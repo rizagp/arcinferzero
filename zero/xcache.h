@@ -227,7 +227,11 @@ struct XCache {
     std::vector<int> rescue;
     for (int s = s0; s < P->n; ++s) {
       const int k = P->key[s];
-      if (k < 0) continue;
+      // (a slot a failed prefetch freed keeps its place in the list: out of it too, before the arrays shrink)
+      if (k < 0) {
+        if (P->head == s || P->prev[s] >= 0) unlink(*P, s);
+        continue;
+      }
       unlink(*P, s);
       where[k] = -1;
       P->key[s] = -1;

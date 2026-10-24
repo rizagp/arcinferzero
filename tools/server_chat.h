@@ -615,9 +615,10 @@
           hit_stop = true;
         }
       }
-      if (stream) {
-        parser.update(text, false, dr, dc);
-        if (!send_delta(dr, dc) || !send_tool_deltas(before_stops(text), false)) gone = true;
+      if (stream) {  // (held back: a possible beginning of a stop string, which a later token may complete)
+        const std::string shown = hit_stop ? text : before_stops(text);
+        parser.update(shown, false, dr, dc);
+        if (!send_delta(dr, dc) || !send_tool_deltas(shown, false)) gone = true;
       }
       if (hit_stop) { finish = "stop"; break; }
       // the client went away (also when nothing was sent for this token): stop before the next pass; the drafts in

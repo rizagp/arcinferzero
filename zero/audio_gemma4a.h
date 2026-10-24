@@ -299,9 +299,10 @@ class AudioGemma4A : public GemmaAudioEncoder {
     if (outp_.K != n_embd || mmp_.K != outp_.N) throw std::runtime_error("mmproj: unexpected Gemma 4 audio output projections");
     loaded_ = true;
   }
-  void reserve(int Mp) {
+  void reserve(int Mp) {  // (grown as needed: the smaller set released first)
     if (Mp <= cap_) return;
     const size_t E = n_embd, F = std::max<size_t>(n_ff, 3 * E), W = std::max<size_t>(outp_.N, n_out);
+    for (cl_mem* m : {&bin_, &x_, &hn_, &h_, &t_, &o_}) e_.free_buf(*m);
     bin_ = e_.buf((size_t)Mp * inp_.K * 4);
     x_ = e_.buf((size_t)Mp * E * 4);
     hn_ = e_.buf((size_t)Mp * std::max<size_t>(E, W) * 4);

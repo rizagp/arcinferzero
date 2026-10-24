@@ -33,6 +33,16 @@ def wait_out(e, tries, what):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **k): return None
 
+# urllib copies every header to the redirected request: the token stays with huggingface.co (not the CDN)
+class HfRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and urllib.parse.urlparse(newurl).hostname != 'huggingface.co':
+            new.remove_header('Authorization')
+        return new
+
+OPENER = urllib.request.build_opener(HfRedirect)
+
 def metadata(repo, rev, name):
     # the resolve URL answers with the commit, the size and (LFS files) the SHA-256, then redirects to the CDN
     url = f'https://huggingface.co/{repo}/resolve/{urllib.parse.quote(rev)}/{urllib.parse.quote(name)}'
@@ -63,7 +73,7 @@ def fetch_small(url, path):
     tries = 0
     while True:
         try:
-            with urllib.request.urlopen(request(url), timeout=60) as resp:
+            with OPENER.open(request(url), timeout=60) as resp:
                 data = resp.read()
             with open(path, 'wb') as f: f.write(data)
             return
@@ -78,7 +88,7 @@ def download(url, path, size, limit):
         have = os.path.getsize(path) if os.path.exists(path) else 0
         if have >= size: return
         try:
-            with urllib.request.urlopen(request(url, start=have), timeout=60) as resp:
+            with OPENER.open(request(url, start=have), timeout=60) as resp:
                 if have and resp.status != 206:  # (a reply from the start: not this time, maybe the next)
                     raise http.client.HTTPException(f'HTTP {resp.status} instead of 206 for a resumed download')
                 with open(path, 'ab') as f:

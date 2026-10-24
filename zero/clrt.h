@@ -256,6 +256,7 @@ inline GetProgramInfo getProgramInfo;
 inline ReleaseProgram releaseProgram;
 inline void *device = nullptr, *context = nullptr;
 inline bool load() {
+  if (context) return true;  // (a second engine in the process: the same compiler context, no second DLL reference)
   HMODULE h = LoadLibraryA("OpenCL.dll");
   if (!h) return false;
 #define RCL(var, name) var = (decltype(var))(void*)GetProcAddress(h, name); if (!var) return false;
@@ -541,6 +542,8 @@ struct ClRt {
       std::ifstream f(path, std::ios::binary);
       if (f) bin.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }
+    bool cached = !bin.empty();
+  compile:
     if (bin.empty()) {
       cl_int err = 0;
       const char* s = src.c_str();
@@ -567,8 +570,15 @@ struct ClRt {
         std::error_code ec;
         std::filesystem::create_directories(cache_dir, ec);
         const std::string tmp = path + ".tmp";
-        { std::ofstream o(tmp, std::ios::binary); o.write((const char*)bin.data(), (std::streamsize)bin.size()); }
-        std::filesystem::rename(tmp, path, ec);
+        bool ok = false;
+        {
+          std::ofstream o(tmp, std::ios::binary);
+          o.write((const char*)bin.data(), (std::streamsize)bin.size());
+          o.close();
+          ok = !o.fail();
+        }
+        if (ok) std::filesystem::rename(tmp, path, ec);  // (a short write (disk full) is never installed)
+        else std::filesystem::remove(tmp, ec);
       }
     }
     // The OpenCL build option -cl-intel-256-GRF-per-thread does not survive into a Level Zero module made from the
@@ -582,6 +592,15 @@ struct ClRt {
     p->opts = opts;
     ze_module_build_log_handle_t log = nullptr;
     const ze_result_t r = zeModuleCreate(zrt::ctx, zrt::dev, &md, &p->m, &log);
+    if (r != ZE_RESULT_SUCCESS && cached) {  // a damaged cache file: compiled again from the source
+      if (log) zeModuleBuildLogDestroy(log);
+      delete p;
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+      bin.clear();
+      cached = false;
+      goto compile;
+    }
     if (r != ZE_RESULT_SUCCESS) {
       size_t ln = 0;
       zeModuleBuildLogGetString(log, &ln, nullptr);

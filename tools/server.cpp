@@ -917,6 +917,15 @@ int main(int argc, char** argv) {
   std::vector<ModelInfo> catalog = swap ? scan_models() : std::vector<ModelInfo>();
   std::shared_mutex swap_mu;  // requests share it; switching models takes it exclusively
   // the catalog entry a request's "model" names (alias, org/repo name or file), rescanning once for new downloads
+  // names no catalog entry has (clients send their own: "gpt-4o", "claude-..."): the request stays on the loaded model,
+  // and for a minute it takes neither the exclusive lock (it would wait for every running request) nor a rescan
+  std::mutex unknown_mu;
+  std::map<std::string, clk::time_point> unknown_names;
+  auto known_unknown = [&](const std::string& want) {
+    std::lock_guard<std::mutex> g(unknown_mu);
+    auto it = unknown_names.find(want);
+    return it != unknown_names.end() && clk::now() - it->second < std::chrono::seconds(60);
+  };
   auto find_model = [&](const std::string& want) -> const ModelInfo* {
     for (int pass = 0; pass < 2; ++pass) {
       for (const ModelInfo& m : catalog)
@@ -1098,8 +1107,10 @@ int main(int argc, char** argv) {
           int status = 0;
           std::string body;
           rs.on_send = [&](int st, const std::string& b) { status = st; body = b; };
-          dispatch(rq2, rs);
-          rs.on_send = nullptr;
+          {
+            struct Unhook { HttpResponse& r; ~Unhook() { r.on_send = nullptr; } } unhook{rs};  // (also on a throw)
+            dispatch(rq2, rs);
+          }
           if (status != 200) return rs.send(status ? status : 500, "application/json", body);
           Json r;
           Json::try_parse(body, r);
@@ -1253,11 +1264,16 @@ int main(int argc, char** argv) {
       bool other = false;
       {
         std::shared_lock<std::shared_mutex> lk(swap_mu);
-        other = !want.empty() && (!cur || want != cur->alias);
+        other = !want.empty() && (!cur || want != cur->alias) && !known_unknown(want);
       }
       if (other) {
         std::unique_lock<std::shared_mutex> lk(swap_mu);
         const ModelInfo* m = !cur || want != cur->alias ? find_model(want) : nullptr;
+        if (!m && (!cur || want != cur->alias)) {
+          std::lock_guard<std::mutex> g(unknown_mu);
+          if (unknown_names.size() > 256) unknown_names.clear();
+          unknown_names[want] = clk::now();
+        }
         if (m && (!cur || m->alias != cur->alias)) {
           const std::string prev_path = cur ? cur->path : std::string(), prev_alias = cur ? cur->alias : std::string();
           const auto t0 = clk::now();

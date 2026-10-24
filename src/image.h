@@ -186,6 +186,11 @@ inline void fit_size(int w, int h, int align, int64_t min_pixels, int64_t max_pi
     const double beta = std::sqrt((double)h * w / max_pixels);
     H = std::max(align, floor_f(h / beta));
     W = std::max(align, floor_f(w / beta));
+    // (a very thin image: the short side held at `align` keeps the area above the budget; the long side gives way)
+    if ((int64_t)H * W > max_pixels) {
+      if (W >= H) W = (int)std::max<int64_t>(align, max_pixels / H / align * align);
+      else H = (int)std::max<int64_t>(align, max_pixels / W / align * align);
+    }
   } else if (min_pixels > 0 && (int64_t)H * W < min_pixels) {
     const double beta = std::sqrt((double)min_pixels / ((double)h * w));
     H = ceil_f(h * beta);

@@ -3,6 +3,15 @@
 // own. Split out of tools/server.cpp unchanged on 2026-10-24 (QUEUE item 11).
 
 // ---------------------------------------------------------------- loading a model
+// the files next to a model ("-m model.gguf" without a folder: the current one; an unreadable folder: none)
+static std::vector<std::filesystem::directory_entry> model_dir_files(const std::string& model) {
+  std::filesystem::path dir = std::filesystem::path(model).parent_path();
+  if (dir.empty()) dir = ".";
+  std::vector<std::filesystem::directory_entry> out;
+  std::error_code ec;
+  for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) out.push_back(*it);
+  return out;
+}
 struct ServeOpts {
   EngineOptions eo;
   bool ctx_auto = false;
@@ -50,9 +59,8 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       gemma = g.get_str("general.architecture", "") == "gemma4" && g.get_int("gemma4.embedding_length_per_layer_input", 0) == 0;
     } catch (const std::exception&) {
     }
-    std::error_code ec;
     if (gemma && so.mmproj.empty())
-      for (const auto& de : std::filesystem::directory_iterator(std::filesystem::path(model).parent_path(), ec))
+      for (const auto& de : model_dir_files(model))
         proj = proj || (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf");
     if (gemma && (proj || !so.mmproj.empty())) eo.min_chunk = std::max(so.img_max, 2048);
   }
@@ -89,7 +97,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (!eng.hp.gemma && mmproj != "-") {
     // Qwen vision (dense and MoE): --mmproj, or an mmproj-*.gguf next to the model with a Qwen3-VL projector arcinferzero runs
     if (mmproj.empty())
-      for (const auto& de : std::filesystem::directory_iterator(std::filesystem::path(model).parent_path()))
+      for (const auto& de : model_dir_files(model))
         if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") { mmproj = de.path().string(); break; }
     if (!mmproj.empty()) {
       try {
@@ -111,7 +119,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (eng.hp.gemma && mmproj != "-") {
     // vision: --mmproj, or an mmproj-*.gguf next to the model (Hugging Face snapshot folder)
     if (mmproj.empty())
-      for (const auto& de : std::filesystem::directory_iterator(std::filesystem::path(model).parent_path()))
+      for (const auto& de : model_dir_files(model))
         if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") { mmproj = de.path().string(); break; }
     if (!mmproj.empty()) {
       try {

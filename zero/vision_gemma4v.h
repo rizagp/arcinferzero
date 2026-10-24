@@ -317,11 +317,12 @@ class VisionGemma4V : public GemmaImageEncoder {
     if (i8_) e_.ensure_stage();  // (MoE models decode Q8_0 rows just in time: staging for these sizes)
     loaded_ = true;
   }
-  // buffers for Mp patch rows and n_tok output tokens (grown as needed; released with the engine)
+  // buffers for Mp patch rows and n_tok output tokens (grown as needed: the smaller set released first)
   void reserve(int Mp, int n_tok) {
     const int Mq = (n_tok + 127) / 128 * 128;
     if (Mp <= cap_ && Mq <= cap_tok_) return;
-    const size_t E = n_embd, F = n_ff, K0 = 3 * patch * patch, R = std::max(Mp, Mq);
+    const size_t E = n_embd, F = n_ff, K0 = 3 * patch * patch, R = std::max({Mp, Mq, cap_, cap_tok_});
+    for (cl_mem* m : {&bin_, &badd_, &bpos_, &x_, &hn_, &h_, &g_, &t_, &o_, &q_, &k_, &v_}) e_.free_buf(*m);
     bin_ = e_.buf(R * K0 * 4);
     badd_ = e_.buf(R * E * 4);
     bpos_ = e_.buf(R * 8);

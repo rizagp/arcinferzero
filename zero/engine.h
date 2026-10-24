@@ -212,6 +212,7 @@ class Engine {
     vrows_ = dfl_used_ = spec_ = false;
     batch_.clear();
     dfl_cap_lo_ = dfl_cap_base_ = dfl_cap_end_ = 0;
+    nc_lo_ = nc_hi_ = -1;
     if (hlast_) fill(hlast_, (size_t)hp.n_embd * 4);
     for (auto& L : layers_)
       if (hp.recurrent(L.il)) {
@@ -359,8 +360,10 @@ class Engine {
       ple_inputs(n, Mp);
     }
     if (non_causal) { nc_lo_ = pos; nc_hi_ = pos + n - 1; }
-    for (auto& L : layers_) run_layer(L, n, Mp);
-    nc_lo_ = nc_hi_ = -1;
+    {
+      struct Causal { int& lo; int& hi; ~Causal() { lo = hi = -1; } } causal{nc_lo_, nc_hi_};  // (also on a throw)
+      for (auto& L : layers_) run_layer(L, n, Mp);
+    }
     pos += n;
     if (logits) {
       head(n);
@@ -1997,6 +2000,15 @@ class Engine {
     mems_.push_back(cl_.buffer(CL_MEM_READ_WRITE, bytes, host));
     return mems_.back();
   }
+  // releases a buffer of buf() before the engine ends (an encoder growing its buffers; no sub-buffers of it)
+  void free_buf(cl_mem& m) {
+    if (!m) return;
+    auto it = std::find(mems_.begin(), mems_.end(), m);
+    if (it != mems_.end()) mems_.erase(it);
+    gpu_bytes -= std::min<size_t>(gpu_bytes, m->size);
+    clReleaseMemObject(m);
+    m = nullptr;
+  }
   // Raw GGUF rows uploaded with each superblock zero-padded to a multiple of 8 bytes (zero/kernels/decode.cl BBP),
   // written in parallel straight into a host-visible buffer (zero-copy on an integrated GPU).
   // Zero bytes after the last superblock: gemv reads two superblocks per step (rounded up to 64-byte block reads),
@@ -2450,7 +2462,7 @@ class Engine {
     static const int pf_min = getenv("ARC_XPF_MIN") ? atoi(getenv("ARC_XPF_MIN")) : 128;
     const int next = L.il + 1;
     // (the tokens that go through the next layer before the layer after it: a layer-major segment's, else the chunk's)
-    if (T >= pf_min && (next < hp.n_layer || (next == hp.n_layer && has_mtp))) xc_->prefetch(next, seg_n_ ? seg_n_ : T);
+    if (T >= pf_min && (next < hp.n_layer || (next == hp.n_layer && mtp_block_))) xc_->prefetch(next, seg_n_ ? seg_n_ : T);
   }
  public:
   // expert cache statistics (empty without streaming)
@@ -3070,7 +3082,8 @@ class Engine {
     // decode key-split partials: up to 4 rows x splits (small splits only while splits * sub-groups < 512)
     apart_ = buf((size_t)4 * std::max(ctx / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4);
     // rows of a speculative verification pass or a batched pass over the slots
-    batch_rows_ = std::min(16, std::max(1 + max_drafts(), std::max(opt.slots, 1)));
+    // (DFlash2's head writes block - 1 draft rows whatever the drafts kept)
+    batch_rows_ = std::min(16, std::max({1 + max_drafts(), opt.slots, 1, dfl_ ? dfl_B_ : 1}));
     logits_ = buf((size_t)hp.n_vocab * 4 * batch_rows_);
     if (hp.moe) {
       const size_t S = M * hp.n_expert_used, F = hp.n_ff_exp_pad, NE = hp.n_expert;

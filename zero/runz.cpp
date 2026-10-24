@@ -121,54 +121,58 @@ static int run_main(int argc, char** argv) {
   std::string dump_logits;  // every generation step's logits (f32), to compare two builds / settings bitwise
   for (int i = 2; i < argc; ++i) {
     std::string a = argv[i];
-    if (a == "--tokens") tokens_arg = argv[++i];
+    auto next = [&]() -> const char* {  // (an option's value; missing at the end of the line: an error, not argv[argc])
+      if (i + 1 >= argc) { fprintf(stderr, "%s: missing value\n", a.c_str()); exit(1); }
+      return argv[++i];
+    };
+    if (a == "--tokens") tokens_arg = next();
     else if (a == "--tokens-file") {
-      std::ifstream f(argv[++i]);
+      std::ifstream f(next());
       std::stringstream ss;
       ss << f.rdbuf();
       tokens_arg = ss.str();
     }
     else if (a == "--text-file") {  // prompt text (special tokens parsed), tokenized with the model's vocabulary
-      std::ifstream f(argv[++i], std::ios::binary);
+      std::ifstream f(next(), std::ios::binary);
       std::stringstream ss;
       ss << f.rdbuf();
       text_prompt = ss.str();
     }
-    else if (a == "--dump-ids") dump_ids = argv[++i];  // write the prompt's token ids (comma separated) and exit
-    else if (a == "--feed-step") feed_step = atoi(argv[++i]);
-    else if (a == "--n") n_gen = atoi(argv[++i]);
-    else if (a == "--chunk") chunk = atoi(argv[++i]);
-    else if (a == "--ctx") ctx = atoi(argv[++i]);
-    else if (a == "--bench-pp") bench_pp = atoi(argv[++i]);
+    else if (a == "--dump-ids") dump_ids = next();  // write the prompt's token ids (comma separated) and exit
+    else if (a == "--feed-step") feed_step = atoi(next());
+    else if (a == "--n") n_gen = atoi(next());
+    else if (a == "--chunk") chunk = atoi(next());
+    else if (a == "--ctx") ctx = atoi(next());
+    else if (a == "--bench-pp") bench_pp = atoi(next());
     else if (a == "--prof") prof = true;
     else if (a == "--show") show = true;
-    else if (a == "--dump-logits") dump_logits = argv[++i];
+    else if (a == "--dump-logits") dump_logits = next();
     else if (a == "--prof-gen") prof_gen = true;
     else if (a == "--act256") eo.act32_all = false;
     else if (a == "--attn-f32") eo.attn_int8 = false;
     else if (a == "--mtp") eo.mtp = true;
-    else if (a == "--dflash") { eo.dflash = argv[++i]; eo.mtp = true; }  // DFlash2 drafter folder
+    else if (a == "--dflash") { eo.dflash = next(); eo.mtp = true; }  // DFlash2 drafter folder
     else if (a == "--draft") {  // auto: DFlash2 and the MTP block, picked per step; mtp: the block only; dflash: DFlash2 only
-      const std::string d = argv[++i];
+      const std::string d = next();
       if (d == "mtp") eo.dflash.clear();
       else if (d == "dflash") eo.mtp_block = false;
       else if (d != "auto") { fprintf(stderr, "--draft: auto, mtp or dflash\n"); return 1; }
     }
-    else if (a == "--mtp-drafts") eo.mtp_drafts = atoi(argv[++i]);
-    else if (a == "--mtp-min-p") eo.mtp_min_p = (float)atof(argv[++i]);
-    else if (a == "--kl-ref") kl_ref = argv[++i];
+    else if (a == "--mtp-drafts") eo.mtp_drafts = atoi(next());
+    else if (a == "--mtp-min-p") eo.mtp_min_p = (float)atof(next());
+    else if (a == "--kl-ref") kl_ref = next();
     else if (a == "--slots-check") slots_check = true;
-    else if (a == "--bench-batch") bench_batch = atoi(argv[++i]);
+    else if (a == "--bench-batch") bench_batch = atoi(next());
     else if (a == "--kl-decode") kl_decode = true;  // with --kl-ref of every position: feed the prompt token by token
-    else if (a == "--perplexity") ppl_file = argv[++i];
-    else if (a == "--ppl-dump") ppl_dump = argv[++i];
-    else if (a == "--ppl-kl-save") ppl_kl_save = argv[++i];
-    else if (a == "--ppl-score-last") ppl_score_last = atoi(argv[++i]);
-    else if (a == "--ppl-score-step") ppl_score_step = atoi(argv[++i]);
-    else if (a == "--ppl-kl") ppl_kl = argv[++i];
-    else if (a == "--ppl-ctx") ppl_ctx = atoi(argv[++i]);
-    else if (a == "--ppl-chunks") ppl_chunks = atoi(argv[++i]);
-    else if (a == "--budget") eo.w8_budget_gb = atof(argv[++i]);
+    else if (a == "--perplexity") ppl_file = next();
+    else if (a == "--ppl-dump") ppl_dump = next();
+    else if (a == "--ppl-kl-save") ppl_kl_save = next();
+    else if (a == "--ppl-score-last") ppl_score_last = atoi(next());
+    else if (a == "--ppl-score-step") ppl_score_step = atoi(next());
+    else if (a == "--ppl-kl") ppl_kl = next();
+    else if (a == "--ppl-ctx") ppl_ctx = atoi(next());
+    else if (a == "--ppl-chunks") ppl_chunks = atoi(next());
+    else if (a == "--budget") eo.w8_budget_gb = atof(next());
     else if (!a.empty() && a[0] != '-' && text_prompt.empty()) text_prompt = a;  // PROMPT (special tokens parsed)
     else { fprintf(stderr, "unknown option %s (--help: the options)\n", a.c_str()); return 1; }
   }
@@ -198,6 +202,7 @@ static int run_main(int argc, char** argv) {
 
   if (bench_batch > 1) {  // batched decoding (forward_batch) over 1..N slots holding the prompt, against one slot alone
     const int NS = bench_batch;
+    if ((int)toks.size() < NS) { fprintf(stderr, "--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS); return 1; }
     eng.add_slots(NS);
     for (int s = 0; s < NS; ++s) {
       eng.bind(s);
@@ -574,9 +579,9 @@ static int run_main(int argc, char** argv) {
       // the single-token (decode) path at every prompt position against the reference log-probs of that position
       FILE* fi = fopen(kl_ref.c_str(), "rb");
       if (!fi) { fprintf(stderr, "cannot open %s\n", kl_ref.c_str()); return 1; }
-      fseek(fi, 0, SEEK_END);
-      std::vector<float> ref((size_t)ftell(fi) / 4);
-      fseek(fi, 0, SEEK_SET);
+      _fseeki64(fi, 0, SEEK_END);  // (64-bit: references of more than 2 GB)
+      std::vector<float> ref((size_t)_ftelli64(fi) / 4);
+      _fseeki64(fi, 0, SEEK_SET);
       const size_t got = fread(ref.data(), 4, ref.size(), fi);
       fclose(fi);
       const size_t V = eng.hp.n_vocab;
@@ -654,9 +659,9 @@ static int run_main(int argc, char** argv) {
       FILE* fi = fopen(kl_ref.c_str(), "rb");
       std::vector<float> ref;
       if (fi) {
-        fseek(fi, 0, SEEK_END);
-        ref.resize((size_t)ftell(fi) / 4);
-        fseek(fi, 0, SEEK_SET);
+        _fseeki64(fi, 0, SEEK_END);
+        ref.resize((size_t)_ftelli64(fi) / 4);
+        _fseeki64(fi, 0, SEEK_SET);
         if (fread(ref.data(), 4, ref.size(), fi) != ref.size()) ref.clear();
         fclose(fi);
       }

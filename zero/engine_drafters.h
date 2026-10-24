@@ -200,7 +200,8 @@
     dfl_eps_ = (float)cfg["rms_norm_eps"].as_number(1e-6);
     dfl_theta_ = (float)cfg["rope_parameters"]["rope_theta"].as_number(1e7);
     if (dfl_B_ < 2 || dfl_B_ > 8 || dfl_K_ != 2 || E % dfl_G_ || dfl_F_ % 256 || dfl_win_ + 64 > dfl_R_ || dfl_tl_.empty() ||
-        dfl_nh_ * 128 > 8192 || dfl_topk_ < 1 || dfl_topk_ > 64)
+        dfl_nh_ * 128 > 8192 || dfl_topk_ < 1 || dfl_topk_ > 64 ||
+        dfl_rank_ < 1 || dfl_rank_ > 1024)  // (dflash_draft: the selector's rows on the stack, float ph[1024])
       throw std::runtime_error("DFlash: unsupported drafter configuration");
     for (int l : dfl_tl_)
       if (l < 0 || l >= hp.n_layer) throw std::runtime_error("DFlash: target layer out of range");

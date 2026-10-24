@@ -263,10 +263,11 @@ class VisionQwen3VL {
       throw std::runtime_error("mmproj: unexpected Qwen3-VL merger shapes");
     loaded_ = true;
   }
-  // buffers for Mp patch rows (grown as needed; released with the engine)
+  // buffers for Mp patch rows (grown as needed: the smaller set released first)
   void reserve(int Mp) {
     if (Mp <= cap_) return;
     const size_t E = n_embd, F = std::max<size_t>(std::max<size_t>(3 * E, n_ff), mm0_.N), K0 = 3 * patch * patch;
+    for (cl_mem* m : {&bin_, &badd_, &bpos_, &x_, &hn_, &h_, &o_, &q_, &k_, &v_}) e_.free_buf(*m);
     bin_ = e_.buf((size_t)Mp * K0 * 4);
     badd_ = e_.buf((size_t)Mp * E * 4);
     bpos_ = e_.buf((size_t)Mp * 8);

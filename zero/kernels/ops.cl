@@ -2302,10 +2302,10 @@ __kernel void vit_ln(__global const float* x, int E, __global const float* w, __
 #else
 #define VSH(a, i) intel_sub_group_shuffle((a), (i))
 #endif
-__attribute__((intel_reqd_sub_group_size(16)))
 // Vision rows x [M][lda] (Kv values each) quantized for the engine's int8 GEMM as quant_rows does (per-32 scales; with
 // the two-pass defines also the residual), K padded with zeros to Kp, whole superblocks: the vision widths 1152 / 4304
 // are not. grid (256, Mp), local (256, 1)
+__attribute__((intel_reqd_sub_group_size(16)))
 __kernel void vit_quant_pad(__global const float* x, int lda, int Kv, int Kp, int M, int M_valid, __global char* aq,
                         __global float* asc, __global ushort* absum) {
   const int m = get_group_id(1), lane = get_sub_group_local_id();
@@ -2320,6 +2320,7 @@ __kernel void vit_quant_pad(__global const float* x, int lda, int Kv, int Kp, in
   }
 }
 
+__attribute__((intel_reqd_sub_group_size(16)))  // (16 activations per block read, shuffled by lane)
 __kernel void vit_gemm_f16(__global const float* A, int lda, __global const half* W, int K, __global float* C,
                            int ldc, int c_off, int acc, int M_valid) {
   const int n = get_global_id(0), m0 = get_global_id(1) * VTM;
@@ -2762,8 +2763,7 @@ __kernel void hc_norm_quant(__global const float* res, int r0, __global const fl
 
 // out[t][n] = W[n] . x[t] in f32 (rows of K floats; K a multiple of 64): a router whose choice int8 inputs would
 // change (Gemma 4 26B-A4B: int8 router inputs alone move the reference by KL 0.035). One sub-group per (row, token).
-// grid (16 * N, T), local (16, 1).
-__attribute__((intel_reqd_sub_group_size(16)))
+// grid (16 * N, T), local (16, 1). (Defined after gemv_bf16.)
 // Flint's router: f32 input rows x [T][K] against BF16 weight rows (the file's own, exact in f32), RT rows x TT tokens
 // per sub-group so that each weight and input load serves several products (one row x one token per sub-group, as
 // gemv_f32, re-read the weights for every token: 744 ms of a 4K prompt). grid (16 * N / RT, ceil(T / TT)), local (16, 1)
@@ -2814,6 +2814,7 @@ __kernel void gemv_bf16(__global const float* x, int K, __global const GW_T* w, 
     }
 }
 
+__attribute__((intel_reqd_sub_group_size(16)))  // (gemv_f32: one 16-lane sub-group per row, see above gemv_bf16)
 __kernel void gemv_f32(__global const float* x, int K, __global const float* w, int N, __global float* out, int ldo) {
   const int n = get_global_id(0) / 16, t = get_global_id(1), lane = get_sub_group_local_id();
   if (n >= N) return;

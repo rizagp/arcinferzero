@@ -416,12 +416,20 @@ class Adapter {
     rs.on_send = [this](int status, const std::string& body) { complete(status, body); };
     if (stream_) rs.on_event = [this](const std::string& data) { return event(data); };
   }
+  // (the hooks capture this: a reply sent after the handler returned (a cancel's 404, an exception's 500) goes to the
+  //  socket as is, not to a destroyed adapter)
+  ~Adapter() {
+    rs_.on_send = nullptr;
+    rs_.on_event = nullptr;
+  }
+  Adapter(const Adapter&) = delete;
+  Adapter& operator=(const Adapter&) = delete;
 
  private:
   std::string kind_, model_, id_;
   Json req_;
   HttpResponse& rs_;
-  bool stream_ = false, started_ = false;
+  bool stream_ = false, started_ = false, ended_ = false;
   // stream state: what was sent so far
   std::string text_, reasoning_;
   struct Call { std::string id, name, args; };
@@ -431,6 +439,7 @@ class Adapter {
   int seq_ = 0;             // Responses: sequence number of the events
   int out_index_ = -1;      // Responses: index of the open output item
   std::string item_type_, item_id_;
+  size_t item_call_ = 0;    // Responses: the open function_call item's entry in calls_
   Json usage_, timings_;
 
   // ---- errors in the client's format
@@ -764,6 +773,7 @@ class Adapter {
     if (type.empty()) return true;
     ++out_index_;
     item_type_ = type;
+    if (c) item_call_ = (size_t)(c - calls_.data());
     Json it = type == "reasoning" ? reasoning_item("", "in_progress")
               : type == "message" ? message_item("", "in_progress")
                                   : call_item(*c, "in_progress");
@@ -825,7 +835,7 @@ class Adapter {
       if (!rsp("response.reasoning_summary_text.done", e)) return false;
       done = reasoning_item(reasoning_, "completed");
     } else {
-      const Call& c = calls_.back();
+      const Call& c = calls_[item_call_];
       e.set("arguments", c.args);
       if (!rsp("response.function_call_arguments.done", e)) return false;
       done = call_item(c, "completed");
@@ -950,7 +960,11 @@ class Adapter {
     }
     if (!finish.empty()) finish_ = finish;
     // the end: the usage comes in the chunk after the finish reason (stream_options.include_usage)
-    if (c["usage"].is_object()) return end();
+    // (the finish chunk carries usage too, then the usage-only chunk: one end)
+    if (c["usage"].is_object() && !ended_) {
+      ended_ = true;
+      return end();
+    }
     return true;
   }
   std::string finish_ = "stop";

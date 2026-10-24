@@ -96,22 +96,23 @@ class GgufFile {
   explicit GgufFile(const std::string& path_) : path(path_) {
     file_ = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file_ == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open " + path);
-    LARGE_INTEGER sz;
-    GetFileSizeEx(file_, &sz);
-    size_ = (uint64_t)sz.QuadPart;
-    map_ = CreateFileMappingA(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
-    if (!map_) throw std::runtime_error("CreateFileMapping failed");
-    base_ = (const uint8_t*)MapViewOfFile(map_, FILE_MAP_READ, 0, 0, 0);
-    if (!base_) throw std::runtime_error("MapViewOfFile failed");
-    parse();
-    open_parts();
-    add_virtual();
+    try {  // (a file that fails to parse: no handle or mapping left open; the destructor does not run here)
+      LARGE_INTEGER sz;
+      if (!GetFileSizeEx(file_, &sz)) throw std::runtime_error("cannot read the size of " + path);
+      size_ = (uint64_t)sz.QuadPart;
+      map_ = CreateFileMappingA(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+      if (!map_) throw std::runtime_error("CreateFileMapping failed");
+      base_ = (const uint8_t*)MapViewOfFile(map_, FILE_MAP_READ, 0, 0, 0);
+      if (!base_) throw std::runtime_error("MapViewOfFile failed");
+      parse();
+      open_parts();
+      add_virtual();
+    } catch (...) {
+      close();
+      throw;
+    }
   }
-  ~GgufFile() {
-    if (base_) UnmapViewOfFile(base_);
-    if (map_) CloseHandle(map_);
-    if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
-  }
+  ~GgufFile() { close(); }
   GgufFile(const GgufFile&) = delete;
   GgufFile& operator=(const GgufFile&) = delete;
 
@@ -166,6 +167,14 @@ class GgufFile {
   uint64_t size_ = 0, pos_ = 0;
 
   std::vector<std::unique_ptr<GgufFile>> parts_;  // the other parts of a split model
+  void close() {
+    if (base_) UnmapViewOfFile(base_);
+    if (map_) CloseHandle(map_);
+    if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
+    base_ = nullptr;
+    map_ = nullptr;
+    file_ = INVALID_HANDLE_VALUE;
+  }
 
   // name-00001-of-0000N.gguf: the parts 2..N, their tensors added to this one's index
   void open_parts() {

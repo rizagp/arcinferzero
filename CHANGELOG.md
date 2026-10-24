@@ -2,6 +2,25 @@
 
 ## 2026-10-24: renamed to arcinferzero; Flint runs; Gemma sliding attention, /W4 and CI
 
+- **Self-audit fixes** (all source files read for bugs, each finding checked against the code):
+  - Server: the Anthropic / Ollama / Responses adapter no longer outlives its request (a cancel or an engine error
+    called into freed memory); their streams end once (the finish chunk and the usage chunk both ended them: Ollama
+    sent its tool calls twice); a Responses stream with two tool calls closes each with its own data; a stop string
+    split over tokens is held back in streams (it reached the client before the cut); a request naming a model no
+    catalog has ("gpt-4o", "claude-...") no longer takes the switch lock and rescans every time (a minute's memory);
+    `-m model.gguf` without a folder loads.
+  - Kernels: `gemv_f32` (Gemma 4 26B's router) and `vit_gemm_f16` (every vision / audio encoder) had lost their
+    16-lane sub-group requirement to a kernel inserted before them (right today only because the compiler chose 16).
+  - Engine: the vision / audio encoders free their smaller buffers when they grow (a server getting larger and
+    larger images kept every set); a Gemma image chunk that throws no longer leaves its non-causal span set;
+    DFlash2's head rows fit `logits_` with `--mtp-drafts` below its block; `selector_rank` is bounded (a stack
+    array); the MTP layer is prefetched only when the MTP block runs; a second engine reuses the OpenCL compiler
+    context; a damaged kernel-cache file is rebuilt from source instead of ending every start, and a short write is
+    never installed; the expert cache's shrink also unlinks slots a failed prefetch freed.
+  - Tools: GGUF files that fail to parse close their handle and mapping; very thin images stay within the image
+    token budget; `runz` checks option values and `--bench-batch` prompts, reads `--kl-ref` files over 2 GB;
+    `hf-download.py` keeps `HF_TOKEN` on huggingface.co (urllib copied it to the CDN); `setup.ps1` downloads the 4B
+    before the 35B conversion that reads it; `arc-server -NoStream` restarts a running server that streams.
 - **Flint** (unsloth/flint-GGUF UD-Q4_K_XL, arch `flint`) runs: Gemma 4's float attention with attention sinks,
   1/sqrt(d), no RoPE on the global layers and a 513-token window on the sliding ones; two leading dense SwiGLU
   layers, then 256 experts (sigmoid routing, streamed from the SSD) and a shared FFN without a gate. Server: its

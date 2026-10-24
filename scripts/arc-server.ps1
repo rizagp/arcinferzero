@@ -326,10 +326,11 @@ if ($PrefixCacheGb -ge 0) { $extra += @("--prefix-cache-gb", $PrefixCacheGb) }
 if ($NoSwap) { $extra += "--no-swap" }
 if ($ListenHost) { $extra += @("--host", $ListenHost) }
 if ($SessionDir) { $extra += @("--session-dir", "`"$SessionDir`"") }
+if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with the SSD cache is restarted without it)
 $extraKey = "$($extra -join ' ')|think $ThinkBudget"
 # (compared with the running server's only when given: pi-arc's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and
@@ -353,7 +354,6 @@ $useMtp = [bool]$m.mtp  # (the variant's setting; -NoMtp picked the variant with
 $srvArgs = @("-m", "`"$($m.path)`"", "--port", $Port, "--ctx", $ctxArg, "--alias", $m.alias, "--think-budget", $ThinkBudget) + $extra
 if ($useMtp) { $srvArgs += "--mtp" }
 if ($useMtp -and $m.draft -and $m.draft -ne "auto") { $srvArgs += @("--draft", $m.draft) }  # (-nodf: MTP block only, -df: DFlash2 only)
-if ($NoStream) { $srvArgs += "--no-stream" }
 if ($Chunk -gt 0) { $srvArgs += @("--chunk", $Chunk) }
 if ($SessionCacheGb -gt 0) { $srvArgs += @("--session-cache-gb", $SessionCacheGb) }  # saved conversations on disk (default 8 GB, 0 = off)
 if ($novision -eq "1") { $srvArgs += "--no-mmproj" }
