@@ -247,6 +247,15 @@ static float gelu_tanh(float x) { return 0.5f * x * (1.0f + std::tanh(0.79788456
 // REF_ATTQ: q, k and v rows rounded to int8 with a per-row absmax scale, as arcinferzero's attention stores them.
 // REF_ATTQB = block size of the scales (default: the whole row).
 // REF_ATTQ_HD = a head size: only the layers with that head size are rounded (Gemma 4: 512 global, 256 sliding).
+// round to f16 (nearest even at 10 mantissa bits; the values here stay in f16's range)
+static void f16_round(float* v, int n) {
+  for (int i = 0; i < n; ++i) {
+    uint32_t u;
+    memcpy(&u, &v[i], 4);
+    u = (u + 0xFFF + ((u >> 13) & 1)) & ~0x1FFFu;
+    memcpy(&v[i], &u, 4);
+  }
+}
 static void fq_row(float* v, int n, bool is_v = false) {
   if (!getenv("REF_ATTQ")) return;
   if (getenv("REF_ATTQ_HD") && atoi(getenv("REF_ATTQ_HD")) != n) return;
@@ -734,6 +743,10 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
           rope(d, t);
           fq_row(d, hd);
           if (getenv("REF_ATTQV")) fq_row(&vv[(size_t)t * nkv * hd + hh * hd], hd, true);  // (the engine keeps V f16)
+          if (getenv("REF_KV16")) {  // (REF_KV16=1: K and V rounded to f16, a float attention's cache)
+            f16_round(d, hd);
+            f16_round(&vv[(size_t)t * nkv * hd + hh * hd], hd);
+          }
         }
       }
       // QSA (llama.cpp qwen4exp build_qsa_sel): the indexer scores blocks of `ratio` cells (pooled raw keys, normed and
@@ -919,13 +932,8 @@ static void flint_layers(const std::vector<int>& toks, std::vector<float>& x) {
     matmul(p + "attn_k.weight", h, T, k);
     matmul(p + "attn_v.weight", h, T, v);
     auto qn = vecf(p + "attn_q_norm.weight"), kn = vecf(p + "attn_k_norm.weight"), sinks = vecf(p + "attn_sinks.weight");
-    if (getenv("REF_V16"))  // (REF_V16=1: V rounded to f16, as the engine stored it before 2026-10-24: its effect alone)
-      for (auto& e : v) {
-        uint32_t u;
-        memcpy(&u, &e, 4);
-        u = (u + 0xFFF + ((u >> 13) & 1)) & ~0x1FFFu;  // (round to nearest even at 10 mantissa bits)
-        memcpy(&e, &u, 4);
-      }
+    if (getenv("REF_V16")) f16_round(v.data(), (int)v.size());  // (REF_V16=1: V rounded to f16, as the engine stored it
+                                                                // before 2026-10-24: its effect alone)
     auto rope = [&](float* r, int pos) {
       const int half = hd / 2;
       for (int i = 0; i < half; ++i) {
@@ -1136,6 +1144,10 @@ int main(int argc, char** argv) {
           rope(d, t);
           fq_row(d, hd);
           if (getenv("REF_ATTQV")) fq_row(&vv[(size_t)t * nkv * hd + hh * hd], hd, true);  // (the engine keeps V f16)
+          if (getenv("REF_KV16")) {  // (REF_KV16=1: K and V rounded to f16, a float attention's cache)
+            f16_round(d, hd);
+            f16_round(&vv[(size_t)t * nkv * hd + hh * hd], hd);
+          }
         }
       }
       std::vector<float> att((size_t)T * nh * hd);

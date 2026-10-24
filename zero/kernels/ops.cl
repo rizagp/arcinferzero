@@ -2741,6 +2741,12 @@ __attribute__((intel_reqd_sub_group_size(16)))
 // Flint's router: f32 input rows x [T][K] against BF16 weight rows (the file's own, exact in f32), RT rows x TT tokens
 // per sub-group so that each weight and input load serves several products (one row x one token per sub-group, as
 // gemv_f32, re-read the weights for every token: 744 ms of a 4K prompt). grid (16 * N / RT, ceil(T / TT)), local (16, 1)
+// -DW_F32: f32 weight rows (Gemma 4 26B's router, F32 in its file)
+#ifdef W_F32
+#define GW_T float
+#else
+#define GW_T ushort
+#endif
 #ifndef RT
 #define RT 4
 #endif
@@ -2748,7 +2754,7 @@ __attribute__((intel_reqd_sub_group_size(16)))
 #define TT 4
 #endif
 __attribute__((intel_reqd_sub_group_size(16)))
-__kernel void gemv_bf16(__global const float* x, int K, __global const ushort* w, int N, int T, __global float* out,
+__kernel void gemv_bf16(__global const float* x, int K, __global const GW_T* w, int N, int T, __global float* out,
                         int ldo) {
   const int n0 = get_global_id(0) / 16 * RT, t0 = get_global_id(1) * TT, lane = get_sub_group_local_id();
   float acc[RT][TT];
@@ -2762,9 +2768,13 @@ __kernel void gemv_bf16(__global const float* x, int K, __global const ushort* w
     for (int t = 0; t < TT; ++t) a[t] = t0 + t < T ? vload4(i, x + (size_t)(t0 + t) * K) : (float4)0.0f;
 #pragma unroll
     for (int r = 0; r < RT; ++r) {
+#ifdef W_F32
+      const float4 b = vload4(i, w + (size_t)min(n0 + r, N - 1) * K);
+#else
       const ushort4 u = vload4(i, w + (size_t)min(n0 + r, N - 1) * K);
       const float4 b = (float4)(as_float((uint)u.x << 16), as_float((uint)u.y << 16), as_float((uint)u.z << 16),
                                 as_float((uint)u.w << 16));
+#endif
 #pragma unroll
       for (int t = 0; t < TT; ++t) acc[r][t] += a[t].x * b.x + a[t].y * b.y + a[t].z * b.z + a[t].w * b.w;
     }
@@ -2865,6 +2875,28 @@ __kernel void hc_gate_mean_quant(__global const float* xn, __global const float*
 // work-group. lo_in: the inputs are silu(lo / HC) of the low-rank values (k < LR of rows of stride ld_in, zero up to
 // K), else x rows of stride ld_in. grid (256 * ceil(N / 256), ceil(M / HCF_TM)), local (256, 1).
 #ifndef HCF_TM
+// -DHC_BF16 (Flash Next): the mixer rows as the file's BF16 values, exact, in their natural order (256 per
+// superblock, lane l the 16 values 16 l ..): the same lane / input pairing as q8sb_dot, no scale
+inline float bf16_at(uint w, int odd) { return as_float(odd ? (w & 0xFFFF0000u) : (w << 16)); }
+inline float bf16sb_dot(__global const ushort* p, __local const float* x) {
+  const int lane = get_sub_group_local_id();
+  const uint8 q = vload8(lane, (__global const uint*)p);
+  const uint w[8] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7};
+  float acc = 0.0f;
+#pragma unroll
+  for (int j = 0; j < 16; ++j) acc += bf16_at(w[j / 2], j % 2) * x[16 * j + lane];
+  return acc;
+}
+inline float bf16sb_dot_v(__global const ushort* p, __local const float* x, int nv) {
+  const int lane = get_sub_group_local_id();
+  const uint8 q = 16 * lane < nv ? vload8(lane, (__global const uint*)p) : (uint8)0;
+  const uint w[8] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7};
+  float acc = 0.0f;
+#pragma unroll
+  for (int j = 0; j < 16; ++j) acc += bf16_at(w[j / 2], j % 2) * x[16 * j + lane];
+  return acc;
+}
+
 #define HCF_TM 16
 #endif
 __attribute__((intel_reqd_sub_group_size(16)))
@@ -2889,15 +2921,28 @@ __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, 
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     if (n < N) {
+#ifdef HC_BF16
+      __global const uint* p = (__global const uint*)((__global const ushort*)wq + ((size_t)n * nsb + sb) * 256);
+#else
       __global const uchar* p = wq + ((size_t)n * nsb + sb) * 272;
+#endif
       for (int l = 0; l < 16; ++l) {
         if (lo_in && sb * 256 + 16 * l >= LR) break;  // (the up projection's zero padding past LR)
+#ifdef HC_BF16
+        const uint8 q = vload8(l, p);
+        const uint w8[8] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7};
+#else
         const float d = vload_half(l / 2, (__global const half*)p);
         const uint4 q = vload4(0, (__global const uint*)(p + 16 + 16 * l));
         const uint w4[4] = {q.x, q.y, q.z, q.w};
+#endif
 #pragma unroll
         for (int j = 0; j < 16; ++j) {
+#ifdef HC_BF16
+          const float w = bf16_at(w8[j / 2], j % 2);
+#else
           const float w = d * (float)(char)((w4[j / 4] >> (8 * (j % 4))) & 0xFF);
+#endif
           const int k = 16 * l + j;
 #pragma unroll
           for (int t = 0; t < HCF_TM; ++t) acc[t] += w * xs[t * 256 + k];
@@ -3351,7 +3396,12 @@ __kernel void hc_down1(__global const float* res, int r0, __global const float* 
   for (int r = 0; r < HC_RT; ++r) acc[r] = 0.0f;
   for (int sb = 0; sb < SL / 256; ++sb)
 #pragma unroll
-    for (int r = 0; r < HC_RT; ++r) acc[r] += q8sb_dot(wd + ((size_t)n * nsb + s0 + sb) * 272, xs[r] + sb * 256);
+    for (int r = 0; r < HC_RT; ++r)
+#ifdef HC_BF16
+      acc[r] += bf16sb_dot((__global const ushort*)wd + ((size_t)n * nsb + s0 + sb) * 256, xs[r] + sb * 256);
+#else
+      acc[r] += q8sb_dot(wd + ((size_t)n * nsb + s0 + sb) * 272, xs[r] + sb * 256);
+#endif
 #pragma unroll
   for (int r = 0; r < HC_RT; ++r) {
     const float a = sub_group_reduce_add(acc[r]);
@@ -3388,7 +3438,12 @@ __kernel void hc_up1(__global const float* res, int r0, __global const float* w,
     for (int r = 0; r < HC_RT; ++r) acc[r] = 0.0f;
     for (int sb = 0; sb < nsb; ++sb)
 #pragma unroll
-      for (int r = 0; r < HC_RT; ++r) acc[r] += q8sb_dot_v(wu + ((size_t)n * nsb + sb) * 272, xs[r] + sb * 256, LR - sb * 256);
+      for (int r = 0; r < HC_RT; ++r)
+#ifdef HC_BF16
+        acc[r] += bf16sb_dot_v((__global const ushort*)wu + ((size_t)n * nsb + sb) * 256, xs[r] + sb * 256, LR - sb * 256);
+#else
+        acc[r] += q8sb_dot_v(wu + ((size_t)n * nsb + sb) * 272, xs[r] + sb * 256, LR - sb * 256);
+#endif
 #pragma unroll
     for (int r = 0; r < HC_RT; ++r) {
       const float g = sub_group_reduce_add(acc[r]);

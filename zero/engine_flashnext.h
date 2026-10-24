@@ -15,7 +15,7 @@
     if (T <= 8 && W <= 10240 && KP <= 1024) {
       if (!hc_rinv_) hc_rinv_ = buf(64 * 4);
       int rr = r0, e = E, hc = HC, n = down.N, lr = LR, kp = KP;
-      const std::string rt = T > 1 ? "-DHC_RT=" + std::to_string(T) : std::string();
+      const std::string rt = (T > 1 ? "-DHC_RT=" + std::to_string(T) : std::string()) + (hc_bf16() ? " -DHC_BF16" : "");
       cl_kernel k1 = kernel("ops", rt, "hc_down1");
       set_args(k1, 0, x_, rr, normw, e, hc, eps, down.raw, n, hc_xn_, hc_rinv_);
       size_t g1[2] = {(size_t)256 * ((n + 15) / 16), 8}, l1[2] = {256, 1};  // (8 K slices: HC_KS)
@@ -40,8 +40,9 @@
     // (1: both projections, 2: the down projection only, 3: the up projection only)
     // (4, the default since 20 Oct: the up projection's input as two int8 passes, the values then their rounding
     //  residual, accumulated: KL 0.0647 -> 0.0483 against the f32 reference, prompts 5-7 % slower; 0: one int8 pass)
+    // (BF16 mixer rows: always the f32 GEMMs, mode 1)
     static const int f32_mode = [] {
-      const int m = getenv("ARC_HC_F32") ? atoi(getenv("ARC_HC_F32")) : 4;
+      const int m = hc_bf16() ? 1 : getenv("ARC_HC_F32") ? atoi(getenv("ARC_HC_F32")) : 4;
       if (m < 0 || m > 4) fprintf(stderr, "ARC_HC_F32=%d: not 0..4, the int8 mixers\n", m);
       return m < 0 || m > 4 ? 0 : m;
     }();
@@ -53,7 +54,7 @@
     }
     const bool f32_down = f32_mode == 1 || f32_mode == 2, f32_up = f32_mode == 1 || f32_mode == 3;
     auto gemm_f32 = [&](cl_mem in, int ld_in, int K, int lo_in, const GpuWeight& w, int N, cl_mem C, int ldc) {
-      cl_kernel k = kernel("ops", "", "hc_gemm_f32");
+      cl_kernel k = kernel("ops", hc_bf16() ? "-DHC_BF16" : "", "hc_gemm_f32");
       int ldi = ld_in, kk = K, li = lo_in, lr = LR, hc = HC, nn = N, lc = ldc, mm = Mp;
       set_args(k, 0, in, ldi, kk, li, lr, hc, w.raw, nn, C, lc, mm);
       size_t gws[2] = {(size_t)256 * ((N + 255) / 256), (size_t)(Mp + 15) / 16}, lws[2] = {256, 1};

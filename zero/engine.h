@@ -2188,8 +2188,38 @@ class Engine {
       if ((int)ti.dims[0] != K || (int)ti.dims[1] != NI) throw std::runtime_error("unexpected tensor shape: " + inject);
       dequant_row(ti.type, ti.data, (int64_t)NI * K, v.data() + (size_t)LR * K);
     }
+    if (hc_bf16()) return bf16_weight(v, N, K);
     auto q8 = quantize_rows_q8_0(v.data(), N, K);
     return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K);
+  }
+  // Flash Next's precise mode, ARC_FN_PRECISE=1 (QUEUE 2, 2026-10-24; 363 tokens of README text against the f32
+  // reference, KL prompt / decode): the mixer rows as the file's BF16 values, exact (hc_down1 / hc_up1 / hc_gemm_f32
+  // -DHC_BF16, f32 inputs in prompts too: with Q8_0 rows every block's residual was ~0.5 % off), the router and shared
+  // gate rows BF16 too (gemv_bf16), every matmul input on two int8 passes, the experts included: 0.0143 / 0.0147 ->
+  // 0.0117 / 0.0096, 4K prompt 180 -> 87 tok/s, generation 6.1 -> 5.4. The BF16 rows alone, on one pass: 0.0137 / 0.0154
+  // at 139 tok/s (the int8 inputs dominate). What is left is mostly the int8 attention (q / K / V per row: simulated
+  // in the f32 reference, +0.11 % at layer 3 as in the engine; per-32 scales +0.06 %): float attention with the QSA
+  // masks is the next step.
+  static bool fn_precise() {
+    static const bool on = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
+    return on;
+  }
+  static bool hc_bf16() { return fn_precise(); }
+  // rows of f32 values that came from BF16 (exact) stored back as BF16, for the -DHC_BF16 kernels
+  GpuWeight bf16_weight(const std::vector<float>& v, int N, int K) {
+    std::vector<uint16_t> bf(v.size());
+    for (size_t i = 0; i < v.size(); ++i) {
+      uint32_t u;
+      memcpy(&u, &v[i], 4);
+      bf[i] = (uint16_t)(u >> 16);
+    }
+    GpuWeight w;
+    w.type = GGML_BF16;
+    w.N = N;
+    w.K = K;
+    w.raw = buf(bf.size() * 2 + kRawSlack, nullptr);
+    if (w.raw) CL_CHECK(clEnqueueWriteBuffer(cl_.queue, w.raw, CL_TRUE, 0, bf.size() * 2, bf.data(), 0, nullptr, nullptr));
+    return w;
   }
   int hc_lr_pad() const { return padded_k(hp.hc_lr); }
   // Flash Next mixer up projection [HCE][hc_lr], its K padded with zeros to a multiple of 256
@@ -2200,6 +2230,7 @@ class Engine {
     std::vector<float> a((size_t)N * K), v((size_t)N * KP, 0.0f);
     dequant_row(t.type, t.data, (int64_t)N * K, a.data());
     for (int n = 0; n < N; ++n) memcpy(&v[(size_t)n * KP], &a[(size_t)n * K], (size_t)K * 4);
+    if (hc_bf16()) return bf16_weight(v, N, KP);
     auto q8 = quantize_rows_q8_0(v.data(), N, KP);
     return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, KP);
   }
@@ -2475,7 +2506,8 @@ class Engine {
     //  matrix through the GEMV / GEMM gave 0.014 / 0.012 / 0.051: the inputs must stay f32 too. Its rows stay BF16
     //  as the file has them (exact; half the bytes of f32). ARC_FL_RF32=0: Q8_0)
     static const bool fl_rf32 = !getenv("ARC_FL_RF32") || atoi(getenv("ARC_FL_RF32")) != 0;
-    if (hp.flint && fl_rf32) {  // (BF16 as in the file: v holds exactly those values, the low 16 bits zero)
+    // (Flash Next's precise mode too: its router and shared-expert gate rows are BF16 in the file as well)
+    if ((hp.flint && fl_rf32) || (hp.hc && fn_precise())) {  // (BF16 as in the file: v holds exactly those values)
       std::vector<uint16_t> bf(v.size());
       for (size_t i = 0; i < v.size(); ++i) {
         uint32_t u;
@@ -3260,7 +3292,8 @@ class Engine {
     //  against f32: KL 0.0043 prompt / 0.0027 decode, one pass 0.044 / 0.084; 4K prompt 240 tok/s (one pass 405),
     //  generation the same. ARC_FL_Q1=1: one pass)
     if (hp.flint) q2_ = !(getenv("ARC_FL_Q1") && atoi(getenv("ARC_FL_Q1")) != 0);
-    frows_ = q2_ || hp.flint;
+    if (hp.hc && fn_precise()) q2_ = true;  // (Flash Next's precise mode: two passes, the experts too)
+    frows_ = (q2_ && hp.gemma) || hp.flint;
     vbytes_ = hp.flint ? 4 : 2;
     // (Gemma 4 E2B / E4B (per-layer embeddings): one int8 pass for the matmuls, the float attention kept; the
     //  user's limit is KL 0.015 and the one-pass E4B measured 0.0010 with int8 attention as well (2026-10-23).

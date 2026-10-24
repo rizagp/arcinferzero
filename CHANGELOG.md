@@ -1,6 +1,24 @@
 # Changelog
 
-## 2026-10-24: renamed to arcinferzero; Gemma sliding attention, Flint kernels, /W4 and CI
+## 2026-10-24: renamed to arcinferzero; Flint runs; Gemma sliding attention, /W4 and CI
+
+- **Flint** (unsloth/flint-GGUF UD-Q4_K_XL, arch `flint`) runs: Gemma 4's float attention with attention sinks,
+  1/sqrt(d), no RoPE on the global layers and a 513-token window on the sliding ones; two leading dense SwiGLU
+  layers, then 256 experts (sigmoid routing, streamed from the SSD) and a shared FFN without a gate. Server: its
+  template through minja, its stop tokens, `</think>`, tool calls in its GLM form (`<tool_call>NAME<arg_key>..`),
+  model id / shortcut `flint`. 4K prompt 248 tok/s, generation 13-17 tok/s.
+- **Flint's accuracy, KL 0.029 -> 0.0043** (prompt; token by token 0.067 -> 0.0027) against the f32 reference: two
+  int8 passes as Gemma (the experts too), the **V rows in f32** (f16 V alone, simulated in the f32 reference,
+  moved it as far as the whole engine and flipped the same near-tie expert choice) and the **router on the file's
+  BF16 rows with f32 inputs** (its sigmoid scores have near-ties 0.005 apart). `ARC_FL_Q1=1`: one pass.
+- **From reading the GPU assembly (ocloc)**: Flint's attn_prep_g 8,855 -> 481 instructions (no unused int8 copies;
+  the in-kernel RoPE angles only where no table is passed, the Gemma drafter); the two-pass expert down kernels no
+  longer spill (256 registers, as gate / up); Flint's router GEMV 4 rows x 4 tokens per sub-group (744 -> 229 ms per
+  4K prompt). **Gemma 4 26B** gets the same router tiling on its f32 rows: prompt +4.6 %, logits bit-identical.
+- **Flash Next precise mode** (`ARC_FN_PRECISE=1`, opt-in for now): BF16 mixer and router rows, two passes for every
+  matmul input: KL 0.0143 / 0.0147 -> 0.0117 / 0.0096 at about half the prompt speed; the int8 attention is next.
+- **Setup / build** find Visual Studio in more places (scripts/vcvars.ps1: vswhere anywhere, every drive's usual
+  folders, a Developer prompt's own compiler).
 
 - **The project is now called arcinferzero** (the repository `rizagp/arcinferzero`; GitHub forwards the old
   `rizagp/arcinfer` address). Entries below this one keep the old name: there "arcinfer" is the project, and before
@@ -15,7 +33,7 @@
 - **Gemma 4 26B / 12B long prompts**: the sliding layers' attention scores two blocks of 16 keys per step, each
   query load used for both: 11K-token prompt, sliding attention 26B 8.6 -> 7.1 s, 12B 16.5-20.1 -> 13.4-14.0 s,
   bit-identical. E4B and the global layers keep one block (slower with two).
-- **Flint groundwork** (the engine itself is not there yet): the float attention kernels take 128-dim heads and
+- **Flint groundwork**: the float attention kernels take 128-dim heads and
   attention sinks, attn_prep_g has V without a norm and layers without RoPE, the MoE routing has sigmoid weights
   with an ungated shared FFN. New GPU tests against double / CPU computations: `tests/test_fa.cpp` (every
   attention form, heads 128 / 256, global / sliding ring, with and without sinks) and `tests/test_route.cpp`.
