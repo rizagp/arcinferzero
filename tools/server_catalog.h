@@ -137,6 +137,46 @@ static std::vector<ModelInfo> scan_models() {
   std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
     return a.name != b.name ? a.name < b.name : a.file != b.file ? a.file < b.file : a.prio != b.prio ? a.prio < b.prio : a.t > b.t;
   });
+  // A copy of a file listed elsewhere too (the same name and size, e.g. a backup of the C: model on an external drive):
+  // listed once, from the place that keeps the id below (a package, then the Hugging Face cache, then the extra
+  // folders), within one place from the Windows drive first; a file of the same name with another size stays. The
+  // GGUF a package was made from (its arcinferzero.source) is not listed either: the package is the same model with
+  // its expert file already written (loading the source would write that file again).
+  {
+    std::error_code e2;
+    const std::string hub_c = lower_ascii(fs::weakly_canonical(hf_hub_dir(), e2).string()),
+                      pk_c = lower_ascii(fs::weakly_canonical(zpack::packages_dir(), e2).string());
+    const char* sd = getenv("SystemDrive");
+    const std::string sys = lower_ascii(sd && *sd ? std::string(sd) : std::string("C:"));
+    std::map<std::string, std::tuple<int, int, int, size_t>> best;  // file|bytes -> (place, not Windows drive, prio, index)
+    std::vector<std::string> keys(cands.size());
+    for (size_t i = 0; i < cands.size(); ++i) {
+      std::error_code e3;
+      const std::string pc = lower_ascii(fs::weakly_canonical(cands[i].path, e3).string());
+      const int place = pc.rfind(pk_c, 0) == 0 ? 0 : !hub_c.empty() && pc.rfind(hub_c, 0) == 0 ? 1 : 2;
+      keys[i] = lower(cands[i].file) + "|" + std::to_string(gguf_bytes(cands[i].path.string()));
+      const auto r = std::make_tuple(place, pc.rfind(sys, 0) == 0 ? 0 : 1, cands[i].prio, i);  // (i: the sorted order)
+      auto it = best.find(keys[i]);
+      if (it == best.end() || r < it->second) best[keys[i]] = r;
+    }
+    std::set<std::string> packed;  // the source file names of the packages
+    std::vector<bool> is_pack(cands.size(), false);
+    for (size_t i = 0; i < cands.size(); ++i) {
+      std::error_code e3;
+      if (lower_ascii(fs::weakly_canonical(cands[i].path, e3).string()).rfind(pk_c, 0) != 0) continue;
+      is_pack[i] = true;
+      try {
+        const GgufFile g(cands[i].path.string());
+        const std::string src = g.get_str("arcinferzero.source", "");
+        if (!src.empty()) packed.insert(lower(src));
+      } catch (const std::exception&) {
+      }
+    }
+    std::vector<Cand> kept;
+    for (size_t i = 0; i < cands.size(); ++i)
+      if (std::get<3>(best[keys[i]]) == i && (is_pack[i] || !packed.count(lower(cands[i].file)))) kept.push_back(cands[i]);
+    cands.swap(kept);
+  }
   static const std::map<std::string, std::pair<std::string, std::string>> known = {
       {"Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", {"qwen3.8-27b", "27b"}},
       {"Qwen3.6-35B-A3B-GSQ2-arc.gguf", {"qwen3.6-35b-a3b", "35b"}},

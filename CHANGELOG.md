@@ -2,6 +2,10 @@
 
 ## 2026-10-24: renamed to arcinferzero; Flint runs; Gemma sliding attention, /W4 and CI
 
+- **The model list shows each model once**: a copy with the same file name and size in another folder (e.g. a
+  backup on an external drive) and the GGUF an arcinferzero package was made from are no longer listed as extra
+  `-2` entries; the package, then the Hugging Face cache, then the Windows drive keep the entry (35B and Gemma 4 26B
+  on D: next to their C: packages: 39 -> 33 entries).
 - **Self-audit fixes** (all source files read for bugs, each finding checked against the code):
   - Server: the Anthropic / Ollama / Responses adapter no longer outlives its request (a cancel or an engine error
     called into freed memory); their streams end once (the finish chunk and the usage chunk both ended them: Ollama
