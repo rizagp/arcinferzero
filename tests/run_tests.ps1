@@ -10,7 +10,7 @@
 #
 # Parameters:
 #   -Model4B / -Model27B / -Model35B / -ModelGemma / -ModelFlashNext / -ModelFlint   GGUF files (Flash Next: the
-#                              -00001-of- shard; Flint: its tokenizer against llama-tokenize under %USERPROFILE%\llama-builds)
+#                              packaged file or the -00001-of- shard; Flint: its tokenizer against llama-tokenize under %USERPROFILE%\llama-builds)
 #   -DFlash27B / -DFlash35B    DFlash2 drafter folders (containing model.safetensors), zero engine only
 #   -Ref35B <file>             opt-in 35B KL check. tests\data\ref_35b_capital_all.bin is the f32 reference of the
 #                              Qwen3.6-35B-A3B GSQ file (tools\convert_gsq.py), not of Unsloth's UD-IQ4_XS: only pass it
@@ -144,7 +144,8 @@ if (-not $NoAutoDetect -and (-not $SkipGpu -or $ListModels)) {
   if (-not $Model4B) { $Model4B = Find-Gguf @("Qwen3.5-4B-UD-Q4_K_XL.gguf") }
   if (-not $Model27B) { $Model27B = Find-Gguf @("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf") }
   if (-not $Model35B) { $Model35B = Find-Gguf @("Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf") }
-  if (-not $ModelFlashNext) { $ModelFlashNext = Find-Gguf @("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf") }
+  # (the packaged single file first: its expert file is next to it; the shards would write their own, 56 GB)
+  if (-not $ModelFlashNext) { $ModelFlashNext = Find-Gguf @("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf") }
   if (-not $ModelGemma) { $ModelGemma = Find-Gguf @("gemma-4-12b*qat*q4_0*.gguf", "gemma-4-12b*qat*.gguf") }
   if (-not $ModelFlint) { $ModelFlint = Find-Gguf @("flint-*.gguf") }
   if (-not $DFlash27B) { $DFlash27B = Find-DFlash @("*Qwen3.8-27B-DFlash2*") }
