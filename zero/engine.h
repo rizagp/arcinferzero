@@ -32,13 +32,8 @@ struct GpuWeight {
 struct Hparams {
   std::string arch = "qwen35";
   bool gemma = false;  // Gemma 4: sliding-window + global attention layers, GeGLU, sandwich norms
-  bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4, Flint): no recurrent state, a cached
+  bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4): no recurrent state, a cached
                           // prefix is reused by rewind() while the rings still hold it, per-layer KV geometry (kv_layers)
-  // Flint (arch "flint", QUEUE F28): Gemma 4's float attention (sliding layers in rings, the global ones without
-  // RoPE) with attention sinks and 1/sqrt(d); plain pre-norm residual; n_dense leading dense SwiGLU layers, then
-  // experts chosen by sigmoid scores and a shared FFN added without a gate
-  bool flint = false;
-  int n_dense = 0;
   int n_layer = 0, n_embd = 0, n_ff = 0, n_head = 0, n_head_kv = 0, head_dim = 0, n_rot = 0, n_vocab = 0;
   int ssm_d_state = 0, ssm_nk = 0, ssm_nv = 0, ssm_d_inner = 0, conv_k = 0, full_attn_interval = 4;
   float eps = 1e-6f, rope_base = 1e7f;
@@ -64,7 +59,7 @@ struct Hparams {
   int qsa_heads = 0, qsa_dim = 0, qsa_topk = 0, n_qsa = 0;
   int hce() const { return hc_n * n_embd; }  // residual floats per token
   int conv_dim() const { return 2 * ssm_nk * ssm_d_state + ssm_d_inner; }
-  bool recurrent(int il) const { return !gemma && !flint && (il + 1) % full_attn_interval != 0; }
+  bool recurrent(int il) const { return !gemma && (il + 1) % full_attn_interval != 0; }
 };
 
 struct EngineOptions {
@@ -551,7 +546,7 @@ class Engine {
         if (L.kv_src < 0) {
           const size_t cap = L.swa ? swa_cap : c;
           if (L.i8) n += 2 * (size_t)L.nkv * cap * L.hd + 2 * (size_t)L.nkv * cap * (L.hd / 64) * 4;
-          if (frows_) n += (4 + vbytes_) * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows)
+          if (frows_) n += (4 + 2) * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows: f32 K, f16 V)
         }
     } else {
       int nl = mtp_block_ ? 1 : 0;
@@ -1131,8 +1126,7 @@ class Engine {
     cl_mem post_attn = nullptr, ffn_norm = nullptr, post_ffw = nullptr, rope_ff = nullptr;
     int kv_src = -1;            // shared KV: the layer whose cache this layer reads (no K/V of its own)
     bool i8 = true;             // Gemma 4: keeps the int8 K / V copy (only the layers the drafter reads)
-    cl_mem sinks = nullptr;     // Flint: one learned logit per q head in the attention softmax
-    cl_mem router_bf16 = nullptr;  // Flint: the router rows in BF16 (read by gemv_bf16 with f32 inputs)
+    cl_mem router_bf16 = nullptr;  // Flash Next precise: the router rows in BF16 (read by gemv_bf16 with f32 inputs)
     // Gemma 4 with experts: the dense FFN's output norm, the experts' input norm and output norm, the router's input
     // norm weights (its scale / sqrt(E)), the scale of each expert
     cl_mem post_ffw1 = nullptr, ffn_norm2 = nullptr, post_ffw2 = nullptr, rnorm = nullptr, escale = nullptr,
@@ -1302,7 +1296,7 @@ class Engine {
       if (frows_)  // (the float K / V rows attn_fa_g reads, [kv head][cap][hd], the same 16-row blocks)
         for (int g = 0; g < k.nkv; ++g)
           for (int t = 0; t < 2; ++t) {
-            const size_t unit = (size_t)16 * k.hd * (t == 0 ? 4 : vbytes_), base = (size_t)g * nbc;
+            const size_t unit = (size_t)16 * k.hd * (t == 0 ? 4 : 2), base = (size_t)g * nbc;
             cl_mem b = t == 0 ? k.L->kc : k.L->vc;
             if (first > 0) v.push_back({b, (base + s0) * unit, (size_t)first * unit});
             if (n > first) v.push_back({b, base * unit, (size_t)(n - first) * unit});
@@ -1527,7 +1521,6 @@ class Engine {
     const std::string a = f_.get_str("general.architecture");
     hp.arch = a;
     if (a == "gemma4") return load_hparams_gemma4();
-    if (a == "flint") return load_hparams_flint();
     if (a != "qwen35" && a != "qwen35moe" && a != "qwen4exp") throw std::runtime_error("unsupported architecture: " + a);
     hp.moe = a == "qwen35moe" || a == "qwen4exp";
     hp.hc = a == "qwen4exp";
@@ -1693,58 +1686,6 @@ class Engine {
       if (hp.n_expert % 16 || hp.n_expert_used > 16 || hp.n_ff_exp % 32 || hp.n_ple)
         throw std::runtime_error("unsupported Gemma 4 expert shape");
     }
-  }
-
-  void load_hparams_flint() {
-    const std::string a = "flint";
-    auto I = [&](const std::string& k, int64_t def = -1) {
-      int64_t v = f_.get_int(a + "." + k, def);
-      if (v < 0) throw std::runtime_error("missing hparam " + k);
-      return (int)v;
-    };
-    hp.flint = hp.swa_rings = true;
-    hp.moe = hp.moe_std = true;
-    hp.n_layer = I("block_count");
-    if (hp.n_layer <= 0 || hp.n_layer > 4096) throw std::runtime_error("invalid block_count in the GGUF");
-    hp.n_layer_kv = hp.n_layer;
-    hp.n_embd = I("embedding_length");
-    hp.n_ff = I("feed_forward_length");
-    hp.n_head = I("attention.head_count");
-    hp.n_head_kv = I("attention.head_count_kv");
-    hp.head_dim = hp.hd_full = hp.hd_swa = hp.n_rot = I("attention.key_length");
-    hp.n_swa = I("attention.sliding_window", 0);
-    hp.n_dense = I("leading_dense_block_count", 0);
-    hp.eps = (float)f_.get_float(a + ".attention.layer_norm_rms_epsilon", 1e-6);
-    hp.rope_base = hp.rope_base_swa = (float)f_.get_float(a + ".rope.freq_base", 1e4);
-    hp.n_expert = I("expert_count");
-    hp.n_expert_used = I("expert_used_count");
-    hp.n_ff_exp = I("expert_feed_forward_length");
-    hp.n_ff_exp_pad = padded_k(hp.n_ff_exp);
-    hp.n_ff_shexp = I("expert_shared_feed_forward_length");
-    // (the kernels: sigmoid scores normalized over the chosen experts, no further scale)
-    if (I("expert_gating_func", 2) != 2 || f_.get_int(a + ".expert_weights_norm", 1) == 0 ||
-        std::abs(f_.get_float(a + ".expert_weights_scale", 1.0) - 1.0) > 1e-6)
-      throw std::runtime_error("unsupported Flint expert routing");
-    // (sliding layers take RoPE, the global ones none: attn_prep_g's base is per layer type)
-    const auto* pat = f_.get_ints(a + ".attention.sliding_window_pattern");
-    const auto* rope = f_.get_ints(a + ".attention.rope_pattern");
-    hp.swa.assign(hp.n_layer, 0);
-    hp.kv_heads.assign(hp.n_layer, hp.n_head_kv);
-    for (int il = 0; il < hp.n_layer; ++il) {
-      hp.swa[il] = pat && il < (int)pat->size() ? (int)(*pat)[il] : 0;
-      const int roped = rope && il < (int)rope->size() ? (int)(*rope)[il] : hp.swa[il];
-      if ((roped != 0) != (hp.swa[il] != 0)) throw std::runtime_error("unsupported Flint RoPE pattern");
-    }
-    tok_embd_ = &f_.get("token_embd.weight");
-    if (tok_embd_->dims.size() < 2 || tok_embd_->dims[1] <= 0) throw std::runtime_error("invalid Flint shape in the GGUF");
-    hp.n_vocab = (int)tok_embd_->dims[1];
-    // (head 128 with up to 64 output floats per lane in attn_fa_gh; standard expert shapes as the 35B's)
-    if (hp.head_dim != 128 || I("attention.value_length", 128) != 128 || hp.n_embd <= 0 || hp.n_embd % 256 ||
-        hp.n_ff % 256 || hp.n_head <= 0 || hp.n_head_kv <= 0 || hp.n_head % hp.n_head_kv || hp.n_head / hp.n_head_kv > 16 ||
-        hp.n_dense >= hp.n_layer || hp.n_swa <= 0)
-      throw std::runtime_error("unsupported Flint dimensions");
-    if (hp.n_expert != 256 || hp.n_expert_used > 16 || hp.n_ff_exp % 256 || hp.n_ff_shexp % 256)
-      throw std::runtime_error("unsupported MoE dimensions");
   }
 
   // q heads per attention sub-group: the largest of 4,3,2,1 dividing the GQA ratio.
@@ -2261,7 +2202,6 @@ class Engine {
     // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
     load_head();
     if (hp.gemma) return load_weights_gemma4();
-    if (hp.flint) return load_weights_flint();
     layers_.resize(hp.n_layer);
     for (int il = 0; il < hp.n_layer; ++il) {
       Layer& L = layers_[il];
@@ -2516,19 +2456,15 @@ class Engine {
     const int E = hp.n_embd, NR = hp.router_rows();
     std::vector<float> v((size_t)NR * E, 0.0f);
     const GgufTensor& r = f_.get(p + "ffn_gate_inp.weight");
-    const GgufTensor* sg = f_.find(p + "ffn_gate_inp_shexp.weight");  // (Flint: none, its gate row stays zero)
-    if (r.nelements() != (uint64_t)hp.n_expert * E || (sg ? sg->nelements() != (uint64_t)E : !hp.flint))
+    const GgufTensor& sg = f_.get(p + "ffn_gate_inp_shexp.weight");
+    if (r.nelements() != (uint64_t)hp.n_expert * E || sg.nelements() != (uint64_t)E)
       throw std::runtime_error("unexpected MoE router shape");
     dequant_row(r.type, r.data, hp.n_expert * E, v.data());
-    if (sg) dequant_row(sg->type, sg->data, E, v.data() + (size_t)hp.n_expert * E);
+    dequant_row(sg.type, sg.data, E, v.data() + (size_t)hp.n_expert * E);
     auto q8 = quantize_rows_q8_0(v.data(), NR, E);
-    // (Flint: the router in f32 as the file's BF16 rows are, on f32 inputs: its sigmoid scores have near-ties, 0.005
-    //  apart, and with Q8_0 rows the expert choices flipped; KL 0.027 -> 0.004 with f32 V; Q8_0 rows plus a Q8_0 residual
-    //  matrix through the GEMV / GEMM gave 0.014 / 0.012 / 0.051: the inputs must stay f32 too. Its rows stay BF16
-    //  as the file has them (exact; half the bytes of f32). ARC_FL_RF32=0: Q8_0)
-    static const bool fl_rf32 = !getenv("ARC_FL_RF32") || atoi(getenv("ARC_FL_RF32")) != 0;
-    // (Flash Next's precise mode too: its router and shared-expert gate rows are BF16 in the file as well)
-    if ((hp.flint && fl_rf32) || (hp.hc && fn_precise())) {  // (BF16 as in the file: v holds exactly those values)
+    // (Flash Next's precise mode: the router and shared-expert gate rows as BF16, as the file has them (exact, half
+    //  the bytes of f32), read with f32 inputs: near-tie expert choices stay as the f32 reference makes them)
+    if (hp.hc && fn_precise()) {  // (BF16 as in the file: v holds exactly those values)
       std::vector<uint16_t> bf(v.size());
       for (size_t i = 0; i < v.size(); ++i) {
         uint32_t u;
@@ -2805,53 +2741,6 @@ class Engine {
         load_gemma_drafter(dpath);
         mem_mtp_ += gpu_bytes - g0;
       }
-    }
-  }
-
-  // Flint: every layer's attention as Gemma 4's float attention (f32 K / f16 V rows; the sliding layers in rings of
-  // n_swa + chunk + 4096 positions), no int8 K / V copy (no drafter reads one); the FFN input norm in post_norm, which
-  // layer_ffn / layer_moe read
-  void load_weights_flint() {
-    layers_.resize(hp.n_layer);
-    swa_cap_ = std::min(ctx, (hp.n_swa + max_chunk + 4096 + 255) / 256 * 256);
-    for (int il = 0; il < hp.n_layer; ++il) {
-      Layer& L = layers_[il];
-      L.il = il;
-      const std::string p = "blk." + std::to_string(il) + ".";
-      L.swa = hp.swa[il] != 0;
-      L.nkv = hp.n_head_kv;
-      L.hd = hp.head_dim;
-      L.cap = L.swa ? swa_cap_ : ctx;
-      L.attn_norm = load_f32(p + "attn_norm.weight");
-      L.post_norm = load_f32(p + "ffn_norm.weight");
-      L.wq = load_w(p + "attn_q.weight");
-      L.wk = load_w(p + "attn_k.weight");
-      L.wv = load_w(p + "attn_v.weight");
-      L.wo = load_w(p + "attn_output.weight");
-      L.q_norm = load_f32(p + "attn_q_norm.weight");
-      L.k_norm = load_f32(p + "attn_k_norm.weight");
-      L.sinks = load_f32(p + "attn_sinks.weight");
-      if (L.wq.N != hp.n_head * L.hd || L.wk.N != L.nkv * L.hd || L.wv.N != L.nkv * L.hd)
-        throw std::runtime_error("unexpected Flint attention shape");
-      L.i8 = false;
-      L.kq = buf(64);
-      L.vq = buf(64);
-      L.ksc = buf(64);
-      L.vsc = buf(64);
-      for (cl_mem m : {L.kq, L.vq, L.ksc, L.vsc}) fill(m, 64);
-      const size_t kvb = (size_t)L.nkv * L.cap * L.hd;
-      L.kc = buf(kvb * 4);
-      L.vc = buf(kvb * vbytes_);
-      fill(L.kc, kvb * 4);
-      fill(L.vc, kvb * vbytes_);
-      if (il < hp.n_dense) {
-        L.gate = load_w(p + "ffn_gate.weight");
-        L.up = load_w(p + "ffn_up.weight");
-        L.down = load_w(p + "ffn_down.weight");
-      } else {
-        load_moe(L, p);
-      }
-      clFinish(cl_.queue);
     }
   }
 
@@ -3291,8 +3180,7 @@ class Engine {
   // runs on both and adds them (the f32 reference simulating this: Gemma 4 26B KL 0.0985 -> 0.0053 together with
   // two-pass attention). The offsets come from alloc_buffers' sizes (max_chunk rows of the widest input).
   bool q2_ = false;
-  bool frows_ = false;  // (the float K / V rows and f32 queries of attn_fa_g: Gemma 4's two-pass mode, Flint)
-  int vbytes_ = 2;      // (bytes per value of those V rows: f16, Flint f32 (-DVC32))
+  bool frows_ = false;  // (the float K / V rows (f32 K, f16 V) and f32 queries of attn_fa_g: Gemma 4's two-pass mode)
   // (two-pass matmul inputs: Gemma 4's mode, and Flash Next's dense matmuls with ARC_FN_Q2=1, an F21.13 experiment:
   //  363-token KL against f32 0.0483 -> 0.0384, 4K prompt 191 -> 160 tok/s; its experts stay one pass)
   bool q2mm_ = false;
@@ -3310,13 +3198,8 @@ class Engine {
   std::string q2_defs_;
   void q2_init() {
     q2_ = hp.gemma;  // (Gemma 4's only mode since 2026-10-22: KL < 0.01 against f32, the one-pass mode removed)
-    // (Flint: two passes as well, the experts included; with the f32 router and f32 V rows, 360-token README prompt
-    //  against f32: KL 0.0043 prompt / 0.0027 decode, one pass 0.044 / 0.084; 4K prompt 240 tok/s (one pass 405),
-    //  generation the same. ARC_FL_Q1=1: one pass)
-    if (hp.flint) q2_ = !(getenv("ARC_FL_Q1") && atoi(getenv("ARC_FL_Q1")) != 0);
     if (hp.hc && fn_precise()) q2_ = true;  // (Flash Next's precise mode: two passes, the experts too)
-    frows_ = (q2_ && hp.gemma) || hp.flint;
-    vbytes_ = hp.flint ? 4 : 2;
+    frows_ = q2_ && hp.gemma;
     // (Gemma 4 E2B / E4B (per-layer embeddings): one int8 pass for the matmuls, the float attention kept; the
     //  user's limit is KL 0.015 and the one-pass E4B measured 0.0010 with int8 attention as well (2026-10-23).
     //  ARC_G4_Q2MM=1: two passes there too, as before)
@@ -3547,13 +3430,6 @@ class Engine {
     if (hp.gemma) {
       layer_gemma_attn(L, T, Mp);
       layer_gemma_ffn(L, T, Mp);
-      return;
-    }
-    if (hp.flint) {  // (the attention adds its output to x_ itself; the FFNs read their norm from post_norm)
-      layer_gemma_attn(L, T, Mp);
-      if (L.il < hp.n_dense) layer_ffn(L, T, Mp);
-      else layer_moe(L, T, Mp);
-      if (dbg_rows) dbg_row(T - 1);
       return;
     }
     if (hp.hc) {  // Flash Next: each block reads the mixed streams and adds its output to every stream

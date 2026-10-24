@@ -27,18 +27,8 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 #define ESCALE_ARG
 #define ESCALE_MUL(e)
 #endif
-// -DSIGMOID (Flint): the chosen experts' sigmoid scores, normalized over the selection (the top NU of the logits
-// are those of the sigmoids); -DSH_NOGATE: a shared FFN without a gate (sgate 1, no logit at column NE)
-#ifdef SIGMOID
-#define ROUTE_P(g, mx) (1.0f / (1.0f + exp(-(g))))
-#else
 #define ROUTE_P(g, mx) exp((g) - (mx))
-#endif
-#ifdef SH_NOGATE
-#define SGATE(lg) 1.0f
-#else
 #define SGATE(lg) (1.0f / (1.0f + exp(-(lg)[NE])))
-#endif
 __kernel void moe_route(__global const float* logits, int ldl, int T, __global int* ids, __global float* wts,
                         __global float* sgate, __global int* counts ESCALE_ARG) {
   const int t = get_group_id(1), l = get_sub_group_local_id();
@@ -288,7 +278,7 @@ __kernel void moe_gelu_mul(__global float* h, __global const float* u, int F, in
   if (c >= fv) return;
   const size_t i = (size_t)r * F + c;
   const float g = h[i];
-#ifdef SILU  // (Flint's experts: SwiGLU)
+#ifdef SILU  // (SwiGLU experts: Flash Next's precise mode)
   h[i] = g / (1.0f + exp(-g)) * u[i];
 #else
   h[i] = 0.5f * g * (1.0f + tanh(0.7978845608f * (g + 0.044715f * g * g * g))) * u[i];

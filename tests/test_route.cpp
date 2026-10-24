@@ -1,6 +1,5 @@
 // Checks the MoE routing kernels of zero/kernels/moe.cl (moe_route, moe_route1) against a CPU computation on random
-// logits: softmax weights (Qwen) and sigmoid weights with an ungated shared FFN (-DSIGMOID -DSH_NOGATE, Flint), top
-// NU of NE experts, weights normalized over the selection, the shared-expert gate, the per-expert counts.
+// logits: softmax weights (Qwen), top NU of NE experts, weights normalized over the selection, the shared-expert gate, the per-expert counts.
 // usage: test_route [kernel_file]
 #include "../src/clrt.h"
 #include <algorithm>
@@ -20,7 +19,7 @@ int main(int argc, char** argv) {
   std::normal_distribution<float> nd(0.0f, 1.0f);
   int fails = 0;
   const int NE = 256, NU = 6, T = 7, ldl = NE + 1;
-  for (int sig : {0, 1}) {
+  {
     std::vector<float> lg((size_t)T * ldl);
     for (auto& x : lg) x = nd(rng) * 2.0f;
     // CPU
@@ -36,15 +35,15 @@ int main(int argc, char** argv) {
       for (int k = 0; k < NU; ++k) {
         const int e = idx[k];
         rid[(size_t)t * NU + k] = e;
-        rw[(size_t)t * NU + k] = sig ? 1.0 / (1.0 + std::exp(-(double)l[e])) : std::exp(l[e] - mx);
+        rw[(size_t)t * NU + k] = std::exp(l[e] - mx);
         sum += rw[(size_t)t * NU + k];
         ++rcount[e];
       }
       for (int k = 0; k < NU; ++k) rw[(size_t)t * NU + k] /= sum;
-      rg[t] = sig ? 1.0 : 1.0 / (1.0 + std::exp(-(double)l[NE]));
+      rg[t] = 1.0 / (1.0 + std::exp(-(double)l[NE]));
     }
     const std::string opts = "-cl-std=CL3.0 -cl-mad-enable -DNE=" + std::to_string(NE) + " -DNU=" + std::to_string(NU) +
-                             " -DTM=16" + (sig ? " -DSIGMOID -DSH_NOGATE" : "");
+                             " -DTM=16";
     cl_program pr = cl.build(src, opts);
     cl_mem blg = cl.buffer(CL_MEM_READ_ONLY, lg.size() * 4, lg.data());
     cl_mem bid = cl.buffer(CL_MEM_READ_WRITE, (size_t)T * NU * 4), bw = cl.buffer(CL_MEM_READ_WRITE, (size_t)T * NU * 4);
@@ -67,7 +66,7 @@ int main(int argc, char** argv) {
       for (size_t i = 0; i < w.size(); ++i) ew = std::max(ew, std::fabs(w[i] - rw[i]));
       for (int t = 0; t < T; ++t) eg = std::max(eg, std::fabs(g[t] - rg[t]));
       const bool ok = id == rid && cnt == rcount && ew < 1e-6 && eg < 1e-6;
-      printf("moe_route  %-8s ids %s, counts %s, max weight err %.1e, gate err %.1e %s\n", sig ? "sigmoid" : "softmax",
+      printf("moe_route  %-8s ids %s, counts %s, max weight err %.1e, gate err %.1e %s\n", "softmax",
              id == rid ? "same" : "DIFFER", cnt == rcount ? "same" : "DIFFER", ew, eg, ok ? "OK" : "FAIL");
       fails += !ok;
     }
@@ -91,7 +90,7 @@ int main(int argc, char** argv) {
       }
       const double eg = std::fabs(g[0] - rg[0]);
       const bool ok = ids_ok && ew < 1e-6 && eg < 1e-6;
-      printf("moe_route1 %-8s ids %s, max weight err %.1e, gate err %.1e %s\n", sig ? "sigmoid" : "softmax",
+      printf("moe_route1 %-8s ids %s, max weight err %.1e, gate err %.1e %s\n", "softmax",
              ids_ok ? "same" : "DIFFER", ew, eg, ok ? "OK" : "FAIL");
       fails += !ok;
     }

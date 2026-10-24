@@ -405,6 +405,8 @@ predicating the loads gave 905 -> 843 ms, bit-identical. Check bit identity afte
 
 ## 11. Later lessons (24 October 2026)
 
+(Flint, the model behind two of these lessons, is no longer supported since 25 October; the lessons stand.)
+
 - **In a mixture of experts with a sigmoid router, the KL comes from expert choices that are near ties.** Flint's
   KL against the f32 reference was 0.029; rounding the V rows to f16 alone (simulated in the reference) moved the
   model as far as the whole engine, because one near-tie expert choice flipped. f32 V rows plus a router on the

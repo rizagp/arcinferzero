@@ -2,8 +2,7 @@
 
 arcinferzero is a from-scratch LLM inference engine for Intel's integrated Arc graphics, built on one laptop to shorten
 the wait before a model starts answering a long prompt. It runs Qwen3.5, Qwen3.6 and Qwen3.8 (dense and mixture of
-experts), Gemma 4 with image and audio input, and Flint (a mixture of experts with attention sinks, added
-24 October), serves an OpenAI-, Anthropic- and Ollama-compatible API, and plugs into the Pi coding agent. This page
+experts) and Gemma 4 with image and audio input (Flint, added on 24 October, was removed again on 25 October), serves an OpenAI-, Anthropic- and Ollama-compatible API, and plugs into the Pi coding agent. This page
 tells the story of the build from the first working forward pass to 24 October 2026, with the emphasis on how
 prompt and generation speed developed and what caused each step.
 

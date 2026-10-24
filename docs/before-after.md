@@ -27,7 +27,6 @@ character. "Bit-identical" below means exactly that, not "close". Changes that a
 | Gemma 4 E4B (Google QAT) | 724 tok/s (4K prompt), 615 (14K) | 32 tok/s with its drafter | KL 0.00088 (one int8 pass, float attention; int8 K / V for the global layers of prompts) |
 | Gemma 4 12B (Google QAT) | 137 tok/s (4K prompt), 102 (14K) | 19.0 tok/s with its drafter | KL 0.0002 (two-pass mode, the only one since 2026-10-22) |
 | Gemma 4 26B-A4B (Google QAT Q4_0, MoE, experts on the SSD) | 252 tok/s (4K prompt), 210 (14K; laptop on a cooling pad) | ~25 tok/s with its drafter; 14.0 after a 14K prompt without | KL 0.0042 against the CPU reference (480 tokens; two-pass mode, the only one since 2026-10-22) |
-| Flint (UD-Q4_K_XL, MoE, experts on the SSD; added 2026-10-24) | 248 tok/s (4K prompt) | 13-17 tok/s | KL 0.0043 prompt / 0.0027 decode against the CPU reference (360 tokens) |
 
 Two conversations at once (`--slots 2`), both writing their answers, their next tokens in one engine pass (tok/s of
 the two together): 27B prose 7.3 -> 10.5, code 11.6 -> 15.4; 35B 20.2 -> 24.7, 29.0 -> 30.7; Gemma 4 26B 19.8 -> 26.2
@@ -58,7 +57,6 @@ measures how far the int8 GPU arithmetic moves the model:
 | Gemma 4 12B (QAT, 480-token code prompt) | 0.0002 | Gemma 4 is ~7x more sensitive to int8 activations: float attention and two int8 passes (value + rounding residual); one pass gave 0.021 |
 | Gemma 4 26B-A4B (QAT) | 0.0042 | two passes; one pass gave 0.0985 |
 | Gemma 4 E4B (QAT) | 0.00088 | one pass is enough here |
-| Flint (UD-Q4_K_XL) | 0.0043 / 0.0027 (prompt / decode) | two passes, f32 V rows and router: near-tie expert choices of the sigmoid router decided it (0.029 before) |
 | Qwen3.8 Flash Next (363 tokens / 3.5K prompt, QSA) | 0.0143 / 0.0186 | the most sensitive model; `ARC_FN_PRECISE=1` 0.0117 / 0.0127 at about half the prompt speed |
 
 **Perplexity against llama.cpp** (40 chunks of llama.cpp documentation, lower is better): Qwen3.5 4B 6.056 vs
@@ -80,6 +78,7 @@ That property is what every speed change is held to:
 
 | Date | Change | Before | After | Answers |
 |---|---|---|---|---|
+| 10-25 | Flint support removed (the user): the `flint` architecture, its tokenizer, GLM tool calls, attention sinks, f32 V rows and sigmoid routing are gone from the engine, kernels, server and tests; the 10-24 Flint rows below are history | – | – | the other models' logits bit-identical before / after (runz --dump-logits: 4B, E4B, 12B, 26B, 35B, 27B; plain and with the drafters) |
 | 10-24 | **Gemma 4 E2B / E4B images: the vision attention built for the right head size** (an earlier `#define HD 256` in ops.cl made it read 256-dim rows of 64-dim heads: wrong results and register spills) | E4B, 1,064-token image: 51.5 s, the model saw "a rainbow spectrum of colors" | **3.1 s**; embeddings 0.035 % from the f32 reference; "several geometric shapes of different colors set against a gradient background" | the f32 reference (tools/gemma4v_ref) |
 | 10-24 | Qwen vision attention, head 72 (Qwen3.5 9B, Qwen3.8 27B, not Flash Next): tiles of 8 keys | 1,064-token image: 9B 794-858 / 604-608 ms, 27B 838 / 646-659 ms (shapes / texture) | 9B **778-783 / 585-593 ms**, 27B **780-815 / 609-620 ms** | KL against 4-key tiles 0.0003-0.0006, 31-32 / 32; Flash Next KL 0.015 with it: keeps 4; E4B and 4B no faster |
 | 10-24 | Gemma 4 vision attention: K / V rows with one 8-wide block read (2 messages per row instead of 9); for head 72 (26B) tiles of 8 keys | 26B, 1,064-token image: attention 5.43 s, encoder 9.05 s | attention **3.81 s**, encoder **7.36 s** | block reads bit-identical (also Qwen 9B's head 72); 8-key tiles: the model's KL against an exact encoder 0.0009-0.0030 (was 0.0010-0.0039), 32 / 32 on 4 images |

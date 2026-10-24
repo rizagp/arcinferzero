@@ -9,23 +9,13 @@
 #endif
 // Gemma 4's float attention: the K rows in f32
 #define KC_T float
-// and the V rows in f16, or in f32 with -DVC32 (Flint: f16 V alone, simulated in its f32 reference, moved that as far
-// as the whole engine did and flipped the same expert choice)
-#ifdef VC32
-#define VC_T float
-#define VC_RAW uint
-#define VLD4(p) vload4(0, p)
-#define VLD8(p) vload8(0, p)
-#define VLD16(p) vload16(0, p)
-#define VST1(x, p) (*(p) = (x))
-#else
+// and the V rows in f16
 #define VC_T half
 #define VC_RAW ushort
 #define VLD4(p) vload_half4(0, p)
 #define VLD8(p) vload_half8(0, p)
 #define VLD16(p) vload_half16(0, p)
 #define VST1(x, p) vstore_half(x, 0, p)
-#endif
 
 inline float silu(float x) { return x / (1.0f + exp(-x)); }
 
@@ -1478,7 +1468,7 @@ __kernel void rope_table(__global float2* rt, int hd, int pos0, float theta_base
 // Attention inputs for one (token, head) per sub-group: RMS norm per head (weighted for q and k), NEOX RoPE over all
 // HD dims (theta = pos * base^(-2i/HD) / ff[i] with optional frequency factors), V = RMS norm without weight of the
 // V projection, or of the raw K projection when the layer has none (has_v = 0); has_v = 2: the V projection as it
-// is, no norm (Flint). theta_base <= 0: no RoPE (Flint's global layers). int8 copies with a per-row scale:
+// is, no norm. theta_base <= 0: no RoPE. int8 copies with a per-row scale:
 // q -> qi/qsc, K/V -> the 16-key-block cache (slot = pos % cap). Lane l holds dims [VPL*l, VPL*l + VPL).
 // qkv rows: [q nh*HD | k nkv*HD | v nkv*HD]. With rt (rope_table of these rows) the angles come from the table.
 // grid (16*(nh+nkv), M), local (16, 1).
@@ -1551,13 +1541,6 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
   }
   }
 #undef PRP
-  // (-DNO_I8, Flint: no int8 copy of q / K / V at all, only the f32 query and the float K / V rows (f16kv 3); the
-  //  int8 rows and scales were computed for nothing, the stores skipped by a runtime flag)
-#ifdef NO_I8
-  if (isq)
-#pragma unroll
-    for (int i = 0; i < VPL; ++i) v[i] *= q_scale;
-#else
   float amax = 0.0f;
 #pragma unroll
   for (int i = 0; i < VPL; ++i) {
@@ -1572,7 +1555,6 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
   for (int c = 0; c < VPL / 4; ++c) pk[c] = 0;
 #pragma unroll
   for (int i = 0; i < VPL; ++i) pk[i / 4] |= (uint)(convert_int_rte(v[i] * inv) & 0xFF) << (8 * (i % 4));
-#endif
   // (f16kv bit 0: the f32 query and the float K / V rows for attn_fa_g as well: kc / vc [kv head][cap][HD], slot =
   //  pos % cap)
   if (f16kv & 1) {
@@ -1586,9 +1568,6 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
       for (int i = 0; i < VPL; ++i) kd[i] = v[i];
     }
   }
-#ifdef NO_I8
-  if (isq) return;
-#else
   if (isq) {
     __global uint* dst = (__global uint*)(qi + ((size_t)m * nh + hs) * HD) + (VPL / 4) * lane;
 #pragma unroll
@@ -1596,16 +1575,13 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     if (lane % (16 / SB) == 0) qsc[((size_t)m * nh + hs) * SB + lane / (16 / SB)] = amax / 127.0f;
     return;
   }
-#endif
   const int slot = pos % cap, kk = slot % 16;
   const size_t blk = (size_t)kvh * (cap / 16) + slot / 16;
   // (f16kv bit 1: this layer keeps no int8 K / V copy, only the drafter's layers do)
   const bool i8 = !(f16kv & 2);
-#ifndef NO_I8
 #pragma unroll
   for (int c = 0; c < VPL / 4; ++c)
     if (i8) kq[(blk * (HD / 4) + (VPL / 4) * lane + c) * 16 + kk] = pk[c];
-#endif
   // V: the V projection, or the raw K projection, RMS-normalized without weight
   // (the raw K projection is read again from qkv, an input only: a register copy of it spilled at HD 512)
   float raw[VPL];
@@ -1620,12 +1596,6 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     LOADF(raw, src + VPL * lane, VPL)
   }
   r = has_v == 2 ? 1.0f : rsqrt(ss / HD + eps);
-#ifdef NO_I8
-#pragma unroll
-  for (int i = 0; i < VPL; ++i) raw[i] *= r;
-  (void)i8;
-  (void)kk;
-#else
   float vmax = 0.0f;
 #pragma unroll
   for (int i = 0; i < VPL; ++i) { raw[i] *= r; vmax = fmax(vmax, fabs(raw[i])); }
@@ -1639,7 +1609,6 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     ksc[(blk * SB + lane / (16 / SB)) * 16 + kk] = amax / 127.0f;
     vsc[(blk * SB + lane / (16 / SB)) * 16 + kk] = vmax / 127.0f;
   }
-#endif
   if (f16kv & 1) {
     __global VC_T* vd = vc + ((size_t)kvh * cap + pos % cap) * HD + VPL * lane;
 #pragma unroll
@@ -1666,7 +1635,7 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
 #define FVT float16
 #define FVLOAD_H(p) VLD16(p)
 #define FVSTORE vstore16
-#else  // (head 128, Flint: one chunk, 8 dims per lane)
+#else  // (head 128: one chunk, 8 dims per lane)
 #define FDC 1
 #define FVW 8
 #define FVT float8
@@ -1697,8 +1666,6 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
                         int nkv, int pos0, int M_valid, __global float* out, int win, int nc_lo, int nc_hi
 #ifdef FA_SPLIT
                         , int sgrid, __global float* part
-#elif defined(SINKS)
-                        , __global const float* sinks
 #endif
                         ) {
   const int lane = get_sub_group_local_id();
@@ -1813,15 +1780,7 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
   if (m >= M_valid) return;
 #pragma unroll
   for (int r = 0; r < GQ; ++r) {
-#if defined(SINKS) && !defined(FA_SPLIT)  // (Flint: one learned logit per q head in the softmax's sum, no value;
-    //  the output and sum rescaled to max(mx, sink). The splits' sinks are added in attn_fa_gc)
-    const float sk = sinks[hg * GQ + r], mn = fmax(mx[r], sk), cs = exp(mx[r] - mn);
-    const float L = sub_group_reduce_add(lp[r]) * cs + exp(sk - mn);
-#pragma unroll
-    for (int c = 0; c < FDC; ++c) o[r][c] *= cs;
-#else
     const float L = sub_group_reduce_add(lp[r]);
-#endif
 #ifdef FA_SPLIT  // (this split's unnormalized output, then its sum and max)
     __global float* pp = part + (((size_t)m * nh + hg * GQ + r) * FA_SMAX + sp) * (HD + 2);
 #pragma unroll
@@ -1841,9 +1800,6 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
 // splits in order. grid (HD, nh, M).
 __kernel void attn_fa_gc(__global const float* part, int nh, int pos0, int M_valid, __global float* out, int win,
                          int nc_lo, int nc_hi
-#ifdef SINKS
-                         , __global const float* sinks
-#endif
                          ) {
   const int d = get_global_id(0), h = get_global_id(1), m = get_global_id(2);
   if (m >= M_valid) return;
@@ -1851,22 +1807,14 @@ __kernel void attn_fa_gc(__global const float* part, int nh, int pos0, int M_val
   const int lo = win > 0 ? max(0, pos - win + 1) : 0;
   const int hi = (pos >= nc_lo && pos <= nc_hi) ? nc_hi : pos;
   __global const float* pp = part + ((size_t)m * nh + h) * FA_SMAX * (HD + 2);
-#ifdef SINKS  // (the head's sink logit: in the max and in the sum, first)
-  float mx = sinks[h];
-#else
   float mx = -INFINITY;
-#endif
   for (int sp = 0; sp < FA_SMAX; ++sp) {
     int b0, b1;
     fa_split_range(lo, hi, sp, &b0, &b1);
     if (b0 >= b1) break;
     mx = fmax(mx, pp[(size_t)sp * (HD + 2) + HD + 1]);
   }
-#ifdef SINKS
-  float num = 0.0f, den = exp(sinks[h] - mx);
-#else
   float num = 0.0f, den = 0.0f;
-#endif
   for (int sp = 0; sp < FA_SMAX; ++sp) {
     int b0, b1;
     fa_split_range(lo, hi, sp, &b0, &b1);
@@ -1905,9 +1853,6 @@ __kernel void attn_fa_gc(__global const float* part, int nh, int pos0, int M_val
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __global const VC_T* vc, int cap, int nh,
                          int nkv, int pos0, int M_valid, __global float* out, int win, int nc_lo, int nc_hi
-#ifdef SINKS
-                         , __global const float* sinks
-#endif
                          ) {
   __local float sc[FS * KB][GRH][16];
   const int lane = get_sub_group_local_id(), sgi = get_sub_group_id();
@@ -2039,13 +1984,7 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
 #pragma unroll
   for (int h = 0; h < GRH; ++h) {
     const int m = m0 + h / HPG;
-#ifdef SINKS  // (as attn_fa_g)
-    const float sk = sinks[g * HPG + h % HPG], mn = fmax(mx[h], sk), cs = exp(mx[h] - mn);
-    const float L = sub_group_reduce_add(lp[h]) * cs + exp(sk - mn);
-    o[h] *= cs;
-#else
     const float L = sub_group_reduce_add(lp[h]);
-#endif
     if (m < M_valid) {
       __global float* op = out + ((size_t)m * nh + g * HPG + h % HPG) * HD + sgi * (HD / FS) + GD * lane;
 #if GD == 4
@@ -2764,7 +2703,7 @@ __kernel void hc_norm_quant(__global const float* res, int r0, __global const fl
 // out[t][n] = W[n] . x[t] in f32 (rows of K floats; K a multiple of 64): a router whose choice int8 inputs would
 // change (Gemma 4 26B-A4B: int8 router inputs alone move the reference by KL 0.035). One sub-group per (row, token).
 // grid (16 * N, T), local (16, 1). (Defined after gemv_bf16.)
-// Flint's router: f32 input rows x [T][K] against BF16 weight rows (the file's own, exact in f32), RT rows x TT tokens
+// A router in f32: f32 input rows x [T][K] against BF16 weight rows (Flash Next's precise mode) (the file's own, exact in f32), RT rows x TT tokens
 // per sub-group so that each weight and input load serves several products (one row x one token per sub-group, as
 // gemv_f32, re-read the weights for every token: 744 ms of a 4K prompt). grid (16 * N / RT, ceil(T / TT)), local (16, 1)
 // -DW_F32: f32 weight rows (Gemma 4 26B's router, F32 in its file)

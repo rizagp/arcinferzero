@@ -38,7 +38,6 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
 | Gemma 4 E4B (Google QAT) | 724 tok/s (4K), 615 (14K) | 32 tok/s with its drafter | 0.00088 |
 | Gemma 4 12B (Google QAT) | 137 tok/s (4K), 102 (14K) | 19.0 tok/s with its drafter | 0.0002 (two-pass int8 activations) |
 | Gemma 4 26B-A4B (Google QAT, MoE, experts on the SSD) | 252 tok/s (4K), 210 (14K) | ~25 tok/s with its drafter; 14 after a 14K prompt without | 0.0042 (two-pass int8 activations) |
-| Flint (Unsloth UD-Q4_K_XL, MoE, experts on the SSD; added 2026-10-24) | 248 tok/s (4K) | 13-17 tok/s | 0.0043 / 0.0027 (two-pass int8 activations, f32 V and router) |
 
 | vs llama.cpp (same file, same laptop) | arcinferzero | llama.cpp Vulkan | llama.cpp SYCL |
 |---|---|---|---|
@@ -85,7 +84,6 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 | `qwen35moe` | Qwen3.6-35B-A3B: standard GGUFs (e.g. Unsloth UD-IQ4_XS / UD-Q3_K_M) or ISTA-DASLab GSQ 2-bit | mixture of experts (256 experts, 8 active); standard GGUF experts (IQ / Q3_K / Q4_K / Q5_K / Q6_K / Q8_0 / Q4_0) load as they are; GSQ converted from the safetensors checkpoint with `tools/convert_gsq.py`; Unsloth's MTP repository adds speculative decoding and its `mmproj` image input (arcinferzero: both together; the automatic context reserves 128K tokens of context, then sizes the expert cache: 131K tokens with ~80 % of the UD-IQ4_XS experts cached; up to 262K with `--ctx`, with a smaller cache; context sweep in docs/speed-progress.md) |
 | `gemma4` | Gemma 4 12B, Gemma 4 E4B, Gemma 4 26B-A4B (Google's QAT Q4_0 GGUFs) | sliding-window + global attention, per-layer embeddings (E4B); image and audio input (`mmproj`: 12B gemma4uv / gemma4ua, E4B gemma4v ViT and gemma4a conformer, 26B gemma4v with 72-dim heads, on the GPU); speculative decoding with the Gemma 4 assistant drafters (`mtp-*.gguf`; 12B, E4B, 26B). 26B-A4B: a dense FFN beside 128 routed experts (8 active, GELU, f32 router) streamed from the SSD like the 35B's. Accuracy: float attention (f32 q / K, f16 V; E4B's global layers in prompts read an int8 copy of K / V, `ARC_G4_ATT8=0`: float); 26B and 12B run their matmuls on two int8 passes (value and rounding residual: KL 0.0042 / 0.0002), E4B on one (KL 0.00088) |
 | `qwen4exp` | Qwen3.8 Flash Next (ISTA-DASLab GSQ-RCO IQ3_S, GGUF in 2 parts) | **arcinferzero only**; 4 hyper-connection streams, Gated DeltaNet + gated attention with QSA sparse attention, 512 experts (10 active) streamed from the SSD, PLE n-gram table read from part 2 per token; no MTP block, no image input (incoai/Qwen3.8-Flash-Next-DFlash2 drafts with `--dflash DIR`: same text, ~79 % accepted, no faster on this laptop's SSD: QUEUE F21.16); runs up to 262,144 tokens, accuracy measured up to a 3.5K-token prompt (KL 0.0143 / 0.0147 (363 tokens); 0.0186 / 0.0177 at 3.5K (QSA); `ARC_FN_PRECISE=1` 0.0127 / 0.0132) |
-| `flint` | Flint (Unsloth's flint-GGUF, UD-Q4_K_XL) | Gemma 4-style float attention with attention sinks, no RoPE on the global layers, a 513-token window on the sliding ones; two dense SwiGLU layers, then 256 experts (sigmoid routing, streamed from the SSD) and an ungated shared FFN; two int8 passes with f32 V rows and router (KL 0.0043 prompt / 0.0027 decode); its own pre-tokenizer, its Jinja template through minja, thinking and GLM-style tool calls in the server; no drafter, no image input |
 
 Weight types: `Q4_0`, `Q8_0`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ1_S`, `IQ1_M`, `IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ3_XXS`, `IQ3_S`,
 `IQ4_XS` (mixed per tensor, e.g. Unsloth dynamic or ISTA-DASLab GSQ-RCO quants), plus `F32/F16/BF16` small matrices;
@@ -207,14 +205,13 @@ in the same folder as the model: download them from the same repository in the s
 | `35b-mtp` | Qwen3.6 35B-A3B UD-Q3_K_M of the same repository | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q3_K_M.gguf mmproj-BF16.gguf` | |
 | (`35b`) | Qwen3.6 35B-A3B, 2-bit GSQ, no MTP (what `setup.cmd -Models 35b` downloads) | see step 7 (download 12.6 GB, then convert) | 11.7 GB |
 | `flash` | Qwen3.8 Flash Next (arcinferzero only) | `hf download ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF --include "IQ3_S/*"` | 54.8 + 28.8 GB |
-| `flint` | Flint (Unsloth UD-Q4_K_XL, mixture of experts) | `hf download unsloth/flint-GGUF flint-UD-Q4_K_XL.gguf` | 25.1 GB |
 | | DFlash2 drafters (optional, see `--dflash` below) | `hf download z-lab/Qwen3.8-27B-DFlash2` / `hf download incoai/Qwen3.6-35B-A3B-DFlash2` | 3.85 / 1.05 GB |
 
 With their `mmproj` file next to the model, Gemma 4 12B and E4B read images and audio, and Gemma 4 26B, Qwen3.5
 4B / 9B, Qwen3.8 27B and Qwen3.6 35B read images (all encoders run on the GPU).
 
 Shortcuts (`pi-arc <shortcut>`, `arc-server start -Model <shortcut>`): `27b`, `35b`, `35b-s`, `35b-mtp`, `flash`,
-`9b`, `4b`, `g12`, `e4b`, `g26`, `flint`. Other GGUFs of these architectures get an id from their file name (`pi-arc --pick`
+`9b`, `4b`, `g12`, `e4b`, `g26`. Other GGUFs of these architectures get an id from their file name (`pi-arc --pick`
 lists them). `35b` is the UD-IQ4_XS file above, or UD-Q3_K_M / the GSQ file when that is the one
 downloaded (with several, the first found keeps the shortcut); `35b-s` is Unsloth's UD-Q3_K_S. Variant suffixes:
 `-mtp` (MTP, no images), `-vision` (images, no MTP), `-std` (neither), and for a model with a DFlash2 drafter
@@ -244,7 +241,7 @@ speculative decoding. `arc-server` / `pi-arc` find the converted file in `%LOCAL
 ### 8. First run
 
 ```powershell
-.\scripts\arc-server.ps1 start -Model e4b      # or 27b, 35b, flash, 9b, 4b, g12, g26, flint
+.\scripts\arc-server.ps1 start -Model e4b      # or 27b, 35b, flash, 9b, 4b, g12, g26
 ```
 
 This starts arcinferzero. The first start of each model compiles its GPU
@@ -298,7 +295,6 @@ The same numbers come from `serverz.exe --list-models` ("memory", "defaults") an
                            # 35b-mtp = its UD-Q3_K_M file;  flash = Qwen3.8 Flash Next (step 6 lists the files)
    pi-arc g12              # Gemma 4 12B (also reads images);  e4b = Gemma 4 E4B;  9b / 4b = Qwen3.5 9B / 4B
    pi-arc g26              # Gemma 4 26B-A4B (mixture of experts, experts on the SSD, reads images)
-   pi-arc flint            # Flint (mixture of experts on the SSD, thinking, tool calls)
    pi-arc -c               # continue the last session in this folder;  pi-arc -r = choose a session
    pi-arc --think off      # no reasoning; also minimal / low (default) / medium / high
    pi-arc --help           # every option
@@ -322,7 +318,7 @@ powershell -ExecutionPolicy Bypass -File tests\run_tests.ps1 -ListModels   # whi
 
 It runs the model-free checks first (HTTP parser, API formats, JSON, sampler, expert-cache pools, tool-call
 streaming, attention and routing kernels, chat templates against the GGUFs' Jinja templates), then per model found
-(4B, 27B, 35B, Flash Next, Gemma 4 12B / E4B / 26B; Flint's tokenizer) the KL and greedy checks and MTP / DFlash2 =
+(4B, 27B, 35B, Flash Next, Gemma 4 12B / E4B / 26B) the KL and greedy checks and MTP / DFlash2 =
 plain decoding, then a server smoke test; a missing model is a SKIP, not a failure. It ends with `ALL TESTS PASSED`. Stop `arc-server` first: the
 test uses port 8091 and needs the GPU memory.
 
@@ -614,9 +610,8 @@ into groups of 8 layers.
   residual-stream buffer small and lets the long contexts above fit.
 - At start the server also runs a 512-token warm-up prompt, so the first request does not pay the first use of
   the large-chunk kernels (35B with its drafters: first 1,749-token request 8.6 -> 4.2 s).
-- Tokenizer (byte-level BPE with the Qwen pre-tokenizer, and Flint's own), chat templates (ChatML + `<think>` + XML
-  tool calls for Qwen, the GGUF's Jinja template through minja for Gemma 4 and Flint) and sampling are implemented
-  natively; the tokenizer output is identical to llama.cpp's.
+- Tokenizer (byte-level BPE with the Qwen pre-tokenizer), chat templates (ChatML + `<think>` + XML tool calls for
+  Qwen, the GGUF's Jinja template through minja for Gemma 4) and sampling are implemented natively; the tokenizer output is identical to llama.cpp's.
 
 ## Layout
 
@@ -633,8 +628,8 @@ zero/       the engine: engine.h (setup, memory, slots, sessions, dispatch) with
             ops.cl norms / DeltaNet / attention / quantization, moe.cl expert routing and GEMMs), grf_probe.cpp
 tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cache.h / server_chat.h /
             server_catalog.h / server_load.h, api_compat.h (Anthropic / Ollama / Responses formats), web_tools.h (web
-            search / page fetch), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash Next,
-            Flint), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.py (ISTA GSQ checkpoint -> GGUF),
+            search / page fetch), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
+            Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.py (ISTA GSQ checkpoint -> GGUF),
             tok_test.cpp, chat_render.cpp, gguf_dump.cpp, clinfo.cpp
 bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, peak_bench, ...), run_bench.ps1
             (comparison with llama.cpp), prompt_bench.py, review_data.py (review data)
@@ -666,7 +661,7 @@ setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1
   and the next answers are the same as before the failure.
 - Mean KL of the next-token distributions vs the f32 reference: Qwen3.5-4B 0.0021; Qwen3.6-35B-A3B 0.0008 with the
   GSQ file, 0.004-0.008 with UD-IQ4_XS (generation path); Gemma 4 (480-token code prompt) 26B 0.0042, 12B 0.0002,
-  E4B 0.00088; Flint 0.0043; Flash Next 0.0143 (363 tokens), 0.0186 at 3.5K. Gemma 4 is about 7x more sensitive to int8 rounding than Qwen, hence
+  E4B 0.00088; Flash Next 0.0143 (363 tokens), 0.0186 at 3.5K. Gemma 4 is about 7x more sensitive to int8 rounding than Qwen, hence
   its float attention and two passes. `tools/ref_forward` can also simulate each engine rounding on its own
   (`REF_Q`, `REF_Q2`, `REF_ATTQ`, `REF_WQ8`) to find which one costs the KL.
 - Consistency: logits are compared bit for bit before and after every speed change (`runz --dump-logits`); the

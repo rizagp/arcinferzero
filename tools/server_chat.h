@@ -19,8 +19,7 @@
       if (tools.is_array() && tools.size() && (tc.str() == "required" || !fname.empty())) {
         force_tool_on = true;
         force_tool = gemma_ ? "<|tool_call>call:" + (fname.empty() ? std::string() : fname + "{")
-                     : flint_ ? "<tool_call>" + fname
-                              : "<tool_call>\n<function=" + (fname.empty() ? std::string() : fname + ">\n");
+                            : "<tool_call>\n<function=" + (fname.empty() ? std::string() : fname + ">\n");
       }
     }
     // response_format: the answer is JSON (an object; with json_schema one that fits the schema)
@@ -39,7 +38,7 @@
       const char* e = getenv("ARC_TOOL_CONSTRAINT");
       if (tools.is_array() && tools.size() && !(e && std::string(e) == "0")) {
         if (gemma_) tcc = std::make_unique<tcon::GemmaCall>(tools);
-        else if (!flint_) tcc = std::make_unique<tcon::QwenCall>(tools);  // (Flint's GLM form: no constraint yet)
+        else tcc = std::make_unique<tcon::QwenCall>(tools);
         if (tcc && tcc->empty()) tcc.reset();
       }
     }
@@ -95,7 +94,6 @@
     } catch (const std::exception& e) {
       return rs.send(400, "application/json", err(e.what()).dump());
     }
-    if (flint_ && !raw_prompt) prompt += flint_think_open(co.enable_thinking);
     std::vector<int> P = tok_.encode(prompt, true);
     // media: the template writes one <|image|> per image part and one <|audio|> per input_audio part; each becomes
     // <|image> / <|audio> + n embedding rows + <image|> / <audio|>. Images are read non-causally, audio causally.
@@ -492,7 +490,7 @@
       d0.set("content", "");
       rs.sse_event(chunk(id, created, d0, Json()).dump());
     }
-    const std::vector<int> close_think = tok_.encode(gemma_ ? "<channel|>" : flint_ ? "</think>" : "\n</think>\n\n", true);
+    const std::vector<int> close_think = tok_.encode(gemma_ ? "<channel|>" : "\n</think>\n\n", true);
     bool in_think = co.enable_thinking;
     int think_n = 0;
     std::vector<int> forced;  // tokens to emit instead of sampling (budget-forced end of reasoning)

@@ -9,8 +9,8 @@
 #   .\tests\run_tests.ps1 -NoAutoDetect -Model4B <4b.gguf> # only the models given on the command line
 #
 # Parameters:
-#   -Model4B / -Model27B / -Model35B / -ModelGemma / -ModelFlashNext / -ModelFlint   GGUF files (Flash Next: the
-#                              packaged file or the -00001-of- shard; Flint: its tokenizer against llama-tokenize under %USERPROFILE%\llama-builds)
+#   -Model4B / -Model27B / -Model35B / -ModelGemma / -ModelFlashNext   GGUF files (Flash Next: the
+#                              packaged file or the -00001-of- shard)
 #   -DFlash27B / -DFlash35B    DFlash2 drafter folders (containing model.safetensors), zero engine only
 #   -Ref35B <file>             opt-in 35B KL check. tests\data\ref_35b_capital_all.bin is the f32 reference of the
 #                              Qwen3.6-35B-A3B GSQ file (tools\convert_gsq.py), not of Unsloth's UD-IQ4_XS: only pass it
@@ -34,7 +34,6 @@ param(
   [string]$Model35B = "",
   [string]$ModelGemma = "",
   [string]$ModelFlashNext = "",
-  [string]$ModelFlint = "",
   [string]$DFlash27B = "",
   [string]$DFlash35B = "",
   [string]$Ref35B = "",
@@ -111,7 +110,9 @@ if (Test-Path -LiteralPath $dirsFile) {
   foreach ($line in Get-Content -LiteralPath $dirsFile) {
     $d = $line.Trim()
     if (-not $d -or $d.StartsWith("#")) { continue }
-    if (Test-Path -LiteralPath $d) { $searchRoots += $d } else { Write-Host "   (model folder $d not found, ignored)" }
+    # (a drive that fails, e.g. "access denied" on a broken USB disk: ignored like a missing one)
+    $ok = $false; try { $ok = Test-Path -LiteralPath $d -ErrorAction Stop } catch {}
+    if ($ok) { $searchRoots += $d } else { Write-Host "   (model folder $d not found or not readable, ignored)" }
   }
 }
 $script:allFiles = $null
@@ -147,7 +148,6 @@ if (-not $NoAutoDetect -and (-not $SkipGpu -or $ListModels)) {
   # (the packaged single file first: its expert file is next to it; the shards would write their own, 56 GB)
   if (-not $ModelFlashNext) { $ModelFlashNext = Find-Gguf @("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf") }
   if (-not $ModelGemma) { $ModelGemma = Find-Gguf @("gemma-4-12b*qat*q4_0*.gguf", "gemma-4-12b*qat*.gguf") }
-  if (-not $ModelFlint) { $ModelFlint = Find-Gguf @("flint-*.gguf") }
   if (-not $DFlash27B) { $DFlash27B = Find-DFlash @("*Qwen3.8-27B-DFlash2*") }
   if (-not $DFlash35B) { $DFlash35B = Find-DFlash @("*Qwen3.6-35B-A3B-DFlash2*") }
 }
@@ -194,8 +194,8 @@ else {
   if ($o -notmatch "ALL IDENTICAL") { Write-Host $o.TrimEnd() }
   Check "chat template (14 cases)" ($o -match "ALL IDENTICAL")
 }
-# templates arcinferzero renders with minja (Gemma 4, Flint) vs Jinja2 (needs python with jinja2)
-$tj = @("gemma4_template.jinja", "gemma4_e4b_template.jinja", "gemma4_google_template.jinja", "flint_template.jinja") |
+# templates arcinferzero renders with minja (Gemma 4) vs Jinja2 (needs python with jinja2)
+$tj = @("gemma4_template.jinja", "gemma4_e4b_template.jinja", "gemma4_google_template.jinja") |
   ForEach-Object { Join-Path $Data $_ } | Where-Object { Test-Path $_ }
 if (-not (Test-Path .\bin\chat_render.exe)) { Skip "minja templates" "bin\chat_render.exe not built" }
 elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) { Skip "minja templates" "python not found" }
@@ -220,10 +220,10 @@ else {
 # hyper-connection kernels of zero/kernels/ops.cl (Flash Next) vs a CPU computation on random data (uses the GPU)
 if ($SkipGpu) { Skip "hyper-connection kernels (zero)" "-SkipGpu" }
 else { Unit "hyper-connection kernels (zero)" .\bin\test_hc.exe @() "ALL OK" }
-# float attention kernels (Gemma 4; head 128 for Flint) vs a CPU computation in double (uses the GPU)
+# float attention kernels (Gemma 4; head 128) vs a CPU computation in double (uses the GPU)
 if ($SkipGpu) { Skip "float attention kernels (zero)" "-SkipGpu" }
 elseif (Test-Path .\bin\test_fa.exe) { Unit "float attention kernels (zero)" .\bin\test_fa.exe @() "test_fa: all passed" }
-# MoE routing kernels (softmax; sigmoid with an ungated shared FFN for Flint) vs a CPU computation (uses the GPU)
+# MoE routing kernels (softmax) vs a CPU computation (uses the GPU)
 if ($SkipGpu) { Skip "MoE routing kernels (zero)" "-SkipGpu" }
 elseif (Test-Path .\bin\test_route.exe) { Unit "MoE routing kernels (zero)" .\bin\test_route.exe @() "test_route: all passed" }
 
@@ -251,21 +251,6 @@ else {
     Check "tokenizer $($p.Name)" ($o -match "IDENTICAL" -and $o -match "round-trip OK")
   }
 }
-# Flint's pre-tokenizer (tokenizer.ggml.pre = flint) against llama.cpp's llama-tokenize on README.md, when both exist
-$lt = Get-ChildItem (Join-Path $env:USERPROFILE "llama-builds") -Recurse -Filter "llama-tokenize.exe" -ErrorAction SilentlyContinue |
-  Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not (Have $ModelFlint)) { Skip "tokenizer Flint" (Why $ModelFlint "Flint model (-ModelFlint)") }
-elseif (-not $lt) { Skip "tokenizer Flint" "no llama-tokenize.exe under %USERPROFILE%\llama-builds" }
-else {
-  $idf = Join-Path $env:TEMP ("arcinferzero_flint_{0}.ids" -f $PID)
-  try {
-    $ref = Run-Exe $lt.FullName @("-m", $ModelFlint, "-f", (Join-Path $root "README.md"), "--ids", "--no-bos", "--no-escape", "--log-disable")
-    [IO.File]::WriteAllText($idf, ($ref -replace "[\[\]\s]", ""))
-    $o = Run-Exe .\bin\tok_test.exe @($ModelFlint, (Join-Path $root "README.md"), $idf)
-    Check "tokenizer Flint (README.md vs llama-tokenize)" ($o -match "IDENTICAL" -and $o -match "round-trip OK") ([regex]::Match($o, "ours \d+ tokens").Value)
-  } finally { Remove-Item -LiteralPath $idf -Force -ErrorAction SilentlyContinue }
-}
-
 # the 20-token Qwen chat prompt shared by the Qwen checks
 $ids = "248045,846,198,213077,173634,172069,23220,30,243381,189040,13,248046,198,248045,74455,198,248068,271,248069,271"
 $greedy4b = "greedy: 40 208756 5899 23220 36316 2972 195793 159034 248046"

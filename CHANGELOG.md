@@ -1,11 +1,20 @@
 # Changelog
 
-## 2026-10-24: renamed to arcinferzero; Flint runs; Gemma sliding attention, /W4 and CI
+## 2026-10-25: Flint support removed; the model list without duplicates
 
+- **Flint is no longer supported** (the user's decision): the `flint` architecture in the engine and the f32
+  reference, its pre-tokenizer (and `src/unicode_ps.h`), the GLM-style tool calls, the server's Flint template and
+  thinking handling, the catalog entry and the `flint` shortcut, and the kernel options only it used (attention
+  sinks, f32 V rows, attention prep without int8 copies, sigmoid routing with an ungated shared FFN) are gone. Kept,
+  as Flash Next's precise mode uses them: BF16 router rows, two passes for the experts, `moe_gelu_mul -DSILU`. The
+  other models' logits are bit-identical before and after.
 - **The model list shows each model once**: a copy with the same file name and size in another folder (e.g. a
   backup on an external drive) and the GGUF an arcinferzero package was made from are no longer listed as extra
   `-2` entries; the package, then the Hugging Face cache, then the Windows drive keep the entry (35B and Gemma 4 26B
   on D: next to their C: packages: 39 -> 33 entries).
+
+## 2026-10-24: renamed to arcinferzero; Flint runs; Gemma sliding attention, /W4 and CI
+
 - **Self-audit fixes** (all source files read for bugs, each finding checked against the code):
   - Server: the Anthropic / Ollama / Responses adapter no longer outlives its request (a cancel or an engine error
     called into freed memory); their streams end once (the finish chunk and the usage chunk both ended them: Ollama

@@ -1,6 +1,6 @@
 // Renders a GGUF chat template as written, with minja (Google's C++ implementation of the Jinja subset used by
 // Hugging Face chat templates, third_party/minja), after two rewrites minja needs (below). Used for model families
-// whose template is not implemented natively in chat.h (Gemma 4, Flint).
+// whose template is not implemented natively in chat.h (Gemma 4).
 #pragma once
 #include "json.h"
 #include <minja/chat-template.hpp>
@@ -34,7 +34,7 @@ class JinjaChat {
         continue;
       }
       // (minja has the string method .replace(old, new) but not the filter: `x | replace(a, b)` becomes
-      //  `x.replace(a, b)`, the same in Jinja (a filter binds as tightly as a method call). Flint's template)
+      //  `x.replace(a, b)`, the same in Jinja (a filter binds as tightly as a method call))
       if (c == '|') {
         size_t j = i + 1;
         while (j < s.size() && (s[j] == ' ' || s[j] == '\t')) ++j;

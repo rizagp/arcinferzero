@@ -11,8 +11,7 @@ The story behind the numbers: [review.md](review.md); what helped and what did n
 The current numbers for every model are in one place: [before-after.md](before-after.md#where-it-stands)
 ("Where it stands"). In short (24 Oct): 35B UD-IQ4_XS prompt 604 tok/s (32K), generation 20.6 tok/s; 27B prompt
 ~135 tok/s (4K), generation 4.9 tok/s; Flash Next prompt ~164 tok/s (4K), generation 6-7 tok/s; Gemma 4 26B-A4B
-prompt 252 tok/s (4K), generation ~25 tok/s with its drafter; Gemma 4 E4B 724 tok/s (4K), 32 tok/s; Flint 248 tok/s
-(4K), 13-17 tok/s. The sections below keep what was measured on each date.
+prompt 252 tok/s (4K), generation ~25 tok/s with its drafter; Gemma 4 E4B 724 tok/s (4K), 32 tok/s. The sections below keep what was measured on each date.
 
 ## 2026-10-22 / 24: Gemma 4 accurate by default, Flint, image encoders
 
@@ -23,7 +22,7 @@ prompt 252 tok/s (4K), generation ~25 tok/s with its drafter; Gemma 4 E4B 724 to
   a tiled f32 router. 26B: **252 tok/s** (4K), 210 (14K), ~25 tok/s with its drafter. 12B 137 tok/s (4K). E4B went
   back to one pass (KL 0.00088 is far under the limit) and to the int8 K / V copy for its global layers in prompts:
   724 tok/s (4K), 615 (14K).
-- **Flint** (2026-10-24): 4K prompt 240 -> 248 tok/s after reading its GPU assembly (ocloc: spills and needless
+- **Flint** (2026-10-24; Flint support was removed on 2026-10-25 (the user)): 4K prompt 240 -> 248 tok/s after reading its GPU assembly (ocloc: spills and needless
   instructions removed), generation 13-17 tok/s; its accuracy (KL 0.029 -> 0.0043) came from f32 V rows and an f32
   router, not from speed changes.
 - **Flash Next**: the expert gate / up kernel reads the activation scales transposed (4K 160 -> 164 tok/s);

@@ -20,7 +20,7 @@
         run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
       }
       {
-        // (prompt chunks: 4 rows x 4 tokens per sub-group, gemv_bf16 -DW_F32, as Flint's router; single tokens as before)
+        // (prompt chunks: 4 rows x 4 tokens per sub-group, gemv_bf16 -DW_F32; single tokens as before)
         static const bool g4_rt = !getenv("ARC_G4_RTILE") || atoi(getenv("ARC_G4_RTILE")) != 0;
         int K = E, N = NR, ld = NR;  // (all the padded rows: the logit past the experts stays 0, not stale)
         if (g4_rt && T > 8) {
@@ -37,21 +37,13 @@
         }
       }
       rmsnorm_quant(x_, 0, L.ffn_norm2, E, Mp, T, 1);
-    } else if (L.router_bf16) {  // (Flint: the router in f32 on the f32 normed rows, in big_ until the shared FFN's
-                                //  gate / up overwrite it; Flash Next: on the mixer's f32 block input, hco_)
-      if (!hp.hc) {
-        float eps = hp.eps;
-        int r0 = 0, EE = E, MM = Mp, TT = T, wh = 1, a32 = 1;
-        set_args(k_rmsnorm_, 0, x_, r0, L.post_norm, EE, MM, TT, eps, aq_, asc_, absum_, big_, wh, a32);
-        size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
-        run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
-      }
+    } else if (L.router_bf16) {  // (Flash Next's precise mode: the router in f32 on the mixer's f32 block input, hco_)
       // (prompt chunks: 4 rows x 4 tokens per sub-group, 4K prompt 744 -> 229 ms; single tokens one row each, enough
       //  sub-groups to keep the reads going: 4 rows gave only 68 of them)
       const int rt = T > 8 ? 4 : 1, tt = T > 8 ? 4 : 1;
       cl_kernel k = kernel("ops", "-DRT=" + std::to_string(rt) + " -DTT=" + std::to_string(tt), "gemv_bf16");
       int K = E, N = NR, nt = T, ld = NR;
-      set_args(k, 0, hp.hc ? hco_ : big_, K, L.router_bf16, N, nt, rl_, ld);
+      set_args(k, 0, hco_, K, L.router_bf16, N, nt, rl_, ld);
       size_t g2[2] = {(size_t)16 * ((NR + rt - 1) / rt), (size_t)(T + tt - 1) / tt}, l2[2] = {16, 1};
       run("gemm_router", k, 2, g2, l2);
     } else if (!hp.hc) {
@@ -81,7 +73,7 @@
     // (Gemma 4, two passes: prompt chunks through the T > 1 routing and moe_rg, whose two passes it runs; generation
     //  and verification (T <= 8) through the per-tile kernels with both passes fused, -DQ2F, as plain decoding)
     static const int rg_min0 = getenv("ARC_MOE_RG_MIN") ? atoi(getenv("ARC_MOE_RG_MIN")) : 320;
-    // (two passes: Gemma 4, Flint; layers whose expert types moe_rg lacks, Flint's Q5_K, per tile at every size)
+    // (two passes: Gemma 4, Flash Next's precise mode; layers whose expert types moe_rg lacks per tile at every size)
     const bool q2f = q2_ && hp.moe_std && ((T <= 8 && T < rg_min0) || !moe_rg_layer_ok(L));
     const bool q2g = q2_ && !q2f;
     const std::string q2fd = q2f ? " -DQ2F" + q2_defs_ + " -DQ2M=" + std::to_string(q2m_hq_) + " -DQ2MS=" +
@@ -92,8 +84,7 @@
     const int tm = T == 1 && !q2g ? 1 : q2f ? (T <= 4 ? 4 : 8) : hp.moe_std ? tm_std : 16, n = T * NU;
     const std::string defs = "-cl-intel-256-GRF-per-thread -DNE=" + std::to_string(hp.n_expert) +
                              " -DNU=" + std::to_string(NU) + " -DTM=" + std::to_string(tm) +
-                             (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "") +
-                             (hp.flint ? " -DSIGMOID -DSH_NOGATE" : "");  // (Flint: sigmoid scores, an ungated shared FFN)
+                             (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "");
     const std::string hld = (Fp != F ? " -DHLD=" + std::to_string(Fp) : std::string()) + (g4 ? " -DMOE_GELU" : "");
     if (T == 1 && !q2g) {  // one token: its NU experts are the tiles
       cl_kernel k = kernel("moe", defs, "moe_route1");
@@ -322,7 +313,7 @@
   bool moe_gemm_ok() const {
     if (!hp.moe_std) return false;
     for (const Layer& L : layers_)
-      if (L.il >= hp.n_dense && !moe_gemm_layer_ok(L)) return false;  // (Flint: its leading dense layers have none)
+      if (!moe_gemm_layer_ok(L)) return false;
     return true;
   }
   // moe_rg's types: no per-block mins, not requantized by decode_w8 (IQ1_M: its own scale layout)
@@ -371,7 +362,7 @@
       }
       if (q2_ && i == 1) {
         cl_kernel g = kernel("moe", "-DNE=" + std::to_string(NE) + " -DNU=" + std::to_string(hp.n_expert_used) + " -DTM=16" +
-                                        (hp.gemma ? "" : " -DSILU"),  // (Flint: silu(gate) * up)
+                                        (hp.gemma ? "" : " -DSILU"),  // (Flash Next's precise mode: silu(gate) * up)
                              "moe_gelu_mul");
         int ld = Fp, fv = F;
         set_args(g, 0, mh_, mh2_, ld, fv);

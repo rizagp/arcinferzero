@@ -5,7 +5,7 @@
 #
 #   pi-arc                          the running / last model (the first time: choose from the list)
 #   pi-arc --pick                   choose from the list
-#   pi-arc 35b  /  pi-arc -Model swift   a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 flint, with -mtp /
+#   pi-arc 35b  /  pi-arc -Model swift   a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26, with -mtp /
 #                                   -vision / -std / -nodf / -df for a variant) or part of a model's name
 #   pi-arc -c  /  pi-arc -r         continue the last Pi session in this folder / choose one (Pi's options)
 #   pi-arc --think off              no reasoning (fastest answers); also minimal / low (default) / medium / high /
@@ -18,7 +18,7 @@
 #
 # (No param() block on purpose: PowerShell would otherwise try to bind Pi's own options such as -p or --tools.)
 $ErrorActionPreference = "Stop"
-$shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "g12", "e4b", "g26", "flint")
+$shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "g12", "e4b", "g26")
 # (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
 function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
 $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0
@@ -69,12 +69,12 @@ MODEL
                                  by full name (e.g. ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF); Enter keeps the
                                  model that is already running. Image projectors (mmproj-*) and drafters
                                  (mtp-*) next to a model are loaded with it, not listed.
-  27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 flint
+  27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26
                                  shortcuts, as the first argument: Qwen3.8 27B; Qwen3.6 35B-A3B (35b: UD-IQ4_XS
                                  from Unsloth's MTP repository, or UD-Q3_K_M / the GSQ file when that is the one
                                  downloaded; 35b-s: UD-Q3_K_S, longer context; 35b-mtp: UD-Q3_K_M of the MTP
                                  repository); flash: Qwen3.8 Flash Next; Qwen3.5 9B / 4B; Gemma 4 12B / E4B /
-                                 26B-A4B (g26: mixture of experts on the SSD, reads images); flint: Flint
+                                 26B-A4B (g26: mixture of experts on the SSD, reads images)
   <shortcut>-mtp / -vision / -std  a variant of the same file: MTP without images, images without MTP, neither
                                  (e.g. 9b-std: the most context, 27b-std, 35b-mtp-std). A shortcut must come
                                  before Pi's options and message; any model's id from --pick works too.
