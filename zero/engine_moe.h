@@ -54,8 +54,9 @@
     // (Gemma 4, two passes: prompt chunks through the T > 1 routing and moe_rg, whose two passes it runs; generation
     //  and verification (T <= 8) through the per-tile kernels with both passes fused, -DQ2F, as plain decoding)
     static const int rg_min0 = getenv("ARC_MOE_RG_MIN") ? atoi(getenv("ARC_MOE_RG_MIN")) : 320;
-    const bool q2f = q2_ && g4 && hp.moe_std && T <= 8 && T < rg_min0;
-    const bool q2g = q2_ && g4 && !q2f;
+    // (two passes: Gemma 4, Flint; layers whose expert types moe_rg lacks, Flint's Q5_K, per tile at every size)
+    const bool q2f = q2_ && hp.moe_std && ((T <= 8 && T < rg_min0) || !moe_rg_layer_ok(L));
+    const bool q2g = q2_ && !q2f;
     const std::string q2fd = q2f ? " -DQ2F" + q2_defs_ + " -DQ2M=" + std::to_string(q2m_hq_) + " -DQ2MS=" +
                                        std::to_string(q2m_sc_ / 4)
                                  : std::string();
@@ -64,7 +65,8 @@
     const int tm = T == 1 && !q2g ? 1 : q2f ? (T <= 4 ? 4 : 8) : hp.moe_std ? tm_std : 16, n = T * NU;
     const std::string defs = "-cl-intel-256-GRF-per-thread -DNE=" + std::to_string(hp.n_expert) +
                              " -DNU=" + std::to_string(NU) + " -DTM=" + std::to_string(tm) +
-                             (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "");
+                             (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "") +
+                             (hp.flint ? " -DSIGMOID -DSH_NOGATE" : "");  // (Flint: sigmoid scores, an ungated shared FFN)
     const std::string hld = (Fp != F ? " -DHLD=" + std::to_string(Fp) : std::string()) + (g4 ? " -DMOE_GELU" : "");
     if (T == 1 && !q2g) {  // one token: its NU experts are the tiles
       cl_kernel k = kernel("moe", defs, "moe_route1");
@@ -138,8 +140,9 @@
     // (Gemma 4 26B-A4B, F 704 padded to 768: no decode + GEMM, so gate / up take moe_rg at every chunk size from
     //  rg_min as the down projection does; ARC_G4_RG_GU=0: per tile)
     static const bool g4_rg_gu = !getenv("ARC_G4_RG_GU") || atoi(getenv("ARC_G4_RG_GU")) != 0;
-    const bool use_rg = rg_ok && ((gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu)),
-               rg_down = rg_ok && (T < rg_max || !gemm_ok);
+    // (two passes: every prompt chunk through moe_rg, which runs both; decode + GEMM has one)
+    const bool use_rg = rg_ok && (q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu)),
+               rg_down = rg_ok && (q2g || T < rg_max || !gemm_ok);
     const bool use_gemm = !use_rg && gemm_ok && tm == 16 && T >= gemm_min;
     const std::string xdef = xc_ ? " -DXCACHE" : "";
     // standard expert types, per tile (zero/kernels/decode.cl moe_gateup_q / moe_down_q): the tiles in `tiles`
@@ -290,7 +293,7 @@
   bool moe_gemm_ok() const {
     if (!hp.moe_std) return false;
     for (const Layer& L : layers_)
-      if (!moe_gemm_layer_ok(L)) return false;
+      if (L.il >= hp.n_dense && !moe_gemm_layer_ok(L)) return false;  // (Flint: its leading dense layers have none)
     return true;
   }
   // moe_rg's types: no per-block mins, not requantized by decode_w8 (IQ1_M: its own scale layout)
@@ -338,8 +341,8 @@
         run(i == 2 ? "moe_down" : "moe_gateup", k, 2, gws, lws);
       }
       if (q2_ && i == 1) {
-        if (!hp.gemma) throw std::logic_error("two-pass experts: Gemma 4 only (the GELU product)");
-        cl_kernel g = kernel("moe", "-DNE=" + std::to_string(NE) + " -DNU=" + std::to_string(hp.n_expert_used) + " -DTM=16",
+        cl_kernel g = kernel("moe", "-DNE=" + std::to_string(NE) + " -DNU=" + std::to_string(hp.n_expert_used) + " -DTM=16" +
+                                        (hp.gemma ? "" : " -DSILU"),  // (Flint: silu(gate) * up)
                              "moe_gelu_mul");
         int ld = Fp, fv = F;
         set_args(g, 0, mh_, mh2_, ld, fv);

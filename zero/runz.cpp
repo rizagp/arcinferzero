@@ -593,6 +593,7 @@ static int run_main(int argc, char** argv) {
         for (size_t i = 0; i < V; ++i)  // (a reference log-prob of -inf adds nothing)
           if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
         sum += kl;
+        if (getenv("ARC_KL_SHOW") && kl > atof(getenv("ARC_KL_SHOW"))) printf("pos %zu KL %.3f\n", r, kl);  // (ARC_KL_SHOW=x: positions above x)
         mxk = std::max(mxk, kl);
         agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
       }
@@ -664,6 +665,7 @@ static int run_main(int argc, char** argv) {
           const std::vector<float>& l = eng.logits_at((int)r);
           const float* rr = ref.data() + r * V;
           const double k = kl_of(l, rr);
+          if (getenv("ARC_KL_SHOW") && k > atof(getenv("ARC_KL_SHOW"))) printf("pos %zu KL %.3f\n", r, k);  // (ARC_KL_SHOW=x: positions above x)
           sum += k;
           mx = std::max(mx, k);
           agree += std::max_element(l.begin(), l.end()) - l.begin() == std::max_element(rr, rr + V) - rr;

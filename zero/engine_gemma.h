@@ -1,4 +1,4 @@
-// Gemma 4 layers: attention (float, attn_fa_g / attn_fa_gh) and the dense / MoE FFN.
+// Gemma 4 layers: attention (float, attn_fa_g / attn_fa_gh; Flint's too) and the dense / MoE FFN.
 // A part of class Engine (zero/engine.h), included inside the class body at the place it was cut from: not a
 // header of its own. Split out of engine.h unchanged on 2026-10-23 (QUEUE F26.3).
 
@@ -25,9 +25,12 @@
       static const bool gprep_small = getenv("ARC_GPREP_GRF") && std::string(getenv("ARC_GPREP_GRF")) == "128";
       cl_kernel k = kernel("ops", (gprep_small ? std::string() : std::string("-cl-intel-256-GRF-per-thread ")) + hdo,
                            "attn_prep_g");
-      float eps = hp.eps, base = L.swa ? hp.rope_base_swa : hp.rope_base, qscale = 1.0f;  // Gemma 4: no 1/sqrt(d)
-      int pp = p0, hv = L.has_v ? 1 : 0, uff = L.rope_ff ? 1 : 0, cap = L.cap, nn = nh, nk = nkv, ld = ldq, TT = Tq;
-      cl_mem rt = rope_table(L.swa ? 0 : 1, hd, base, L.rope_ff, Tq);
+      // (Gemma 4: no 1/sqrt(d); Flint: 1/sqrt(d), its global layers without RoPE (base 0), V without a norm)
+      float eps = hp.eps, base = hp.flint && !L.swa ? 0.0f : L.swa ? hp.rope_base_swa : hp.rope_base,
+            qscale = hp.flint ? 1.0f / std::sqrt((float)hd) : 1.0f;
+      int pp = p0, hv = L.has_v ? (hp.flint ? 2 : 1) : 0, uff = L.rope_ff ? 1 : 0, cap = L.cap, nn = nh, nk = nkv, ld = ldq,
+          TT = Tq;
+      cl_mem rt = base > 0.0f ? rope_table(L.swa ? 0 : 1, hd, base, L.rope_ff, Tq) : rope_tab_[0];
       set_args(k, 0, from(big_, (size_t)r0 * ldq * 4), ld, nn, nk, hv, L.q_norm, L.k_norm, TT, pp, eps, base,
                L.rope_ff ? L.rope_ff : L.q_norm, uff, qscale, qi_, qsc_, L.kq, L.ksc, L.vq, L.vsc, cap, rt);
       int f16 = L.i8 ? 1 : 3;  // (the f32 query and the float K / V rows for attn_fa_g; 2: no int8 copy)
@@ -57,6 +60,8 @@
     // (generation / verification, <= 8 rows: flash-decoding, the key range split over many sub-groups and combined;
     //  ARC_FA_SPLIT=0: one sub-group per (row, q-head pair) over every key, as the prompt kernel)
     static const bool fa_split = !getenv("ARC_FA_SPLIT") || atoi(getenv("ARC_FA_SPLIT")) != 0;
+    // (Flint: the heads' sink logits, one more term of each softmax: -DSINKS, the buffer after the usual arguments)
+    const std::string snk = L.sinks ? " -DSINKS" : "";
     auto fa_g = [&](int r0, int n, int p0) {
       if (g4_att8_ && !L.swa && n > 8 && batch_.empty() && hd == 512) {
         // E2B / E4B prompt chunks, global layers: attn_ps on the int8 copy (head dims over 4 sub-groups of 4 q heads;
@@ -74,7 +79,7 @@
       if (fa_split && n <= 8) {
         const int gq = std::min(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
         const std::string fd = "-cl-intel-256-GRF-per-thread -DFA_G -DFA_SPLIT -DHD=" + std::to_string(hd) + " -DGQ=" +
-                               std::to_string(gq);
+                               std::to_string(gq) + snk;
         cl_kernel k = kernel("ops", fd, "attn_fa_g");
         // (splits of the launch: those of its widest row, as the kernel computes them)
         const int nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1, last = p0 + n - 1;
@@ -89,6 +94,7 @@
         run(L.swa ? "attn_swa" : "attn_global", k, 3, gws, lws);
         cl_kernel kc2 = kernel("ops", fd, "attn_fa_gc");
         set_args(kc2, 0, fa_part_, nn, pp, MM, from(o_, (size_t)r0 * nh * hd * 4), w, nl, nh2);
+        if (L.sinks) set_args(kc2, 8, L.sinks);
         size_t g2[3] = {(size_t)hd, (size_t)nh, (size_t)n};
         run(L.swa ? "attn_swa" : "attn_global", kc2, 3, g2, nullptr);
         return;
@@ -97,18 +103,19 @@
       //  6.4 KB per thread and made its global attention slower, 3.4 -> 4.4-4.9 s for a 4K prompt; DeepSeek's audit)
       // (head 256, the sliding layers: 4 sub-groups and up to 4 rows; 26B, 4K prompt: sliding attention 4.17 -> 2.26 s
       //  instead of attn_fa_g with 32 rows)
-      const int fa_fs = fa_fs_env ? fa_fs_env : hd >= 512 ? 8 : 4;
-      if (fa_gh && n > 8 && hd >= 256 && hpg * (hd / fa_fs / 16) <= 64 && hd % (fa_fs * 16) == 0 &&
+      const int fa_fs = fa_fs_env ? fa_fs_env : hd >= 512 ? 8 : hd >= 256 ? 4 : 2;  // (Flint, head 128: 2, 4 dims per lane)
+      if (fa_gh && n > 8 && hd >= 128 && hpg * (hd / fa_fs / 16) <= 64 && hd % (fa_fs * 16) == 0 &&
           (hd / fa_fs / 16 == 4 || hd / fa_fs / 16 == 8 || hd / fa_fs / 16 == 16)) {
         const int fa_gr = fa_gr_env ? fa_gr_env : std::clamp(64 / (hpg * (hd / fa_fs / 16)), 1, 4);
         const int fa_kb = fa_kb_env ? fa_kb_env : hd < 512 && hpg * fa_gr <= 8 ? 2 : 1;
         cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH -DHD=" + std::to_string(hd) + " -DHPG=" +
                                         std::to_string(hpg) + " -DFS=" + std::to_string(fa_fs) + " -DGR=" + std::to_string(fa_gr) +
-                                        " -DKB=" + std::to_string(fa_kb),
+                                        " -DKB=" + std::to_string(fa_kb) + snk,
                              "attn_fa_gh");
         int cp = L.cap, nn = nh, nk = nkv, pp = p0, MM = n, w = win, nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1;
         set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM,
                  from(o_, (size_t)r0 * nh * hd * 4), w, nlo, nhi);
+        if (L.sinks) set_args(k, 12, L.sinks);
         size_t gws[3] = {(size_t)16 * fa_fs, (size_t)nkv, (size_t)(n + fa_gr - 1) / fa_gr}, lws[3] = {(size_t)16 * fa_fs, 1, 1};
         run(L.swa ? "attn_swa" : "attn_global", k, 3, gws, lws);
         return;
@@ -116,10 +123,12 @@
       const int gq = std::min(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
       const int R = n <= 8 ? 1 : fa_rows ? fa_rows : hd >= 512 ? 1 : 32;  // (sliding: 32 rows 4.43 -> 4.16 s; 64: too large)
       cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_G -DHD=" + std::to_string(hd) + " -DGQ=" +
-                                      std::to_string(gq) + (R > 1 ? " -DFA_ROWS=" + std::to_string(R) : std::string()), "attn_fa_g");
+                                      std::to_string(gq) + (R > 1 ? " -DFA_ROWS=" + std::to_string(R) : std::string()) + snk,
+                           "attn_fa_g");
       int cp = L.cap, nn = nh, nk = nkv, pp = p0, MM = n, w = win, nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1;
       set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM,
                from(o_, (size_t)r0 * nh * hd * 4), w, nlo, nhi);
+      if (L.sinks) set_args(k, 12, L.sinks);
       size_t gws[3] = {16, (size_t)(nh / gq), (size_t)(n + R - 1) / R * R}, lws[3] = {16, 1, (size_t)R};
       run(L.swa ? "attn_swa" : "attn_global", k, 3, gws, lws);
     };
@@ -143,6 +152,10 @@
       int K = nh * hd, MM = Mp, TT = T, fused = 1, gelu = 0;  // quantize the attention output for wo
       set_args(k_swiglu_, 0, o_, K, MM, TT, aq_, asc_, absum_, a_out, fused, gelu);
       run_rows_quant("attn_gate_quant", K, T, Mp);
+    }
+    if (hp.flint) {  // (Flint: a plain residual, the projection added to x_)
+      matmul("gemm_o", L.wo, Mp, x_, E, 0, 1, a_out);
+      return;
     }
     matmul("gemm_o", L.wo, Mp, big_, E, 0, 0, a_out);
     if (T <= 8) {  // + the FFN input norm (layer_gemma_ffn skips its own)

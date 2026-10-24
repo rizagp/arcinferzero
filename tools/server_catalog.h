@@ -153,7 +153,8 @@ static std::vector<ModelInfo> scan_models() {
       {"Qwen3.5-4B-UD-Q4_K_XL.gguf", {"qwen3.5-4b", "4b"}},
       {"gemma-4-12b-it-qat-q4_0.gguf", {"gemma4-12b", "g12"}},
       {"gemma-4-E4B_q4_0-it.gguf", {"gemma4-e4b", "e4b"}},
-      {"gemma-4-26B_q4_0-it.gguf", {"gemma4-26b", "g26"}}};
+      {"gemma-4-26B_q4_0-it.gguf", {"gemma4-26b", "g26"}},
+      {"flint-UD-Q4_K_XL.gguf", {"flint", "flint"}}};
   std::vector<ModelInfo> out;
   for (size_t i = 0; i < cands.size(); ++i) {
     const Cand& c = cands[i];
@@ -198,6 +199,7 @@ static std::vector<ModelInfo> scan_models() {
     }
     m.supported = m.arch == "qwen35" || m.arch == "qwen35moe" || m.arch == "gemma4";  // (MoE: GSQ or standard experts)
     m.supported = m.supported || m.arch == "qwen4exp";  // (Qwen3.8 Flash Next: arcinferzero only, experts streamed)
+    m.supported = m.supported || m.arch == "flint";  // (Flint: experts streamed)
     (void)gsq;
     m.vision = mmproj;  // (Gemma 4 12B: gemma4uv; E2B / E4B: gemma4v)
     m.audio = audio;

@@ -196,7 +196,31 @@ inline bool json_value(const std::string& ty, const std::string& val, Json& out)
   return false;
 }
 
-// Parses "<tool_call>\n<function=NAME>\n<parameter=K>\nV\n</parameter>...</function>\n</tool_call>" blocks.
+// Flint's calls (GLM style): "<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...</tool_call>", the
+// values as written (JSON for non-string parameters, as Qwen's). `block` starts at "<tool_call>"; false: no name.
+inline bool parse_glm_call(const std::string& block, const Json& tools, ToolCall& tc) {
+  const size_t ak = block.find("<arg_key>", 11);
+  tc.name = trim(block.substr(11, ak == std::string::npos ? std::string::npos : ak - 11));
+  if (tc.name.empty() || tc.name.find_first_of("<>{}\n") != std::string::npos) return false;
+  for (size_t p = ak; p != std::string::npos && (p = block.find("<arg_key>", p)) != std::string::npos;) {
+    const size_t ke = block.find("</arg_key>", p);
+    size_t vs = ke == std::string::npos ? ke : block.find("<arg_value>", ke);
+    if (vs == std::string::npos) break;
+    const std::string key = trim(block.substr(p + 9, ke - p - 9));
+    vs += 11;
+    size_t ve = block.find("</arg_value>", vs);
+    if (ve == std::string::npos) ve = block.size();
+    const std::string val = block.substr(vs, ve - vs);
+    Json parsed;
+    if (json_value(param_type(tools, tc.name, key), val, parsed)) tc.arguments.set(key, parsed);
+    else tc.arguments.set(key, Json(val));
+    p = ve;
+  }
+  return true;
+}
+
+// Parses "<tool_call>\n<function=NAME>\n<parameter=K>\nV\n</parameter>...</function>\n</tool_call>" blocks (and
+// Flint's, parse_glm_call).
 inline std::vector<ToolCall> parse_tool_calls(const std::string& text, const Json& tools) {
   std::vector<ToolCall> calls;
   size_t pos = 0;
@@ -205,7 +229,11 @@ inline std::vector<ToolCall> parse_tool_calls(const std::string& text, const Jso
     const std::string block = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
     pos = end == std::string::npos ? text.size() : end + 12;
     const size_t f = block.find("<function=");
-    if (f == std::string::npos) continue;
+    if (f == std::string::npos) {
+      ToolCall tc;
+      if (parse_glm_call(block, tools, tc)) calls.push_back(std::move(tc));
+      continue;
+    }
     const size_t fe = block.find('>', f);
     if (fe == std::string::npos) continue;
     ToolCall tc;
@@ -392,6 +420,61 @@ inline JsonPrefix json_prefix(const std::string& s, size_t from, size_t to) {
   return r;
 }
 
+// A closed parameter appended to a streamed call's arguments (`sep` before it) so that the final text reads as
+// parse_tool_calls' value: an array / object value as streamed, closed and repeated when it is not valid JSON.
+inline void append_closed_arg(std::string& args, const std::string& sep, const std::string& key, const std::string& ty,
+                              const std::string& val) {
+  Json parsed;
+  const bool ok = json_value(ty, val, parsed);
+  if (ty == "array" || ty == "object") {
+    const JsonPrefix jp = json_prefix(val, 0, val.size());
+    if (jp.complete && ok) args += sep + Json(key).dump() + ":" + val;  // as streamed
+    else args += sep + Json(key).dump() + ":" + val.substr(0, jp.end) + jp.close + "," + Json(key).dump() + ":" +
+                 (ok ? parsed.dump() : Json(val).dump());
+  } else if (ok) {
+    args += sep + Json(key).dump() + ":" + parsed.dump();
+  } else {
+    args += sep + Json(key).dump() + ":" + Json(val).dump();
+  }
+}
+// The part of an open parameter value s[vs, lim) that later text cannot change, appended: string and array / object
+// parameters stream, other values wait for their closing tag.
+inline void append_open_arg(std::string& args, const std::string& sep, const std::string& key, const std::string& ty,
+                            const std::string& s, size_t vs, size_t lim) {
+  lim = utf8_end(s, vs, lim);
+  if (ty == "string") args += sep + Json(key).dump() + ":\"" + json_str_body(s.substr(vs, lim - vs));
+  else if (ty == "array" || ty == "object") args += sep + Json(key).dump() + ":" + s.substr(vs, json_prefix(s, vs, lim).end - vs);
+}
+
+// partial_tool_calls for a Flint (GLM style) block starting at "<tool_call>" (cut before a possible "</tool_call>"
+// unless `done`); false while its name may still grow
+inline bool partial_glm_call(const std::string& block, const Json& tools, bool done, PartialToolCall& tc) {
+  const size_t ak = block.find("<arg_key>", 11);
+  if (ak == std::string::npos && !done) return false;
+  tc.name = trim(block.substr(11, ak == std::string::npos ? std::string::npos : ak - 11));
+  if (tc.name.empty() || tc.name.find_first_of("<>{}\n") != std::string::npos) return false;
+  tc.done = done;
+  tc.args = "{";
+  for (size_t p = ak; p != std::string::npos && (p = block.find("<arg_key>", p)) != std::string::npos;) {
+    const size_t ke = block.find("</arg_key>", p);
+    size_t vs = ke == std::string::npos ? ke : block.find("<arg_value>", ke);
+    if (vs == std::string::npos) break;
+    const std::string key = trim(block.substr(p + 9, ke - p - 9)), ty = param_type(tools, tc.name, key);
+    const std::string sep = tc.args.size() > 1 ? "," : "";
+    vs += 11;
+    size_t ve = block.find("</arg_value>", vs);
+    if (!done && ve == std::string::npos) {
+      append_open_arg(tc.args, sep, key, ty, block, vs, hold_tags(block, vs, block.size(), {"</arg_value>"}));
+      break;
+    }
+    if (ve == std::string::npos) ve = block.size();
+    append_closed_arg(tc.args, sep, key, ty, block.substr(vs, ve - vs));
+    p = ve;
+  }
+  if (done) tc.args += "}";
+  return true;
+}
+
 // The tool calls of parse_tool_calls as JSON text, incrementally: unless `final`, the text may still grow, and each
 // call holds only what cannot change any more. String parameters (by the tool schema) grow while they are generated;
 // so do array and object parameters (Pi's edit: its whole change is the `edits` array), as the model's JSON text
@@ -410,7 +493,11 @@ inline std::vector<PartialToolCall> partial_tool_calls(const std::string& text, 
     pos = end == std::string::npos ? text.size() : end + 12;
     if (!done) block.resize(hold_tags(block, 0, block.size(), {"</tool_call>"}));
     const size_t f = block.find("<function=");
-    if (f == std::string::npos) continue;
+    if (f == std::string::npos) {
+      PartialToolCall tc;
+      if (partial_glm_call(block, tools, done, tc)) calls.push_back(std::move(tc));
+      continue;
+    }
     const size_t fe = block.find('>', f);
     if (fe == std::string::npos) continue;
     PartialToolCall tc;
@@ -428,36 +515,20 @@ inline std::vector<PartialToolCall> partial_tool_calls(const std::string& text, 
       size_t ve = block.find("</parameter>", vs);
       const size_t next = block.find("<parameter=", vs);
       const std::string ty = param_type(tools, tc.name, key);
-      const bool structured = ty == "array" || ty == "object";
       const std::string sep = tc.args.size() > 1 ? "," : "";
       if (!done && ve == std::string::npos && next == std::string::npos) {
         // value still open: it ends at the first of these tags at the earliest, and its last newline may be the one
         // parse_tool_calls drops
-        if (ty == "string" || structured) {
-          size_t lim = std::min(block.find("</function>", vs), hold_tags(block, vs, block.size(), {"</parameter>", "<parameter=", "</function>"}));
-          if (lim > vs && block[lim - 1] == '\n') --lim;
-          lim = utf8_end(block, vs, lim);
-          if (ty == "string") tc.args += sep + Json(key).dump() + ":\"" + json_str_body(block.substr(vs, lim - vs));
-          else tc.args += sep + Json(key).dump() + ":" + block.substr(vs, json_prefix(block, vs, lim).end - vs);
-        }
+        size_t lim = std::min(block.find("</function>", vs), hold_tags(block, vs, block.size(), {"</parameter>", "<parameter=", "</function>"}));
+        if (lim > vs && block[lim - 1] == '\n') --lim;
+        append_open_arg(tc.args, sep, key, ty, block, vs, lim);
         break;
       }
       if (ve == std::string::npos || (next != std::string::npos && next < ve)) ve = next != std::string::npos ? next : block.find("</function>", vs);
       if (ve == std::string::npos) ve = block.size();
       std::string val = block.substr(vs, ve - vs);
       if (!val.empty() && val.back() == '\n') val.pop_back();
-      Json parsed;
-      const bool ok = json_value(ty, val, parsed);
-      if (structured) {
-        const JsonPrefix jp = json_prefix(val, 0, val.size());
-        if (jp.complete && ok) tc.args += sep + Json(key).dump() + ":" + val;  // as streamed
-        else tc.args += sep + Json(key).dump() + ":" + val.substr(0, jp.end) + jp.close + "," + Json(key).dump() + ":" +
-                        (ok ? parsed.dump() : Json(val).dump());
-      } else if (ok) {
-        tc.args += sep + Json(key).dump() + ":" + parsed.dump();
-      } else {
-        tc.args += sep + Json(key).dump() + ":" + Json(val).dump();
-      }
+      append_closed_arg(tc.args, sep, key, ty, val);
       p = ve;
     }
     if (done) tc.args += "}";

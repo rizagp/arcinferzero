@@ -19,7 +19,8 @@
       if (tools.is_array() && tools.size() && (tc.str() == "required" || !fname.empty())) {
         force_tool_on = true;
         force_tool = gemma_ ? "<|tool_call>call:" + (fname.empty() ? std::string() : fname + "{")
-                            : "<tool_call>\n<function=" + (fname.empty() ? std::string() : fname + ">\n");
+                     : flint_ ? "<tool_call>" + fname
+                              : "<tool_call>\n<function=" + (fname.empty() ? std::string() : fname + ">\n");
       }
     }
     // response_format: the answer is JSON (an object; with json_schema one that fits the schema)
@@ -38,8 +39,8 @@
       const char* e = getenv("ARC_TOOL_CONSTRAINT");
       if (tools.is_array() && tools.size() && !(e && std::string(e) == "0")) {
         if (gemma_) tcc = std::make_unique<tcon::GemmaCall>(tools);
-        else tcc = std::make_unique<tcon::QwenCall>(tools);
-        if (tcc->empty()) tcc.reset();
+        else if (!flint_) tcc = std::make_unique<tcon::QwenCall>(tools);  // (Flint's GLM form: no constraint yet)
+        if (tcc && tcc->empty()) tcc.reset();
       }
     }
     ChatOptions co;
@@ -89,7 +90,7 @@
     }
     try {
       prompt = raw_prompt ? body["__raw_prompt"].str()
-               : gemma_   ? jinja_->render(messages, tools, true, co.enable_thinking)
+               : jinja_   ? jinja_->render(messages, tools, true, co.enable_thinking)
                           : chat::render(messages, tools, co, q38_);
     } catch (const std::exception& e) {
       return rs.send(400, "application/json", err(e.what()).dump());
@@ -238,7 +239,7 @@
     // Qwen: the start of the first assistant turn after the user's last message (tool results come as user messages
     // starting with <tool_response>, which do not count); a snapshot there survives the turn's tool calls
     size_t turn_cut = 0;
-    if (!gemma_ && im_start_ >= 0)
+    if (!jinja_ && im_start_ >= 0)
       for (size_t i = gen_cut; i-- > 0;) {
         if (P[i] != im_start_ || i + 1 >= P.size() || tok_.piece(P[i + 1]) != "user") continue;
         std::string head;
@@ -490,7 +491,7 @@
       d0.set("content", "");
       rs.sse_event(chunk(id, created, d0, Json()).dump());
     }
-    const std::vector<int> close_think = tok_.encode(gemma_ ? "<channel|>" : "\n</think>\n\n", true);
+    const std::vector<int> close_think = tok_.encode(gemma_ ? "<channel|>" : flint_ ? "</think>" : "\n</think>\n\n", true);
     bool in_think = co.enable_thinking;
     int think_n = 0;
     std::vector<int> forced;  // tokens to emit instead of sampling (budget-forced end of reasoning)

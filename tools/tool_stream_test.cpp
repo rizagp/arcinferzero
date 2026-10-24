@@ -93,7 +93,26 @@ int main(int argc, char** argv) {
     "<|tool_call>call:x{a:{b:{c:[" + Q + "d" + Q + ",]}},e:\"bad\\q\",}",
     "<|tool_call>call:x{a:[1}<tool_call|>",  // a stray '}' in an array made the parser loop forever
   };
+  // Flint (GLM style, the same parsers): values as written, no newlines around them
+  const std::vector<std::string> flint = {
+    "Writing it.<tool_call>write<arg_key>path</arg_key><arg_value>src/a.py</arg_value><arg_key>content</arg_key>"
+    "<arg_value>def f(x):\n\treturn \"x\\n\" + 'é 中文 😀' # </arg_key> <arg_val </tool</arg_value></tool_call>",
+    "<tool_call>edit<arg_key>path</arg_key><arg_value>README.md</arg_value><arg_key>edits</arg_key>"
+    "<arg_value>[{\"oldText\": \"a\\nb\", \"newText\": \"c\"}]</arg_value></tool_call>",
+    "<tool_call>read<arg_key>path</arg_key><arg_value>x</arg_value><arg_key>limit</arg_key><arg_value>40</arg_value></tool_call>"
+    "<tool_call>bash\n<arg_key>command</arg_key><arg_value>ls -la\n</arg_value><arg_key>timeout</arg_key><arg_value>soon</arg_value></tool_call>",
+    "<tool_call>write<arg_key>content</arg_key><arg_value>truncated mid value \xF0\x9F\x98",
+    "<tool_call>write<arg_key>path</arg_key><arg_value>a</arg_value><arg_key>path</arg_key><arg_value>b</arg_value></tool_call>",
+    "<tool_call>browser_close</tool_call><tool_call>{\"name\": \"x\"}</tool_call><tool_call>edit<arg_key>edits</arg_key>"
+    "<arg_value>[{\"oldText\": \"line1\nline2\", \"newText\": \"x\"}]</arg_value></tool_call>",
+  };
   for (const auto& t : qwen) check(t, qp, qw);
+  for (const auto& t : flint) check(t, qp, qw);
+  {
+    const auto c = qw(flint[2]);
+    if (c.size() != 2 || c[0].name != "read" || c[0].arguments.dump() != "{\"path\":\"x\",\"limit\":40}" || c[1].name != "bash")
+      fail("flint parse", flint[2], flint[2].size(), c.empty() ? "none" : c[0].arguments.dump());
+  }
   // array parameters stream while they are written (Pi's edit puts its whole change in `edits`): before "newText"
   // is generated, the first edit's oldText is already in the arguments
   {

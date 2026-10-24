@@ -32,8 +32,13 @@ struct GpuWeight {
 struct Hparams {
   std::string arch = "qwen35";
   bool gemma = false;  // Gemma 4: sliding-window + global attention layers, GeGLU, sandwich norms
-  bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4; Flint later): no recurrent state, a cached
+  bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4, Flint): no recurrent state, a cached
                           // prefix is reused by rewind() while the rings still hold it, per-layer KV geometry (kv_layers)
+  // Flint (arch "flint", QUEUE F28): Gemma 4's float attention (sliding layers in rings, the global ones without
+  // RoPE) with attention sinks and 1/sqrt(d); plain pre-norm residual; n_dense leading dense SwiGLU layers, then
+  // experts chosen by sigmoid scores and a shared FFN added without a gate
+  bool flint = false;
+  int n_dense = 0;
   int n_layer = 0, n_embd = 0, n_ff = 0, n_head = 0, n_head_kv = 0, head_dim = 0, n_rot = 0, n_vocab = 0;
   int ssm_d_state = 0, ssm_nk = 0, ssm_nv = 0, ssm_d_inner = 0, conv_k = 0, full_attn_interval = 4;
   float eps = 1e-6f, rope_base = 1e7f;
@@ -59,7 +64,7 @@ struct Hparams {
   int qsa_heads = 0, qsa_dim = 0, qsa_topk = 0, n_qsa = 0;
   int hce() const { return hc_n * n_embd; }  // residual floats per token
   int conv_dim() const { return 2 * ssm_nk * ssm_d_state + ssm_d_inner; }
-  bool recurrent(int il) const { return !gemma && (il + 1) % full_attn_interval != 0; }
+  bool recurrent(int il) const { return !gemma && !flint && (il + 1) % full_attn_interval != 0; }
 };
 
 struct EngineOptions {
@@ -543,7 +548,7 @@ class Engine {
         if (L.kv_src < 0) {
           const size_t cap = L.swa ? swa_cap : c;
           if (L.i8) n += 2 * (size_t)L.nkv * cap * L.hd + 2 * (size_t)L.nkv * cap * (L.hd / 64) * 4;
-          if (q2_) n += 6 * (size_t)L.nkv * cap * L.hd;  // (two-pass mode: attn_fa_g's K / V rows)
+          if (frows_) n += 6 * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows)
         }
     } else {
       int nl = mtp_block_ ? 1 : 0;
@@ -636,7 +641,7 @@ class Engine {
       for (cl_mem* f : {&L.kq, &L.vq, &L.ksc, &L.vsc, &L.conv_state, &L.S, &L.pk, &L.S_next, &L.conv_pre,
                         &L.xin, &L.qkvin, &L.abin})
         add(*f);
-      if (!opt.attn_int8 || q2_) { add(L.kc); add(L.vc); }
+      if (!opt.attn_int8 || frows_) { add(L.kc); add(L.vc); }
     };
     for (auto& L : layers_) add_layer(L);
     if (mtp_block_) add_layer(mtp_);
@@ -1123,6 +1128,7 @@ class Engine {
     cl_mem post_attn = nullptr, ffn_norm = nullptr, post_ffw = nullptr, rope_ff = nullptr;
     int kv_src = -1;            // shared KV: the layer whose cache this layer reads (no K/V of its own)
     bool i8 = true;             // Gemma 4: keeps the int8 K / V copy (only the layers the drafter reads)
+    cl_mem sinks = nullptr;     // Flint: one learned logit per q head in the attention softmax
     // Gemma 4 with experts: the dense FFN's output norm, the experts' input norm and output norm, the router's input
     // norm weights (its scale / sqrt(E)), the scale of each expert
     cl_mem post_ffw1 = nullptr, ffn_norm2 = nullptr, post_ffw2 = nullptr, rnorm = nullptr, escale = nullptr,
@@ -1289,7 +1295,7 @@ class Engine {
           if (first > 0) v.push_back({b, (base + s0) * unit, (size_t)first * unit});
           if (n > first) v.push_back({b, base * unit, (size_t)(n - first) * unit});
         }
-      if (q2_)  // (two-pass mode: the float K / V rows attn_fa_g reads, [kv head][cap][hd], the same 16-row blocks)
+      if (frows_)  // (the float K / V rows attn_fa_g reads, [kv head][cap][hd], the same 16-row blocks)
         for (int g = 0; g < k.nkv; ++g)
           for (int t = 0; t < 2; ++t) {
             const size_t unit = (size_t)16 * k.hd * (t == 0 ? 4 : 2), base = (size_t)g * nbc;
@@ -1319,7 +1325,7 @@ class Engine {
     return v;
   }
   // (a saved state loads only into the same layout: ring caches (swa_rings), the 4-bit V copy, the two-pass mode's float K / V rows)
-  int state_flags() const { return (hp.swa_rings ? 1 : 0) | (q2_ ? 4 | 8 : 0) | (q2_ && !q2mm_ ? 16 : 0) | (g4_att8_ ? 32 : 0); }  // (2: the removed
+  int state_flags() const { return (hp.swa_rings ? 1 : 0) | (frows_ ? 4 | 8 : 0) | (q2_ && !q2mm_ ? 16 : 0) | (g4_att8_ ? 32 : 0); }  // (2: the removed
   //  --v4; 8: int8 copies of the drafter's layers only; 16: Gemma's matmuls in one pass, E2B / E4B)
   // header and device ranges of save_state()
   void save_layout(int keep_from, std::vector<int32_t>& hdr, std::vector<Seg>& segs, bool host_snapshot = true) {
@@ -1508,6 +1514,7 @@ class Engine {
     const std::string a = f_.get_str("general.architecture");
     hp.arch = a;
     if (a == "gemma4") return load_hparams_gemma4();
+    if (a == "flint") return load_hparams_flint();
     if (a != "qwen35" && a != "qwen35moe" && a != "qwen4exp") throw std::runtime_error("unsupported architecture: " + a);
     hp.moe = a == "qwen35moe" || a == "qwen4exp";
     hp.hc = a == "qwen4exp";
@@ -1675,6 +1682,58 @@ class Engine {
     }
   }
 
+  void load_hparams_flint() {
+    const std::string a = "flint";
+    auto I = [&](const std::string& k, int64_t def = -1) {
+      int64_t v = f_.get_int(a + "." + k, def);
+      if (v < 0) throw std::runtime_error("missing hparam " + k);
+      return (int)v;
+    };
+    hp.flint = hp.swa_rings = true;
+    hp.moe = hp.moe_std = true;
+    hp.n_layer = I("block_count");
+    if (hp.n_layer <= 0 || hp.n_layer > 4096) throw std::runtime_error("invalid block_count in the GGUF");
+    hp.n_layer_kv = hp.n_layer;
+    hp.n_embd = I("embedding_length");
+    hp.n_ff = I("feed_forward_length");
+    hp.n_head = I("attention.head_count");
+    hp.n_head_kv = I("attention.head_count_kv");
+    hp.head_dim = hp.hd_full = hp.hd_swa = hp.n_rot = I("attention.key_length");
+    hp.n_swa = I("attention.sliding_window", 0);
+    hp.n_dense = I("leading_dense_block_count", 0);
+    hp.eps = (float)f_.get_float(a + ".attention.layer_norm_rms_epsilon", 1e-6);
+    hp.rope_base = hp.rope_base_swa = (float)f_.get_float(a + ".rope.freq_base", 1e4);
+    hp.n_expert = I("expert_count");
+    hp.n_expert_used = I("expert_used_count");
+    hp.n_ff_exp = I("expert_feed_forward_length");
+    hp.n_ff_exp_pad = padded_k(hp.n_ff_exp);
+    hp.n_ff_shexp = I("expert_shared_feed_forward_length");
+    // (the kernels: sigmoid scores normalized over the chosen experts, no further scale)
+    if (I("expert_gating_func", 2) != 2 || f_.get_int(a + ".expert_weights_norm", 1) == 0 ||
+        std::abs(f_.get_float(a + ".expert_weights_scale", 1.0) - 1.0) > 1e-6)
+      throw std::runtime_error("unsupported Flint expert routing");
+    // (sliding layers take RoPE, the global ones none: attn_prep_g's base is per layer type)
+    const auto* pat = f_.get_ints(a + ".attention.sliding_window_pattern");
+    const auto* rope = f_.get_ints(a + ".attention.rope_pattern");
+    hp.swa.assign(hp.n_layer, 0);
+    hp.kv_heads.assign(hp.n_layer, hp.n_head_kv);
+    for (int il = 0; il < hp.n_layer; ++il) {
+      hp.swa[il] = pat && il < (int)pat->size() ? (int)(*pat)[il] : 0;
+      const int roped = rope && il < (int)rope->size() ? (int)(*rope)[il] : hp.swa[il];
+      if ((roped != 0) != (hp.swa[il] != 0)) throw std::runtime_error("unsupported Flint RoPE pattern");
+    }
+    tok_embd_ = &f_.get("token_embd.weight");
+    if (tok_embd_->dims.size() < 2 || tok_embd_->dims[1] <= 0) throw std::runtime_error("invalid Flint shape in the GGUF");
+    hp.n_vocab = (int)tok_embd_->dims[1];
+    // (head 128 with up to 64 output floats per lane in attn_fa_gh; standard expert shapes as the 35B's)
+    if (hp.head_dim != 128 || I("attention.value_length", 128) != 128 || hp.n_embd <= 0 || hp.n_embd % 256 ||
+        hp.n_ff % 256 || hp.n_head <= 0 || hp.n_head_kv <= 0 || hp.n_head % hp.n_head_kv || hp.n_head / hp.n_head_kv > 16 ||
+        hp.n_dense >= hp.n_layer || hp.n_swa <= 0)
+      throw std::runtime_error("unsupported Flint dimensions");
+    if (hp.n_expert != 256 || hp.n_expert_used > 16 || hp.n_ff_exp % 256 || hp.n_ff_shexp % 256)
+      throw std::runtime_error("unsupported MoE dimensions");
+  }
+
   // q heads per attention sub-group: the largest of 4,3,2,1 dividing the GQA ratio.
   // int8 attention tiling: each sub-group handles hs of the q heads sharing a kv head (nsp = hpg / hs sub-groups
   // per token, a power of two), and a work-group covers tpw tokens with 512 work-items.
@@ -1716,7 +1775,7 @@ class Engine {
   }
   // int8 attention scale blocks per row: Gemma 4 one per 64 dims (its V rows have a few large dims, which a single
   // row scale lets swamp the others: measured against an f32 reference), Qwen one per row (as accurate there, faster)
-  std::string sb_opt(int hd) const { return " -DSB=" + std::to_string(hp.gemma ? hd / 64 : 1); }
+  std::string sb_opt(int hd) const { return " -DSB=" + std::to_string(hp.swa_rings ? hd / 64 : 1); }
 
   int gq() const {
     const int r = hp.n_head / hp.n_head_kv;
@@ -2149,6 +2208,7 @@ class Engine {
     // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
     load_head();
     if (hp.gemma) return load_weights_gemma4();
+    if (hp.flint) return load_weights_flint();
     layers_.resize(hp.n_layer);
     for (int il = 0; il < hp.n_layer; ++il) {
       Layer& L = layers_[il];
@@ -2403,11 +2463,11 @@ class Engine {
     const int E = hp.n_embd, NR = hp.router_rows();
     std::vector<float> v((size_t)NR * E, 0.0f);
     const GgufTensor& r = f_.get(p + "ffn_gate_inp.weight");
-    const GgufTensor& sg = f_.get(p + "ffn_gate_inp_shexp.weight");
-    if (r.nelements() != (uint64_t)hp.n_expert * E || sg.nelements() != (uint64_t)E)
+    const GgufTensor* sg = f_.find(p + "ffn_gate_inp_shexp.weight");  // (Flint: none, its gate row stays zero)
+    if (r.nelements() != (uint64_t)hp.n_expert * E || (sg ? sg->nelements() != (uint64_t)E : !hp.flint))
       throw std::runtime_error("unexpected MoE router shape");
     dequant_row(r.type, r.data, hp.n_expert * E, v.data());
-    dequant_row(sg.type, sg.data, E, v.data() + (size_t)hp.n_expert * E);
+    if (sg) dequant_row(sg->type, sg->data, E, v.data() + (size_t)hp.n_expert * E);
     auto q8 = quantize_rows_q8_0(v.data(), NR, E);
     const GgufTensor& tg = f_.get(p + "ffn_gate_shexp.weight");
     const GgufTensor& tu = f_.get(p + "ffn_up_shexp.weight");
@@ -2680,6 +2740,53 @@ class Engine {
     }
   }
 
+  // Flint: every layer's attention as Gemma 4's float attention (f32 K / f16 V rows; the sliding layers in rings of
+  // n_swa + chunk + 4096 positions), no int8 K / V copy (no drafter reads one); the FFN input norm in post_norm, which
+  // layer_ffn / layer_moe read
+  void load_weights_flint() {
+    layers_.resize(hp.n_layer);
+    swa_cap_ = std::min(ctx, (hp.n_swa + max_chunk + 4096 + 255) / 256 * 256);
+    for (int il = 0; il < hp.n_layer; ++il) {
+      Layer& L = layers_[il];
+      L.il = il;
+      const std::string p = "blk." + std::to_string(il) + ".";
+      L.swa = hp.swa[il] != 0;
+      L.nkv = hp.n_head_kv;
+      L.hd = hp.head_dim;
+      L.cap = L.swa ? swa_cap_ : ctx;
+      L.attn_norm = load_f32(p + "attn_norm.weight");
+      L.post_norm = load_f32(p + "ffn_norm.weight");
+      L.wq = load_w(p + "attn_q.weight");
+      L.wk = load_w(p + "attn_k.weight");
+      L.wv = load_w(p + "attn_v.weight");
+      L.wo = load_w(p + "attn_output.weight");
+      L.q_norm = load_f32(p + "attn_q_norm.weight");
+      L.k_norm = load_f32(p + "attn_k_norm.weight");
+      L.sinks = load_f32(p + "attn_sinks.weight");
+      if (L.wq.N != hp.n_head * L.hd || L.wk.N != L.nkv * L.hd || L.wv.N != L.nkv * L.hd)
+        throw std::runtime_error("unexpected Flint attention shape");
+      L.i8 = false;
+      L.kq = buf(64);
+      L.vq = buf(64);
+      L.ksc = buf(64);
+      L.vsc = buf(64);
+      for (cl_mem m : {L.kq, L.vq, L.ksc, L.vsc}) fill(m, 64);
+      const size_t kvb = (size_t)L.nkv * L.cap * L.hd;
+      L.kc = buf(kvb * 4);
+      L.vc = buf(kvb * 2);
+      fill(L.kc, kvb * 4);
+      fill(L.vc, kvb * 2);
+      if (il < hp.n_dense) {
+        L.gate = load_w(p + "ffn_gate.weight");
+        L.up = load_w(p + "ffn_up.weight");
+        L.down = load_w(p + "ffn_down.weight");
+      } else {
+        load_moe(L, p);
+      }
+      clFinish(cl_.queue);
+    }
+  }
+
   // An assistant drafter for this model next to it: mtp-*.gguf of arch gemma4-assistant with the same hidden size.
   std::string find_gemma_drafter() const {
     namespace fs = std::filesystem;
@@ -2898,7 +3005,7 @@ class Engine {
     }
     gb_ = buf(std::max<size_t>(M * 2 * hp.ssm_nv * 4, 64));
     qi_ = buf(M * hp.n_head * hp.head_dim);
-    if (q2_) qf_ = buf(M * hp.n_head * hp.head_dim * 4);  // (two-pass mode: the f32 queries of attn_fa_g)
+    if (frows_) qf_ = buf(M * hp.n_head * hp.head_dim * 4);  // (the f32 queries of attn_fa_g)
     qsc_ = buf(M * hp.n_head * (hp.head_dim / 64) * 4);  // q scales per 64-dim block
     if (hp.swa_rings) {  // (RoPE tables per layer type: sliding / global)
       rope_tab_[0] = buf(M * (hp.hd_swa / 2) * 8);
@@ -3115,6 +3222,7 @@ class Engine {
   // runs on both and adds them (the f32 reference simulating this: Gemma 4 26B KL 0.0985 -> 0.0053 together with
   // two-pass attention). The offsets come from alloc_buffers' sizes (max_chunk rows of the widest input).
   bool q2_ = false;
+  bool frows_ = false;  // (the float K / V rows and f32 queries of attn_fa_g: Gemma 4's two-pass mode, Flint)
   // (two-pass matmul inputs: Gemma 4's mode, and Flash Next's dense matmuls with ARC_FN_Q2=1, an F21.13 experiment:
   //  363-token KL against f32 0.0483 -> 0.0384, 4K prompt 191 -> 160 tok/s; its experts stay one pass)
   bool q2mm_ = false;
@@ -3132,6 +3240,11 @@ class Engine {
   std::string q2_defs_;
   void q2_init() {
     q2_ = hp.gemma;  // (Gemma 4's only mode since 2026-10-22: KL < 0.01 against f32, the one-pass mode removed)
+    // (Flint: two passes as well, the experts included; 360-token README prompt against f32: KL 0.029 -> 0.024 for
+    //  the prompt, 0.067 -> 0.017 for token-by-token decoding (max 13.3 -> 0.9), 4K prompt 405 -> 251 tok/s, generation
+    //  the same. The rest is mostly expert choices that flip after "\n" tokens. ARC_FL_Q1=1: one pass)
+    if (hp.flint) q2_ = !(getenv("ARC_FL_Q1") && atoi(getenv("ARC_FL_Q1")) != 0);
+    frows_ = q2_ || hp.flint;
     // (Gemma 4 E2B / E4B (per-layer embeddings): one int8 pass for the matmuls, the float attention kept; the
     //  user's limit is KL 0.015 and the one-pass E4B measured 0.0010 with int8 attention as well (2026-10-23).
     //  ARC_G4_Q2MM=1: two passes there too, as before)
@@ -3362,6 +3475,13 @@ class Engine {
     if (hp.gemma) {
       layer_gemma_attn(L, T, Mp);
       layer_gemma_ffn(L, T, Mp);
+      return;
+    }
+    if (hp.flint) {  // (the attention adds its output to x_ itself; the FFNs read their norm from post_norm)
+      layer_gemma_attn(L, T, Mp);
+      if (L.il < hp.n_dense) layer_ffn(L, T, Mp);
+      else layer_moe(L, T, Mp);
+      if (dbg_rows) dbg_row(T - 1);
       return;
     }
     if (hp.hc) {  // Flash Next: each block reads the mixed streams and adds its output to every stream

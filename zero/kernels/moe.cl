@@ -288,7 +288,11 @@ __kernel void moe_gelu_mul(__global float* h, __global const float* u, int F, in
   if (c >= fv) return;
   const size_t i = (size_t)r * F + c;
   const float g = h[i];
+#ifdef SILU  // (Flint's experts: SwiGLU)
+  h[i] = g / (1.0f + exp(-g)) * u[i];
+#else
   h[i] = 0.5f * g * (1.0f + tanh(0.7978845608f * (g + 0.044715f * g * g * g))) * u[i];
+#endif
 }
 
 // y[slot][N] = weight(slot) * (h[slot] W_down^T) for one tile and 16 columns. grid (N, max_tiles), local (16, 1)

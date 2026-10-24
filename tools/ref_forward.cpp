@@ -906,6 +906,8 @@ static void flint_layers(const std::vector<int>& toks, std::vector<float>& x) {
   const auto* swa_pat = F->get_ints(A + ".attention.sliding_window_pattern");
   const auto* rope_pat = F->get_ints(A + ".attention.rope_pattern");
   if (F->get_int(A + ".expert_gating_func", 2) != 2) throw std::runtime_error("flint: only sigmoid expert gating");
+  // (REF_DUMP=file: the residual row of the last token after each layer, as runz ARC_DUMP_ROWS writes them)
+  FILE* fdump = getenv("REF_DUMP") ? fopen(getenv("REF_DUMP"), "wb") : nullptr;
   for (int il = 0; il < nl; ++il) {
     const std::string p = "blk." + std::to_string(il) + ".";
     const bool swa = swa_pat && il < (int)swa_pat->size() && (*swa_pat)[il] != 0;
@@ -998,8 +1000,10 @@ static void flint_layers(const std::vector<int>& toks, std::vector<float>& x) {
       }
     }
     for (size_t i = 0; i < x.size(); ++i) x[i] += d[i];
+    if (fdump) fwrite(&x[(size_t)(T - 1) * E], 4, E, fdump);
     fprintf(stderr, "\rlayer %d/%d", il + 1, nl);
   }
+  if (fdump) fclose(fdump);
 }
 
 // Gemma's final logit soft-capping (cap * tanh(l / cap)); no-op for other models.
