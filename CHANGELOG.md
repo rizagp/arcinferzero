@@ -12,6 +12,8 @@
   backup on an external drive) and the GGUF an arcinferzero package was made from are no longer listed as extra
   `-2` entries; the package, then the Hugging Face cache, then the Windows drive keep the entry (35B and Gemma 4 26B
   on D: next to their C: packages: 39 -> 33 entries).
+- A plain folder of `.gguf` files inside the Hugging Face cache or a model folder (a copied model, not the
+  `models--org--repo\snapshots\...` layout) is listed too, one level deep (e.g. a copied Qwen3.8-27B-AP-IQ4_XS).
 
 ## 2026-10-24: renamed to arcinferzero; Flint runs; Gemma sliding attention, /W4 and CI
 

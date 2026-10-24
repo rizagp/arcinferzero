@@ -99,7 +99,8 @@ static std::vector<ModelInfo> scan_models() {
     return k == std::string::npos || k < 6 || f.compare(k - 5, 5, "00001") == 0;
   };
   std::error_code ec;
-  // a Hugging Face cache layout (models--org--repo\snapshots\<rev>\...); in extra folders also loose .gguf files
+  // a Hugging Face cache layout (models--org--repo\snapshots\<rev>\...), plain folders of .gguf files beside it (a
+  // copied model); in extra folders also loose .gguf files
   auto scan_hub = [&](const fs::path& dir, int prio) {
     for (const auto& d : fs::directory_iterator(dir, ec)) {
       const std::string dn = d.path().filename().string();
@@ -107,7 +108,13 @@ static std::vector<ModelInfo> scan_models() {
         cands.push_back({"local/" + d.path().stem().string(), dn, d.path(), d.last_write_time(ec), prio});
         continue;
       }
-      if (!d.is_directory(ec) || dn.rfind("models--", 0) != 0) continue;
+      if (!d.is_directory(ec)) continue;
+      if (dn.rfind("models--", 0) != 0) {  // a plain folder of .gguf files (a copy, a manual download): one level deep
+        for (const auto& e : fs::directory_iterator(d.path(), ec))
+          if (is_model(e.path()) && e.is_regular_file(ec))
+            cands.push_back({"local/" + dn, e.path().filename().string(), e.path(), e.last_write_time(ec), prio});
+        continue;
+      }
       std::string name = dn.substr(8);
       const size_t sep = name.find("--");
       if (sep != std::string::npos) name.replace(sep, 2, "/");
