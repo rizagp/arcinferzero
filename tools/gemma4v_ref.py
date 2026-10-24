@@ -1,7 +1,12 @@
 """f32 reference of the Gemma 4 vision encoder (mmproj gemma4v: E2B / E4B), written from the mmproj and llama.cpp's
 tools/mtmd/models/gemma4v.cpp (FFN: gelu_tanh, as Google's config). Compares with the GPU encoder's output that
 bin/vision_testz.exe writes (<image>.g4v.bin, and the resized pixels <image>.g4v.rgb).
-usage: python gemma4v_ref.py mmproj.gguf image.png   (after: vision_testz model.gguf mmproj.gguf image.png 70)"""
+usage: python gemma4v_ref.py mmproj.gguf image.png   (after: vision_testz model.gguf mmproj.gguf image.png 70)
+Lower-precision simulations (environment): REF_VW=q8 weights as Q8_0 (int8 per 32 values); REF_VA=1 / 2 activations
+int8 per 32 values on one / two passes (the value, then its rounding residual); REF_VATT=f16 / i8 attention q / K / V
+in f16, or int8 per row with P in 8 bits; REF_VOUT=file writes the embeddings as vision_testz does (header n_tok,
+n_out, 0; f32), for vision_testz ARC_VIS_EMB (the model's KL on them)."""
+import os
 import struct
 import sys
 
@@ -95,11 +100,32 @@ def main():
     cols, rows = np.arange(N) % nx, np.arange(N) // nx
     x = x + tab[0][cols] + tab[1][rows]
 
+    vw, va, vatt = os.environ.get('REF_VW', ''), int(os.environ.get('REF_VA', '0')), os.environ.get('REF_VATT', '')
+
+    def q8(m, passes=1):  # int8 per 32 values along the last axis (absmax / 127), `passes` times on the residual
+        sh = m.shape
+        r = m.reshape(-1, 32).astype(np.float32)
+        out = np.zeros_like(r)
+        for _ in range(passes):
+            d = np.abs(r).max(axis=1, keepdims=True) / 127.0
+            qv = np.round(r / np.where(d > 0, d, 1)) * d
+            out += qv
+            r = r - qv
+        return out.reshape(sh)
+
+    wcache = {}
+
     def lin(name, a):
         w = T[name + '.weight']
+        if vw == 'q8' and w.shape[1] % 32 == 0:
+            if name not in wcache:
+                wcache[name] = q8(w)
+            w = wcache[name]
         lo, hi = (T.get(name + '.input_min'), T.get(name + '.input_max'))
         if lo is not None:
             a = np.clip(a, lo.item(), hi.item())
+        if va and a.shape[-1] % 32 == 0:
+            a = q8(a, va)
         y = a @ w.T
         lo, hi = (T.get(name + '.output_min'), T.get(name + '.output_max'))
         if lo is not None:
@@ -118,9 +144,18 @@ def main():
         v = rms(v, None, eps)
         q = np.concatenate([rope_neox(q[..., :hd // 2], cols), rope_neox(q[..., hd // 2:], rows)], axis=-1)
         k = np.concatenate([rope_neox(k[..., :hd // 2], cols), rope_neox(k[..., hd // 2:], rows)], axis=-1)
+        if vatt == 'f16':
+            q, k, v = (t.astype(np.float16).astype(np.float32) for t in (q, k, v))
+        elif vatt == 'i8':
+            def i8row(t):
+                d = np.abs(t).max(axis=-1, keepdims=True) / 127.0
+                return np.round(t / np.where(d > 0, d, 1)) * d
+            q, k, v = i8row(q), i8row(k), i8row(v)
         s = q @ k.transpose(0, 2, 1)  # unscaled
         s = s - s.max(axis=-1, keepdims=True)
         a = np.exp(s)
+        if vatt == 'i8':
+            a = np.round(a * 255.0) / 255.0  # (P in 8 bits before the sum, as an int8 P.V would)
         a /= a.sum(axis=-1, keepdims=True)
         o = (a @ v).transpose(1, 0, 2).reshape(N, E)
         o = lin(b + 'attn_out', o)
@@ -134,6 +169,10 @@ def main():
     if 'v.std_bias' in T:  # (26B-A4B: llama.cpp gemma4v's std_bias / std_scale)
         g = (g - T['v.std_bias']) * T['v.std_scale']
     ref = rms(g, None, eps) @ T['mm.input_projection.weight'].T
+    if os.environ.get('REF_VOUT'):
+        with open(os.environ['REF_VOUT'], 'wb') as f:
+            f.write(np.array([ref.shape[0], ref.shape[1], 0], dtype=np.int32).tobytes())
+            f.write(ref.astype(np.float32).tobytes())
     hdr = np.fromfile(img + '.g4v.bin', dtype=np.int32, count=3)
     gpu = np.fromfile(img + '.g4v.bin', dtype=np.float32, offset=12).reshape(hdr[0], hdr[1])
     cos = np.sum(ref * gpu, axis=1) / (np.linalg.norm(ref, axis=1) * np.linalg.norm(gpu, axis=1))
