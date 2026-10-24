@@ -140,7 +140,7 @@ class VisionGemma4V : public GemmaImageEncoder {
         //  built this kernel for 256-dim heads over rows of 64: wrong rows, spilled, 50 s per image until 2026-10-24)
         // (head 72, the 26B: tiles of 8 keys, the softmax's rescale and the loads spread over twice the keys: 1,064-token
         //  image 4.48 -> 3.81 s (2: 4.63, 12: 3.90, 16: 3.90); not bit-identical to tiles of 4, the model's KL against an
-        //  exact encoder unchanged, see QUEUE 21.7. E2B / E4B keep 4)
+        //  exact encoder unchanged, see QUEUE 21.7. E2B / E4B keep 4: no faster with 8, 1.79 s either way)
         cl_kernel k = kern("vit_attn_rows", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd_) + (hd_ == 72 ? " -DFT=8" : ""));
         int n = N, mp = Mp, nh = n_head;
         set_args(k, 0, q_, k_, v_, n, mp, nh, o_);

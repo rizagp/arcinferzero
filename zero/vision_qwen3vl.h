@@ -147,7 +147,10 @@ class VisionQwen3VL {
       e_.run("vit_qkv_rope", k, 2, g, nullptr);
       int n = N;
       {
-        cl_kernel k2 = kern("vit_attn_rows", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd_) + " " + ardefs_);
+        // (head 72 (Qwen3.5 9B, Qwen3.8 27B): tiles of 8 keys, attention -3 to -7 %, KL against tiles of 4 <= 0.0006, 31-32 / 32
+        //  tokens; not with Flash Next (hc), whose model turns the same rounding difference into KL 0.015; head 64 (4B) no faster)
+        const std::string ft = hd_ == 72 && !e_.hp.hc ? " -DFT=8" : "";
+        cl_kernel k2 = kern("vit_attn_rows", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd_) + ft + " " + ardefs_);
         set_args(k2, 0, q_, k_, v_, n, mp, nh, o_);
         const size_t rows = (size_t)8 * arsg_;
         size_t g2[2] = {((size_t)N + rows - 1) / rows * rows, (size_t)n_head}, lw2[2] = {rows, 1};

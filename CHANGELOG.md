@@ -24,6 +24,8 @@
   its attention with 8-wide block reads and tiles of 8 keys; the model's KL against an exact encoder stays ~0.001-0.003
   (4 test images). An int8 attention was measured too: accurate enough, but no faster, not taken. Tools: `tools/gemma4v_ref.cpp` (the f32 encoder reference in
   C++, 3x faster than the numpy one) and `vision_testz` `ARC_VIS_LM` (the model's KL on an image).
+- Qwen3.5 9B / Qwen3.8 27B images: the vision attention in tiles of 8 keys, 3-7 % faster (KL <= 0.0006). `vision_testz`
+  now also runs Qwen3-VL mmprojs (timing, `ARC_VIS_LM`).
 - **Setup / build** find Visual Studio in more places (scripts/vcvars.ps1: vswhere anywhere, every drive's usual
   folders, a Developer prompt's own compiler).
 
