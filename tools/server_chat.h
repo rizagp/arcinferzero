@@ -95,6 +95,7 @@
     } catch (const std::exception& e) {
       return rs.send(400, "application/json", err(e.what()).dump());
     }
+    if (flint_ && !raw_prompt) prompt += flint_think_open(co.enable_thinking);
     std::vector<int> P = tok_.encode(prompt, true);
     // media: the template writes one <|image|> per image part and one <|audio|> per input_audio part; each becomes
     // <|image> / <|audio> + n embedding rows + <image|> / <audio|>. Images are read non-causally, audio causally.

@@ -198,8 +198,9 @@ class Server {
     ChatOptions co;
     if (body["enable_thinking"].is_bool()) co.enable_thinking = body["enable_thinking"].as_bool();
     std::lock_guard<std::mutex> lock(mu_);
-    const std::string prompt = jinja_ ? jinja_->render(body["messages"], body["tools"], true, co.enable_thinking)
-                                      : chat::render(body["messages"], body["tools"], co, q38_);
+    const std::string prompt = (jinja_ ? jinja_->render(body["messages"], body["tools"], true, co.enable_thinking)
+                                       : chat::render(body["messages"], body["tools"], co, q38_)) +
+                               (flint_ ? flint_think_open(co.enable_thinking) : std::string());
     return (int)tok_.encode(prompt, true).size();
   }
   void handle(const HttpRequest& rq, HttpResponse& rs) {
@@ -280,6 +281,9 @@ class Server {
   Tokenizer& tok_;
   std::string model_id_, webui_;
   bool q38_ = false, gemma_ = false, flint_ = false;
+  // Flint writes <think> itself after <|assistant|> (its template leaves it to the model): the server writes it,
+  // so the answer starts inside the reasoning as Qwen's do (chat::OutputParser), or an empty block without thinking
+  static std::string flint_think_open(bool thinking) { return thinking ? "<think>" : "<think></think>"; }
   bool rings_ = false;  // (ring caches, no recurrent state: a prefix is reused by rewind(), not snapshots)
 
  public:

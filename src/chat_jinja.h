@@ -1,6 +1,6 @@
 // Renders a GGUF chat template as written, with minja (Google's C++ implementation of the Jinja subset used by
-// Hugging Face chat templates, third_party/minja). Used for model families whose template is not implemented
-// natively in chat.h (Gemma 4).
+// Hugging Face chat templates, third_party/minja), after two rewrites minja needs (below). Used for model families
+// whose template is not implemented natively in chat.h (Gemma 4, Flint).
 #pragma once
 #include "json.h"
 #include <minja/chat-template.hpp>
@@ -32,6 +32,44 @@ class JinjaChat {
         out += s[i + 1];
         i += 2;
         continue;
+      }
+      // (minja has the string method .replace(old, new) but not the filter: `x | replace(a, b)` becomes
+      //  `x.replace(a, b)`, the same in Jinja (a filter binds as tightly as a method call). Flint's template)
+      if (c == '|') {
+        size_t j = i + 1;
+        while (j < s.size() && (s[j] == ' ' || s[j] == '\t')) ++j;
+        if (s.compare(j, 7, "replace") == 0) {
+          size_t k = j + 7;
+          while (k < s.size() && (s[k] == ' ' || s[k] == '\t')) ++k;
+          if (k < s.size() && s[k] == '(') {
+            out += ".replace(";
+            i = k + 1;
+            continue;
+          }
+        }
+      }
+      // (`tojson(ensure_ascii=False)`: minja's tojson takes no such argument and already writes UTF-8 as is)
+      if (c == 't' && s.compare(i, 7, "tojson(") == 0 && (i == 0 || !(isalnum((unsigned char)s[i - 1]) || s[i - 1] == '_'))) {
+        size_t k = i + 7;
+        auto skip = [&] { while (k < s.size() && (s[k] == ' ' || s[k] == '\t')) ++k; };
+        skip();
+        if (s.compare(k, 12, "ensure_ascii") == 0) {
+          k += 12;
+          skip();
+          if (k < s.size() && s[k] == '=') {
+            ++k;
+            skip();
+            if (s.compare(k, 5, "False") == 0) {
+              k += 5;
+              skip();
+              if (k < s.size() && s[k] == ')') {
+                out += "tojson";
+                i = k + 1;
+                continue;
+              }
+            }
+          }
+        }
       }
       if (c != '"' && c != '\'') {
         out += s[i++];

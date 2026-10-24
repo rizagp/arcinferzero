@@ -193,6 +193,19 @@ else {
   if ($o -notmatch "ALL IDENTICAL") { Write-Host $o.TrimEnd() }
   Check "chat template (14 cases)" ($o -match "ALL IDENTICAL")
 }
+# templates arcinferzero renders with minja (Gemma 4, Flint) vs Jinja2 (needs python with jinja2)
+$tj = @("gemma4_template.jinja", "gemma4_e4b_template.jinja", "gemma4_google_template.jinja", "flint_template.jinja") |
+  ForEach-Object { Join-Path $Data $_ } | Where-Object { Test-Path $_ }
+if (-not (Test-Path .\bin\chat_render.exe)) { Skip "minja templates" "bin\chat_render.exe not built" }
+elseif (-not (Get-Command python -ErrorAction SilentlyContinue)) { Skip "minja templates" "python not found" }
+else {
+  $o = Run-Exe python (@("tests\test_chat_jinja.py", "$root\bin\chat_render.exe") + $tj)
+  if ($o -match "No module named 'jinja2'") { Skip "minja templates" "python has no jinja2" }
+  else {
+    if ($o -notmatch "ALL IDENTICAL") { Write-Host $o.TrimEnd() }
+    Check "minja templates ($($tj.Count) templates x 9 cases)" ($o -match "ALL IDENTICAL")
+  }
+}
 
 # GGUF repacking (zero/gguf_pack.h) must reproduce every key and tensor
 if (-not $PackGguf) { Skip "GGUF pack round trip" "no -PackGguf" }

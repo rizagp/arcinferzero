@@ -1,5 +1,5 @@
 """Compares minja rendering in arcinferzero (chat_render.exe --jinja) with jinja2 for GGUF chat templates that arcinferzero
-renders through minja (Gemma 4). usage: python test_chat_jinja.py chat_render.exe template.jinja [template ...]"""
+renders through minja (Gemma 4, Flint). usage: python test_chat_jinja.py chat_render.exe template.jinja [template ...]"""
 import json
 import os
 import subprocess
@@ -16,7 +16,7 @@ def raise_exception(msg):
 
 
 env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
-env.filters["tojson"] = lambda x, indent=None: json.dumps(x, ensure_ascii=False, indent=indent)
+env.filters["tojson"] = lambda x, indent=None, ensure_ascii=False: json.dumps(x, ensure_ascii=ensure_ascii, indent=indent)
 env.globals["raise_exception"] = raise_exception
 
 TOOLS = [
