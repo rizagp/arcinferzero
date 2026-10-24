@@ -30,7 +30,7 @@ USAGE
   setup -Help, --help, -h        this text
 
 STEPS
-  1 requirements   64-bit Windows, an Intel Arc GPU and its driver, the Visual Studio C++ compiler (vswhere;
+  1 requirements   64-bit Windows, an Intel Arc GPU and its driver, the Visual Studio C++ compiler (vswhere,
                    $env:ARC_VCVARS = a vcvars64.bat overrides), Python 3.10+ (downloads), Pi (optional).
                    Missing ones: where to get them.
   2 build          bin\serverz.exe, runz.exe, clinfo.exe when missing or older than their sources; the compiler
@@ -86,20 +86,14 @@ foreach ($g in $gpus) { Ok "GPU: $($g.Name), driver $($g.DriverVersion)" }
 if (-not ($gpus | Where-Object { $_.Name -match "Arc" })) { Note "only Intel Arc integrated graphics (Xe-LPG tested; Xe2 / Xe3 reported to work) is supported" }
 
 # Visual Studio C++ compiler (the same search as build.ps1)
-$vcvars = $null
-if ($env:ARC_VCVARS -and (Test-Path $env:ARC_VCVARS)) { $vcvars = $env:ARC_VCVARS }
-$vw = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not $vcvars -and (Test-Path $vw)) {
-  foreach ($p in @(& $vw -all -products * -prerelease -property installationPath)) {
-    $v = Join-Path $p "VC\Auxiliary\Build\vcvars64.bat"
-    if (Test-Path $v) { $vcvars = $v; break }
-  }
-}
-if (-not $vcvars) {
+. (Join-Path $PSScriptRoot "scripts\vcvars.ps1")
+$vcvars = Find-VcVars
+if ($null -eq $vcvars) {
   Bad "No Visual Studio C++ compiler found." ("Install 'Build Tools for Visual Studio' (https://visualstudio.microsoft.com/downloads/, " +
     "under 'Tools for Visual Studio') with the workload 'Desktop development with C++', then run setup again.")
 }
-Ok "C++ compiler: $(Split-Path (Split-Path (Split-Path (Split-Path $vcvars))))"
+if ($vcvars) { Ok "C++ compiler: $(Split-Path (Split-Path (Split-Path (Split-Path $vcvars))))" }
+else { Ok "C++ compiler: cl from this Developer prompt ($env:VCToolsInstallDir)" }
 
 # Python (model downloads, 35B conversion)
 $py = $null  # the command line that runs Python, e.g. "python" or "py -3"
