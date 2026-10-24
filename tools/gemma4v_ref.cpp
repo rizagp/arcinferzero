@@ -7,7 +7,7 @@
 // that bin/vision_testz.exe writes (<image>.g4v.bin, and the resized pixels <image>.g4v.rgb).
 // Lower-precision simulations (environment): REF_VW=q8 weights as Q8_0 (int8 per 32 values); REF_VA=1 / 2 activations
 // int8 per 32 values on one / two passes (the value, then its rounding residual); REF_VATT=f16 / i8 attention q / K / V
-// in f16, or int8 per row with P in 8 bits; REF_VOUT=file writes the embeddings as vision_testz does (header n_tok,
+// in f16, or int8 per row with P in 8 bits, or (qk8) q / K int8 per row with V f16 and P float; REF_VOUT=file writes the embeddings as vision_testz does (header n_tok,
 // n_out, 0; f32), for vision_testz ARC_VIS_EMB (the model's KL on them).
 // usage: gemma4v_ref mmproj.gguf image.png   (after: vision_testz model.gguf mmproj.gguf image.png)
 #include "../src/gguf.h"
@@ -362,14 +362,19 @@ int main(int argc, char** argv) {
       if (vatt == "f16") {
         for (Vec* t : {&qh, &kh, &vh})
           for (float& e : *t) e = f16_round(e);
-      } else if (vatt == "i8") {
-        for (Vec* t : {&qh, &kh, &vh})
+      } else if (vatt == "i8" || vatt == "qk8") {  // (qk8: q / K int8 per row, V f16 as the GPU keeps it, P float)
+        for (Vec* t : {&qh, &kh, &vh}) {
+          if (t == &vh && vatt == "qk8") {
+            for (float& e : vh) e = f16_round(e);
+            continue;
+          }
           for (int n = 0; n < N; ++n) {
             float* r = t->data() + (size_t)n * hd, mx = 0;
             for (int d = 0; d < hd; ++d) mx = std::max(mx, std::fabs(r[d]));
             const float dd = mx / 127.0f;
             for (int d = 0; d < hd; ++d) r[d] = dd > 0 ? std::nearbyint(r[d] / dd) * dd : 0.0f;
           }
+        }
       }
       attention(qh.data(), kh.data(), vh.data(), N, hd, oh.data(), vatt == "i8");
 #pragma omp parallel for schedule(static)
