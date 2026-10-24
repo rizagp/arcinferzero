@@ -2398,8 +2398,16 @@ __kernel void vit_bias_act(__global float* x, int N, __global const float* b, in
 // other head sizes: interleaved, lane l holds dims l, l + VW, ... (one aligned sub-group block read per VW dims)
 #define KD(r, d) intel_sub_group_shuffle((r)[(d) / VW], (d) % VW)
 inline void kv_row(__global const half* p, float* r) {
+#if VW == 8 && PL >= 8  // (one 8-wide block read for the first 64 dims, the same lane layout: 2 messages per row of 72, not 9)
+  const ushort8 a = intel_sub_group_block_read_us8((__global const ushort*)p);
+  r[0] = (float)as_half(a.s0); r[1] = (float)as_half(a.s1); r[2] = (float)as_half(a.s2); r[3] = (float)as_half(a.s3);
+  r[4] = (float)as_half(a.s4); r[5] = (float)as_half(a.s5); r[6] = (float)as_half(a.s6); r[7] = (float)as_half(a.s7);
+#pragma unroll
+  for (int i = 8; i < PL; ++i) r[i] = (float)as_half(intel_sub_group_block_read_us((__global const ushort*)(p + VW * i)));
+#else
 #pragma unroll
   for (int i = 0; i < PL; ++i) r[i] = (float)as_half(intel_sub_group_block_read_us((__global const ushort*)(p + VW * i)));
+#endif
 }
 #endif
 #ifdef PRECISE_VEXP
