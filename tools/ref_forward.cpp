@@ -1266,12 +1266,14 @@ int main(int argc, char** argv) {
     FILE* fo = fopen(argv[3], "wb");
     std::vector<float> lp(V);
     if (getenv("REF_ALL")) {
-      // log-probs of every position (T x V), for a KL averaged over the prompt
-      std::vector<float> xs = x, all;
-      for (int t = 0; t < T; ++t) out_norm(&xs[(size_t)t * E]);
-      matmul(f.find("output.weight") ? "output.weight" : "token_embd.weight", xs, T, all);
+      // log-probs of every position (T x V), for a KL averaged over the prompt; REF_ALL_FROM=N: of positions N..T-1
+      // only (long prompts: Flash Next's QSA is sparse only past its top_k keys; runz ARC_KL_FROM=N reads such a file)
+      const int from = getenv("REF_ALL_FROM") ? std::clamp(atoi(getenv("REF_ALL_FROM")), 0, T - 1) : 0, n = T - from;
+      std::vector<float> xs(x.begin() + (size_t)from * E, x.end()), all;
+      for (int t = 0; t < n; ++t) out_norm(&xs[(size_t)t * E]);
+      matmul(f.find("output.weight") ? "output.weight" : "token_embd.weight", xs, n, all);
       softcap(all);
-      for (int t = 0; t < T; ++t) {
+      for (int t = 0; t < n; ++t) {
         const float* l = &all[(size_t)t * V];
         double m2 = l[0], z2 = 0;
         for (int i = 0; i < V; ++i) m2 = std::max(m2, (double)l[i]);

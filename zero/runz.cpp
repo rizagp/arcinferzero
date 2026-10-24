@@ -580,15 +580,19 @@ static int run_main(int argc, char** argv) {
       const size_t got = fread(ref.data(), 4, ref.size(), fi);
       fclose(fi);
       const size_t V = eng.hp.n_vocab;
-      if (got != ref.size() || ref.size() != V * toks.size()) { fprintf(stderr, "reference must hold every position\n"); return 1; }
+      // (ARC_KL_FROM=N: the reference holds positions N.. only (tools/ref_forward REF_ALL_FROM); the tokens before N go
+      //  in as a prompt, the rest one by one)
+      const size_t from = getenv("ARC_KL_FROM") ? std::min<size_t>(atoi(getenv("ARC_KL_FROM")), toks.size() - 1) : 0;
+      if (got != ref.size() || ref.size() != V * (toks.size() - from)) { fprintf(stderr, "reference must hold every position\n"); return 1; }
       double sum = 0, mxk = 0;
       int agree = 0;
-      for (size_t r = 0; r < toks.size(); ++r) {
+      if (from > 0) eng.forward(toks.data(), (int)from);
+      for (size_t r = from; r < toks.size(); ++r) {
         const auto& l = eng.forward(&toks[r], 1);
         const double mx = *std::max_element(l.begin(), l.end());
         double z = 0;
         for (float v : l) z += std::exp((double)v - mx);
-        const float* rr = ref.data() + r * V;
+        const float* rr = ref.data() + (r - from) * V;
         double kl = 0;
         for (size_t i = 0; i < V; ++i)  // (a reference log-prob of -inf adds nothing)
           if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
@@ -597,8 +601,9 @@ static int run_main(int argc, char** argv) {
         mxk = std::max(mxk, kl);
         agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
       }
+      const size_t n = toks.size() - from;
       printf("KL decode path (ref || arcinferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
-             sum / toks.size(), toks.size(), mxk, agree, toks.size());
+             sum / n, n, mxk, agree, n);
       return 0;
     }
     // warm-up so kernel compilation is not counted in the time to first token
@@ -655,23 +660,27 @@ static int run_main(int argc, char** argv) {
         if (fread(ref.data(), 4, ref.size(), fi) != ref.size()) ref.clear();
         fclose(fi);
       }
+      // (ARC_KL_FROM=N: the reference holds positions N.. only; they must lie in the last chunk, which x_ holds)
+      const size_t kl_from = getenv("ARC_KL_FROM") ? std::min<size_t>(atoi(getenv("ARC_KL_FROM")), toks.size() - 1) : 0,
+                   kl_c0 = (toks.size() - 1) / eng.max_chunk * eng.max_chunk;
       if (ref.size() == V) {
         printf("\nKL(ref || arcinferzero) = %.5f", kl_of(lg, ref.data()));
-      } else if (ref.size() == V * toks.size() && (int)toks.size() <= eng.max_chunk) {
+      } else if (ref.size() == V * (toks.size() - kl_from) && kl_from >= kl_c0) {
         const std::vector<float> last(lg.begin(), lg.end());  // logits_at() overwrites the shared logits buffer
         double sum = 0, mx = 0;
         int agree = 0;  // (positions whose top token is the reference's)
-        for (size_t r = 0; r < toks.size(); ++r) {
-          const std::vector<float>& l = eng.logits_at((int)r);
-          const float* rr = ref.data() + r * V;
+        for (size_t r = kl_from; r < toks.size(); ++r) {
+          const std::vector<float>& l = eng.logits_at((int)(r - kl_c0));
+          const float* rr = ref.data() + (r - kl_from) * V;
           const double k = kl_of(l, rr);
           if (getenv("ARC_KL_SHOW") && k > atof(getenv("ARC_KL_SHOW"))) printf("pos %zu KL %.3f\n", r, k);  // (ARC_KL_SHOW=x: positions above x)
           sum += k;
           mx = std::max(mx, k);
           agree += std::max_element(l.begin(), l.end()) - l.begin() == std::max_element(rr, rr + V) - rr;
         }
+        const size_t n = toks.size() - kl_from;
         printf("\nKL(ref || arcinferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu",
-               sum / toks.size(), toks.size(), mx, agree, toks.size());
+               sum / n, n, mx, agree, n);
         std::copy(last.begin(), last.end(), const_cast<float*>(lg.data()));
       }
     }
