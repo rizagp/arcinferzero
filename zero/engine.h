@@ -548,7 +548,7 @@ class Engine {
         if (L.kv_src < 0) {
           const size_t cap = L.swa ? swa_cap : c;
           if (L.i8) n += 2 * (size_t)L.nkv * cap * L.hd + 2 * (size_t)L.nkv * cap * (L.hd / 64) * 4;
-          if (frows_) n += 6 * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows)
+          if (frows_) n += (4 + vbytes_) * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows)
         }
     } else {
       int nl = mtp_block_ ? 1 : 0;
@@ -1298,7 +1298,7 @@ class Engine {
       if (frows_)  // (the float K / V rows attn_fa_g reads, [kv head][cap][hd], the same 16-row blocks)
         for (int g = 0; g < k.nkv; ++g)
           for (int t = 0; t < 2; ++t) {
-            const size_t unit = (size_t)16 * k.hd * (t == 0 ? 4 : 2), base = (size_t)g * nbc;
+            const size_t unit = (size_t)16 * k.hd * (t == 0 ? 4 : vbytes_), base = (size_t)g * nbc;
             cl_mem b = t == 0 ? k.L->kc : k.L->vc;
             if (first > 0) v.push_back({b, (base + s0) * unit, (size_t)first * unit});
             if (n > first) v.push_back({b, base * unit, (size_t)(n - first) * unit});
@@ -2469,6 +2469,10 @@ class Engine {
     dequant_row(r.type, r.data, hp.n_expert * E, v.data());
     if (sg) dequant_row(sg->type, sg->data, E, v.data() + (size_t)hp.n_expert * E);
     auto q8 = quantize_rows_q8_0(v.data(), NR, E);
+    // (Flint: the router in f32 as the file's BF16 rows are, on f32 inputs: its sigmoid scores have near-ties, 0.005
+    //  apart, and with Q8_0 rows the expert choices flipped; KL 0.027 -> 0.004 with f32 V. ARC_FL_RF32=0: Q8_0)
+    static const bool fl_rf32 = !getenv("ARC_FL_RF32") || atoi(getenv("ARC_FL_RF32")) != 0;
+    if (hp.flint && fl_rf32) L.router_f32 = buf(v.size() * 4, v.data());
     const GgufTensor& tg = f_.get(p + "ffn_gate_shexp.weight");
     const GgufTensor& tu = f_.get(p + "ffn_up_shexp.weight");
     const int Fs = hp.n_ff_shexp, NRP = rgu_rows();
@@ -2773,9 +2777,9 @@ class Engine {
       for (cl_mem m : {L.kq, L.vq, L.ksc, L.vsc}) fill(m, 64);
       const size_t kvb = (size_t)L.nkv * L.cap * L.hd;
       L.kc = buf(kvb * 4);
-      L.vc = buf(kvb * 2);
+      L.vc = buf(kvb * vbytes_);
       fill(L.kc, kvb * 4);
-      fill(L.vc, kvb * 2);
+      fill(L.vc, kvb * vbytes_);
       if (il < hp.n_dense) {
         L.gate = load_w(p + "ffn_gate.weight");
         L.up = load_w(p + "ffn_up.weight");
@@ -3223,6 +3227,7 @@ class Engine {
   // two-pass attention). The offsets come from alloc_buffers' sizes (max_chunk rows of the widest input).
   bool q2_ = false;
   bool frows_ = false;  // (the float K / V rows and f32 queries of attn_fa_g: Gemma 4's two-pass mode, Flint)
+  int vbytes_ = 2;      // (bytes per value of those V rows: f16, Flint f32 (-DVC32))
   // (two-pass matmul inputs: Gemma 4's mode, and Flash Next's dense matmuls with ARC_FN_Q2=1, an F21.13 experiment:
   //  363-token KL against f32 0.0483 -> 0.0384, 4K prompt 191 -> 160 tok/s; its experts stay one pass)
   bool q2mm_ = false;
@@ -3240,11 +3245,12 @@ class Engine {
   std::string q2_defs_;
   void q2_init() {
     q2_ = hp.gemma;  // (Gemma 4's only mode since 2026-10-22: KL < 0.01 against f32, the one-pass mode removed)
-    // (Flint: two passes as well, the experts included; 360-token README prompt against f32: KL 0.029 -> 0.024 for
-    //  the prompt, 0.067 -> 0.017 for token-by-token decoding (max 13.3 -> 0.9), 4K prompt 405 -> 251 tok/s, generation
-    //  the same. The rest is mostly expert choices that flip after "\n" tokens. ARC_FL_Q1=1: one pass)
+    // (Flint: two passes as well, the experts included; with the f32 router and f32 V rows, 360-token README prompt
+    //  against f32: KL 0.0043 prompt / 0.0027 decode, one pass 0.044 / 0.084; 4K prompt 240 tok/s (one pass 405),
+    //  generation the same. ARC_FL_Q1=1: one pass)
     if (hp.flint) q2_ = !(getenv("ARC_FL_Q1") && atoi(getenv("ARC_FL_Q1")) != 0);
     frows_ = q2_ || hp.flint;
+    vbytes_ = hp.flint ? 4 : 2;
     // (Gemma 4 E2B / E4B (per-layer embeddings): one int8 pass for the matmuls, the float attention kept; the
     //  user's limit is KL 0.015 and the one-pass E4B measured 0.0010 with int8 attention as well (2026-10-23).
     //  ARC_G4_Q2MM=1: two passes there too, as before)

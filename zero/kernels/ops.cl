@@ -9,6 +9,23 @@
 #endif
 // Gemma 4's float attention: the K rows in f32
 #define KC_T float
+// and the V rows in f16, or in f32 with -DVC32 (Flint: f16 V alone, simulated in its f32 reference, moved that as far
+// as the whole engine did and flipped the same expert choice)
+#ifdef VC32
+#define VC_T float
+#define VC_RAW uint
+#define VLD4(p) vload4(0, p)
+#define VLD8(p) vload8(0, p)
+#define VLD16(p) vload16(0, p)
+#define VST1(x, p) (*(p) = (x))
+#else
+#define VC_T half
+#define VC_RAW ushort
+#define VLD4(p) vload_half4(0, p)
+#define VLD8(p) vload_half8(0, p)
+#define VLD16(p) vload_half16(0, p)
+#define VST1(x, p) vstore_half(x, 0, p)
+#endif
 
 inline float silu(float x) { return x / (1.0f + exp(-x)); }
 
@@ -1472,7 +1489,7 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
                           __global const float* ff, int use_ff, float q_scale, __global char* qi,
                           __global float* qsc, __global uint* kq, __global float* ksc, __global uchar* vq,
                           __global float* vsc, int cap, __global const float2* rt, int f16kv, __global float* qf,
-                          __global KC_T* kc, __global half* vc) {
+                          __global KC_T* kc, __global VC_T* vc) {
   const int m = get_global_id(1), hs = get_global_id(0) / SG, lane = get_sub_group_local_id();
   if (m >= M_valid) return;
   const bool isq = hs < nh;
@@ -1592,9 +1609,9 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     vsc[(blk * SB + lane / (16 / SB)) * 16 + kk] = vmax / 127.0f;
   }
   if (f16kv & 1) {
-    __global half* vd = vc + ((size_t)kvh * cap + pos % cap) * HD + VPL * lane;
+    __global VC_T* vd = vc + ((size_t)kvh * cap + pos % cap) * HD + VPL * lane;
 #pragma unroll
-    for (int i = 0; i < VPL; ++i) vstore_half(raw[i], 0, vd + i);
+    for (int i = 0; i < VPL; ++i) VST1(raw[i], vd + i);
   }
 }
 
@@ -1615,13 +1632,13 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
 #define FDC (HD / 256)  // 256-dim chunks of a row, 16 dims per lane each
 #define FVW 16
 #define FVT float16
-#define FVLOAD_H vload_half16
+#define FVLOAD_H(p) VLD16(p)
 #define FVSTORE vstore16
 #else  // (head 128, Flint: one chunk, 8 dims per lane)
 #define FDC 1
 #define FVW 8
 #define FVT float8
-#define FVLOAD_H vload_half8
+#define FVLOAD_H(p) VLD8(p)
 #define FVSTORE vstore8
 #endif
 // -DFA_SPLIT (generation / verification, <= 8 rows): flash-decoding. A row's key blocks are cut into splits of at
@@ -1644,7 +1661,7 @@ inline void fa_split_range(int lo, int hi, int sp, int* b0, int* b1) {  // block
 #define FA_KW uint
 #endif
 __attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __global const half* vc, int cap, int nh,
+__kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __global const VC_T* vc, int cap, int nh,
                         int nkv, int pos0, int M_valid, __global float* out, int win, int nc_lo, int nc_hi
 #ifdef FA_SPLIT
                         , int sgrid, __global float* part
@@ -1660,7 +1677,7 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
 #endif
 #if FA_ROWS > 1
   __local FA_KW sk[16 * FA_KS];
-  __local ushort sv[16 * HD];
+  __local VC_RAW sv[16 * HD];
   const int mr = min(m, M_valid - 1);  // (rows past the launch take part in the loads; nothing is stored for them)
 #else
   if (m >= M_valid) return;
@@ -1671,7 +1688,7 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
   const int hi = (pos >= nc_lo && pos <= nc_hi) ? nc_hi : pos;
   __global const float* qp = qf + ((size_t)mr * nh + hg * GQ) * HD;
   __global const KC_T* kb = kc + (size_t)g * cap * HD;
-  __global const half* vb = vc + (size_t)g * cap * HD;
+  __global const VC_T* vb = vc + (size_t)g * cap * HD;
   FVT o[GQ][FDC];
   float mx[GQ], lp[GQ];
 #pragma unroll
@@ -1694,7 +1711,7 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
       const int kk = i / HD, d = i % HD;
       const size_t at = (size_t)(bslot + kk) * HD + d;
       sk[kk * FA_KS + d] = ((__global const FA_KW*)kb)[at];
-      sv[kk * HD + d] = ((__global const ushort*)vb)[at];
+      sv[kk * HD + d] = ((__global const VC_RAW*)vb)[at];
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     if (b < lo / 16 || b > hi / 16) continue;  // (uniform over the sub-group: its row's own blocks only)
@@ -1749,13 +1766,13 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
       const int pj = t0 + j;
       if (pj < lo || pj > hi) continue;  // (the same for every lane)
 #if FA_ROWS > 1
-      __local const half* vrow = (__local const half*)sv + j * HD + FVW * lane;
+      __local const VC_T* vrow = (__local const VC_T*)sv + j * HD + FVW * lane;
 #else
-      __global const half* vrow = vb + (size_t)(t0s + j) * HD + FVW * lane;
+      __global const VC_T* vrow = vb + (size_t)(t0s + j) * HD + FVW * lane;
 #endif
 #pragma unroll
       for (int c = 0; c < FDC; ++c) {
-        const FVT vv = FVLOAD_H(0, vrow + 16 * FVW * c);
+        const FVT vv = FVLOAD_H(vrow + 16 * FVW * c);
 #pragma unroll
         for (int r = 0; r < GQ; ++r) o[r][c] = fma((FVT)sub_group_broadcast(s[r], j), vv, o[r][c]);
       }
@@ -1854,7 +1871,7 @@ __kernel void attn_fa_gc(__global const float* part, int nh, int pos0, int M_val
 #define KB 1  // blocks of 16 keys per sub-group and step: each q load serves KB key rows
 #endif
 __attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __global const half* vc, int cap, int nh,
+__kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __global const VC_T* vc, int cap, int nh,
                          int nkv, int pos0, int M_valid, __global float* out, int win, int nc_lo, int nc_hi
 #ifdef SINKS
                          , __global const float* sinks
@@ -1877,7 +1894,7 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
   for (int r = 1; r < GR; ++r)
     if (hir[r] >= lor[r]) lo = min(lo, lor[r]), hi = max(hi, hir[r]);
   __global const KC_T* kb = kc + (size_t)g * cap * HD;
-  __global const half* vb = vc + (size_t)g * cap * HD;
+  __global const VC_T* vb = vc + (size_t)g * cap * HD;
   float mx[GRH], lp[GRH];
 #if GD == 4
   float4 o[GRH];
@@ -1966,20 +1983,20 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
         const int pj = t0 + j;
         if (pj < lo || pj > hi) continue;  // (the same for every lane)
 #if HD >= 512
-        __global const half* vrow = vb + (size_t)(t0s + j) * HD + sgi * (HD / FS) + GD * lane;
+        __global const VC_T* vrow = vb + (size_t)(t0s + j) * HD + sgi * (HD / FS) + GD * lane;
 #else
-        __global const half* vrow = vb + (size_t)(pj % cap) * HD + sgi * (HD / FS) + GD * lane;
+        __global const VC_T* vrow = vb + (size_t)(pj % cap) * HD + sgi * (HD / FS) + GD * lane;
 #endif
 #if GD == 4
-        const float4 vv = vload_half4(0, vrow);
+        const float4 vv = VLD4(vrow);
 #pragma unroll
         for (int h = 0; h < GRH; ++h) o[h] = fma((float4)sub_group_broadcast(pr[h], j), vv, o[h]);
 #elif GD == 8
-        const float8 vv = vload_half8(0, vrow);
+        const float8 vv = VLD8(vrow);
 #pragma unroll
         for (int h = 0; h < GRH; ++h) o[h] = fma((float8)sub_group_broadcast(pr[h], j), vv, o[h]);
 #else
-        const float16 vv = vload_half16(0, vrow);
+        const float16 vv = VLD16(vrow);
 #pragma unroll
         for (int h = 0; h < GRH; ++h) o[h] = fma((float16)sub_group_broadcast(pr[h], j), vv, o[h]);
 #endif

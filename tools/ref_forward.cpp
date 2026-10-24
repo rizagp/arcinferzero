@@ -919,6 +919,13 @@ static void flint_layers(const std::vector<int>& toks, std::vector<float>& x) {
     matmul(p + "attn_k.weight", h, T, k);
     matmul(p + "attn_v.weight", h, T, v);
     auto qn = vecf(p + "attn_q_norm.weight"), kn = vecf(p + "attn_k_norm.weight"), sinks = vecf(p + "attn_sinks.weight");
+    if (getenv("REF_V16"))  // (REF_V16=1: V rounded to f16, as the engine stored it before 2026-10-24: its effect alone)
+      for (auto& e : v) {
+        uint32_t u;
+        memcpy(&u, &e, 4);
+        u = (u + 0xFFF + ((u >> 13) & 1)) & ~0x1FFFu;  // (round to nearest even at 10 mantissa bits)
+        memcpy(&e, &u, 4);
+      }
     auto rope = [&](float* r, int pos) {
       const int half = hd / 2;
       for (int i = 0; i < half; ++i) {
@@ -986,6 +993,10 @@ static void flint_layers(const std::vector<int>& toks, std::vector<float>& x) {
         std::stable_sort(id.begin(), id.end(), [&](int a, int b) { return pr[a] > pr[b]; });
         double z = 0;
         for (int kk = 0; kk < NU; ++kk) z += pr[id[kk]];
+        if (t == T - 1 && getenv("REF_ROUTES")) {  // (REF_ROUTES=1: the last token's top router logits per layer)
+          fprintf(stderr, "\nlayer %d:", il);
+          for (int kk = 0; kk < NU + 2; ++kk) fprintf(stderr, " %d(%.5f)", id[kk], rl[(size_t)t * NE + id[kk]]);
+        }
         std::vector<float> ge(Fe), ue(Fe), de(E);
         float* dt = &d[(size_t)t * E];
         for (int kk = 0; kk < NU; ++kk) {

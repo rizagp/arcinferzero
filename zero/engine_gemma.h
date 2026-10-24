@@ -15,7 +15,8 @@
       matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, 0, a_in);
       if (L.has_v) matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, 0, a_in);
     }
-    const std::string hdo = "-DHD=" + std::to_string(hd) + sb_opt(hd);
+    const std::string vcd = vbytes_ == 4 ? " -DVC32" : "";  // (Flint: f32 V rows)
+    const std::string hdo = "-DHD=" + std::to_string(hd) + sb_opt(hd) + vcd;
     const int win = L.swa ? hp.n_swa : 0;
     // RoPE, the K / V writes into the ring (or cache) and the q rows for the attention: rows r0 .. r0 + Tq of the pass
     // at position p0 (a batched pass: per sequence, in its slot)
@@ -61,7 +62,7 @@
     //  ARC_FA_SPLIT=0: one sub-group per (row, q-head pair) over every key, as the prompt kernel)
     static const bool fa_split = !getenv("ARC_FA_SPLIT") || atoi(getenv("ARC_FA_SPLIT")) != 0;
     // (Flint: the heads' sink logits, one more term of each softmax: -DSINKS, the buffer after the usual arguments)
-    const std::string snk = L.sinks ? " -DSINKS" : "";
+    const std::string snk = (L.sinks ? " -DSINKS" : "") + vcd;
     auto fa_g = [&](int r0, int n, int p0) {
       if (g4_att8_ && !L.swa && n > 8 && batch_.empty() && hd == 512) {
         // E2B / E4B prompt chunks, global layers: attn_ps on the int8 copy (head dims over 4 sub-groups of 4 q heads;
