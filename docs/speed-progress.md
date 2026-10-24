@@ -8,10 +8,30 @@ The story behind the numbers: [review.md](review.md); what helped and what did n
 
 ## Current speed
 
-The current numbers for every model are in one place: [before-after.md](before-after.md#where-it-stands-2026-10-20)
-("Where it stands"). In short (20 Oct): 35B UD-IQ4_XS prompt 604 tok/s (32K), generation 20.6 tok/s; 27B prompt
-~135 tok/s (4K), generation 4.9 tok/s; Flash Next prompt 160 tok/s (4K), generation 6-7 tok/s; Gemma 4 26B-A4B
-prompt 450 tok/s (4K), generation ~20 tok/s. The sections below keep what was measured on each date.
+The current numbers for every model are in one place: [before-after.md](before-after.md#where-it-stands)
+("Where it stands"). In short (24 Oct): 35B UD-IQ4_XS prompt 604 tok/s (32K), generation 20.6 tok/s; 27B prompt
+~135 tok/s (4K), generation 4.9 tok/s; Flash Next prompt ~164 tok/s (4K), generation 6-7 tok/s; Gemma 4 26B-A4B
+prompt 252 tok/s (4K), generation ~25 tok/s with its drafter; Gemma 4 E4B 724 tok/s (4K), 32 tok/s; Flint 248 tok/s
+(4K), 13-17 tok/s. The sections below keep what was measured on each date.
+
+## 2026-10-22 / 24: Gemma 4 accurate by default, Flint, image encoders
+
+- **Gemma 4 runs its accurate mode only** (since 2026-10-22, the user's KL limit of 0.015): float attention and, on
+  the 26B / 12B, two int8 passes per matmul input. That first cost the 26B half its prompt speed (450 -> ~200 tok/s
+  at 4K); the kernels were then rebuilt for it: fused passes in one-token GEMVs and the per-tile expert kernels,
+  `attn_fa_gh` (one read of each key row for all q heads of a kv head, 2 key blocks per step in the sliding layers),
+  a tiled f32 router. 26B: **252 tok/s** (4K), 210 (14K), ~25 tok/s with its drafter. 12B 137 tok/s (4K). E4B went
+  back to one pass (KL 0.00088 is far under the limit) and to the int8 K / V copy for its global layers in prompts:
+  724 tok/s (4K), 615 (14K).
+- **Flint** (2026-10-24): 4K prompt 240 -> 248 tok/s after reading its GPU assembly (ocloc: spills and needless
+  instructions removed), generation 13-17 tok/s; its accuracy (KL 0.029 -> 0.0043) came from f32 V rows and an f32
+  router, not from speed changes.
+- **Flash Next**: the expert gate / up kernel reads the activation scales transposed (4K 160 -> 164 tok/s);
+  `ARC_FN_PRECISE=1` (KL under 0.015 at 3.5K) runs prompts at ~87 tok/s, so it stays opt-in.
+- **Image encoders**: Gemma 4 26B 12.7 -> **7.4 s** per 1,064-token image (the encoder's GEMMs on the engine's int8
+  GEMM with two passes, K / V rows in one 8-wide block read, 8-key tiles for head 72); E4B 51.5 -> 3.1 s (a wrong
+  head size in its attention, a bug); Qwen3.5 9B / Qwen3.8 27B attention 3-7 % faster with 8-key tiles. An int8
+  vision attention was accurate enough but not faster: not taken.
 
 ## 2026-10-19 / 20: two conversations at once, Gemma 4 26B-A4B, Flash Next accuracy
 

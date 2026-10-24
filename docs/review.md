@@ -2,9 +2,10 @@
 
 arcinferzero is a from-scratch LLM inference engine for Intel's integrated Arc graphics, built on one laptop to shorten
 the wait before a model starts answering a long prompt. It runs Qwen3.5, Qwen3.6 and Qwen3.8 (dense and mixture of
-experts) and Gemma 4 with image and audio input, serves an OpenAI-, Anthropic- and Ollama-compatible API, and plugs
-into the Pi coding agent. This page tells the story of the build from the first working forward pass to
-20 October 2026, with the emphasis on how prompt and generation speed developed and what caused each step.
+experts), Gemma 4 with image and audio input, and Flint (a mixture of experts with attention sinks, added
+24 October), serves an OpenAI-, Anthropic- and Ollama-compatible API, and plugs into the Pi coding agent. This page
+tells the story of the build from the first working forward pass to 24 October 2026, with the emphasis on how
+prompt and generation speed developed and what caused each step.
 
 The work up to 15 October was done on an OpenCL engine (`src/`). **arcinferzero** (`zero/`) runs the same kernels
 through Level Zero, gave bit-identical logits to the OpenCL engine on every model, streams mixture-of-experts weights
@@ -72,7 +73,7 @@ CHANGELOG.md and the working notes. The first ten stages are recorded only as "b
 
 ## Speed now
 
-The current numbers for every model are kept in one place: [before-after.md](before-after.md#where-it-stands-2026-10-20)
+The current numbers for every model are kept in one place: [before-after.md](before-after.md#where-it-stands)
 ("Where it stands", 20 October). The model tables below end at their last milestone. The 17 October speculative
 decoding numbers (27B code 4.91 / 15.5 / 18.1 tok/s plain / MTP / DFlash2 + MTP; 35B UD-Q3_K_M 21.2 / 39.3 / 49.8)
 were `runz` runs with 96-token greedy answers and warm kernels, not server runs. All speed tables by date:
@@ -242,6 +243,8 @@ norm (an int8 router gave KL 0.079 instead of 0.073). The experts are streamed f
 |---|---|---|---|
 | 19 Oct | 4K 450 tok/s, 8K 410 | 19.6–20.6 (expert cache 85–93 % in `runz`, 72 % at the server's 106K context) | first version; KL 0.073 prompt / 0.068 decode path against the CPU reference |
 | 19 Oct | — | two conversations 19.8 → 26.2 together | batched decoding over slots; 2 slots get 32,768 tokens each (was 8,192) |
+| 22 Oct | 4K ~200 tok/s | ~17 (25 with its drafter) | accurate mode only (the user's KL limit 0.015): float attention, two int8 passes per matmul input; KL 0.073 → 0.0042 |
+| 23–24 Oct | 4K 252 tok/s, 14K 210 | ~25 with its drafter, 14.0 after a 14K prompt | kernels rebuilt for the two passes (fused GEMV passes, `attn_fa_gh`, 2 key blocks per step in the sliding layers, a tiled f32 router) |
 
 ### Qwen3.8 Flash Next (ISTA-DASLab GSQ-RCO IQ3_S, arcinferzero only)
 
@@ -273,6 +276,9 @@ that limit.
 | Gemma 4 E4B ViT, 12 Oct | 0.11–0.17 % from an f32 reference; 1,120-token image in 3.2 s |
 | Gemma 4 E4B audio conformer, 12 Oct | 7.2 s of speech encoded in 226 ms, transcribed word for word |
 | Qwen3.6 35B-A3B, 14 Oct | 1,008 image tokens in ~3 s |
+| Gemma 4 E4B ViT, 24 Oct | a wrong head size in its attention (an earlier `#define HD 256`) found and fixed: 1,064-token image 51.5 → 3.1 s, the image read correctly again |
+| Gemma 4 26B ViT (head size 72), 24 Oct | 12.7 → 7.4 s per 1,064-token image: the matrix products on the engine's int8 GEMM with two passes (model KL against an exact encoder ~0.001), K / V rows in one 8-wide block read, 8-key tiles; an int8 attention was accurate enough but not faster |
+| Qwen3.5 9B / Qwen3.8 27B, 24 Oct | attention 3–7 % faster with 8-key tiles (KL against 4-key tiles ≤ 0.0006) |
 
 ## Comparison with llama.cpp
 
@@ -427,7 +433,9 @@ pointed at the V cache: Gemma's V rows hold a few large values, and one scale pe
 levels. One scale per 64 dims removed the flips and halved the drift, at 1.5–1.8x the attention time for Gemma only.
 Gemma 4 is about 7x more sensitive to int8 activations than Qwen3.5 (activations rounded to int8 alone, in the f32
 reference: KL 0.009 vs 0.001). Flash Next is more sensitive still: every matrix group adds 0.02–0.10. The same method
-decided the vision encoders: the Qwen3-VL encoder drifted 10–23 % with int8 activations, so it runs in floating point.
+decided the vision encoders: the Qwen3-VL encoder drifted 10–23 % with int8 activations, so it runs in floating point;
+the Gemma 4 26B encoder's matrix products run on two int8 passes (value and rounding residual), which keep the
+model's KL against an exact encoder at ~0.001.
 
 Perplexity in the 10 October benchmark (see the comparison tables) was 6.06 / 5.42 / 4.27 for the 4B / 9B / 27B on
 arcinferzero against 6.14 / 5.50 / 4.31 on llama.cpp Vulkan. On the 4B, int8 attention and requantized Q4_K together
@@ -470,7 +478,8 @@ The ones that shaped the design:
 - **27B generation** stays at ~72 % of the bandwidth: the IQ3 / IQ2 codebook decoding is not hidden behind the
   memory reads.
 - **Flash Next**: no MTP block and no image input; generation depends on the SSD (cache 12–22 % of the experts);
-  the README still lists long-context QSA as not validated beyond the 3,566-token check.
+  its KL is 0.0143 on short prompts and 0.0186 at 3,584 tokens with QSA (`ARC_FN_PRECISE=1`: 0.0127, at about
+  half the prompt speed, opt-in); longer prompts are not measured.
 - **Register spills left**: `gdn_conv` 1 KB and `moe_gateup_q` 2 KB (256 registers remove them but are not faster).
 - **Not done yet**: cheaper MTP drafts (dynamic token list or draft tree), `/v1/embeddings`, a 4-bit KV cache (since
   18 Oct an opt-in 4-bit V copy for generation, `--v4`), batched decoding for Flash Next (its hyper-connection

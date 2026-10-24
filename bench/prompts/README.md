@@ -20,4 +20,7 @@ $env:REF_ALL = "1"; .\bin\ref_forward.exe $g $ids ref_g12_code160.bin; $env:REF_
 .\bin\runz.exe $g --tokens-file bench\prompts\gemma-code160.ids.txt --kl-ref ref_g12_code160.bin --kl-decode  # generation path
 ```
 
-Results on 10 October 2026: prompt path 0.018, generation path 0.013 (code); generation path 0.029 (raw text).
+Results on 10 October 2026 (the one-pass mode of then): prompt path 0.018, generation path 0.013 (code); generation
+path 0.029 (raw text). Since 2026-10-22 Gemma 4 12B runs two int8 passes: KL 0.0002 on the code prompt.
+For a long prompt, `REF_ALL_FROM=N` (ref_forward) writes the reference only from position N on and `ARC_KL_FROM=N`
+(runz) compares from there, so the reference of a 3.5K-token prompt does not need every position.

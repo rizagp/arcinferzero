@@ -1,8 +1,8 @@
 # LLM inference on an Intel Arc iGPU: what made it fast, and what did not
 
 Lessons from building arcinferzero, a from-scratch inference engine for the integrated Arc GPU of a Meteor Lake laptop,
-from the first working forward pass (early October 2026) to the Level Zero engine of 18 October 2026 (section 10:
-later lessons, to 23 October). Every number
+from the first working forward pass (early October 2026) to the Level Zero engine of 18 October 2026 (sections 10
+and 11: later lessons, to 24 October). Every number
 below was measured on one machine; your hardware, driver and models will differ, so treat them as starting points,
 not promises. Sources: [CHANGELOG.md](../CHANGELOG.md), [review.md](review.md), [review_notes.md](archive/review_notes.md),
 [speed-progress.md](speed-progress.md), [arcinferzero-log.md](archive/arcinferzero-log.md), [QUEUE.md](../QUEUE.md),
@@ -18,7 +18,7 @@ SSD.
 Qwen3.8 27B (IQ3_S GSQ, dense) prompt ~135 tok/s (llama.cpp Vulkan pp2048: 23), generation 4.91 plain, 18.1 with
 DFlash2 + MTP on code; Qwen3.8 Flash Next (512 experts on the SSD) prompt 166 tok/s at 4K, generation 6-7 tok/s. On
 Indonesian prose the drafters help far less (27B 4.88 / 7.0 / 6.8 tok/s plain / MTP / both; 35B 21.9 with MTP
-only): they are trained mostly on English and code. Every model, kept current: [before-after.md](before-after.md#where-it-stands-2026-10-20).
+only): they are trained mostly on English and code. Every model, kept current: [before-after.md](before-after.md#where-it-stands).
 
 ## 1. Know the hardware first (measured)
 
@@ -75,7 +75,7 @@ after the steps below (llama.cpp: 590 s Vulkan, 504 s SYCL).
 | The same kernels through Level Zero instead of OpenCL | bit-identical, 35B time to first token 6.45 -> 4.07 s, generation 16.9 -> 18.3 tok/s, model load 4.3 -> 2.3 s (4B) |
 | Flash Next prompt mixer (gated mean) with vector loads instead of one value per lane per load | 45 -> 3.7 ms per 2048-row chunk; 8K prompt 98 -> 127 tok/s (with moe_rg for its down projection: 165) |
 | Flash Next QSA block scores for 8 query rows per work-group (`qsa_score_rt`: each pooled key block read once for 8 rows instead of once per row) | bit-identical; qsa_score 13.8 -> 2.4 s on a 32K prompt, pp32768 131-146 -> 153-154 tok/s, 125K prompt 78.6 -> 123.4 tok/s (16 rows: slower) |
-| Vision encoders on the GPU in f16 weights / f32 activations, attention with one query row per lane, 4-key tiles, native_exp | 1008-token image 1118 -> 588 ms; 4096 tokens 36.1 -> 15.3 s for the whole encoder (llama.cpp Vulkan 71 s); 72-dim heads with interleaved sub-group block reads 6.0 -> 1.6 s |
+| Vision encoders on the GPU in f16 weights / f32 activations, attention with one query row per lane, 4-key tiles (8 for head 72 since 24 Oct, section 11), native_exp | 1008-token image 1118 -> 588 ms; 4096 tokens 36.1 -> 15.3 s for the whole encoder (llama.cpp Vulkan 71 s); 72-dim heads with interleaved sub-group block reads 6.0 -> 1.6 s |
 
 Prompt speed, tokens/s (10 October, OpenCL engine, same laptop; llama.cpp b11527 official builds, flash attention,
 best micro-batch per model):
@@ -191,7 +191,7 @@ MoE expert kernels read small scattered blocks: the 35B's gate/up IQ3_XXS runs 5
 | Dense weights carved from 512 MB device allocations (an arena), 2 MiB alignment, or trimming the working set at load, against the runs where every dense-weight kernel is ~2x slower | arena: 35B DFlash2 hybrid 22.7 -> 23.2 tok/s and steadier, but 27B prompts 2–5 % slower; alignment and trimming: no visible change |
 | Q8_0 GEMV reading the GEMM's interleaved layout (one copy instead of decoding per chunk) | not worth it once Q8_0 decoding per 2048-token chunk fell to 72 ms (~2 % of a prompt) |
 | Requantizing Q6_K's per-16 scales to per-32 for the GEMM | per-16 matrices cost only ~4 % more |
-| f16 (half2) GEMM or larger key tiles in the vision encoder; int8 vision weights and activations | no faster, error 0.8–2.4 %; spills; 10–23 % off the f32 reference: activations must stay f32 |
+| f16 (half2) GEMM or larger key tiles in the vision encoder; int8 vision weights and activations (one pass) | no faster, error 0.8–2.4 %; spills; 10–23 % off the f32 reference with one int8 pass (Later: two int8 passes do fit the Gemma 4 26B encoder, and 8-key tiles help at head 72 once the K / V reads are block reads: section 11) |
 | Opting out of Windows power throttling (EcoQoS) | no measurable effect |
 | IQ4_XS / IQ4_NL value lookup by sub-group shuffle (the 16 values in registers) instead of local-memory tables | one matrix in bench/gemv_bench: 69.5 -> 75.8 GB/s, bit-identical, memory instructions 196 -> 38 in moe_down_q; in the model slower: 27B 4.95 -> 3.5 tok/s plain, MTP code 14.5 -> 12.7, 35B and Flash Next 2-5 % slower. Not kept |
 | IQ2 / IQ3_XXS sign table computed (`i | parity(i) << 7`) instead of read from local memory | bit-identical, 16 fewer memory instructions per GEMV (ocloc); in the model 27B 5.03 -> 4.65 tok/s (-7 %), Flash Next 6.8 -> 7.2 (+5 %), 35B within noise. Not kept |
@@ -402,3 +402,30 @@ predicating the loads gave 905 -> 843 ms, bit-identical. Check bit identity afte
   endpoints (WinHTTP; every host and redirect resolved and checked for private addresses first); the tool loop, the
   voice conversation (loudness-based end-of-speech, sentence-by-sentence speech synthesis, barge-in) and searches
   that run in the background while the model talks all live in the page.
+
+## 11. Later lessons (24 October 2026)
+
+- **In a mixture of experts with a sigmoid router, the KL comes from expert choices that are near ties.** Flint's
+  KL against the f32 reference was 0.029; rounding the V rows to f16 alone (simulated in the reference) moved the
+  model as far as the whole engine, because one near-tie expert choice flipped. f32 V rows plus a router on the
+  file's BF16 rows with f32 inputs (and two int8 passes elsewhere) gave 0.0043. Simulate each rounding in the f32
+  reference first: it names the part that decides the error before any kernel is written.
+- **A macro default defined earlier in a big kernel file silently wins.** `#ifndef HD / #define HD 64` near the
+  vision attention was dead code because an unrelated `#define HD 256` came first in the same file: the E2B / E4B
+  encoder read 256-dim rows of 64-dim heads (wrong answers, register spills, 51.5 s instead of 3.1 s per image).
+  Pass every size a kernel depends on from the host, always.
+- **An attribute line belongs directly above its kernel.** `intel_reqd_sub_group_size(16)` lines that had a new
+  kernel inserted between them and their kernel moved to the newcomer; the old kernel still worked only because the
+  compiler happened to pick 16 lanes. A self-audit found two of them (the 26B router GEMV and every encoder GEMM).
+- **Lower precision is not faster when the kernel is already at the f32 limit.** An int8 vision attention (DP4a
+  scores, 1,536 -> 1,122 instructions in ocloc) was accurate enough but slower, 5.4 -> 6.1-6.7 s; skipping P·V
+  entirely did not change the time either. What helped instead was fewer memory messages: K / V rows in one 8-wide
+  block read (2 messages per row instead of 9) and, at head size 72, tiles of 8 keys (attention 5.43 -> 3.81 s).
+- **Read the GPU assembly before tuning.** `ocloc` disassembly showed Flint's attention prep kernel at 8,855
+  instructions for work worth 481 and spills in the two-pass expert kernels; removing them was worth more than any
+  launch-size sweep.
+- **An external USB drive can hand the engine wrong weights without an error.** During a test run the drive reset
+  (System log: disk 153, UASPStor 129) and Windows' file cache kept pages that had come in wrong: the 27B produced
+  garbage in three processes in a row, and a buffered SHA-256 of the file gave a wrong hash twice, while an unbuffered
+  read matched the original. Reconnecting the drive cleared it. When a model on removable storage misbehaves, check
+  the disk events and hash with an unbuffered read before suspecting the kernels.

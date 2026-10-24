@@ -1,7 +1,7 @@
 # F21.11 — Q2 speed work log / handoff
 
 Status (2026-10-22): **done; the two-pass mode is Gemma 4's only mode** (`ARC_Q2` / `--q2` no longer exist; the
-one-pass code is removed). What was implemented and measured is in `docs/before-after.md` (rows of 10-22) and
+one-pass code is removed; since 2026-10-23 E4B runs one pass again, see the update below). What was implemented and measured is in `docs/before-after.md` (rows of 10-22) and
 `QUEUE.md` F21.11; the plan below is kept as written. Summary, 26B: generation with the drafter ~25 tok/s (one-pass
 26.8), after a 14K prompt 13.0 (14.9); 4K prompt ~218 tok/s (526); KL 0.0042 (prompt 0.0044, decode 0.0042).
 Tried and dropped: fused two-pass moe_rg for prompts (gate / up only -6 %), shuffle-free prompt attention, V from the
@@ -10,7 +10,8 @@ int8 cache (KL 0.084), K f16 (KL 0.018).
 Update 2026-10-23: the user's KL limit is now 0.015, so Gemma 4 E4B runs its matmuls on one pass again (float
 attention kept; KL 0.00075, 14K prompt 45 -> 30 s); 26B and 12B stay on two passes. The prompt attention got faster
 for all three (attn_fa_gh with 8 sub-groups, several rows per work-group, also for the sliding layers): 26B 4K prompt
-~254 tok/s, 14K ~74 s. QUEUE.md F21.14: partial one-pass mixes for the 26B / 12B under 0.015.
+~254 tok/s, 14K ~74 s (with the laptop on a cooling pad and the later attention changes: 252 tok/s, TTFT 64-66 s).
+QUEUE.md F21.14, partial one-pass mixes for the 26B / 12B under 0.015: measured, none worth taking.
 
 ## Why this file
 

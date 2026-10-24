@@ -14,16 +14,19 @@ and compared byte for byte with the run before the change, or the generated gree
 character. "Bit-identical" below means exactly that, not "close". Changes that are allowed to change the numbers
 (new quantization, 4-bit V) are measured as KL divergence against a reference instead.
 
-## Where it stands (2026-10-20)
+## Where it stands
+
+(Updated 2026-10-24; each row's date and measurement are in the rows below.)
 
 | Model | Prompt | Generation | Accuracy |
 |---|---|---|---|
 | Qwen3.6 35B-A3B UD-IQ4_XS (MoE, experts on the SSD) | 604 tok/s (32K prompt), 324 tok/s (128K) | 20.6 tok/s; Python code 49.9 with DFlash2, Indonesian 21.9 with MTP; 12.6 at 128K depth | KL 0.004-0.008 against an f32 reference (generation path) |
 | Qwen3.8 27B (IQ3_S GSQ, dense) | ~135 tok/s (4K prompt) | 4.9 tok/s; code 18.1 with DFlash2 + MTP | KL 0.0003-0.0004 |
-| Qwen3.8 Flash Next (IQ3_S, 512 experts on the SSD) | ~191 tok/s (4K, measured 2026-10-23), 163 (32K), 123 (125K) | 6-7 tok/s | KL 0.020 against the CPU reference with QSA (3.5K prompt); 0.048 on 363 tokens of README text (0.065 before) |
+| Qwen3.8 Flash Next (IQ3_S, 512 experts on the SSD) | ~164 tok/s (4K, 2026-10-23), 163 (32K), 123 (125K) | 6-7 tok/s | KL 0.0143 prompt / 0.0147 decode on 363 tokens of README text; 0.0186 / 0.0177 on a 3,584-token prompt (QSA sparse); `ARC_FN_PRECISE=1` (opt-in, about half the prompt speed) 0.0127 / 0.0132 |
 | Qwen3.5 4B | 911 tok/s (2K prompt) | 17.6 tok/s | KL 0.0021; perplexity 6.056 (llama.cpp 6.141) |
-| Gemma 4 12B (Google QAT) | 102 tok/s (14K prompt) | 19.0 tok/s with its drafter | KL 0.0002 (two-pass mode, the only one since 2026-10-22) |
-| Gemma 4 26B-A4B (Google QAT Q4_0, MoE, experts on the SSD) | 254 tok/s (4K prompt), 189 (14K) | ~25 tok/s with its drafter; 13.0 after a 14K prompt without | KL 0.0042 against the CPU reference (480 tokens; two-pass mode, the only one since 2026-10-22) |
+| Gemma 4 E4B (Google QAT) | 724 tok/s (4K prompt), 615 (14K) | 32 tok/s with its drafter | KL 0.00088 (one int8 pass, float attention; int8 K / V for the global layers of prompts) |
+| Gemma 4 12B (Google QAT) | 137 tok/s (4K prompt), 102 (14K) | 19.0 tok/s with its drafter | KL 0.0002 (two-pass mode, the only one since 2026-10-22) |
+| Gemma 4 26B-A4B (Google QAT Q4_0, MoE, experts on the SSD) | 252 tok/s (4K prompt), 210 (14K; laptop on a cooling pad) | ~25 tok/s with its drafter; 14.0 after a 14K prompt without | KL 0.0042 against the CPU reference (480 tokens; two-pass mode, the only one since 2026-10-22) |
 | Flint (UD-Q4_K_XL, MoE, experts on the SSD; added 2026-10-24) | 248 tok/s (4K prompt) | 13-17 tok/s | KL 0.0043 prompt / 0.0027 decode against the CPU reference (360 tokens) |
 
 Two conversations at once (`--slots 2`), both writing their answers, their next tokens in one engine pass (tok/s of
@@ -52,8 +55,11 @@ measures how far the int8 GPU arithmetic moves the model:
 | Qwen3.5 4B | 0.0021 | 0.0006 of it is int8 attention |
 | Qwen3.8 27B (generation path) | 0.0003-0.0004 | run-to-run rounding noise is of the same size |
 | Qwen3.6 35B-A3B UD-IQ4_XS (generation path) | 0.004-0.008 | a small change in attention can pick other experts |
-| Gemma 4 12B (QAT, regression test) | 0.021 | Gemma 4 is ~7x more sensitive to int8 activations; one int8 scale per 64 V dims (instead of per row) removed the flipped predictions (code: 0.23 -> 0.018) |
-| Qwen3.8 Flash Next (3.5K prompt, QSA) | 0.020 | the most sensitive model: every matrix group adds 0.02-0.10 |
+| Gemma 4 12B (QAT, 480-token code prompt) | 0.0002 | Gemma 4 is ~7x more sensitive to int8 activations: float attention and two int8 passes (value + rounding residual); one pass gave 0.021 |
+| Gemma 4 26B-A4B (QAT) | 0.0042 | two passes; one pass gave 0.0985 |
+| Gemma 4 E4B (QAT) | 0.00088 | one pass is enough here |
+| Flint (UD-Q4_K_XL) | 0.0043 / 0.0027 (prompt / decode) | two passes, f32 V rows and router: near-tie expert choices of the sigmoid router decided it (0.029 before) |
+| Qwen3.8 Flash Next (363 tokens / 3.5K prompt, QSA) | 0.0143 / 0.0186 | the most sensitive model; `ARC_FN_PRECISE=1` 0.0117 / 0.0127 at about half the prompt speed |
 
 **Perplexity against llama.cpp** (40 chunks of llama.cpp documentation, lower is better): Qwen3.5 4B 6.056 vs
 6.141 (Vulkan), 9B 5.417 vs 5.499, 27B 4.274 vs 4.311. Speed did not cost quality: on the same GGUF files

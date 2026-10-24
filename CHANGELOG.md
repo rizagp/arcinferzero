@@ -34,8 +34,19 @@
   the in-kernel RoPE angles only where no table is passed, the Gemma drafter); the two-pass expert down kernels no
   longer spill (256 registers, as gate / up); Flint's router GEMV 4 rows x 4 tokens per sub-group (744 -> 229 ms per
   4K prompt). **Gemma 4 26B** gets the same router tiling on its f32 rows: prompt +4.6 %, logits bit-identical.
-- **Flash Next precise mode** (`ARC_FN_PRECISE=1`, opt-in for now): BF16 mixer and router rows, two passes for every
-  matmul input: KL 0.0143 / 0.0147 -> 0.0117 / 0.0096 at about half the prompt speed; the int8 attention is next.
+- **Flash Next precise mode** (`ARC_FN_PRECISE=1`, opt-in): BF16 mixer and router rows, two passes for every
+  matmul input: KL 0.0143 / 0.0147 -> 0.0117 / 0.0096 at about half the prompt speed. On a 3,584-token prompt with
+  QSA the default measures 0.0186 / 0.0177, precise 0.0127 / 0.0132; the user keeps the fast default (a float
+  attention is not needed).
+- **KL on the tail of long prompts**: `REF_ALL_FROM=N` (ref_forward) writes the reference from position N on,
+  `ARC_KL_FROM=N` (runz) compares from there.
+- **Tests**: 27B long-prompt MTP / DFlash2 logits equal plain decoding bit for bit; Flint's tokenizer against
+  llama-tokenize; Flash Next auto-detect takes the packaged single file first (its expert file exists; the GGUF parts
+  would write a 56 GB one).
+- `tools/server.cpp` split into `server_cache.h`, `server_chat.h`, `server_catalog.h` and `server_load.h` (3,337 ->
+  1,316 lines, the same code); setup rebuilds serverz when `tools\*.h` change.
+- (The 2026-10-24 entries IQ1_S weights, the Qwen verification rows bit-identical again and the Gemma ring slot per
+  16-key block are listed under 2026-10-23 below.)
 - **Gemma 4 E2B / E4B images fixed** (wrong since the Level Zero engine): the vision attention kernel was built for
   256-dim heads (an earlier default in the kernel file won), so it read the wrong rows; now 3.1 s instead of 51.5 s
   for a 1,064-token image, and the model sees what is in it.
@@ -72,6 +83,7 @@
 
 ## 2026-10-23: Xe2 / Xe3 GPUs (no 8-lane sub-groups); Unsloth Studio statistics and context
 
+- Every exe embeds a UTF-8 code page manifest: model and data paths with any characters work.
 - **Gemma 4 26B long prompts ~2 % faster**: the attention's ring slot computed once per 16-key block (global
   layers 16.4 -> 15.2 s at 13,921 tokens), bit-identical.
 - **IQ1_S weights** (CPU and GPU decoders; IQ1_M's codebook with one scale per 32 values): agentionai's

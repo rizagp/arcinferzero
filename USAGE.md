@@ -52,6 +52,7 @@ and the DFlash2 drafters are not downloaded by setup.
 | `pi-arc g12` | Gemma 4 12B: reads images (attach an image in Pi or the web UI) |
 | `pi-arc e4b` | Gemma 4 E4B: small and fast (~32 tokens/s with its drafter); hears audio: the voice model for Talk in the web UI |
 | `pi-arc g26` | Gemma 4 26B-A4B (Google QAT Q4_0): mixture of experts (~4B active), ~25 tokens/s with its drafter, reads images; 90K context with images, 118K with `--vision off` |
+| `pi-arc flint` | Flint: mixture of experts streamed from the SSD (~13-17 tokens/s), thinking and tool calls |
 | `pi-arc 9b` | Qwen3.5 9B: faster, medium quality |
 | `pi-arc 4b` | Qwen3.5 4B: fastest |
 | `pi-arc --think off` | No thinking (reasoning) phase: much faster answers |
@@ -175,14 +176,14 @@ little more GPU memory for the expert cache), e.g. `35b`, `35b-nodf`, `35b-df`; 
 server like another model does. On the command line: `--draft auto|mtp|dflash` (server and `runz`). Which one to
 use: `-df` for code, `-nodf` for Indonesian and other prose (the drafter was trained mostly on English text and
 code), the default (both) when the text is mixed. Speeds of each variant:
-[docs/before-after.md, "Where it stands"](docs/before-after.md#where-it-stands-2026-10-20).
+[docs/before-after.md, "Where it stands"](docs/before-after.md#where-it-stands).
 
 **Gemma 4 runs in its accurate mode.** The attention is computed in float (f32 queries and keys, f16 values); on
 the 26B and 12B every matmul input also goes through two int8 passes (the value, then its rounding residual).
 E4B is accurate enough with one pass and keeps it (since 2026-10-23: its prompts ~1.5x faster). KL against an f32
-reference on a 480-token code prompt: 26B 0.0042, 12B 0.0002, E4B 0.00075 (the limit kept is 0.015; the old fully
-int8 mode gave 0.0985 / 0.033 / 0.0010). Speed: 26B with its drafter ~25 tokens/s, 4K prompt ~254 tokens/s; E4B
-with its drafter ~32 tokens/s, a 14K prompt in ~30 s. Conversations saved by an older mode are not loaded (they are
+reference on a 480-token code prompt: 26B 0.0042, 12B 0.0002, E4B 0.00088 (the limit kept is 0.015; the old fully
+int8 mode gave 0.0985 / 0.033 / 0.0010). Speed: 26B with its drafter ~25 tokens/s, 4K prompt ~252 tokens/s; E4B
+with its drafter ~32 tokens/s, a 14K prompt in ~23 s. Conversations saved by an older mode are not loaded (they are
 processed again).
 
 **Two conversations at once (`-Slots 2`, arcinferzero).** By default the server holds one conversation and runs one
@@ -207,8 +208,9 @@ same folder (or use `pi-arc flash` / `arc-server start -Model flash`). The first
 to `%LOCALAPPDATA%\arcinferzero\zero\` (~9.5 minutes); later loads through the server take ~21–26 s. It writes ~6–7
 tokens/s (the expert cache holds about a fifth of the experts at 131K); prompts: 166 tokens/s at 4K, ~145-163 at
 9-32K, ~123 at 125K. The automatic context is 131,072; up to 262,144 with `--ctx`. The difference from the CPU
-reference is small (KL 0.0014 on a short chat prompt, 0.020 on a 3,566-token prompt); accuracy at longer prompts is
-not measured. This model has no MTP block and cannot read images.
+reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. `ARC_FN_PRECISE=1` (set before starting
+the server) makes it more exact (0.0127 at 3.5K) at about half the prompt speed. This model has no MTP block and
+cannot read images; the packaged single file in `%LOCALAPPDATA%\arcinferzero\zero\models` works too.
 
 Stop the server (`arc-server stop`) before using the laptop for other heavy GPU work (games, video editing), or
 before moving or rebuilding the arcinferzero folder.
@@ -218,7 +220,7 @@ before moving or rebuilding the arcinferzero folder.
 While the server is running:
 
 - **Web UI**: open http://127.0.0.1:8090/ in a browser to chat directly (text files can be attached with
-  drag-and-drop; images too for Gemma 4 12B / E4B, Qwen3.5 4B / 9B and Qwen3.6 35B: the **Image** button,
+  drag-and-drop; images too for Gemma 4 12B / E4B / 26B, Qwen3.5 4B / 9B, Qwen3.8 27B and Qwen3.6 35B: the **Image** button,
   drag-and-drop, or paste).
 - **Web UI: web search.** Tick **Web** under the message box and the model can search the web (`web_search`) and
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
@@ -292,6 +294,7 @@ for the driver, or the model's training limit. The context adjusts itself when t
 | Gemma 4 26B-A4B | 90,112 with images + drafter (`g26`); 118,784 `g26-mtp`; 102,400 `g26-vision`; 131,072 `g26-std` (generation at 36K of depth: 11.4 tok/s with a 49K context, 10.5 with 131K) |
 | Qwen3.6 35B-A3B | 131,072 automatically (images + MTP + DFlash2, ~80 % of the experts cached); up to 262,144 with `--ctx` (smaller expert cache) |
 | Qwen3.8 Flash Next | 131,072 automatically; up to 262,144 with `--ctx` |
+| Flint | ~36K automatically (its experts share the GPU memory with the context) |
 | Qwen3.5 9B / 4B | 262,144 tokens (full) |
 | Gemma 4 12B | 262,144 tokens (full) |
 | Gemma 4 E4B | 131,072 tokens (full) |
@@ -315,12 +318,15 @@ Qwen3.5/3.8 keep a state that cannot "forget" individual tokens.
 ## 6. How fast
 
 Current numbers, measured on this laptop with arcinferzero (every model, how it was measured, and llama.cpp for
-comparison: [docs/before-after.md, "Where it stands"](docs/before-after.md#where-it-stands-2026-10-20)):
+comparison: [docs/before-after.md, "Where it stands"](docs/before-after.md#where-it-stands)):
 
 - Qwen3.6 35B-A3B (UD-IQ4_XS): reads a 32K prompt at 604 tokens/s, 128K at 324; writes 20.6 tokens/s, Python code
   ~50 with DFlash2, Indonesian ~22 with MTP; 12.6-13.0 tokens/s deep in a 128K context.
 - Qwen3.8 27B: reads ~135 tokens/s; writes 4.9 tokens/s, code 18.1 with DFlash2 + MTP, Indonesian ~7 with MTP.
-- Qwen3.8 Flash Next: reads 166 tokens/s (4K) to 123 (125K); writes ~6-7 tokens/s.
+- Qwen3.8 Flash Next: reads ~164 tokens/s (4K) to 123 (125K); writes ~6-7 tokens/s.
+- Gemma 4: 26B reads ~252 tokens/s (4K), writes ~25 with its drafter; 12B 137 / 19; E4B ~724 / 32. Flint reads
+  248 tokens/s (4K), writes 13-17.
+- Images: a 1,064-token image takes ~7.4 s on Gemma 4 26B, ~3 s on E4B and the Qwen models.
 - Very long prompts are read more slowly (attention gets heavier), and drafting helps code more than prose.
 
 Tips:
@@ -381,4 +387,6 @@ GPU kernels (`zero\kernels\*.cl`) are compiled by the driver
 when the server starts, so kernel changes do not need a build.
 Compiled kernels are saved in `%LOCALAPPDATA%\arcinferzero\kernels`, so only the first use of each variant waits for
 compilation.
-Regression tests: `.\tests\run_tests.ps1 -Model4B <path to 4B gguf> -Model27B <path to 27B gguf> -ModelGemma <path to Gemma 12B> -Model35B <path to 35B gguf>`.
+Regression tests: `.\tests\run_tests.ps1` finds the models itself (`-ListModels` shows which), or give them:
+`-Model4B`, `-Model27B`, `-Model35B`, `-ModelGemma` (12B), `-ModelFlashNext` (the packaged file first, else the
+first part), `-ModelFlint`.
