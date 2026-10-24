@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
   try {
     EngineOptions eo;
     eo.ctx = 4096;
+    eo.min_chunk = 2048;  // (an image in one chunk, as the server sets for Gemma with an image projector)
     Engine eng(argv[1], eo);
     VisionGemma4V vis(argv[2], eng);
     if (argc > 4) vis.min_tokens = vis.max_tokens = atoi(argv[4]);

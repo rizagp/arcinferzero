@@ -1469,6 +1469,15 @@ class Engine {
   // router rows padded to 128 (512 bytes: the shared-expert part of rgu_out_ starts at a sub-buffer alignment)
   int rgu_rows() const { return (hp.router_rows() + 127) / 128 * 128; }
   size_t stage_need_q_[kRoles] = {}, stage_need_h_[kRoles] = {};
+  size_t stage_have_q_[kRoles] = {}, stage_have_h_[kRoles] = {};  // (bytes allocated: ensure_stage)
+  // just-in-time W8 staging large enough for every matrix made since alloc_buffers (the vision encoder's, made later)
+  void ensure_stage() {
+    for (int r = 0; r < kRoles; ++r)
+      if (stage_need_q_[r] > stage_have_q_[r] || stage_need_h_[r] > stage_have_h_[r]) {
+        stage_q_[r] = buf(stage_have_q_[r] = std::max(stage_need_q_[r], stage_have_q_[r]));
+        stage_h_[r] = buf(stage_have_h_[r] = std::max(stage_need_h_[r], stage_have_h_[r]));
+      }
+  }
   const GpuWeight* stage_owner_[kRoles] = {};
   // Gemma 4 assistant drafter (speculative decoding): small layers of its own whose attention reads the main model's
   // KV cache (its last sliding-window and last global layer); input [embedding(tok) * sqrt(E) | main hidden state]
@@ -3150,8 +3159,8 @@ class Engine {
     }
     for (int r = 0; r < kRoles; ++r)
       if (stage_need_q_[r]) {
-        stage_q_[r] = buf(stage_need_q_[r]);
-        stage_h_[r] = buf(stage_need_h_[r]);
+        stage_q_[r] = buf(stage_have_q_[r] = stage_need_q_[r]);
+        stage_h_[r] = buf(stage_have_h_[r] = stage_need_h_[r]);
       }
     if (!w8_resident || stream_) {
       // residual stream of a layer-major segment (+ one chunk of padding rows)

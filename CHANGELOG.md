@@ -17,6 +17,12 @@
   4K prompt). **Gemma 4 26B** gets the same router tiling on its f32 rows: prompt +4.6 %, logits bit-identical.
 - **Flash Next precise mode** (`ARC_FN_PRECISE=1`, opt-in for now): BF16 mixer and router rows, two passes for every
   matmul input: KL 0.0143 / 0.0147 -> 0.0117 / 0.0096 at about half the prompt speed; the int8 attention is next.
+- **Gemma 4 E2B / E4B images fixed** (wrong since the Level Zero engine): the vision attention kernel was built for
+  256-dim heads (an earlier default in the kernel file won), so it read the wrong rows; now 3.1 s instead of 51.5 s
+  for a 1,064-token image, and the model sees what is in it.
+- **Gemma 4 26B images 12.7 -> 9.05 s**: the encoder's matrix products on the engine's int8 GEMM with two passes; the
+  model's KL against an exact encoder stays ~0.001. Tools: `tools/gemma4v_ref.cpp` (the f32 encoder reference in
+  C++, 3x faster than the numpy one) and `vision_testz` `ARC_VIS_LM` (the model's KL on an image).
 - **Setup / build** find Visual Studio in more places (scripts/vcvars.ps1: vswhere anywhere, every drive's usual
   folders, a Developer prompt's own compiler).
 

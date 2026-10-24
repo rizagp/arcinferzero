@@ -2303,6 +2303,23 @@ __kernel void vit_ln(__global const float* x, int E, __global const float* w, __
 #define VSH(a, i) intel_sub_group_shuffle((a), (i))
 #endif
 __attribute__((intel_reqd_sub_group_size(16)))
+// Vision rows x [M][lda] (Kv values each) quantized for the engine's int8 GEMM as quant_rows does (per-32 scales; with
+// the two-pass defines also the residual), K padded with zeros to Kp, whole superblocks: the vision widths 1152 / 4304
+// are not. grid (256, Mp), local (256, 1)
+__kernel void vit_quant_pad(__global const float* x, int lda, int Kv, int Kp, int M, int M_valid, __global char* aq,
+                        __global float* asc, __global ushort* absum) {
+  const int m = get_group_id(1), lane = get_sub_group_local_id();
+  const bool valid = m < M_valid;
+  const int nsg = get_num_groups(0) * get_num_sub_groups();
+  for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < Kp / 256; s += nsg) {
+    const int base = s * 256 + 16 * lane;
+    float v[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) v[i] = valid && base + i < Kv ? x[(size_t)m * lda + base + i] : 0.0f;
+    quant_store16(v, s, m, M, Kp, aq, asc, absum, 1);
+  }
+}
+
 __kernel void vit_gemm_f16(__global const float* A, int lda, __global const half* W, int K, __global float* C,
                            int ldc, int c_off, int acc, int M_valid) {
   const int n = get_global_id(0), m0 = get_global_id(1) * VTM;
@@ -2375,6 +2392,7 @@ __kernel void vit_bias_act(__global float* x, int N, __global const float* b, in
 #endif
 #define PL ((HD + VW - 1) / VW)
 #if PL == 8 && VW == 8
+#define VIT_QREG 1
 #define KD(r, d) intel_sub_group_shuffle((r)[(d) % PL], (d) / PL)
 #else
 // other head sizes: interleaved, lane l holds dims l, l + VW, ... (one aligned sub-group block read per VW dims)
@@ -2395,7 +2413,7 @@ __kernel void vit_attn_rows(__global const half* q, __global const half* k, __gl
   const int lane = get_sub_group_local_id(), h = get_group_id(1), m = get_global_id(0);
   const bool act = m < n;
   __global const half* qp = q + ((size_t)h * Mp + (act ? m : 0)) * HD;
-#if PL == 8 && VW == 8
+#ifdef VIT_QREG
   float qr[HD];
 #pragma unroll
   for (int d = 0; d < HD; ++d) qr[d] = vload_half(d, qp);
@@ -2413,13 +2431,13 @@ __kernel void vit_attn_rows(__global const half* q, __global const half* k, __gl
     for (int jj = 0; jj < FT; ++jj) {
       const int key = min(j0 + jj, n - 1);
       float kr[PL];  // dims PL * lane ..
-#if PL == 8 && VW == 8
+#ifdef VIT_QREG
       vstore8(vload_half8(lane, kh + (size_t)key * HD), 0, kr);
 #else
       kv_row(kh + (size_t)key * HD, kr);
 #endif
       float a0 = 0.0f, a1 = 0.0f;
-#if PL == 8 && VW == 8
+#ifdef VIT_QREG
 #pragma unroll
       for (int d = 0; d < HD; d += 2) {
         a0 = fma(qr[d], KD(kr, d), a0);
@@ -2455,7 +2473,7 @@ __kernel void vit_attn_rows(__global const half* q, __global const half* k, __gl
       l += p;
       const int key = min(j0 + jj, n - 1);
       float vr[PL];
-#if PL == 8 && VW == 8
+#ifdef VIT_QREG
       vstore8(vload_half8(lane, vh + (size_t)key * HD), 0, vr);
 #else
       kv_row(vh + (size_t)key * HD, vr);

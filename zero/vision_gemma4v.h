@@ -136,7 +136,9 @@ class VisionGemma4V : public GemmaImageEncoder {
         e_.run("g4v_qkv", k, 2, g, lw);
       }
       {
-        cl_kernel k = kern("vit_attn_rows", "-cl-intel-256-GRF-per-thread" + (hd_ == 64 ? std::string() : " -DHD=" + std::to_string(hd_)));
+        // (-DHD always: ops.cl has an earlier "#ifndef HD / #define HD 256" (the Qwen attention), so without it E2B / E4B
+        //  built this kernel for 256-dim heads over rows of 64: wrong rows, spilled, 50 s per image until 2026-10-24)
+        cl_kernel k = kern("vit_attn_rows", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd_));
         int n = N, mp = Mp, nh = n_head;
         set_args(k, 0, q_, k_, v_, n, mp, nh, o_);
         const size_t rows = (size_t)8 * 4;
@@ -194,10 +196,16 @@ class VisionGemma4V : public GemmaImageEncoder {
   struct alignas(32) F8 {  // an OpenCL float8 kernel argument (clamp ranges)
     float v[8];
   };
-  struct FW {  // an f16 weight [N][K] on the GPU
+  struct FW {  // an f16 weight [N][K] on the GPU, or (i8_) Q8_0 rows with K padded to whole superblocks
     cl_mem w = nullptr;
     int N = 0, K = 0;
+    GpuWeight q8;
   };
+  // (the engine on two int8 passes (Gemma 4 26B / 12B): the matrix products on its int8 GEMM, Q8_0 weights from the
+  //  file's values and the activations on two passes; the model's KL against an exact encoder (tools/gemma4v_ref
+  //  REF_VW=q8 REF_VA=2, vision_testz ARC_VIS_LM, shapes.png) 0.0015 against 0.0008 for f16 weights and f32 products,
+  //  32 / 32 tokens the same; on one pass 0.0118. E4B (one pass) keeps the f32 products. ARC_VIT_F32=1: f32 always)
+  bool i8_ = false;
   struct CW {  // a clippable linear
     FW w;
     float in_lo = -FLT_MAX, in_hi = FLT_MAX, out_lo = -FLT_MAX, out_hi = FLT_MAX;
@@ -231,6 +239,17 @@ class VisionGemma4V : public GemmaImageEncoder {
     return e_.buf(v.size() * 4, v.data());
   }
   FW f16(const std::vector<float>& v, int N, int K) {
+    if (i8_) {
+      const int Kp = (K + 255) / 256 * 256;
+      std::vector<float> p((size_t)N * Kp, 0.0f);
+      for (int n = 0; n < N; ++n) memcpy(&p[(size_t)n * Kp], &v[(size_t)n * K], (size_t)K * 4);
+      const auto q = quantize_rows_q8_0(p.data(), N, Kp);
+      FW w;
+      w.q8 = e_.make_weight(GGML_Q8_0, q.data(), q.size(), N, Kp);
+      w.N = N;
+      w.K = K;
+      return w;
+    }
     std::vector<uint16_t> h(v.size());
     for (size_t i = 0; i < v.size(); ++i) h[i] = f32_to_fp16(v[i]);
     FW w;
@@ -254,6 +273,7 @@ class VisionGemma4V : public GemmaImageEncoder {
   }
   void load() {
     if (loaded_) return;
+    i8_ = e_.q2mm_ && !(getenv("ARC_VIT_F32") && atoi(getenv("ARC_VIT_F32")) != 0);
     {  // conv weight [E][3][16][16] = rows of (channel, row, column)
       const GgufTensor& t = f_.get("v.patch_embd.weight");
       patch_w_ = f16(host("v.patch_embd.weight"), (int)t.dims[3], 3 * patch * patch);
@@ -291,6 +311,7 @@ class VisionGemma4V : public GemmaImageEncoder {
     }
     proj_ = f16("mm.input_projection.weight");
     if (proj_.K != n_embd || proj_.N != n_out) throw std::runtime_error("mmproj: unexpected Gemma 4 vision projection");
+    if (i8_) e_.ensure_stage();  // (MoE models decode Q8_0 rows just in time: staging for these sizes)
     loaded_ = true;
   }
   // buffers for Mp patch rows and n_tok output tokens (grown as needed; released with the engine)
@@ -315,6 +336,22 @@ class VisionGemma4V : public GemmaImageEncoder {
   }
   cl_kernel kern(const char* name, const std::string& defs) { return e_.kernel("ops", "-DVIT " + defs, name); }
   void gemm(cl_mem A, int lda, const FW& w, cl_mem C, int ldc, int c_off, bool acc, int M, int n) {
+    if (w.q8.raw) {  // the engine's int8 GEMM, rows in equal chunks of at most its chunk size (its activation buffers)
+      const int nch = (n + e_.max_chunk - 1) / e_.max_chunk, rows = ((n + nch - 1) / nch + 127) / 128 * 128;
+      cl_kernel kq = kern("vit_quant_pad", "");
+      const int saved = e_.cur_T_;
+      for (int r0 = 0; r0 < n; r0 += rows) {
+        const int nv = std::min(rows, n - r0), Mp = std::min(rows, M - r0);
+        int ld = lda, kv = w.K, kp = w.q8.K, mm = Mp, mv = nv;
+        set_args(kq, 0, e_.from(A, (size_t)r0 * lda * 4), ld, kv, kp, mm, mv, e_.aq_, e_.asc_, e_.absum_);
+        size_t g[2] = {256, (size_t)Mp}, lw[2] = {256, 1};
+        e_.run("vit_gemm", kq, 2, g, lw);
+        e_.cur_T_ = nv;
+        e_.matmul("vit_gemm", w.q8, Mp, e_.from(C, (size_t)r0 * ldc * 4), ldc, c_off, acc ? 1 : 0, true);
+      }
+      e_.cur_T_ = saved;
+      return;
+    }
     cl_kernel k = kern("vit_gemm_f16", "-cl-intel-256-GRF-per-thread");
     int ld = lda, K = w.K, lc = ldc, co = c_off, ac = acc ? 1 : 0, mv = n;
     set_args(k, 0, A, ld, w.w, K, C, lc, co, ac, mv);

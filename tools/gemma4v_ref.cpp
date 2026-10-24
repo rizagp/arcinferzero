@@ -52,15 +52,20 @@ static float scalar(const std::string& name) { return tensor(name)[0]; }
 // ---- simulations of the GPU's number formats
 static int env_va() { return getenv("REF_VA") ? atoi(getenv("REF_VA")) : 0; }
 static std::string env_s(const char* k) { return getenv(k) ? getenv(k) : ""; }
-// int8 per 32 values (absmax / 127), `passes` times on the remaining residual (the sum kept)
-static void q8_rows(float* a, size_t n, int passes) {
+// int8 per 32 values of each row of K (absmax / 127; a last partial block as if padded with zeros, as the GPU pads
+// K to whole superblocks), `passes` times on the remaining residual (the sum kept)
+static void q8_rows(float* a, size_t n, int K, int passes) {
+  const int nb = (K + 31) / 32;
 #pragma omp parallel for schedule(static)
-  for (long long b = 0; b < (long long)(n / 32); ++b) {
-    float r[32], out[32] = {};
-    memcpy(r, a + b * 32, sizeof r);
+  for (long long b = 0; b < (long long)(n / K) * nb; ++b) {
+    const size_t row = b / nb;
+    const int c0 = (int)(b % nb) * 32, len = std::min(32, K - c0);
+    float* x = a + row * K + c0;
+    float r[32] = {}, out[32] = {};
+    memcpy(r, x, len * 4);
     for (int p = 0; p < passes; ++p) {
       float mx = 0;
-      for (float x : r) mx = std::max(mx, std::fabs(x));
+      for (float v : r) mx = std::max(mx, std::fabs(v));
       const float d = mx / 127.0f;
       for (int i = 0; i < 32; ++i) {
         const float q = d > 0 ? std::nearbyint(r[i] / d) * d : 0.0f;
@@ -68,7 +73,7 @@ static void q8_rows(float* a, size_t n, int passes) {
         r[i] -= q;
       }
     }
-    memcpy(a + b * 32, out, sizeof out);
+    memcpy(x, out, len * 4);
   }
 }
 static float f16_round(float x) {  // (nearest even at 10 mantissa bits)
@@ -134,7 +139,7 @@ static Lin load_lin(const std::string& name) {
   l.in = (int)t.dims[0];
   l.out = (int)(t.nelements() / l.in);
   l.w = tensor(name + ".weight");
-  if (env_s("REF_VW") == "q8" && l.in % 32 == 0) q8_rows(l.w.data(), l.w.size(), 1);
+  if (env_s("REF_VW") == "q8") q8_rows(l.w.data(), l.w.size(), l.in, 1);
   if (has(name + ".input_min")) { l.clamp_in = true; l.in_lo = scalar(name + ".input_min"); l.in_hi = scalar(name + ".input_max"); }
   if (has(name + ".output_min")) { l.clamp_out = true; l.out_lo = scalar(name + ".output_min"); l.out_hi = scalar(name + ".output_max"); }
   return l;
@@ -145,7 +150,7 @@ static Vec apply(const Lin& l, const Vec& a, int M) {
   if (l.clamp_in)
 #pragma omp parallel for schedule(static)
     for (long long i = 0; i < (long long)x.size(); ++i) x[i] = std::clamp(x[i], l.in_lo, l.in_hi);
-  if (const int va = env_va(); va > 0 && l.in % 32 == 0) q8_rows(x.data(), x.size(), va);
+  if (const int va = env_va(); va > 0) q8_rows(x.data(), x.size(), l.in, va);
   Vec y((size_t)M * l.out);
   gemm(x.data(), M, l.in, l.w.data(), l.out, y.data());
   if (l.clamp_out)
