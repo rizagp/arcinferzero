@@ -1129,6 +1129,7 @@ class Engine {
     int kv_src = -1;            // shared KV: the layer whose cache this layer reads (no K/V of its own)
     bool i8 = true;             // Gemma 4: keeps the int8 K / V copy (only the layers the drafter reads)
     cl_mem sinks = nullptr;     // Flint: one learned logit per q head in the attention softmax
+    cl_mem router_bf16 = nullptr;  // Flint: the router rows in BF16 (read by gemv_bf16 with f32 inputs)
     // Gemma 4 with experts: the dense FFN's output norm, the experts' input norm and output norm, the router's input
     // norm weights (its scale / sqrt(E)), the scale of each expert
     cl_mem post_ffw1 = nullptr, ffn_norm2 = nullptr, post_ffw2 = nullptr, rnorm = nullptr, escale = nullptr,
@@ -2470,9 +2471,19 @@ class Engine {
     if (sg) dequant_row(sg->type, sg->data, E, v.data() + (size_t)hp.n_expert * E);
     auto q8 = quantize_rows_q8_0(v.data(), NR, E);
     // (Flint: the router in f32 as the file's BF16 rows are, on f32 inputs: its sigmoid scores have near-ties, 0.005
-    //  apart, and with Q8_0 rows the expert choices flipped; KL 0.027 -> 0.004 with f32 V. ARC_FL_RF32=0: Q8_0)
+    //  apart, and with Q8_0 rows the expert choices flipped; KL 0.027 -> 0.004 with f32 V; Q8_0 rows plus a Q8_0 residual
+    //  matrix through the GEMV / GEMM gave 0.014 / 0.012 / 0.051: the inputs must stay f32 too. Its rows stay BF16
+    //  as the file has them (exact; half the bytes of f32). ARC_FL_RF32=0: Q8_0)
     static const bool fl_rf32 = !getenv("ARC_FL_RF32") || atoi(getenv("ARC_FL_RF32")) != 0;
-    if (hp.flint && fl_rf32) L.router_f32 = buf(v.size() * 4, v.data());
+    if (hp.flint && fl_rf32) {  // (BF16 as in the file: v holds exactly those values, the low 16 bits zero)
+      std::vector<uint16_t> bf(v.size());
+      for (size_t i = 0; i < v.size(); ++i) {
+        uint32_t u;
+        memcpy(&u, &v[i], 4);
+        bf[i] = (uint16_t)(u >> 16);
+      }
+      L.router_bf16 = buf(bf.size() * 2, bf.data());
+    }
     const GgufTensor& tg = f_.get(p + "ffn_gate_shexp.weight");
     const GgufTensor& tu = f_.get(p + "ffn_up_shexp.weight");
     const int Fs = hp.n_ff_shexp, NRP = rgu_rows();

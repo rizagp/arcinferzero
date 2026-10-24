@@ -16,7 +16,8 @@
       if (L.has_v) matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, 0, a_in);
     }
     const std::string vcd = vbytes_ == 4 ? " -DVC32" : "";  // (Flint: f32 V rows)
-    const std::string hdo = "-DHD=" + std::to_string(hd) + sb_opt(hd) + vcd;
+    const std::string hdo = "-DHD=" + std::to_string(hd) + sb_opt(hd) + vcd + " -DRT_TABLE" +
+                            (hp.flint ? " -DNO_I8" : "");  // (the RoPE table always passed; Flint: no int8 copies)
     const int win = L.swa ? hp.n_swa : 0;
     // RoPE, the K / V writes into the ring (or cache) and the q rows for the attention: rows r0 .. r0 + Tq of the pass
     // at position p0 (a batched pass: per sequence, in its slot)

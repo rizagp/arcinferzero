@@ -27,17 +27,20 @@
         run("gemm_router", k, 2, gws, lws);
       }
       rmsnorm_quant(x_, 0, L.ffn_norm2, E, Mp, T, 1);
-    } else if (L.router_f32) {  // (Flint: the router in f32 on the f32 normed rows, in big_ until the shared FFN's
+    } else if (L.router_bf16) {  // (Flint: the router in f32 on the f32 normed rows, in big_ until the shared FFN's
                                 //  gate / up overwrite it)
       float eps = hp.eps;
       int r0 = 0, EE = E, MM = Mp, TT = T, wh = 1, a32 = 1;
       set_args(k_rmsnorm_, 0, x_, r0, L.post_norm, EE, MM, TT, eps, aq_, asc_, absum_, big_, wh, a32);
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
       run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
-      cl_kernel k = kernel("ops", "", "gemv_f32");
-      int K = E, N = NR, ld = NR;
-      set_args(k, 0, big_, K, L.router_f32, N, rl_, ld);
-      size_t g2[2] = {(size_t)16 * NR, (size_t)T}, l2[2] = {16, 1};
+      // (prompt chunks: 4 rows x 4 tokens per sub-group, 4K prompt 744 -> 229 ms; single tokens one row each, enough
+      //  sub-groups to keep the reads going: 4 rows gave only 68 of them)
+      const int rt = T > 8 ? 4 : 1, tt = T > 8 ? 4 : 1;
+      cl_kernel k = kernel("ops", "-DRT=" + std::to_string(rt) + " -DTT=" + std::to_string(tt), "gemv_bf16");
+      int K = E, N = NR, nt = T, ld = NR;
+      set_args(k, 0, big_, K, L.router_bf16, N, nt, rl_, ld);
+      size_t g2[2] = {(size_t)16 * ((NR + rt - 1) / rt), (size_t)(T + tt - 1) / tt}, l2[2] = {16, 1};
       run("gemm_router", k, 2, g2, l2);
     } else if (!hp.hc) {
       rmsnorm_quant(x_, 0, L.post_norm, E, Mp, T, 1);
@@ -50,14 +53,14 @@
       // (done above)
     } else if (T == 1 && L.rgu.raw) {
       matmul("gemm_router_sh", L.rgu, Mp, rgu_out_, 0, 0, 0, true);
-      rl = L.router_f32 ? rl_ : rgu_out_;
+      rl = L.router_bf16 ? rl_ : rgu_out_;
       gu = rgu_gu_;
     } else if (fused) {
-      if (!L.router_f32) matmul("gemm_router", L.router, Mp, rl_, NR, 0, 0, true);
+      if (!L.router_bf16) matmul("gemm_router", L.router, Mp, rl_, NR, 0, 0, true);
       matmul("gemm_gate_sh", L.gate_sh, Mp, big_, Fs, 0, 0, true);
       matmul("gemm_up_sh", L.up_sh, Mp, big_, Fs, 0, 2, true);
     } else {
-      if (!L.router_f32) matmul("gemm_router", L.router, Mp, rl_, NR, 0, 0, true);
+      if (!L.router_bf16) matmul("gemm_router", L.router, Mp, rl_, NR, 0, 0, true);
       matmul("gemm_gate_sh", L.gate_sh, Mp, big_, 2 * Fs, 0, 0, true);
       matmul("gemm_up_sh", L.up_sh, Mp, big_, 2 * Fs, Fs, 0, true);
     }
@@ -197,7 +200,9 @@
     };
     auto down_q = [&](cl_mem tiles) {
       const int grows = T == 1 ? gr_dn : 1;
-      cl_kernel k = kernel("decode", "-DMOE_Q -DQT=" + std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
+      // (two passes fused: the 256-register file, as gate / up; with 128 the sums spilled, ocloc: 28-61 scratch messages)
+      cl_kernel k = kernel("decode", (q2f ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DMOE_Q -DQT=" +
+                                         std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
                                          " -DTM=" + std::to_string(tm) + xdef +
                                          (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + q2fd, "moe_down_q");
       int NN = E, K = Fp, S = slots_;

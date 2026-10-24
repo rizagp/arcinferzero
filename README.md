@@ -38,7 +38,7 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
 | Gemma 4 E4B (Google QAT) | 724 tok/s (4K), 615 (14K) | 32 tok/s with its drafter | 0.00088 |
 | Gemma 4 12B (Google QAT) | 137 tok/s (4K), 102 (14K) | 19.0 tok/s with its drafter | 0.0002 (two-pass int8 activations) |
 | Gemma 4 26B-A4B (Google QAT, MoE, experts on the SSD) | 252 tok/s (4K), 210 (14K) | ~25 tok/s with its drafter; 14 after a 14K prompt without | 0.0042 (two-pass int8 activations) |
-| Flint (Unsloth UD-Q4_K_XL, MoE, experts on the SSD; new, server support in progress) | 240 tok/s (4K) | 13-17 tok/s | 0.0043 (two-pass int8 activations, f32 V and router) |
+| Flint (Unsloth UD-Q4_K_XL, MoE, experts on the SSD; new, server support in progress) | 248 tok/s (4K) | 13-17 tok/s | 0.0043 (two-pass int8 activations, f32 V and router) |
 
 | vs llama.cpp (same file, same laptop) | arcinferzero | llama.cpp Vulkan | llama.cpp SYCL |
 |---|---|---|---|

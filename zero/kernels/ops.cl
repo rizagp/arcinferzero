@@ -1521,11 +1521,21 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     float pv[PRP], rtv[2 * PRP];  // this lane's (cos, sin) pairs: angles (VPL * lane) % (HD / 2) + c0 ..
 #pragma unroll
     for (int i = 0; i < PRP; ++i) pv[i] = intel_sub_group_shuffle_xor(v[c0 + i], 8);
+#ifdef RT_TABLE  // (-DRT_TABLE: the caller always passes the table; the angles' code below (pow / cos / sin, ~8,000 of
+                 //  the kernel's 8,500 instructions) is left out. Without it: the Gemma 4 drafter's layers, no table)
+    LOADF(rtv, rtl + 2 * c0, 2 * PRP)
+#else
     if (rt) { LOADF(rtv, rtl + 2 * c0, 2 * PRP) }
+#endif
 #pragma unroll
     for (int i = 0; i < PRP; ++i) {
       const int e = VPL * lane + c0 + i, fi = e % (HD / 2);
       float c, sn;
+#ifdef RT_TABLE
+      c = rtv[2 * i];
+      sn = rtv[2 * i + 1];
+      (void)fi;
+#else
       if (rt) {
         c = rtv[2 * i];
         sn = rtv[2 * i + 1];
@@ -1535,11 +1545,19 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
         c = cos(theta);
         sn = sin(theta);
       }
+#endif
       v[c0 + i] = e < HD / 2 ? v[c0 + i] * c - pv[i] * sn : v[c0 + i] * c + pv[i] * sn;
     }
   }
   }
 #undef PRP
+  // (-DNO_I8, Flint: no int8 copy of q / K / V at all, only the f32 query and the float K / V rows (f16kv 3); the
+  //  int8 rows and scales were computed for nothing, the stores skipped by a runtime flag)
+#ifdef NO_I8
+  if (isq)
+#pragma unroll
+    for (int i = 0; i < VPL; ++i) v[i] *= q_scale;
+#else
   float amax = 0.0f;
 #pragma unroll
   for (int i = 0; i < VPL; ++i) {
@@ -1554,6 +1572,7 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
   for (int c = 0; c < VPL / 4; ++c) pk[c] = 0;
 #pragma unroll
   for (int i = 0; i < VPL; ++i) pk[i / 4] |= (uint)(convert_int_rte(v[i] * inv) & 0xFF) << (8 * (i % 4));
+#endif
   // (f16kv bit 0: the f32 query and the float K / V rows for attn_fa_g as well: kc / vc [kv head][cap][HD], slot =
   //  pos % cap)
   if (f16kv & 1) {
@@ -1567,6 +1586,9 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
       for (int i = 0; i < VPL; ++i) kd[i] = v[i];
     }
   }
+#ifdef NO_I8
+  if (isq) return;
+#else
   if (isq) {
     __global uint* dst = (__global uint*)(qi + ((size_t)m * nh + hs) * HD) + (VPL / 4) * lane;
 #pragma unroll
@@ -1574,13 +1596,16 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     if (lane % (16 / SB) == 0) qsc[((size_t)m * nh + hs) * SB + lane / (16 / SB)] = amax / 127.0f;
     return;
   }
+#endif
   const int slot = pos % cap, kk = slot % 16;
   const size_t blk = (size_t)kvh * (cap / 16) + slot / 16;
   // (f16kv bit 1: this layer keeps no int8 K / V copy, only the drafter's layers do)
   const bool i8 = !(f16kv & 2);
+#ifndef NO_I8
 #pragma unroll
   for (int c = 0; c < VPL / 4; ++c)
     if (i8) kq[(blk * (HD / 4) + (VPL / 4) * lane + c) * 16 + kk] = pk[c];
+#endif
   // V: the V projection, or the raw K projection, RMS-normalized without weight
   // (the raw K projection is read again from qkv, an input only: a register copy of it spilled at HD 512)
   float raw[VPL];
@@ -1595,6 +1620,12 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     LOADF(raw, src + VPL * lane, VPL)
   }
   r = has_v == 2 ? 1.0f : rsqrt(ss / HD + eps);
+#ifdef NO_I8
+#pragma unroll
+  for (int i = 0; i < VPL; ++i) raw[i] *= r;
+  (void)i8;
+  (void)kk;
+#else
   float vmax = 0.0f;
 #pragma unroll
   for (int i = 0; i < VPL; ++i) { raw[i] *= r; vmax = fmax(vmax, fabs(raw[i])); }
@@ -1608,6 +1639,7 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     ksc[(blk * SB + lane / (16 / SB)) * 16 + kk] = amax / 127.0f;
     vsc[(blk * SB + lane / (16 / SB)) * 16 + kk] = vmax / 127.0f;
   }
+#endif
   if (f16kv & 1) {
     __global VC_T* vd = vc + ((size_t)kvh * cap + pos % cap) * HD + VPL * lane;
 #pragma unroll
@@ -2706,6 +2738,46 @@ __kernel void hc_norm_quant(__global const float* res, int r0, __global const fl
 // change (Gemma 4 26B-A4B: int8 router inputs alone move the reference by KL 0.035). One sub-group per (row, token).
 // grid (16 * N, T), local (16, 1).
 __attribute__((intel_reqd_sub_group_size(16)))
+// Flint's router: f32 input rows x [T][K] against BF16 weight rows (the file's own, exact in f32), RT rows x TT tokens
+// per sub-group so that each weight and input load serves several products (one row x one token per sub-group, as
+// gemv_f32, re-read the weights for every token: 744 ms of a 4K prompt). grid (16 * N / RT, ceil(T / TT)), local (16, 1)
+#ifndef RT
+#define RT 4
+#endif
+#ifndef TT
+#define TT 4
+#endif
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void gemv_bf16(__global const float* x, int K, __global const ushort* w, int N, int T, __global float* out,
+                        int ldo) {
+  const int n0 = get_global_id(0) / 16 * RT, t0 = get_global_id(1) * TT, lane = get_sub_group_local_id();
+  float acc[RT][TT];
+#pragma unroll
+  for (int r = 0; r < RT; ++r)
+#pragma unroll
+    for (int t = 0; t < TT; ++t) acc[r][t] = 0.0f;
+  for (int i = lane; i < K / 4; i += 16) {
+    float4 a[TT];
+#pragma unroll
+    for (int t = 0; t < TT; ++t) a[t] = t0 + t < T ? vload4(i, x + (size_t)(t0 + t) * K) : (float4)0.0f;
+#pragma unroll
+    for (int r = 0; r < RT; ++r) {
+      const ushort4 u = vload4(i, w + (size_t)min(n0 + r, N - 1) * K);
+      const float4 b = (float4)(as_float((uint)u.x << 16), as_float((uint)u.y << 16), as_float((uint)u.z << 16),
+                                as_float((uint)u.w << 16));
+#pragma unroll
+      for (int t = 0; t < TT; ++t) acc[r][t] += a[t].x * b.x + a[t].y * b.y + a[t].z * b.z + a[t].w * b.w;
+    }
+  }
+#pragma unroll
+  for (int r = 0; r < RT; ++r)
+#pragma unroll
+    for (int t = 0; t < TT; ++t) {
+      const float s = sub_group_reduce_add(acc[r][t]);
+      if (lane == 0 && n0 + r < N && t0 + t < T) out[(size_t)(t0 + t) * ldo + n0 + r] = s;
+    }
+}
+
 __kernel void gemv_f32(__global const float* x, int K, __global const float* w, int N, __global float* out, int ldo) {
   const int n = get_global_id(0) / 16, t = get_global_id(1), lane = get_sub_group_local_id();
   if (n >= N) return;
