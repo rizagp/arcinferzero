@@ -1,7 +1,7 @@
 # One-time setup of arcinferzero for Pi on this laptop (setup.cmd runs it too):
 #   - builds bin\serverz.exe if it is missing,
 #   - adds the "arcinferzero" provider to ~/.pi/agent/models.json: every model serverz.exe finds (Hugging Face cache and
-#     %LOCALAPPDATA%\arcinferzero\models) with its context for the current GPU memory (other providers are kept; the
+#     %USERPROFILE%\arcinferzero\models) with its context for the current GPU memory (other providers are kept; the
 #     previous file is saved as models.json.bak). pi-arc refreshes the list on every start.
 #   - installs the `pi-arc` and `arc-server` commands into ~/.pi/agent/bin (already on PATH).
 # Run:  powershell -ExecutionPolicy Bypass -File scripts\install-pi.ps1

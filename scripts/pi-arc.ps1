@@ -56,7 +56,7 @@ WORKING IN PI
                                  a model switch (27B: ~5 s to the first token instead of ~40 s).
   another project folder         Pi's system prompt contains the folder and its AGENTS.md, so the first session
                                  in a project processes it once (27B: ~40 s); later ones reuse it. Kept per
-                                 folder in %LOCALAPPDATA%\arcinferzero\zero\prefix: its 2 latest versions, which other
+                                 folder in %USERPROFILE%\arcinferzero\zero\prefix: its 2 latest versions, which other
                                  projects do not replace; past 8 GB in all the least recently used go first.
   going back to an old session   (pi-arc -c, pi-arc -r, /resume) right after closing it: only the new message.
                                  After other sessions (or the web UI): loaded from disk in seconds (session
@@ -65,7 +65,7 @@ WORKING IN PI
 
 MODEL
   --pick, -Pick                  numbered list of every supported GGUF model in the Hugging Face cache
-                                 (%USERPROFILE%\.cache\huggingface\hub), %LOCALAPPDATA%\arcinferzero\models and
+                                 (%USERPROFILE%\.cache\huggingface\hub), %USERPROFILE%\arcinferzero\models and
                                  the folders in model-dirs.txt,
                                  by full name (e.g. ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF); Enter keeps the
                                  model that is already running. Image projectors (mmproj-*) and drafters
@@ -105,7 +105,7 @@ LAUNCHER OPTIONS
                                  currently set (bin\clinfo.exe, "global mem") less 1.2 GiB for the driver,
                                  at most the model's max context length. Computed for every model in
                                  a few seconds (a dry load that only adds up the memory), remembered in
-                                 %LOCALAPPDATA%\arcinferzero\zero\ctx-auto.txt, recomputed when the GPU memory changes.
+                                 %USERPROFILE%\arcinferzero\zero\ctx-auto.txt, recomputed when the GPU memory changes.
                                  35b and flash get 131,072 (the expert cache gets the rest); --pick shows every
                                  model's value.
                                  Without --ctx: a running server keeps its context, a new one starts with auto.
@@ -117,7 +117,7 @@ LAUNCHER OPTIONS
                                  memory, which the auto context turns into more context: 27B with
                                  --chunk 1024 -> ~65K tokens at 17.4 GiB, 118,784 at 18.3 GiB; ~11K-token
                                  prompts ~4 % slower, long prompts the same speed.
-  --session-cache <GB>           keep conversations on disk (%LOCALAPPDATA%\arcinferzero\zero\sessions) when you switch
+  --session-cache <GB>           keep conversations on disk (%USERPROFILE%\arcinferzero\zero\sessions) when you switch
   (also -SessionCache)           Pi sessions: going back to one loads it in seconds instead of processing its
                                  whole prompt again (default: 8 GB; 0 = off). New sessions always reuse the
                                  system prompt (in memory; from disk after a restart or a model switch).
@@ -198,18 +198,18 @@ bin\serverz.exe --help)
        /health, /props (also GPU memory by part and request stats), /tokenize, /sessions (GET size, DELETE clear)
 
 FILES
-  %LOCALAPPDATA%\arcinferzero\server.log      server log: load time, context, per-request prompt / generation speed,
+  %USERPROFILE%\arcinferzero\server.log      server log: load time, context, per-request prompt / generation speed,
                                           system-prompt cache loads and saves
-  %LOCALAPPDATA%\arcinferzero\server.json     what arc-server started (model, context, chunk)
-  %LOCALAPPDATA%\arcinferzero\last-model.txt  the model started last (pi-arc starts it again by default)
-  %LOCALAPPDATA%\arcinferzero\kernels         compiled GPU kernels (cache)
-  %LOCALAPPDATA%\arcinferzero\zero\          arcinferzero's data:
+  %USERPROFILE%\arcinferzero\server.json     what arc-server started (model, context, chunk)
+  %USERPROFILE%\arcinferzero\last-model.txt  the model started last (pi-arc starts it again by default)
+  %USERPROFILE%\arcinferzero\kernels         compiled GPU kernels (cache)
+  %USERPROFILE%\arcinferzero\zero\          arcinferzero's data:
     ctx-auto.txt                          computed contexts per model and GPU memory
     sessions                              saved conversations (--session-cache)
     prefix                                saved system prompts, per project folder (Pi's differs per
                                           project: it contains the folder and its AGENTS.md)
     *.experts / *.lru                     MoE expert files (written once per model) and their cache state
-  %LOCALAPPDATA%\arcinferzero\build.log       compiler output of the last setup.cmd build
+  %USERPROFILE%\arcinferzero\build.log       compiler output of the last setup.cmd build
 '@
     exit 0
   }
@@ -256,7 +256,7 @@ shortens a long conversation (the details it drops are gone for the model).
 }
 # Which model: the one the server is running, else the one started last, else ask (--pick: always ask).
 . (Join-Path $PSScriptRoot "app-dir.ps1")
-$stateDir = Get-AppDir  # (%LOCALAPPDATA%\arcinferzero; renamed from arcinfer once)
+$stateDir = Get-AppDir  # (%USERPROFILE%\arcinferzero; renamed from arcinfer once)
 $base = "http://127.0.0.1:8090"
 # the id of the loaded model: the entry marked loaded (the server lists every model it can switch to), else the first
 function Get-LoadedId([int]$TimeoutSec) {

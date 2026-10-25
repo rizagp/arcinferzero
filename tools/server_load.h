@@ -168,14 +168,14 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (!eo.mtp) layout += "-std";
   if (eo.mtp && !eo.dflash.empty() && !eo.mtp_block) layout += "-nomtp";
   if (L->eng->hp.gemma) layout += "-q2";  // (Gemma 4: two-pass states; the one-pass ones of before 2026-10-22 stay unused)
-  if (so.prefix_cache && eo.attn_int8) {  // %LOCALAPPDATA%\arcinferzero\prefix\<model>-<size>[<layout>]
+  if (so.prefix_cache && eo.attn_int8) {  // %USERPROFILE%\arcinferzero\prefix\<model>-<size>[<layout>]
     std::error_code ec;
     const std::filesystem::path mp(model);
     srv.open_prefix_cache(app_dir() + ARC_DATA "prefix/" + mp.stem().string() + "-" +
                           std::to_string(std::filesystem::file_size(mp, ec)) + layout, so.prefix_gb);
   }
   if (so.sess_gb > 0 && eo.attn_int8) {
-    // saved conversations of this model file: %LOCALAPPDATA%\arcinferzero\sessions\<model>-<size>
+    // saved conversations of this model file: %USERPROFILE%\arcinferzero\sessions\<model>-<size>
     std::error_code ec;
     const std::filesystem::path mp(model);
     std::string dir = so.sess_dir;

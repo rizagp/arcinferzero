@@ -1,5 +1,5 @@
 // arcinferzero: the routed experts of a MoE GGUF in a file of their own on the SSD, laid out for streaming:
-//   %LOCALAPPDATA%\arcinferzero\zero\<gguf name>-<fingerprint>.experts
+//   %USERPROFILE%\arcinferzero\zero\<gguf name>-<fingerprint>.experts
 // Every (layer, expert) is one record: its gate, up and down rows one after the other in the GPU raw form arcinferzero
 // uploads (src/quants.h gpu_raw_sb: regrouped / padded superblocks), the record padded to a multiple of 4 KB, so one
 // unbuffered read (FILE_FLAG_NO_BUFFERING: no Windows file cache in RAM) brings a whole expert, ready for the GPU.

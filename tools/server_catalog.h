@@ -45,7 +45,7 @@ static std::string hf_hub_dir() {
   if (const char* u = getenv("USERPROFILE")) return std::string(u) + "/.cache/huggingface/hub";
   return "";
 }
-// extra model folders (e.g. a second drive): ARC_MODEL_DIRS (';'-separated) and %LOCALAPPDATA%\arcinferzero\model-dirs.txt
+// extra model folders (e.g. a second drive): ARC_MODEL_DIRS (';'-separated) and %USERPROFILE%\arcinferzero\model-dirs.txt
 // (one folder per line, '#' comments); each in the Hugging Face cache layout or with .gguf files directly in it
 static std::vector<std::string> extra_model_dirs() {
   std::vector<std::string> extra;
@@ -134,7 +134,7 @@ static std::vector<ModelInfo> scan_models() {
   }
   for (const auto& e : fs::directory_iterator(fs::path(app_dir()) / "models", ec))
     if (is_model(e.path())) cands.push_back({"arcinferzero/" + e.path().stem().string(), e.path().filename().string(), e.path(), e.last_write_time(ec)});
-  // arcinferzero packages (zero/gguf_pack.h): %LOCALAPPDATA%\arcinferzero\zero\models\<name>\<name>.gguf
+  // arcinferzero packages (zero/gguf_pack.h): %USERPROFILE%\arcinferzero\zero\models\<name>\<name>.gguf
   for (const auto& d : fs::directory_iterator(zpack::packages_dir(), ec)) {
     const fs::path g = d.path() / (d.path().filename().string() + ".gguf");
     if (d.is_directory(ec) && fs::exists(g, ec))
@@ -401,7 +401,7 @@ static std::string find_dflash(const std::string& model) {
 // The largest context (a multiple of 4096, at most the trained one) for which the server's GPU memory, the ~0.22 GiB
 // the driver adds and ~0.95 GiB for the desktop and other apps fit the device's global memory. A dry load (the
 // engine adds up its allocations without making them: seconds, no GPU memory) gives what does not depend on the
-// context; the result is remembered per model file, chunk size, MTP setting and device memory in %LOCALAPPDATA%\arcinferzero\ctx-auto.txt.
+// context; the result is remembered per model file, chunk size, MTP setting and device memory in %USERPROFILE%\arcinferzero\ctx-auto.txt.
 static uint64_t device_global_mem() {
   static uint64_t dev = 0;
   if (!dev) {

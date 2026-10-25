@@ -21,7 +21,7 @@
 #   -Port <n>                  server smoke-test port (default 8091)
 #
 # Models that are not given are searched in %USERPROFILE%\.cache\huggingface\hub\models--*\snapshots and in the
-# folders listed one per line in %LOCALAPPDATA%\arcinferzero\model-dirs.txt (# starts a comment; missing folders, e.g.
+# folders listed one per line in %USERPROFILE%\arcinferzero\model-dirs.txt (# starts a comment; missing folders, e.g.
 # an unplugged drive, are ignored). A check whose model is missing prints [SKIP] and does not fail.
 #
 # Checks: model-free unit tests (HTTP parser, API compatibility, expert-cache pools, tool-call streaming, chat

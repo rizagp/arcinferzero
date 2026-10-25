@@ -70,7 +70,7 @@ The server keeps running after Pi is closed. The next session is ready right awa
 and a repeated prompt (for example Pi's system prompt) comes from the cache. If `pi-arc` is called with another
 model, the server switches models automatically.
 
-Pi's system prompt is also saved to disk (`%LOCALAPPDATA%\arcinferzero\zero\prefix`), so after the server restarts or
+Pi's system prompt is also saved to disk (`%USERPROFILE%\arcinferzero\zero\prefix`), so after the server restarts or
 switches models, a new Pi session still starts within a few seconds (27B: ~5 s instead of ~40 s). Pi's system
 prompt contains the project folder and its `AGENTS.md`, so the saved prompts are grouped per project folder: each
 folder keeps its 2 latest versions and is not pushed out by other folders (27B: ~290 MB per file). All models
@@ -127,7 +127,7 @@ arc-server start -Model 35b -MtpDrafts 2 -ThinkBudget 4096 -NoSwap   # other opt
 arc-server help                # every option
 ```
 
-The server log is `%LOCALAPPDATA%\arcinferzero\server.log`. The server uses port 8090.
+The server log is `%USERPROFILE%\arcinferzero\server.log`. The server uses port 8090.
 
 **arcinferzero (the engine):** the server runs through Level Zero (Intel's GPU driver). For
 MoE models (Qwen3.6 35B) the experts are kept on the SSD and only the frequently used experts are in GPU memory (a
@@ -142,7 +142,7 @@ pi-arc 35b --no-stream               # without the SSD cache: every expert on th
 ```
 
 On first use, arcinferzero writes the expert file once (35B UD-IQ4_XS: 16 GB, about 2.5 minutes; Flash Next: 56 GB, about 9.5 minutes) to
-`%LOCALAPPDATA%\arcinferzero\zero\`. This file can be deleted at any time; when it is missing, it is written again
+`%USERPROFILE%\arcinferzero\zero\`. This file can be deleted at any time; when it is missing, it is written again
 automatically. The cache size is set automatically: arcinferzero uses the GPU memory Windows reports for the iGPU (your
 shared-memory setting) less 1.2 GB for the driver, and the cache takes what the rest of the model leaves (it can be
 changed: server options `--expert-cache-gb`, `--expert-cache-pct`). If GPU memory suddenly runs short because of other apps (e.g.
@@ -153,14 +153,14 @@ arcinferzero notes:
   layer are in the same file). Dense models (27B, 9B, 4B, Gemma 12B / E4B) keep every weight on the GPU.
 - Expert files are never deleted automatically: the next start uses them right away (35B about 10 s, including
   filling the GPU cache from the last list). They are rewritten only when the GGUF changes; files of an old version
-  have to be deleted by hand from `%LOCALAPPDATA%\arcinferzero\zero\`.
+  have to be deleted by hand from `%USERPROFILE%\arcinferzero\zero\`.
 - Disk space: a MoE model's experts are stored twice, in the GGUF and in the expert file (Gemma 4 26B: 14.4 + 13.2
-  GB). `bin\serverz.exe --pack <model.gguf>` turns them into a package in `%LOCALAPPDATA%\arcinferzero\zero\models\`: a
+  GB). `bin\serverz.exe --pack <model.gguf>` turns them into a package in `%USERPROFILE%\arcinferzero\zero\models\`: a
   small GGUF with the other weights (26B: 1.6 GB) and the expert file (moved, not written again: seconds). Copy the
   `mmproj` file next to the package for images. The model list then uses the package, and the original GGUF can be
   moved to a backup disk. The package gives bit-identical logits and the same image answers (checked on the 26B,
   20 Oct; the 35B and Flash Next run from packages too).
-- GPU kernels are compiled once and then saved (`%LOCALAPPDATA%\arcinferzero\kernels`): the first request of a model on
+- GPU kernels are compiled once and then saved (`%USERPROFILE%\arcinferzero\kernels`): the first request of a model on
   zero, the first image, or the first use after an Intel driver update feels slower, after that it is normal.
 
 **DFlash2 drafter (`--dflash`, arcinferzero only: `serverz.exe` / `runz.exe`).** This drafter guesses 7 tokens at
@@ -190,7 +190,7 @@ the Intel AI Boost NPU compute part of every prompt chunk while the GPU computes
 +15-20 %, about 0.4 GB more RAM, generation unchanged. The setting stays with the server: Pi's `/model`, another
 client's model, or `pi-arc` on another model keep it (models it does not help, such as the 4B or the 35B, run
 without it and say so in the log); `arc-server restart` or a stop turns it off. The first prompt of a new length
-class compiles the NPU's graphs once (10-30 s; cached in `%LOCALAPPDATA%\arcinferzero\npu`).
+class compiles the NPU's graphs once (10-30 s; cached in `%USERPROFILE%\arcinferzero\npu`).
 [docs/npu-experiment.md](docs/npu-experiment.md).
 
 **Two conversations at once (`-Slots 2`, arcinferzero).** By default the server holds one conversation and runs one
@@ -212,12 +212,12 @@ engine's logits bit-identical alone, interleaved or batched). `ARC_NO_BATCH=1` t
 **Qwen3.8 Flash Next (arcinferzero only).** A MoE model with 512 experts fetched from the SSD (like the 35B). Run
 `serverz.exe` with `-m` pointing to the first file (`...-IQ3_S-00001-of-00002.gguf`); the second file must be in the
 same folder (or use `pi-arc flash` / `arc-server start -Model flash`). The first start writes a 56 GB expert file
-to `%LOCALAPPDATA%\arcinferzero\zero\` (~9.5 minutes); later loads through the server take ~21–26 s. It writes ~6–7
+to `%USERPROFILE%\arcinferzero\zero\` (~9.5 minutes); later loads through the server take ~21–26 s. It writes ~6–7
 tokens/s (the expert cache holds about a fifth of the experts at 131K); prompts: 166 tokens/s at 4K, ~145-163 at
 9-32K, ~123 at 125K. The automatic context is 131,072; up to 262,144 with `--ctx`. The difference from the CPU
 reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. `ARC_FN_PRECISE=1` (set before starting
 the server) makes it more exact (0.0127 at 3.5K) at about half the prompt speed. This model has no MTP block and
-cannot read images; the packaged single file in `%LOCALAPPDATA%\arcinferzero\zero\models` works too.
+cannot read images; the packaged single file in `%USERPROFILE%\arcinferzero\zero\models` works too.
 
 Stop the server (`arc-server stop`) before using the laptop for other heavy GPU work (games, video editing), or
 before moving or rebuilding the arcinferzero folder.
@@ -343,7 +343,7 @@ Tips:
   your message is processed. The first session in a new project folder processes its system prompt once (27B:
   ~40 s).
 - Going back to an old session after another session (or the web UI) loads its conversation from disk in seconds:
-  the session cache is on by default (8 GB in `%LOCALAPPDATA%\arcinferzero\zero\sessions`, delete with
+  the session cache is on by default (8 GB in `%USERPROFILE%\arcinferzero\zero\sessions`, delete with
   `arc-server clear-cache`, turn off with `pi-arc --session-cache 0`). `arc-server stop` / `restart` and a model
   switch first save the conversation the server holds, so afterwards that conversation is loaded too, not processed
   again.
@@ -367,16 +367,16 @@ Only the `pi-arc` / `arc-server` shortcut commands store the folder location; ev
 | Symptom | Cause and fix |
 |---|---|
 | `pi-arc` is not recognized | Run `setup.cmd` (section 1), then open a new terminal. |
-| Setup fails at the build step | Visual Studio Build Tools (C++) is not installed; setup shows how to install it. The compiler output is in `%LOCALAPPDATA%\arcinferzero\build.log`. |
+| Setup fails at the build step | Visual Studio Build Tools (C++) is not installed; setup shows how to install it. The compiler output is in `%USERPROFILE%\arcinferzero\build.log`. |
 | "The server stopped while loading" | Look at the log it shows. Usually there is not enough GPU memory: close heavy apps, or use `--ctx 32768` / a smaller model. |
 | Windows is slow or stops responding while a model loads | The GPU memory is set too high (section 5): lower it in Intel Graphics Software, then `arc-server restart`. |
 | `web_search` in Pi answers "No results found" or never finishes | Its default search engines are DuckDuckGo and Startpage; DuckDuckGo is blocked in Indonesia, so neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or with the `/search-config` command in Pi). |
 | A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. |
 | "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [README, section 6](README.md#6-download-models)). |
-| Models moved to another drive | Write the folders (one per line) in `%LOCALAPPDATA%\arcinferzero\model-dirs.txt`, e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first. A plain folder of `.gguf` files (a copied model) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
+| Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\arcinferzero\model-dirs.txt`, e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first. A plain folder of `.gguf` files (a copied model) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
 | The answer is very slow at the start | Normal for the first large prompt (see section 6); later ones use the cache. |
-| Want to see what is happening | `arc-server status`, and the log in `%LOCALAPPDATA%\arcinferzero\server.log` (prompt processing time, speed, MTP statistics per request). |
+| Want to see what is happening | `arc-server status`, and the log in `%USERPROFILE%\arcinferzero\server.log` (prompt processing time, speed, MTP statistics per request). |
 
 ## 9. Rebuilding from source
 
@@ -390,7 +390,7 @@ arc-server stop
 
 GPU kernels (`zero\kernels\*.cl`) are compiled by the driver
 when the server starts, so kernel changes do not need a build.
-Compiled kernels are saved in `%LOCALAPPDATA%\arcinferzero\kernels`, so only the first use of each variant waits for
+Compiled kernels are saved in `%USERPROFILE%\arcinferzero\kernels`, so only the first use of each variant waits for
 compilation.
 Regression tests: `.\tests\run_tests.ps1` finds the models itself (`-ListModels` shows which), or give them:
 `-Model4B`, `-Model27B`, `-Model35B`, `-ModelGemma` (12B), `-ModelFlashNext` (the packaged file first, else the

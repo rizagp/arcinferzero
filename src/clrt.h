@@ -45,7 +45,7 @@ struct ClRt {
     return true;
   }
 
-  // Builds a program, or loads its binary from the kernel cache (%LOCALAPPDATA%\arcinferzero\kernels, keyed by the
+  // Builds a program, or loads its binary from the kernel cache (%USERPROFILE%\arcinferzero\kernels, keyed by the
   // source, the options, the device and the driver version): the driver compiles each variant only once.
   cl_program build(const std::string& src, const std::string& opts) {
     std::string path;

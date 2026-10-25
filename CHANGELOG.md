@@ -2,6 +2,13 @@
 
 ## 2026-10-25: the NPU next to the GPU (`--npu on`); Flint support removed; the model list without duplicates
 
+- **The data folder moved to `%USERPROFILE%\arcinferzero`** (`C:\Users\<name>\arcinferzero`, visible in Explorer;
+  `ARC_DATA_DIR` overrides it): kernel cache, NPU graphs, model packages and expert files, sessions, prefix cache,
+  logs, settings, and later transcripts and recordings. The exes and scripts move `%LOCALAPPDATA%\arcinferzero` there
+  once on the first start (a rename on the same drive: instant) and fix the paths in `last-model.txt`,
+  `launcher.json` and `ctx-auto.txt`. Results unchanged (27B with the NPU, 35B, 4B bit-identical to the previous
+  build).
+
 - **Cleanup** (no change in results: 4B, E4B, Gemma 4 12B, 35B, 27B with and without MTP / the NPU bit-identical
   before and after; Qwen3.5 4B and Gemma 4 26B images checked): unused code removed (`zero/kernels/gemm8.cl`,
   `weight_ext` / `gemm_ext`, the `attn_decode` kernel built at load and never used, the next-layer expert guess and
