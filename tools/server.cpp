@@ -775,11 +775,18 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
       return rs.send(200, "application/json", r.dump());
     }
     if (rq.path == "/v1/files/delete_unused" && rq.method == "POST") {
+      // (a body {"ids": [...]}: only those files, e.g. the ones of a deleted message; no body: every file)
+      std::set<std::string> only;
+      Json b;
+      const bool limited = !rq.body.empty() && Json::try_parse(rq.body, b) && b["ids"].is_array();  // ([] : none)
+      if (!rq.body.empty() && !limited) return fail(400, "expected no body (every unused file) or {\"ids\": [...]}");
+      if (limited)
+        for (const Json& x : b["ids"].items()) only.insert(x.str());
       const auto uses = st.uses();
       int n = 0;
       double freed = 0;
       for (const files::Info& i : st.list())
-        if (!uses.count(i.id) && st.remove(i.id)) { ++n; freed += (double)i.bytes; }
+        if ((!limited || only.count(i.id)) && !uses.count(i.id) && st.remove(i.id)) { ++n; freed += (double)i.bytes; }
       Json r = Json::object();
       r.set("deleted", n);
       r.set("freed_bytes", freed);
@@ -799,6 +806,20 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
       rs.extra = "Cache-Control: max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
       if (q("download")) rs.extra += "Content-Disposition: attachment; filename=\"" + i.name + "\"\r\n";
       return rs.send(200, files::mime_of(i.name), data);
+    }
+    if (rq.path == "/v1/chats" && rq.method == "DELETE") {  // every chat; ?files=1: every uploaded file too
+      int nc = 0, nf = 0;
+      double freed = 0;
+      for (const auto& [cid, text] : st.chats_all())
+        if (st.chat_remove(cid)) ++nc;
+      if (q("files"))
+        for (const files::Info& i : st.list())
+          if (st.remove(i.id)) { ++nf; freed += (double)i.bytes; }
+      Json r = Json::object();
+      r.set("chats_deleted", nc);
+      r.set("files_deleted", nf);
+      r.set("freed_bytes", freed);
+      return rs.send(200, "application/json", r.dump());
     }
     if (rq.path == "/v1/chats" && rq.method == "GET") {
       Json d = Json::array();

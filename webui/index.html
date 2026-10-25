@@ -112,6 +112,11 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 .chip small { color: var(--muted); flex: none; }
 .menu.mention { top: auto; bottom: 62px; left: 64px; }
 .menu.mention button.sel { background: var(--active); }
+.msg .more { position: absolute; top: 2px; right: 4px; width: 24px; height: 22px; border-radius: 4px; display: none; place-items: center; color: var(--muted); background: inherit; z-index: 1; }
+.msg:hover .more { display: grid; }
+.msg .more svg { width: 18px; height: 18px; }
+.msg.old .more { display: none !important; }
+.menu.bubble { position: fixed; top: 0; left: 0; min-width: 150px; }
 /* the chat */
 .chat { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; background-color: var(--chat);
   background-image: radial-gradient(var(--dots) 1.2px, transparent 1.3px), radial-gradient(var(--dots) 1.2px, transparent 1.3px);
@@ -278,6 +283,12 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <div class="opt col"><div class="lab">System prompt<small>Sent at the start of every conversation</small></div><textarea id="sys" placeholder="Optional"></textarea></div>
         </div>
         <div class="sec">
+          <h3>Data</h3>
+          <div class="opt"><div class="lab">Saved in the arcinferzero folder<small id="datasum">…</small></div></div>
+          <div class="opt"><button class="fbtn" id="clrchats" title="Delete every chat; the files stay (Files panel)">Clear chats</button>
+            <button class="fbtn" id="clrall" title="Delete every chat and every uploaded file">Clear chats and files</button></div>
+        </div>
+        <div class="sec">
           <h3>Appearance</h3>
           <div class="opt"><div class="lab">Theme</div><select id="theme" aria-label="Theme"><option value="">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
         </div>
@@ -296,6 +307,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <button class="iconbtn" id="talk" title="Talk" aria-label="Talk"><svg viewBox="0 0 24 24"><path d="M12 2a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h2v-8H5v-2a7 7 0 0 1 14 0v2h-3v8h2a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z"/></svg></button>
       <button class="iconbtn" id="compact" title="Compact: summarize the earlier messages so the conversation takes less context (done automatically when the context is nearly full)" aria-label="Compact" disabled><svg viewBox="0 0 24 24"><path d="M8 19h3v3h2v-3h3l-4-4-4 4zm8-15h-3V1h-2v3H8l4 4 4-4zM4 9v2h16V9H4zm0 3h16v2H4v-2z"/></svg></button>
       <div class="menu" id="modelmenu" hidden></div>
+      <div class="menu bubble" id="msgmenu" hidden></div>
     </header>
     <main id="main"><div class="thread" id="thread"></div></main>
     <button id="latest" hidden title="Scroll to the newest output and keep following it" aria-label="Latest"><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
@@ -359,8 +371,8 @@ loadPrefs();
 $("tempon").addEventListener("change", () => { $("temp").disabled = $("temp").hidden = !$("tempon").checked; savePrefs(); });
 $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
-$("gear").addEventListener("click", () => openPanel(!$("panel").classList.contains("open")));
-$("gearside").addEventListener("click", () => openPanel(true));
+$("gear").addEventListener("click", () => { const on = !$("panel").classList.contains("open"); openPanel(on); if (on) dataSummary(); });
+$("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); });
 $("panelback").addEventListener("click", () => openPanel(false));
 
 // the thinking choices this model has: Qwen3.8 off / low / medium / high, others on / off, none without the switch
@@ -482,6 +494,15 @@ function stamp(el, t) {
   s.className = "time";
   s.textContent = hhmm(t);
   el.appendChild(s);
+  if (!el.querySelector(":scope > .more")) {
+    const b = document.createElement("button");
+    b.className = "more";
+    b.title = "Message options";
+    b.setAttribute("aria-label", "Message options");
+    b.innerHTML = '<svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>';
+    b.addEventListener("click", (e) => { e.stopPropagation(); msgMenu(el, b); });
+    el.appendChild(b);
+  }
 }
 const kb = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B";
 const EXT_KIND = { image: "png jpg jpeg gif webp bmp", audio: "wav mp3 m4a aac flac ogg opus wma", video: "mp4 mov mkv webm wmv avi" };
@@ -1053,8 +1074,8 @@ function snippetOf(h) {
   return m ? (m.role === "user" ? "You: " : "") + textOf(m.content).replace(/```[\w+#.-]*|[*_#`>]+/g, "").replace(/\s+/g, " ").trim().slice(0, 120) : "";
 }
 let saving = Promise.resolve();
-function saveConv() {
-  if (!history.length) return;
+function saveConv(force) {
+  if (!history.length && !(force && convId)) return saving;
   if (!convId) convId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const c = { id: convId, title: titleOf(history), at: Date.now(), model: modelId, snippet: snippetOf(history), history };
   const body = JSON.stringify(c);
@@ -1063,6 +1084,7 @@ function saveConv() {
   // (one save after another: the newest state wins)
   saving = saving.then(() => fetch("/v1/chats/" + c.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body }))
     .then((r) => { if (!r.ok) note("saving the chat failed: HTTP " + r.status); }).catch((e) => note("saving the chat failed: " + (e.message || e)));
+  return saving;
 }
 function renderConvs() {
   const box = $("convlist"), q = $("search").value.trim().toLowerCase();
@@ -1264,6 +1286,31 @@ async function deleteFiles(list) {
   }
   loadFiles();
 }
+// ---- settings > Data: how much is saved, and clearing it (every chat; every chat and every file)
+async function dataSummary() {
+  try {
+    const [c, f] = await Promise.all([fetch("/v1/chats").then((r) => r.json()), fetch("/v1/files").then((r) => r.json())]);
+    const nc = (c.data || []).length, nf = (f.data || []).length;
+    $("datasum").textContent = nc + " chat" + (nc === 1 ? "" : "s") + " · " + nf + " file" + (nf === 1 ? "" : "s") + " (" + kb(f.total_bytes || 0) + ")";
+    $("clrchats").disabled = !nc;
+    $("clrall").disabled = !nc && !nf;
+  } catch (e) { $("datasum").textContent = "not available"; }
+}
+async function clearData(files) {
+  const what = files ? "every chat and every uploaded file" : "every chat (the files stay in the Files panel)";
+  if (!confirm("Delete " + what + "? This cannot be undone.")) return;
+  try {
+    const r = await (await fetch("/v1/chats" + (files ? "?files=1" : ""), { method: "DELETE" })).json();
+    note("deleted " + r.chats_deleted + " chats" + (files ? " and " + r.files_deleted + " files (" + kb(r.freed_bytes || 0) + ")" : ""));
+  } catch (e) { note("clearing failed: " + (e.message || e)); }
+  convs = [];
+  newChat();
+  loadConvs();
+  dataSummary();
+  if ($("filespanel").classList.contains("open")) loadFiles();
+}
+$("clrchats").addEventListener("click", () => clearData(false));
+$("clrall").addEventListener("click", () => clearData(true));
 $("fdelsel").addEventListener("click", () => deleteFiles(fileData.filter((f) => fileSel.has(f.id))));
 $("fdelunused").addEventListener("click", async () => {
   const unused = fileData.filter((f) => !f.used_by || !f.used_by.length);
@@ -1549,6 +1596,81 @@ thread.addEventListener("click", async (e) => {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 });
+
+// ---- one message: Edit (a message of yours: it and its answer leave the chat, its text and files come back into the
+// message box to send again), Delete (yours: it, its answer, and its files no other chat uses; an answer: only it),
+// Copy. Not while an answer runs, nor on compacted (dimmed) messages.
+// the messages of the turn that el belongs to: [from, to) in history (a user message with its answer, or an answer)
+function turnRange(el) {
+  const i = history.indexOf(el._h);
+  if (i < 0) return null;
+  let from = i, to = i + 1;
+  if (history[i].role === "user") { while (to < history.length && history[to].role !== "user") to++; }
+  else {
+    while (from > 0 && history[from - 1].role !== "user") from--;
+    while (to < history.length && history[to].role !== "user") to++;
+  }
+  return [from, to];
+}
+const msgFiles = (m) => [...(Array.isArray(m.content) ? m.content.filter((p) => p.type === "file").map((p) => String(p.file?.file_id || "").replace(/^file-/, "")) : []),
+  ...(m.voice?.id ? [m.voice.id] : [])].filter(Boolean);
+function msgMenu(el, btn) {
+  const menu = $("msgmenu"), mine = el.classList.contains("user");
+  menu.replaceChildren();
+  const add = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.addEventListener("click", () => { menu.hidden = true; fn(); }); menu.appendChild(b); };
+  const live = !controller && history.includes(el._h);
+  if (mine && live) add("Edit", () => editMsg(el));
+  add("Copy", () => copyText(mine ? textOf(el._h?.content || "").replace(/\[file: [^\]]*\]\n?/g, "") : String(el._h?.content || el.querySelector(".content")?.textContent || "")));
+  if (live) add(mine ? "Delete (and its files)" : "Delete", () => deleteMsg(el));
+  const r = btn.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(r.right - 160, window.innerWidth - 168)) + "px";
+  menu.style.top = Math.min(r.bottom + 4, window.innerHeight - 140) + "px";
+  menu.hidden = false;
+}
+document.addEventListener("click", (e) => { if (!e.target.closest("#msgmenu")) $("msgmenu").hidden = true; });
+// takes the turn out of the chat (history and screen); returns its messages
+function removeTurn(el) {
+  const range = turnRange(el);
+  if (!range) return [];
+  const gone = history.splice(range[0], range[1] - range[0]), set = new Set(gone);
+  for (const m of [...thread.querySelectorAll(".msg")]) if (set.has(m._h)) m.remove();
+  // (bubbles of the turn without a message of their own: an answer stopped before it was kept)
+  used = 0;
+  if (!history.length) showEmpty("New conversation");
+  showUse();
+  return gone;
+}
+async function deleteMsg(el) {
+  const mine = el.classList.contains("user"), files = mine ? msgFiles(el._h) : [];
+  if (!confirm(mine ? "Delete this message and its answer?" + (files.length ? " Its " + files.length + " attached file" + (files.length > 1 ? "s are" : " is") + " deleted too (unless another chat uses " + (files.length > 1 ? "them" : "it") + ")." : "")
+    : "Delete this answer?")) return;
+  if (mine) removeTurn(el);
+  else {  // (only the answer: the user's message stays)
+    const range = turnRange(el), i = history.indexOf(el._h);
+    const from = history[range[0]]?.role === "user" ? range[0] + 1 : range[0];
+    const gone = new Set(history.splice(from, range[1] - from));
+    for (const m of [...thread.querySelectorAll(".msg")]) if (gone.has(m._h)) m.remove();
+    used = 0; showUse();
+    if (i < 0) el.remove();
+  }
+  await saveConv(true);
+  if (files.length) {
+    try { await fetch("/v1/files/delete_unused", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: files }) }); } catch (e) {}
+    if ($("filespanel").classList.contains("open")) loadFiles();
+  }
+}
+async function editMsg(el) {
+  const m = el._h;
+  const text = typeof m.content === "string" ? m.content : m.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
+  const media = partsMedia(m).filter((x) => x.id && !x.shown);
+  removeTurn(el);
+  await saveConv(true);
+  pending.push(...media.filter((x) => !pending.some((p) => p.id === x.id)));
+  input.value = text;
+  renderAtts();
+  grow();
+  input.focus();
+}
 
 // ---- @ in the message: the files saved earlier (uploads), filtered by what follows the @; Enter / Tab / a click
 // attaches the chosen one (the "@name" text goes away); Esc closes the list
