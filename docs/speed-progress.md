@@ -9,9 +9,27 @@ The story behind the numbers: [review.md](review.md); what helped and what did n
 ## Current speed
 
 The current numbers for every model are in one place: [before-after.md](before-after.md#where-it-stands)
-("Where it stands"). In short (24 Oct): 35B UD-IQ4_XS prompt 604 tok/s (32K), generation 20.6 tok/s; 27B prompt
+("Where it stands"). In short (24 Oct; 25 Oct: the 27B with `--npu on` +13-15 % on prompts of 2K-34K): 35B UD-IQ4_XS prompt 604 tok/s (32K), generation 20.6 tok/s; 27B prompt
 ~135 tok/s (4K), generation 4.9 tok/s; Flash Next prompt ~164 tok/s (4K), generation 6-7 tok/s; Gemma 4 26B-A4B
 prompt 252 tok/s (4K), generation ~25 tok/s with its drafter; Gemma 4 E4B 724 tok/s (4K), 32 tok/s. The sections below keep what was measured on each date.
+
+## 2026-10-25: the NPU next to the GPU for prompts (`--npu on`)
+
+The Meteor Lake NPU computes part of each prompt chunk's matrix products while the GPU computes the rest (Level Zero
+graph extension only; [npu-experiment.md](npu-experiment.md)): 1/3 of ffn_gate / ffn_up in per-row int8, 27.5 / 29 %
+of ffn_down / attn_qkv in f16. Off by default, kept across model switches in the server, worth it on the 27B only
+(models with resident W8 weights gain nothing and stay off).
+
+Benchmark (`bench/run_bench.ps1 -Engines arcinferzero,arcinferzero-npu,arcinferzero`, 2026-10-25, off measured
+before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`):
+
+| 27B-AP IQ4_XS | off | `--npu on` |
+|---|---|---|
+| pp512 (one 512-row chunk: no NPU) | 94.7-100.2 tok/s | 97.7 |
+| pp2048 | 125.9-133.5 tok/s | **153.8 (+15 %)** |
+| 11,240-token code prompt, time to first token | 84.7-86.2 s (130-133 tok/s) | **73.7 s (152.6 tok/s, +15 %)** |
+| 33,937-token code prompt, time to first token | 292.1-295.3 s (115-116 tok/s) | **258.4 s (131.3 tok/s, +13 %)** |
+| generation (tg64; 32 tokens after the 11K / 34K prompt) | 3.67-4.04; 3.76-3.79; 3.65-3.68 tok/s | 3.91; 3.83; 3.46 (unchanged: noise and heat) |
 
 ## 2026-10-22 / 24: Gemma 4 accurate by default, Flint, image encoders
 

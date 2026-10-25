@@ -1,2 +1,15 @@
 {"test":"pp512","engine":"arcinferzero","tps":100.2,"model":"27b-ap","time":"2026-10-25T16:10:05"}
 {"test":"tg64","engine":"arcinferzero","tps":4.04,"model":"27b-ap","time":"2026-10-25T16:10:05"}
+{"test":"pp2048","engine":"arcinferzero","tps":133.5,"model":"27b-ap","time":"2026-10-25T16:11:53"}
+{"engine":"arcinferzero","tg_tps":3.76,"model":"27b-ap","n_prompt":11240,"prompt":"qwen-code-11k","tg_n":32,"pp_tps":132.65182083506917,"ttft_s":84.73310000000001,"test":"ttft","time":"2026-10-25T16:14:11"}
+{"engine":"arcinferzero","tg_tps":3.68,"model":"27b-ap","n_prompt":33937,"prompt":"qwen-code-34k","tg_n":32,"pp_tps":114.91898071330563,"ttft_s":295.3124,"test":"ttft","time":"2026-10-25T16:20:00"}
+{"test":"pp512","engine":"arcinferzero-npu","tps":97.7,"model":"27b-ap","time":"2026-10-25T16:21:25"}
+{"test":"tg64","engine":"arcinferzero-npu","tps":3.91,"model":"27b-ap","time":"2026-10-25T16:21:25"}
+{"test":"pp2048","engine":"arcinferzero-npu","tps":153.8,"model":"27b-ap","time":"2026-10-25T16:23:32"}
+{"engine":"arcinferzero-npu","tg_tps":3.83,"model":"27b-ap","n_prompt":11240,"prompt":"qwen-code-11k","tg_n":32,"pp_tps":152.61309186792178,"ttft_s":73.6503,"test":"ttft","time":"2026-10-25T16:25:41"}
+{"engine":"arcinferzero-npu","tg_tps":3.46,"model":"27b-ap","n_prompt":33937,"prompt":"qwen-code-34k","tg_n":32,"pp_tps":131.34367869118427,"ttft_s":258.3832,"test":"ttft","time":"2026-10-25T16:30:55"}
+{"test":"pp512","engine":"arcinferzero","tps":94.7,"model":"27b-ap","time":"2026-10-25T16:32:19"}
+{"test":"tg64","engine":"arcinferzero","tps":3.67,"model":"27b-ap","time":"2026-10-25T16:32:19"}
+{"test":"pp2048","engine":"arcinferzero","tps":125.9,"model":"27b-ap","time":"2026-10-25T16:34:15"}
+{"engine":"arcinferzero","tg_tps":3.79,"model":"27b-ap","n_prompt":11240,"prompt":"qwen-code-11k","tg_n":32,"pp_tps":130.33727669305105,"ttft_s":86.23780000000001,"test":"ttft","time":"2026-10-25T16:36:41"}
+{"engine":"arcinferzero","tg_tps":3.65,"model":"27b-ap","n_prompt":33937,"prompt":"qwen-code-34k","tg_n":32,"pp_tps":116.17414379892223,"ttft_s":292.1218,"test":"ttft","time":"2026-10-25T16:42:34"}

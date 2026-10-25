@@ -256,6 +256,9 @@ switch ($Action) {
       Say "arcinferzero server running on $base : model $id"
       if (Test-Path $lastFile) { Say ("  " + (Get-Content $lastFile -Raw).Trim()) }  # (also after switching in Pi)
       Say ("  " + ($p | ConvertTo-Json -Compress -Depth 3))
+      if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
+        Say "  NPU: on (-Npu on; kept when the model changes, off after a restart)"
+      }
     } else { Say "arcinferzero server is not running." }
     $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
     Say ("Saved conversations: {0} ({1:N1} GiB) in {2}" -f $files.Count, (($files | Measure-Object Length -Sum).Sum / 1GB), $sessDir)

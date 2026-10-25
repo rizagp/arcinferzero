@@ -16,12 +16,13 @@ character. "Bit-identical" below means exactly that, not "close". Changes that a
 
 ## Where it stands
 
-(Updated 2026-10-24; each row's date and measurement are in the rows below.)
+(Updated 2026-10-25; each row's date and measurement are in the rows below.)
 
 | Model | Prompt | Generation | Accuracy |
 |---|---|---|---|
 | Qwen3.6 35B-A3B UD-IQ4_XS (MoE, experts on the SSD) | 604 tok/s (32K prompt), 324 tok/s (128K) | 20.6 tok/s; Python code 49.9 with DFlash2, Indonesian 21.9 with MTP; 12.6 at 128K depth | KL 0.004-0.008 against an f32 reference (generation path) |
 | Qwen3.8 27B (IQ3_S GSQ, dense) | ~135 tok/s (4K prompt) | 4.9 tok/s; code 18.1 with DFlash2 + MTP | KL 0.0003-0.0004 |
+| Qwen3.8 27B-AP IQ4_XS, GPU + NPU (`--npu on`, 2026-10-25) | 153.8 tok/s (2K; off 133.5), 152.6 (11K; off 132.7), 131.3 (34K, time to first token 258 s; off 116.2, 292 s) | unchanged (~3.8 tok/s) | KL 0.0028-0.0031 (off 0.00066); 0.37 GiB of RAM outside the GPU budget |
 | Qwen3.8 Flash Next (IQ3_S, 512 experts on the SSD) | ~164 tok/s (4K, 2026-10-23), 163 (32K), 123 (125K) | 6-7 tok/s | KL 0.0143 prompt / 0.0147 decode on 363 tokens of README text; 0.0186 / 0.0177 on a 3,584-token prompt (QSA sparse); `ARC_FN_PRECISE=1` (opt-in, about half the prompt speed) 0.0127 / 0.0132 |
 | Qwen3.5 4B | 911 tok/s (2K prompt) | 17.6 tok/s | KL 0.0021; perplexity 6.056 (llama.cpp 6.141) |
 | Gemma 4 E4B (Google QAT) | 724 tok/s (4K prompt), 615 (14K) | 32 tok/s with its drafter | KL 0.00088 (one int8 pass, float attention; int8 K / V for the global layers of prompts) |

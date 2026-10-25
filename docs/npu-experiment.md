@@ -28,6 +28,17 @@ Qwen3.8 27B (agentionai Qwen3.8-27B-AP IQ4_XS), code prompts, this laptop (therm
 | 4,096 tokens | 132-140 tok/s | **153-162 tok/s (+15-20 %)** | 0.00066 -> **0.0028-0.0031** |
 | 11,240 tokens | 133.8-134.0 tok/s | **154.7 tok/s (+15.6 %)** | |
 
+Benchmark (`bench/run_bench.ps1 -Engines arcinferzero,arcinferzero-npu,arcinferzero`, 2026-10-25, off measured
+before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`):
+
+| 27B-AP IQ4_XS | off | `--npu on` |
+|---|---|---|
+| pp512 (one 512-row chunk: no NPU) | 94.7-100.2 tok/s | 97.7 |
+| pp2048 | 125.9-133.5 tok/s | **153.8 (+15 %)** |
+| 11,240-token code prompt, time to first token | 84.7-86.2 s (130-133 tok/s) | **73.7 s (152.6 tok/s, +15 %)** |
+| 33,937-token code prompt, time to first token | 292.1-295.3 s (115-116 tok/s) | **258.4 s (131.3 tok/s, +13 %)** |
+| generation (tg64; 32 tokens after the 11K / 34K prompt) | 3.67-4.04; 3.76-3.79; 3.65-3.68 tok/s | 3.91; 3.83; 3.46 (unchanged: noise and heat) |
+
 - Off: logits bit-identical to the engine without the NPU code (27B and Qwen3.6 35B, prompt and generation).
 - On: bit-identical run to run; MTP and DFlash2 drafting give the same logits as plain decoding (with the NPU on
   both); the MTP block's prompt pass uses the NPU too. Generation is unchanged (it never uses the NPU).
