@@ -65,7 +65,8 @@ WORKING IN PI
 
 MODEL
   --pick, -Pick                  numbered list of every supported GGUF model in the Hugging Face cache
-                                 (%USERPROFILE%\.cache\huggingface\hub) and %LOCALAPPDATA%\arcinferzero\models,
+                                 (%USERPROFILE%\.cache\huggingface\hub), %LOCALAPPDATA%\arcinferzero\models and
+                                 the folders in model-dirs.txt,
                                  by full name (e.g. ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF); Enter keeps the
                                  model that is already running. Image projectors (mmproj-*) and drafters
                                  (mtp-*) next to a model are loaded with it, not listed.
@@ -105,14 +106,13 @@ LAUNCHER OPTIONS
                                  at most the model's max context length. Computed for every model in
                                  a few seconds (a dry load that only adds up the memory), remembered in
                                  %LOCALAPPDATA%\arcinferzero\zero\ctx-auto.txt, recomputed when the GPU memory changes.
-                                 For example (2026-10-18, 21.5 GiB GPU budget): 27b 69,632 (images, MTP and
-                                 DFlash2), 27b-df 94,208, 27b-std 188,416; 35b and flash 131,072 (the expert cache
-                                 gets the rest). --pick shows every model's value.
+                                 35b and flash get 131,072 (the expert cache gets the rest); --pick shows every
+                                 model's value.
                                  Without --ctx: a running server keeps its context, a new one starts with auto.
                                  --ctx auto also restarts a server that runs a fixed context (e.g. one started
                                  with --ctx 32768).
-  --chunk <N>, -Chunk            prompt chunk size in tokens (default per model: 27B 4096; 35B and Gemma 4 26B
-                                 8192; Flash Next 2048; 512 when the decoded weights stay resident, as on the 4B /
+  --chunk <N>, -Chunk            prompt chunk size in tokens (default per model: 27B 4096; 35B 8192; Gemma 4 26B
+                                 and Flash Next 2048; 512 when the decoded weights stay resident, as on the 4B /
                                  9B / E4B; Gemma with images at least 2048). Smaller chunks need less GPU
                                  memory, which the auto context turns into more context: 27B with
                                  --chunk 1024 -> ~65K tokens at 17.4 GiB, 118,784 at 18.3 GiB; ~11K-token
@@ -164,7 +164,7 @@ SERVER COMMANDS (arc-server)
   arc-server clear-cache         delete all saved conversations (session cache)
   arc-server help                its own options:
     -Model <shortcut|text|path>  -Ctx <N|auto>  -Chunk <N>  -SessionCacheGb <N>  -NoMtp  -Vision on|off  -NoStream
-    -Slots <N>
+    -Slots <N>  -Npu on|off
     -Port <N> (default 8090)  -MtpDrafts <1..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
     -BudgetGb <GB>  -AttnF32  -NoPrefixCache  -PrefixCacheGb <N>  -NoSwap  -ListenHost <addr>  -SessionDir <dir>
     -Quiet
@@ -177,12 +177,12 @@ bin\serverz.exe --help)
   -m, --model <model.gguf>       model file              --port <N>          port (default 8080)
   -c, --ctx <N|auto>             context                 --chunk <N>         prompt chunk size
   --alias <name>                 model id in the API     --mtp               speculative decoding
-  --mtp-drafts <N>               drafts per step (27B 7, 35B 5, 4B 3, else 2; 7 with DFlash2)
+  --mtp-drafts <N>               drafts per step (27B 7, 35B 5, 4B and Gemma 26B 3, else 2; 7 with DFlash2)
   --draft auto|mtp|dflash        with a DFlash2 drafter: both (auto), the MTP block only, DFlash2 only (the
                                  -nodf / -df variants)
   --think-budget <N>             close reasoning after N tokens
                                                                              (arc-server: 8192)
-  --mmproj <file> / --no-mmproj  image projector (Gemma 4 12B; found next to the model by default)
+  --mmproj <file> / --no-mmproj  image projector (the models that read images; found next to the model)
   --session-cache-gb <N>         disk session cache      --session-dir <dir> where it is kept
   --no-prefix-cache              do not keep system prompts on disk
   --prefix-cache-gb <N>          disk space for them, all models together (default 8)
@@ -190,6 +190,7 @@ bin\serverz.exe --help)
   --host <addr>                  listen address (default 127.0.0.1)
   --attn-f32                     f32 attention (tests)   --budget <GB>       keep decoded weights resident up to GB
   --slots <N>                    hold N conversations at once, taking turns step by step
+  --npu on|off|force             the NPU next to the GPU for prompt chunks (on: 27B, Gemma 4 12B; force: all)
   --webui <dir>                  web UI folder           --kernels <dir>     kernel folder (zero\kernels)
   --list-models                  the models arc-server's list shows, as JSON
   --help, -h                     every option with its default

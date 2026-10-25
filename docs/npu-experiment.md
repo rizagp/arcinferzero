@@ -58,8 +58,9 @@ before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`)
   Gemma 4 runs its NPU shares in f16 (gate / up and down: 27 % of the columns, 40 % with the two-pass int8 GPU
   matmuls of the 12B / 26B); Flash Next's attn_qkv share takes the mixer's output as its input.
 - Not worth it on models whose W8 weights stay resident on the GPU, measured earlier: Qwen3.5 4B +2 % (noise), 9B +4-6 % with
-  KL 0.008-0.013 (over the 0.01 target), Qwen3.6 35B-A3B +0.5 %. `--npu on` leaves them off (the log says why);
-  `--npu force` forces it. Gemma 4 (E4B) was not built: small and resident like the 4B. Other architectures: off.
+  KL 0.008-0.013 (over the 0.01 the NPU shares were held to; the general limit is 0.015), Qwen3.6 35B-A3B +0.5 %
+  (before the Q8_0 form was read: the NPU computed nothing there). `--npu on` leaves them off (the log says why);
+  `--npu force` forces it. Other architectures: off.
 - Cost: 0.37 GiB of system RAM outside the GPU budget for the 27B (the shared block) and 33 MiB of GPU staging. The
   NPU's weight rows are not kept: per layer the GPU decodes them from its own W8 form into the shared block
   (`npu_w8rows`, once per layer and prompt segment; until 2026-10-25 a resident copy took 5.8 GiB more, same speed).
@@ -94,8 +95,8 @@ go the same way with f16 inputs and outputs.
 - `npu_rt.h`: the runtime (graph compile with a blob cache: the native binary loads only from page-aligned memory,
   `ZE_RESULT_ERROR_INVALID_NATIVE_BINARY` otherwise; external memory import with stype `0x00020037`; arguments by
   name; start / wait; teardown).
-- `engine_npu.h`: the engine's part (inside `class Engine`), hooks in `engine.h` (init, setup, teardown) and
-  `engine_qwen.h` (`layer_ffn`, `layer_gdn`).
+- `engine_npu.h`: the engine's part (inside `class Engine`), hooks in `engine.h` (init, setup, teardown),
+  `engine_qwen.h` (`layer_ffn`, `layer_gdn`) and `engine_gemma.h` (`layer_gemma_ffn`).
 
 What the NPU compiler does with a graph, measured (27B FFN up shape, 4096 rows):
 

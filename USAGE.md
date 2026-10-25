@@ -94,7 +94,7 @@ whole conversation again: only the new message is processed.
 
 **Through the window:** double-click `arc-launcher.cmd` in the project folder. The window shows:
 - every model and its variants (MTP, images, auto context, VRAM at that context, compatible or not);
-- for the selected model: how the auto context is counted (GPU memory minus what is kept for Windows, snapshots,
+- for the selected model: how the auto context is counted (GPU memory minus 1.2 GiB for the driver, snapshots,
   image encoder, weights, MTP block and buffers, then the rest divided by the memory needed per 1,000 tokens);
 - the server option fields: the main ones are shown directly (context, MTP drafts, thinking budget, prompt cache,
   access from other computers); the rest (port, chunk, image tokens, W8 weights, cache folders and sizes,
@@ -131,7 +131,7 @@ The server log is `%LOCALAPPDATA%\arcinferzero\server.log`. The server uses port
 
 **arcinferzero (the engine):** the server runs through Level Zero (Intel's GPU driver). For
 MoE models (Qwen3.6 35B) the experts are kept on the SSD and only the frequently used experts are in GPU memory (a
-cache): the context can reach 262K together with images and MTP, and Windows still keeps at least 14 GB of RAM.
+cache): the context can reach 262K together with images and MTP.
 The automatic context reserves 128K tokens, then sizes the expert cache (35B: 131,072 tokens with ~76-81 % of the
 experts cached), because a small cache makes generation pause for SSD reads; 262,144 with `--ctx 262144`.
 
@@ -373,7 +373,7 @@ Only the `pi-arc` / `arc-server` shortcut commands store the folder location; ev
 | `web_search` in Pi answers "No results found" or never finishes | Its default search engines are DuckDuckGo and Startpage; DuckDuckGo is blocked in Indonesia, so neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or with the `/search-config` command in Pi). |
 | A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. |
 | "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [README, section 6](README.md#6-download-models)). |
-| Models moved to another drive | Write the folders (one per line) in `%LOCALAPPDATA%\arcinferzero\model-dirs.txt`, e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first. A model that is on both drives (the same file and size, or the original of a model arcinferzero packaged) is listed once, from C:. If that drive is removed, its models disappear from the list until the drive is connected again. |
+| Models moved to another drive | Write the folders (one per line) in `%LOCALAPPDATA%\arcinferzero\model-dirs.txt`, e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first. A plain folder of `.gguf` files (a copied model) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
 | The answer is very slow at the start | Normal for the first large prompt (see section 6); later ones use the cache. |
 | Want to see what is happening | `arc-server status`, and the log in `%LOCALAPPDATA%\arcinferzero\server.log` (prompt processing time, speed, MTP statistics per request). |

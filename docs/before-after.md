@@ -67,7 +67,8 @@ arcinferzero's int8 path scores as well as llama.cpp's.
 **Consistency.** The engine is deterministic: the same prompt gives the same logits, bit for bit, run after run.
 That property is what every speed change is held to:
 
-- arcinferzero (Level Zero) gives bit-identical logits to the OpenCL engine on every model.
+- arcinferzero (Level Zero) gave bit-identical logits to the OpenCL engine on every model, checked until that engine
+  was removed (2026-10-20); since then every change is checked against the previous build.
 - Speculative decoding (MTP block, DFlash2, both) gives exactly the text of plain decoding; a drift after ~40
   tokens on the 35B was found this way and fixed (the verification rows took another attention kernel).
 - The SSD expert streaming gives the same logits whatever the cache size (41 % or 97 % of the 35B's experts,

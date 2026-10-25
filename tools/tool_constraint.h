@@ -22,6 +22,9 @@ using jcon::Res;
 using jcon::FAIL;
 using jcon::PARTIAL;
 using jcon::DONE;
+using jcon::has_type;
+using jcon::integer_only;
+using jcon::literal;
 
 // A tool-call format: its open / close markers and the check of a call's text (the text after the open marker).
 class ToolCon {
@@ -78,7 +81,7 @@ class GemmaCall : public ToolCon {
   // DONE (the call is complete, <tool_call|> included).
   Res check(const std::string& s) const override {
     size_t i = 0;
-    Res r = lit(s, i, "call:");
+    Res r = literal(s, i, "call:");
     if (r != DONE) return r;
     const size_t n0 = i;
     while (i < s.size() && s[i] != '{') ++i;
@@ -90,22 +93,13 @@ class GemmaCall : public ToolCon {
     root_ = params;
     r = value(*params, s, i, 0, true);
     if (r != DONE) return r;
-    r = lit(s, i, kClose);  // then the call ends
+    r = literal(s, i, kClose);  // then the call ends
     return r == DONE && i != s.size() ? FAIL : r;
   }
 
  private:
   mutable const Json* root_ = nullptr;
 
-  // the literal t from i: DONE when all of it is there, PARTIAL when s ends inside it
-  static Res lit(const std::string& s, size_t& i, const char* t) {
-    const size_t n = strlen(t);
-    for (size_t k = 0; k < n; ++k, ++i) {
-      if (i >= s.size()) return PARTIAL;
-      if (s[i] != t[k]) return FAIL;
-    }
-    return DONE;
-  }
   const Json& resolve(const Json& sc) const {
     const std::string ref = sc["$ref"].str();
     if (ref.empty() || !root_) return sc;
@@ -114,17 +108,6 @@ class GemmaCall : public ToolCon {
       if (ref.compare(0, p.size(), p) == 0) return (*root_)[p.substr(2, p.size() - 3)][ref.substr(p.size())];
     }
     return *root_;
-  }
-  static bool has_type(const Json& sc, const char* t) {
-    const Json& ty = sc["type"];
-    auto is = [&](const std::string& x) { return x == t || (std::string(t) == "number" && x == "integer"); };
-    if (ty.is_string()) return is(ty.str());
-    if (ty.is_array()) {
-      for (const Json& x : ty.items())
-        if (is(x.str())) return true;
-      return false;
-    }
-    return true;
   }
 
   Res value(const Json& sc0, const std::string& s, size_t& i, int depth, bool top = false) const {
@@ -163,27 +146,19 @@ class GemmaCall : public ToolCon {
     if (c == '<') return has_type(sc, "string") ? string(s, i) : FAIL;
     if (c == '{') return has_type(sc, "object") ? object(sc, s, i, depth) : FAIL;
     if (c == '[') return has_type(sc, "array") ? array(sc, s, i, depth) : FAIL;
-    if (c == '-' || (c >= '0' && c <= '9')) return has_type(sc, "number") ? number(s, i, int_only(sc)) : FAIL;
-    if (c == 't') return has_type(sc, "boolean") ? lit(s, i, "true") : FAIL;
-    if (c == 'f') return has_type(sc, "boolean") ? lit(s, i, "false") : FAIL;
-    if (c == 'n') return has_type(sc, "null") ? lit(s, i, "null") : FAIL;
+    if (c == '-' || (c >= '0' && c <= '9')) return has_type(sc, "number") ? number(s, i, integer_only(sc)) : FAIL;
+    if (c == 't') return has_type(sc, "boolean") ? literal(s, i, "true") : FAIL;
+    if (c == 'f') return has_type(sc, "boolean") ? literal(s, i, "false") : FAIL;
+    if (c == 'n') return has_type(sc, "null") ? literal(s, i, "null") : FAIL;
     return FAIL;
   }
   static std::string text_of(const Json& v) {
     if (v.is_string()) return std::string(kQ) + v.str() + kQ;
     return v.dump();
   }
-  static bool int_only(const Json& sc) {
-    const Json& ty = sc["type"];
-    if (ty.is_string()) return ty.str() == "integer";
-    if (!ty.is_array()) return false;
-    bool num = false, in = false;
-    for (const Json& x : ty.items()) { num = num || x.str() == "number"; in = in || x.str() == "integer"; }
-    return in && !num;
-  }
   // <|"|>text<|"|>: any text up to the closing delimiter
   Res string(const std::string& s, size_t& i) const {
-    const Res r = lit(s, i, kQ);
+    const Res r = literal(s, i, kQ);
     if (r != DONE) return r;
     const size_t e = s.find(kQ, i);
     if (e == std::string::npos) { i = s.size(); return PARTIAL; }
@@ -319,12 +294,12 @@ class QwenCall : public ToolCon {
         for (const Json& q : (*params)["required"].items())
           if (std::find(seen.begin(), seen.end(), q.str()) == seen.end()) return FAIL;
         i = j;
-        if ((r = lit(s, i, "</function>")) != DONE) return r;
+        if ((r = literal(s, i, "</function>")) != DONE) return r;
         if ((r = ws_lit(s, i, "</tool_call>")) != DONE) return r;
         return i == s.size() ? DONE : FAIL;
       }
       i = j;
-      if ((r = lit(s, i, "<parameter=")) != DONE) return r;
+      if ((r = literal(s, i, "<parameter=")) != DONE) return r;
       const size_t k0 = i;
       while (i < s.size() && s[i] != '>' && s[i] != '\n') ++i;
       const std::string key = s.substr(k0, i - k0);
@@ -374,17 +349,10 @@ class QwenCall : public ToolCon {
   static void skip_ws(const std::string& s, size_t& i) {
     for (int n = 0; n < 2 && i < s.size() && (s[i] == '\n' || s[i] == ' '); ++n) ++i;
   }
-  static Res lit(const std::string& s, size_t& i, const char* t) {
-    for (const char* p = t; *p; ++p, ++i) {
-      if (i >= s.size()) return PARTIAL;
-      if (s[i] != *p) return FAIL;
-    }
-    return DONE;
-  }
   static Res ws_lit(const std::string& s, size_t& i, const char* t) {
     skip_ws(s, i);
     if (i >= s.size()) return PARTIAL;
-    return lit(s, i, t);
+    return literal(s, i, t);
   }
 };
 

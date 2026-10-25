@@ -73,7 +73,9 @@ CHANGELOG.md and the working notes. The first ten stages are recorded only as "b
 ## Speed now
 
 The current numbers for every model are kept in one place: [before-after.md](before-after.md#where-it-stands)
-("Where it stands", 20 October). The model tables below end at their last milestone. The 17 October speculative
+("Where it stands", updated 25 October). The timeline above and the model tables below end at their last
+milestone (20 October); what came after (Gemma 4's accurate mode, the image encoders, the NPU) is in
+[CHANGELOG.md](../CHANGELOG.md). The 17 October speculative
 decoding numbers (27B code 4.91 / 15.5 / 18.1 tok/s plain / MTP / DFlash2 + MTP; 35B UD-Q3_K_M 21.2 / 39.3 / 49.8)
 were `runz` runs with 96-token greedy answers and warm kernels, not server runs. All speed tables by date:
 [speed-progress.md](speed-progress.md).

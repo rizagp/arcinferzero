@@ -2116,68 +2116,11 @@ __kernel void softcap_rows(__global float* C, int ld, int off, int N, float cap)
   *p = cap * tanh(*p * (1.0f / cap));
 }
 
-// x[m] *= s (layer output scale applied after the per-layer-embedding block). grid (256, M_valid).
-__kernel void scale_rows(__global float* x, int K, float s) {
-  const int m = get_group_id(1);
-  for (int i = get_local_id(0); i < K; i += get_local_size(0)) x[(size_t)m * K + i] *= s;
-}
-
 // ---------------------------------------------------------------- vision encoders (ViT on the GPU)
 // Compiled only into the vision encoders' builds of this file (-DVIT): the language model never pays for them.
 #ifdef VIT
-// The matrix products go through the int8 GEMM (kernels/gemm.cl, Q8_0 weights, activations per 32); these kernels
-// do what lies between them. Rows m >= M_valid are padding: quantized as zeros, not written otherwise.
-
-// LayerNorm with weight and bias (two-pass mean / variance) of row m (E values, a multiple of 256), quantized for the
-// next GEMM (quant != 0) and / or written as f32 to hout. grid (256, M), local (256, 1).
-__attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void vit_ln_quant(__global const float* x, int E, __global const float* w, __global const float* b, float eps,
-                           int M, int M_valid, __global char* aq, __global float* asc, __global ushort* absum,
-                           int quant, __global float* hout, int write_h) {
-  const int m = get_group_id(1);
-  const bool valid = m < M_valid;
-  __global const float* xr = x + (size_t)m * E;
-  float s = 0.0f;
-  if (valid)
-    for (int i = get_local_id(0); i < E; i += get_local_size(0)) s += xr[i];
-  const float mean = work_group_reduce_add(s) / E;
-  float q = 0.0f;
-  if (valid)
-    for (int i = get_local_id(0); i < E; i += get_local_size(0)) q += (xr[i] - mean) * (xr[i] - mean);
-  const float r = rsqrt(work_group_reduce_add(q) / E + eps);
-  const int lane = get_sub_group_local_id();
-  for (int sb = get_sub_group_id(); sb < E / 256; sb += get_num_sub_groups()) {
-    const int base = sb * 256 + 16 * lane;
-    float v[16];
-#pragma unroll
-    for (int i = 0; i < 16; ++i) v[i] = valid ? (xr[base + i] - mean) * r * w[base + i] + b[base + i] : 0.0f;
-    if (write_h && valid)
-#pragma unroll
-      for (int i = 0; i < 16; ++i) hout[(size_t)m * E + base + i] = v[i];
-    if (quant) quant_store16(v, sb, m, M, E, aq, asc, absum, 1);
-  }
-}
-
-// Row m of x (K values), plus bias (if has_b) and through gelu_tanh (if gelu), quantized for the next GEMM.
-// grid (256, M), local (256, 1).
-__attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void vit_quant(__global const float* x, int K, __global const float* bias, int has_b, int gelu, int M,
-                        int M_valid, __global char* aq, __global float* asc, __global ushort* absum) {
-  const int m = get_group_id(1);
-  const bool valid = m < M_valid;
-  const int lane = get_sub_group_local_id();
-  __global const float* xr = x + (size_t)m * K;
-  for (int sb = get_sub_group_id(); sb < K / 256; sb += get_num_sub_groups()) {
-    const int base = sb * 256 + 16 * lane;
-    float v[16];
-#pragma unroll
-    for (int i = 0; i < 16; ++i) {
-      float t = valid ? xr[base + i] + (has_b ? bias[base + i] : 0.0f) : 0.0f;
-      v[i] = gelu ? gelu_tanh(t) : t;
-    }
-    quant_store16(v, sb, m, M, K, aq, asc, absum, 1);
-  }
-}
+// The matrix products go through vit_gemm_f16 (or, for the Gemma 4 encoder's int8 path, vit_quant_pad and the int8
+// GEMM, kernels/gemm.cl); these kernels do what lies between them. Rows m >= M_valid are padding: quantized as zeros, not written otherwise.
 
 // x[m][n] += a[n] (per_row 0: a bias) or a[m][n] (per_row 1), n < N. grid (N, M_valid).
 __kernel void vit_add(__global float* x, int N, __global const float* a, int per_row) {

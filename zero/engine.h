@@ -1406,7 +1406,7 @@ class Engine {
   std::vector<cl_mem> mems_;       // every buffer and sub-buffer, released with the engine
   cl_kernel k_rmsnorm_ = nullptr, k_swiglu_ = nullptr, k_gdn_conv_ = nullptr, k_conv_upd_ = nullptr,
             k_gdn_recur_ = nullptr, k_gnorm_ = nullptr, k_attn_prep_ = nullptr, k_attn_ = nullptr,
-            k_attn_gate_ = nullptr, k_gdn_gates_ = nullptr, k_attn_q8_ = nullptr, k_attn_dec_ = nullptr,
+            k_attn_gate_ = nullptr, k_gdn_gates_ = nullptr, k_attn_q8_ = nullptr,
             k_attn_comb_ = nullptr;
   std::vector<Layer> layers_;
   cl_kernel k_add_norm_ = nullptr, k_ple_gate_ = nullptr, k_ple_comb_ = nullptr, k_add_nq_ = nullptr;
@@ -1729,12 +1729,6 @@ class Engine {
     return c;  // (defaults per GQA ratio: set from the measurements)
   }
   int attn_tpw() const { return 32 / attn_nsp(); }
-  // build options of the int8 attention kernels for a head size and GQA ratio
-  std::string attn_opts(int hd, int hpg) const {
-    const int hs = attn_hs_for(hpg), nsp = hpg / hs;
-    return "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) + " -DHS=" +
-           std::to_string(hs) + " -DTPW=" + std::to_string(32 / nsp) + sb_opt(hd);
-  }
   // int8 attention scale blocks per row: Gemma 4 one per 64 dims (its V rows have a few large dims, which a single
   // row scale lets swamp the others: measured against an f32 reference), Qwen one per row (as accurate there, faster)
   std::string sb_opt(int hd) const { return " -DSB=" + std::to_string(hp.swa_rings ? hd / 64 : 1); }
@@ -1932,11 +1926,6 @@ class Engine {
     const std::string att = "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hp.n_head / hp.n_head_kv) +
                             " -DHS=" + std::to_string(attn_hs()) + " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256);
     k_attn_q8_ = kernel("ops", att, "attn_q8");
-    {
-      const int hpg = hp.n_head / hp.n_head_kv, hs = attn_hs_for(hpg);
-      k_attn_dec_ = kernel("ops", "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hpg) + " -DHS=" + std::to_string(hs) +
-                                      " -DTPW=" + std::to_string(32 / (hpg / hs)) + sb_opt(256), "attn_decode");
-    }
     k_attn_comb_ = kernel("ops", "", "attn_combine");
     k_mtp_concat_ = kernel("ops", "", "mtp_concat");
     auto tabs = build_iq_tables();
@@ -2420,11 +2409,10 @@ class Engine {
     char b[512];
     snprintf(b, sizeof b,
              "experts: generation %llu hits / %llu misses (%.1f %% hit) | prompt %llu cached, %llu read (%llu prefetched) | "
-             "SSD %.2f GB in %.0f ms (%.2f GB/s) | next-layer guesses %llu read, %llu used",
+             "SSD %.2f GB in %.0f ms (%.2f GB/s)",
              (unsigned long long)x.hits, (unsigned long long)x.misses, 100.0 * x.hits / std::max<uint64_t>(1, x.hits + x.misses),
              (unsigned long long)x.p_hits, (unsigned long long)x.p_reads, (unsigned long long)x.pf_reads,
-             x.st.bytes_read / 1e9, x.read_ms, x.st.bytes_read / 1e6 / std::max(1e-9, x.read_ms),
-             (unsigned long long)x.g_pf, (unsigned long long)x.g_pf_used);
+             x.st.bytes_read / 1e9, x.read_ms, x.st.bytes_read / 1e6 / std::max(1e-9, x.read_ms));
     std::string r = b;
     char h[160];
     snprintf(h, sizeof h, "\nhost: routing reads %.0f ms (waiting for the GPU), ensure %.0f ms, PLE rows %.0f ms",
@@ -3341,34 +3329,6 @@ class Engine {
       int s0 = nsb * sp / splits, s1 = nsb * (sp + 1) / splits, ac = sp == 0 ? a : 1;
       set_args(k, 0, wq, wh, aq_, asc_, absum_, C, M, N, K, ldc, c_off, ac, rgroup, s0, s1);
       run(name, k, 2, gws, lws);
-    }
-  }
-
-  // ---- matrices of a model next to the language model (the vision encoders, src/vision_*.h)
-  // A tensor of another GGUF (F16 / BF16 / F32) as a resident Q8_0 GEMM weight.
-  GpuWeight weight_ext(const GgufTensor& t) {
-    const int K = (int)t.dims[0], N = (int)t.dims[1];
-    std::vector<float> v((size_t)N * K);
-    dequant_row(t.type, t.data, (int64_t)N * K, v.data());
-    auto q8 = quantize_rows_q8_0(v.data(), N, K);
-    return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K);
-  }
-  // C[:, c_off : c_off + N] (+)= act * W^T for Mp rows, with the activations in the given buffers (quant_store16
-  // layout, per-32 scales). acc: 0 = store, 1 = accumulate.
-  void gemm_ext(const GpuWeight& w, cl_mem aq, cl_mem asc, cl_mem absum, int Mp, cl_mem C, int ldc, int c_off, int acc) {
-    cl_kernel k = gemm_kernel(w.gemm_qtype, true);
-    int M = Mp, N = w.N, K = w.K;
-    if (Mp % 16 || N % 16 || K % 256)
-      throw std::runtime_error("gemm_ext: shape " + std::to_string(Mp) + " x " + std::to_string(N) + " x " + std::to_string(K) +
-                               " is not a multiple of 16 x 16 x 256");
-    const int nsb = K / 256, splits = K > 8192 ? (nsb + 16) / 17 : 1, rgroup = 4;
-    int wgy = 1;
-    while (wgy < 8 && (Mp / 16) % (wgy * 2) == 0) wgy *= 2;
-    size_t gws[2] = {(size_t)N * (Mp / 16 / wgy), (size_t)wgy}, lws[2] = {16, (size_t)wgy};
-    for (int sp = 0; sp < splits; ++sp) {
-      int s0 = nsb * sp / splits, s1 = nsb * (sp + 1) / splits, ac = sp == 0 ? acc : 1;
-      set_args(k, 0, w.wq, w.wh, aq, asc, absum, C, M, N, K, ldc, c_off, ac, rgroup, s0, s1);
-      run("vit_gemm", k, 2, gws, lws);
     }
   }
 

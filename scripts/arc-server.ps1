@@ -197,7 +197,7 @@ Options for start / restart:
                                  of a model, remembered, recomputed when the GPU memory changes). Not given:
                                  a running server keeps its context, a new one starts with auto. -Ctx auto
                                  also restarts a server that runs a fixed context.
-  -Chunk <N>                     prompt chunk size (default per model: 27B 4096; 35B and Gemma 4 26B 8192; Flash
+  -Chunk <N>                     prompt chunk size (default per model: 27B 4096; 35B 8192; Gemma 4 26B and Flash
                                  Next 2048; 4B / 9B / E4B 512; Gemma with images at least 2048); smaller = less
                                  GPU memory, more context
   -SessionCacheGb <N>            save conversations to disk when switching sessions (default 8 GB, 0 = off)
@@ -214,15 +214,14 @@ Options for start / restart:
                                  smaller context. Without it, MoE models (35B, Flash Next, Gemma 4 26B) keep their
                                  experts (MTP layer included) on the SSD and the most used ones in a GPU cache
                                  and read the next layer's missing experts while the GPU computes (35B and Flash
-                                 Next: 131,072 tokens of context by default, up to 262,144 with -Ctx; Windows keeps
-                                 14 GB). The first start writes the expert file (35B: 16 GB, ~2.5 min; Flash Next:
+                                 Next: 131,072 tokens of context by default, up to 262,144 with -Ctx). The first start writes the expert file (35B: 16 GB, ~2.5 min; Flash Next:
                                  56 GB, ~9.5 min; Gemma 4 26B: 13 GB, ~1 min) to %LOCALAPPDATA%\arcinferzero\zero (safe
                                  to delete: it is written again).
   -Vision on|off                 image / audio input (default on). off: the projector (mmproj) is not loaded and
                                  --ctx auto keeps no GPU memory for it, so the context is longer
   -Port <N>                      port (default 8090; also for status / stop)
   -MtpDrafts <1..7>              drafts per step (default: 7 for Qwen 27B-class and with DFlash2, 5
-                                 for MoE, 3 for 4B, 2 otherwise)
+                                 for Qwen MoE, 3 for 4B and Gemma 4 26B, 2 otherwise)
   -ThinkBudget <N>               default reasoning budget in tokens (default 8192; requests can override it)
   -ImageMinTokens / -ImageMaxTokens <N>  tokens per image (defaults: Qwen 256..2048, Gemma 4 12B 1120..2048)
   -BudgetGb <GB>                 keep decoded weights resident up to GB (default: chosen with the context)

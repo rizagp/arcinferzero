@@ -2,6 +2,14 @@
 
 ## 2026-10-25: the NPU next to the GPU (`--npu on`); Flint support removed; the model list without duplicates
 
+- **Cleanup** (no change in results: 4B, E4B, Gemma 4 12B, 35B, 27B with and without MTP / the NPU bit-identical
+  before and after; Qwen3.5 4B and Gemma 4 26B images checked): unused code removed (`zero/kernels/gemm8.cl`,
+  `weight_ext` / `gemm_ext`, the `attn_decode` kernel built at load and never used, the next-layer expert guess and
+  its always-zero counters, the `scale_rows` / `vit_ln_quant` / `vit_quant` kernels, a few unused helpers); the
+  JSON / tool-call constraint checkers share one copy of their type / literal helpers; outdated help texts and docs
+  fixed (Gemma 4 26B prompt chunks 2048, no Windows RAM reserve since 10-22, Gemma 4 26B's default of 3 drafts, the
+  model folders, the NPU), QUEUE's open list tidied.
+
 - **The NPU next to the GPU for prompts** (`--npu on|off|force` for serverz / runz, `arc-server -Npu on`, `pi-arc
   --npu on`; off by default; docs/npu-experiment.md; built on the branch npu-experiment, merged): the Meteor Lake NPU
   computes part of the Qwen3.8 27B's FFN and DeltaNet projections in each prompt chunk through Level Zero's graph

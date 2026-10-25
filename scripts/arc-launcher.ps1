@@ -297,7 +297,7 @@ function Show-Detail {
     $L.Add("")
     $L.Add("Auto context (--ctx auto):")
     $L.Add("  GPU memory (Intel setting)    {0,12}" -f (GiB $mm.device))
-    $L.Add("  - kept for Windows / apps     {0,12}" -f (GiB $mm.keep_free))
+    $L.Add("  - left for the driver         {0,12}" -f (GiB $mm.keep_free))
     $L.Add("  - conversation snapshots      {0,12}" -f (GiB $mm.snapshots))
     $L.Add("  - image / audio encoders      {0,12}" -f (GiB $mm.encoders))
     $L.Add("  = for the model               {0,12}" -f (GiB $budget))

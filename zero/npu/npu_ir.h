@@ -80,9 +80,6 @@ class Ir {
   Out multiply(const std::string& name, const Out& a, const Out& b) {  // (numpy broadcast; the result has a's shape)
     return add(name, "Multiply", "<data auto_broadcast=\"numpy\"/>", {a, b}, T{a.t.et, a.t.shape}, "");
   }
-  Out add_op(const std::string& name, const Out& a, const Out& b) {
-    return add(name, "Add", "<data auto_broadcast=\"numpy\"/>", {a, b}, T{a.t.et, a.t.shape}, "");
-  }
   Out matmul_tb(const std::string& name, const Out& a, const Out& b) {  // a [M][K] . b [N][K]^T
     return add(name, "MatMul", "<data transpose_a=\"false\" transpose_b=\"true\"/>", {a, b},
                T{a.t.et, {a.t.shape[0], b.t.shape[0]}}, "");

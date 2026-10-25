@@ -27,7 +27,7 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
   public addresses only), and with Gemma 4 E4B / 12B you can talk to it: the microphone stays open, it hears the
   audio itself, answers aloud sentence by sentence, can be interrupted, and looks things up while it talks.
 
-### Results at a glance (2026-10-24)
+### Results at a glance (2026-10-25)
 
 | Model | Prompt | Generation | KL vs f32 reference |
 |---|---|---|---|
@@ -37,7 +37,7 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
 | Qwen3.8 Flash Next IQ3_S (512 experts on the SSD) | ~164 tok/s (4K), 163 (32K), 123 (125K) | 6-7 tok/s | 0.0143 / 0.0147 (363 tokens); 0.0186 / 0.0177 at 3.5K (QSA); `ARC_FN_PRECISE=1` 0.0127 / 0.0132 (prompt / decode) |
 | Qwen3.5 4B | 911 tok/s (2K) | 17.6 tok/s | 0.0021 |
 | Gemma 4 E4B (Google QAT) | 724 tok/s (4K), 615 (14K) | 32 tok/s with its drafter | 0.00088 |
-| Gemma 4 12B (Google QAT) | 137 tok/s (4K), 102 (14K) | 19.0 tok/s with its drafter | 0.0002 (two-pass int8 activations) |
+| Gemma 4 12B (Google QAT) | 137 tok/s (4K), 102 (14K); +10 % with `--npu on` | 19.0 tok/s with its drafter | 0.0002 (two-pass int8 activations) |
 | Gemma 4 26B-A4B (Google QAT, MoE, experts on the SSD) | 252 tok/s (4K), 210 (14K) | ~25 tok/s with its drafter; 14 after a 14K prompt without | 0.0042 (two-pass int8 activations) |
 
 | vs llama.cpp (same file, same laptop) | arcinferzero | llama.cpp Vulkan | llama.cpp SYCL |
@@ -264,8 +264,8 @@ is running and `arc-server stop` frees the GPU memory.
   resident W8 weights, the cache folders and sizes, `--no-swap` and f32 attention. A field you change turns yellow
   and only those are passed on. "Set as default" keeps them (`%LOCALAPPDATA%\arcinferzero\launcher.json`) and makes the
   selected model the default one (also pi-arc's); "Reset options" goes back to the best values.
-- **Selected model:** what it supports and how its auto context was counted: GPU memory, minus what is kept for
-  Windows, state snapshots, encoders, weights, MTP block and working buffers, divided by the context's memory per
+- **Selected model:** what it supports and how its auto context was counted: GPU memory, minus 1.2 GiB for the
+  driver, state snapshots, encoders, weights, MTP block and working buffers, divided by the context's memory per
   1,000 tokens, at most the model's max context length.
 - **Running server:** model, filled context, GPU memory by part (weights, context, MTP, buffers, encoders),
   requests, the last prompt / answer speed and MTP acceptance.
@@ -346,7 +346,7 @@ test uses port 8091 and needs the GPU memory.
 ```powershell
 .\bin\serverz.exe -m C:\path\to\model.gguf --port 8080 --ctx auto --mtp --alias qwen3.8-27b
 .\bin\serverz.exe --help           # every option with its default
-.\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %LOCALAPPDATA%\arcinferzero\models), as JSON
+.\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %LOCALAPPDATA%\arcinferzero\models, model-dirs.txt), as JSON
 ```
 
 - Web UI: http://127.0.0.1:8080/ (chat with images, audio and files; **Web**: the model searches the web and reads
@@ -401,7 +401,7 @@ test uses port 8091 and needs the GPU memory.
   Files: `<folder>-<folder hash>-<prompt hash>-<tokens>.arcp`.
 - The NPU next to the GPU (`--npu on`; `arc-server start -Npu on`, `pi-arc --npu on`): the Intel AI Boost NPU
   computes part of each prompt chunk's matrix products while the GPU computes the rest, through Level Zero alone.
-  Qwen3.8 27B: prompts +15-20 % (4K: ~133 -> ~157 tok/s), KL vs f32 0.0003 -> 0.003, 0.4 GB of RAM; Gemma 4 12B
+  Qwen3.8 27B: prompts +15-20 % (4K: ~133 -> ~157 tok/s), KL vs f32 0.00066 -> 0.003, 0.4 GB of RAM; Gemma 4 12B
   +10 % (129 -> 142 tok/s, KL 0.0027); generation unchanged. Models where it gains nothing (4B, 9B, E4B, the MoE
   models 35B, Gemma 4 26B, Flash Next) stay off and say so; `--npu force` runs it on every Qwen and Gemma model. The setting is the server's: switching
   models keeps it, a restart turns it off. Default off. Details: [docs/npu-experiment.md](docs/npu-experiment.md).
@@ -428,7 +428,7 @@ test uses port 8091 and needs the GPU memory.
   reads the main model's KV cache. The drafts are verified in one main-model pass and the next token is still
   sampled from the model's distribution, so the output is unchanged (checked: identical answers at every draft
   count). `--mtp-drafts N`: arcinferzero 1–7 (default 7 for the 27B and whenever DFlash2 drafts, 5 for the 35B,
-  3 for the 4B, 2 for the 9B and Gemma).
+  3 for the 4B and Gemma 4 26B, 2 for the 9B and the other Gemma models).
 - `--dflash DIR` (arcinferzero: `serverz`, `runz`): speculative decoding with a DFlash2 block drafter, `DIR` being
   the folder with its `config.json` and `model.safetensors` (the snapshot folder of `hf download
   z-lab/Qwen3.8-27B-DFlash2` for the 27B, `hf download incoai/Qwen3.6-35B-A3B-DFlash2` for the 35B). It drafts a
@@ -648,7 +648,7 @@ tests/      run_tests.ps1 and its reference data
 webui/      index.html (chat, web search tools, Talk voice mode)
 docs/       before-after.md (every change, before / after, accuracy), review.md (results), speed-progress.md
             (speed by date), lessons-intel-arc-igpu.md, f21-q2-speed.md (Gemma 4 accurate-mode plan),
-            flash-next-spec.md, archive/ (arcinferzero-log.md, review_notes.md: older logs and notes)
+            flash-next-spec.md, npu-experiment.md (the NPU next to the GPU), archive/ (arcinferzero-log.md, review_notes.md: older logs and notes)
 QUEUE.md    open work, measurements and the decisions waiting for the user
 setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1: builds one or more tools
 ```

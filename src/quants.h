@@ -577,7 +577,6 @@ inline void quantize_act_cpu(const float* x, int M, int K, int8_t* aq, float* as
 
 // Weight types the GEMM reads natively (repacked once at load). Everything else is decoded just in time
 // on the GPU (zero/kernels/decode.cl) into the W8 layout.
-inline bool is_native_type(uint32_t t) { return t == GGML_Q4_K || t == GGML_Q5_K || t == GGML_Q6_K || t == GGML_Q8_0; }
 // Small-block types (IQ4_NL: 32 elements / 18 bytes, Q2_0: 64 / 18) whose consecutive blocks are read as 256-element
 // "superblocks" by the GPU (144 / 72 bytes). A row whose K is not a multiple of 256 (Qwen3.8 Flash Next down
 // projections: K = 640) is padded to the next multiple with zero blocks (scale 0, dequantizing to zeros).
@@ -602,7 +601,7 @@ inline bool is_w8_type(uint32_t t) {
     default: return false;
   }
 }
-// W8x8 GEMM variant (zero/kernels/gemm8.cl VARIANT 0..4) for a decoded GGUF type.
+// W8x8 GEMM variant (zero/kernels/gemm.cl QTYPE 100 + variant; 4: the Q8_0 form) for a decoded GGUF type.
 // Types with mins (Q2_K/Q4_K/Q5_K) are requantized to signed int8 by decode_w8_sb (no min term in the GEMM: 3x the
 // speed of the scales + mins variants 2/3, about 0.5 % weight error; the scales + mins form was less accurate end to
 // end, docs/archive/review_notes.md).
@@ -668,14 +667,4 @@ inline void gpu_raw_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
   }
   memcpy(dst, src, bb);
   if (bp > bb) memset(dst + bb, 0, bp - bb);
-}
-inline std::vector<uint8_t> pad_raw_rows(uint32_t type, const uint8_t* data, size_t nbytes) {
-  const size_t bb = gguf_sb_bytes(type), bp = raw_padded_sb_bytes(type), nsb = nbytes / bb;
-  std::vector<uint8_t> out(nsb * bp + 256, 0);  // tail slack: block reads may run past the last superblock
-  if (bb == bp && !gpu_regrouped(type)) {
-    memcpy(out.data(), data, nbytes);
-  } else {
-    for (size_t i = 0; i < nsb; ++i) gpu_raw_sb(type, data + i * bb, out.data() + i * bp);
-  }
-  return out;
 }

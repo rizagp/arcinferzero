@@ -821,8 +821,8 @@ int main(int argc, char** argv) {
   if (model.empty() || help) {
     fprintf(stderr,
             "usage: arcinferzero-server -m model.gguf [options]   OpenAI-compatible server (API at /v1, web UI at /)\n"
-            "       arcinferzero-server --list-models             the models it can load, as JSON (Hugging Face cache and\n"
-            "                                                 %%LOCALAPPDATA%%\\arcinferzero\\models) with each one's auto context\n"
+            "       arcinferzero-server --list-models             the models it can load, as JSON (Hugging Face cache,\n"
+            "                                                 %%LOCALAPPDATA%%\\arcinferzero\\models, model-dirs.txt) with each one's auto context\n"
             "  -m, --model FILE      model GGUF; an mmproj-* image projector and an mtp-* drafter next to it are found\n"
             "  --host H, --port P    listen address (default 127.0.0.1:8080)\n"
             "  --alias NAME          model id in the API (default: the file name)\n"

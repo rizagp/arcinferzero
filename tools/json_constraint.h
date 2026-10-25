@@ -26,6 +26,35 @@ inline bool more_keys(const Json& props, bool any_key, const std::vector<std::st
   }
   return false;
 }
+// whether the schema allows type t ("number" includes "integer"; no type: anything)
+inline bool has_type(const Json& sc, const char* t) {
+  const Json& ty = sc["type"];
+  auto is = [&](const std::string& x) { return x == t || (std::string(t) == "number" && x == "integer"); };
+  if (ty.is_string()) return is(ty.str());
+  if (ty.is_array()) {
+    for (const Json& x : ty.items())
+      if (is(x.str())) return true;
+    return false;
+  }
+  return true;
+}
+// whether the schema's numbers must be integers (type "integer", or a list with "integer" and no "number")
+inline bool integer_only(const Json& sc) {
+  const Json& ty = sc["type"];
+  if (ty.is_string()) return ty.str() == "integer";
+  if (!ty.is_array()) return false;
+  bool num = false, in = false;
+  for (const Json& x : ty.items()) { num = num || x.str() == "number"; in = in || x.str() == "integer"; }
+  return in && !num;
+}
+// the literal t from i: DONE when all of it is there, PARTIAL when s ends inside it
+inline Res literal(const std::string& s, size_t& i, const char* t) {
+  for (const char* p = t; *p; ++p, ++i) {
+    if (i >= s.size()) return PARTIAL;
+    if (s[i] != *p) return FAIL;
+  }
+  return DONE;
+}
 
 class Checker {
  public:
@@ -67,26 +96,6 @@ class Checker {
     size_t n = 0;
     while (i < s.size() && (s[i] == ' ' || s[i] == '\n' || s[i] == '\r' || s[i] == '\t')) { ++i; ++n; }
     return n <= 8;
-  }
-  static bool has_type(const Json& sc, const char* t) {
-    const Json& ty = sc["type"];
-    if (ty.is_string()) return ty.str() == t || (std::string(t) == "number" && ty.str() == "integer");
-    if (ty.is_array()) {
-      for (const Json& x : ty.items())
-        if (x.str() == t || (std::string(t) == "number" && x.str() == "integer")) return true;
-      return false;
-    }
-    return true;  // (no type: anything)
-  }
-  static bool integer_only(const Json& sc) {
-    const Json& ty = sc["type"];
-    if (ty.is_string()) return ty.str() == "integer";
-    if (ty.is_array()) {
-      bool num = false, integer = false;
-      for (const Json& x : ty.items()) { num = num || x.str() == "number"; integer = integer || x.str() == "integer"; }
-      return integer && !num;
-    }
-    return false;
   }
 
   Res value(const Json& sc0, const std::string& s, size_t& i, int depth) const {
@@ -132,14 +141,6 @@ class Checker {
     return FAIL;
   }
 
-  static Res literal(const std::string& s, size_t& i, const char* lit) {
-    const std::string l = lit;
-    for (size_t k = 0; k < l.size(); ++k, ++i) {
-      if (i >= s.size()) return PARTIAL;
-      if (s[i] != l[k]) return FAIL;
-    }
-    return DONE;
-  }
   static Res number(const std::string& s, size_t& i, bool integer) {
     if (i < s.size() && s[i] == '-') ++i;
     if (i >= s.size()) return PARTIAL;
