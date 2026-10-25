@@ -513,11 +513,22 @@ struct ClRt {
     if (zrt::ctx) return true;
     if (!ze_load()) { fprintf(stderr, "cannot load ze_loader.dll (Level Zero)\n"); return false; }
     ZE_CHECK(zeInit(1));
-    uint32_t n = 1;
-    ze_driver_handle_t drvh;
-    ZE_CHECK(zeDriverGet(&n, &drvh));
-    n = 1;
-    ZE_CHECK(zeDeviceGet(drvh, &n, &zrt::dev));
+    // the first driver whose device is a GPU (zeInit(1) lists GPU drivers only; after a zeInit(0) of the NPU
+    // experiment, ARC_NPU=1, the NPU's driver is listed too and could come first)
+    uint32_t nd = 0;
+    ZE_CHECK(zeDriverGet(&nd, nullptr));
+    std::vector<ze_driver_handle_t> drvs(nd);
+    ZE_CHECK(zeDriverGet(&nd, drvs.data()));
+    ze_driver_handle_t drvh = nullptr;
+    for (ze_driver_handle_t d : drvs) {
+      uint32_t n = 1;
+      ze_device_handle_t x = nullptr;
+      if (zeDeviceGet(d, &n, &x) != 0 || !n) continue;
+      ze_device_properties_t p{};
+      p.stype = ZE_STYPE_DEVICE_PROPERTIES;
+      if (zeDeviceGetProperties(x, &p) == 0 && p.type == 1) { drvh = d; zrt::dev = x; break; }
+    }
+    if (!drvh) { fprintf(stderr, "no Level Zero GPU driver\n"); return false; }
     uint32_t nm = 1;
     ze_device_memory_properties_t mp{};
     mp.stype = ZE_STYPE_DEVICE_MEMORY_PROPERTIES;

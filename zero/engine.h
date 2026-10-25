@@ -190,6 +190,7 @@ class Engine {
   ~Engine() {
     if (cl_.queue) clFinish(cl_.queue);
     if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
+    npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
     for (cl_program p : progs_) clReleaseProgram(p);

@@ -38,8 +38,8 @@ struct ze_graph_properties_t {
   uint32_t numGraphArgs;
 };
 // argument types / precisions / layouts (ze_graph_argument_type_t, ze_graph_argument_precision_t, ...)
-#define ZE_GRAPH_ARGUMENT_TYPE_INPUT 0x1u
-#define ZE_GRAPH_ARGUMENT_TYPE_OUTPUT 0x2u
+#define ZE_GRAPH_ARGUMENT_TYPE_INPUT 0x0u  // (as the driver reports them: 0 input, 1 output)
+#define ZE_GRAPH_ARGUMENT_TYPE_OUTPUT 0x1u
 #define ZE_MAX_GRAPH_ARGUMENT_NAME 256
 #define ZE_MAX_GRAPH_ARGUMENT_DIMENSIONS_SIZE 5
 struct ze_graph_argument_properties_t {

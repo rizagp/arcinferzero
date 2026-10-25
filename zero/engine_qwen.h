@@ -16,9 +16,11 @@
       if (L.qz_ab) gbc = qz_ab_;
       else matmul("gemm_ab", L.ab, Mp, gb_, 2 * nv, 0, false, a_in);
     } else {
-      matmul("gemm_qkv", L.qkv, Mp, big_, C, 0, false, a_in);
+      const bool npu = npu_qkv_start(L, T, Mp);  // (ARC_NPU=1: the NPU's share of attn_qkv, zero/npu/engine_npu.h)
+      if (!npu) matmul("gemm_qkv", L.qkv, Mp, big_, C, 0, false, a_in);
       matmul("gemm_z", L.z, Mp, z_, Di, 0, false, a_in);
       matmul("gemm_ab", L.ab, Mp, gb_, 2 * nv, 0, false, a_in);
+      if (npu) npu_qkv_finish(L, Mp);
     }
     {
       int n = T * 2 * nv;

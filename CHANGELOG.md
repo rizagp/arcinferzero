@@ -2,6 +2,11 @@
 
 ## 2026-10-25: Flint support removed; the model list without duplicates
 
+- **Branch npu-experiment: the NPU next to the GPU for prompts** (`ARC_NPU=1`, off by default;
+  docs/npu-experiment.md): the Meteor Lake NPU computes part of the Qwen3.8 27B's FFN and DeltaNet projections in each
+  prompt chunk through Level Zero's graph extension alone (no OpenVINO): 4K prompt +15-20 %, 11K +15.6 %, KL vs f32
+  0.00278; off bit-identical to main, MTP / DFlash2 still bit-identical to plain decoding. Models with resident W8
+  (4B, 9B, 35B) gain nothing and stay off.
 - **Flint is no longer supported** (the user's decision): the `flint` architecture in the engine and the f32
   reference, its pre-tokenizer (and `src/unicode_ps.h`), the GLM-style tool calls, the server's Flint template and
   thinking handling, the catalog entry and the `flint` shortcut, and the kernel options only it used (attention

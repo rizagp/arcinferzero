@@ -41,6 +41,20 @@ struct Rt {
   ze_device_graph_properties_t gp{};
   std::string cache_dir;
   std::vector<void*> blobs_;  // (native binaries of the graphs loaded from the cache)
+  std::vector<void*> hosts_;  // (host allocations of host())
+  std::vector<ze_graph_handle_t> graphs_;
+  uint32_t driver_version = 0;
+  Rt() = default;
+  Rt(const Rt&) = delete;
+  Rt& operator=(const Rt&) = delete;
+  ~Rt() {  // (everything of this context: the engine of a server switching models goes, its NPU memory with it)
+    if (cl) zeCommandListHostSynchronize(cl, UINT64_MAX);
+    for (ze_graph_handle_t gr : graphs_) g->pfnDestroy(gr);
+    for (void* b : blobs_) VirtualFree(b, 0, MEM_RELEASE);
+    for (void* p : hosts_) zeMemFree(ctx, p);
+    if (cl) zeCommandListDestroy(cl);
+    if (ctx) zeContextDestroy(ctx);
+  }
   // (needs ze_load() and zeInit(0) done: zeInit(1), GPUs only, hides the NPU driver)
   bool init() {
     auto getExt = (ze_result_t(*)(ze_driver_handle_t, const char*, void**))(void*)GetProcAddress(
@@ -59,6 +73,12 @@ struct Rt {
       if (p.type == 5) { drv = d; dev = x; }
     }
     if (!dev || !getExt || getExt(drv, "ZE_extension_graph_1_8", (void**)&g) != 0 || !g) return false;
+    {  // (the driver's version: part of the blob cache's key, so a driver update compiles the graphs again)
+      struct DriverProps { uint32_t stype; void* pNext; uint8_t uuid[16]; uint32_t driverVersion; } dp{0x1u, nullptr, {}, 0};
+      auto getProps = (ze_result_t(*)(ze_driver_handle_t, DriverProps*))(void*)GetProcAddress(GetModuleHandleA("ze_loader.dll"),
+                                                                                             "zeDriverGetProperties");
+      if (getProps && getProps(drv, &dp) == 0) driver_version = dp.driverVersion;
+    }
     gp.stype = ZE_STYPE_DEVICE_GRAPH_PROPERTIES;
     g->pfnDeviceGetGraphProperties(dev, &gp);
     ze_context_desc_t cd{ZE_STYPE_CONTEXT_DESC, nullptr, 0};
@@ -73,7 +93,8 @@ struct Rt {
   ze_graph_handle_t compile(const Ir& ir, double& ms, bool& cached) {
     const std::vector<uint8_t> in = ir.serialize(gp.compilerVersion);
     char hex[17];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)fnv1a(in.data(), in.size()));
+    snprintf(hex, sizeof hex, "%016llx",
+             (unsigned long long)fnv1a(&driver_version, sizeof driver_version, fnv1a(in.data(), in.size())));
     const std::string path = cache_dir.empty() ? std::string() : cache_dir + "\\" + hex + ".blob";
     std::vector<uint8_t> blob;
     if (!path.empty()) {
@@ -111,7 +132,9 @@ struct Rt {
         if (g->pfnGetNativeBinary(gr, &bn, nb.data()) == 0) {
           std::error_code ec;
           std::filesystem::create_directories(cache_dir, ec);
-          const std::string tmp = path + ".tmp";
+          // (a temporary file of this process and thread: two processes compiling the same graph do not interleave)
+          const std::string tmp = path + "." + std::to_string(GetCurrentProcessId()) + "_" +
+                                  std::to_string(GetCurrentThreadId()) + ".tmp";
           bool ok = false;
           {
             std::ofstream o(tmp, std::ios::binary);
@@ -125,12 +148,15 @@ struct Rt {
       }
     }
     ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    graphs_.push_back(gr);
     return gr;
   }
   void* host(size_t bytes) {
     ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
     void* p = nullptr;
-    return zeMemAllocHost(ctx, &hd, bytes, 4096, &p) == 0 ? p : nullptr;
+    if (zeMemAllocHost(ctx, &hd, bytes, 4096, &p) != 0) return nullptr;
+    hosts_.push_back(p);
+    return p;
   }
   int arg(ze_graph_handle_t gr, const char* name, bool output = false) {
     ze_graph_properties_t pr{ZE_STYPE_GRAPH_PROPERTIES, nullptr, 0};
@@ -152,6 +178,19 @@ struct Rt {
     const ze_result_t r = g->pfnSetArgumentValue(gr, (uint32_t)i, p);
     if (r != 0) fprintf(stderr, "NPU set argument %s (%d) to %p: 0x%x\n", name, i, p, r);
     return r == 0;
+  }
+  // the output argument whose name starts with prefix + "_" (the producing layer's output name), or -1
+  int output_named(ze_graph_handle_t gr, const char* prefix) {
+    ze_graph_properties_t pr{ZE_STYPE_GRAPH_PROPERTIES, nullptr, 0};
+    g->pfnGetProperties(gr, &pr);
+    const std::string p = std::string(prefix) + "_";
+    for (uint32_t i = 0; i < pr.numGraphArgs; ++i) {
+      ze_graph_argument_properties_t ap{};
+      ap.stype = ZE_STYPE_GRAPH_ARGUMENT_PROPERTIES;
+      g->pfnGetArgumentProperties(gr, i, &ap);
+      if (ap.type != 0 && std::string(ap.name).rfind(p, 0) == 0) return (int)i;
+    }
+    return -1;
   }
   // output arguments in order of the graph (their names are the producing layers' output names)
   std::vector<int> outputs(ze_graph_handle_t gr) {
