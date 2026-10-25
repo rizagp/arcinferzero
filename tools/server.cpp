@@ -836,7 +836,7 @@ int main(int argc, char** argv) {
             "  --mtp-drafts N        drafts per step: Qwen 1..7, Gemma 1..3 (default: 7 for Qwen 27B-class and with\n"
             "                        DFlash2, 5 for MoE, 3 for 4B and Gemma 4 26B, 2 otherwise)\n"
             "  --npu on|off|force    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU\n"
-            "                        (Qwen3.8 27B: prompts +15-20 %%; other models stay off, force: on anyway);\n"
+            "                        (Qwen3.8 27B +15 %%, Gemma 4 12B +10 %%; others off, force: on anyway);\n"
             "                        kept when a request switches models; default off (or ARC_NPU=1)\n"
             "  --slots N             hold N conversations at once (default 1), each with its own KV cache and states\n"
             "                        of --ctx tokens (auto: the context that fits N of them; MoE with experts on the\n"

@@ -208,7 +208,7 @@ Options for start / restart:
                                  run in one pass. Each slot gets the
                                  context that fits N of them (-Ctx auto; 27B: 2 x 49,152, 35B: 2 x 65,536, g26 2 x 32,768)
   -Npu on|off                    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
-                                 (Qwen3.8 27B: prompts +15-20 %, 0.4 GB of RAM; other models stay off). Kept when
+                                 (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
                                  the model changes (pi-arc, Pi's /model); off again after restart / stop
   -NoStream                      every expert on the GPU: no expert file, no SSD reads; MoE models then get a
                                  smaller context. Without it, MoE models (35B, Flash Next, Gemma 4 26B) keep their

@@ -161,15 +161,17 @@
     const int a_in = act32_for(false);
     if (!ffn_in_ready_) rmsnorm_quant(x_, 0, L.ffn_norm, E, Mp, T, a_in);
     ffn_in_ready_ = false;
-    matmul("gemm_gate", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
-    matmul("gemm_up", L.up, Mp, big_, 2 * F, F, 0, a_in);
-    const int a_dn = act32_for(false);
-    {
-      int gelu = 1, FF = F, MM = Mp, TT = T, fused = 0;  // (gelu(gate) * up, quantized for the down projection)
-      set_args(k_swiglu_, 0, big_, FF, MM, TT, aq_, asc_, absum_, a_dn, fused, gelu);
-      run_rows_quant("swiglu_quant", F, T, Mp);
+    if (!npu_gemma_ffn(L, T, Mp, a_in)) {  // (--npu: the NPU's shares of the matmuls, zero/npu/engine_npu.h)
+      matmul("gemm_gate", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
+      matmul("gemm_up", L.up, Mp, big_, 2 * F, F, 0, a_in);
+      const int a_dn = act32_for(false);
+      {
+        int gelu = 1, FF = F, MM = Mp, TT = T, fused = 0;  // (gelu(gate) * up, quantized for the down projection)
+        set_args(k_swiglu_, 0, big_, FF, MM, TT, aq_, asc_, absum_, a_dn, fused, gelu);
+        run_rows_quant("swiglu_quant", F, T, Mp);
+      }
+      matmul("gemm_down", L.down, Mp, big_, E, 0, 0, a_dn);
     }
-    matmul("gemm_down", L.down, Mp, big_, E, 0, 0, a_dn);
     if (hp.moe) {
       // Gemma 4 26B-A4B (llama.cpp gemma4): ffn = rmsnorm(mlp) * post_ffw_norm_1 + rmsnorm(experts(rmsnorm(x) *
       // pre_ffw_norm_2)) * post_ffw_norm_2, the router on rmsnorm(x) * scale / sqrt(E); then the usual post_ffw norm

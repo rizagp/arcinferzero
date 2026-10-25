@@ -88,7 +88,7 @@ static int run_main(int argc, char** argv) {
             "  --feed-step N         feed the prompt in calls of N tokens (tests resuming mid-prompt)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
             "  --attn-f32            f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
-            "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (Qwen3.8 27B; force: any Qwen)\n"
+            "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any)\n"
             "profiling:\n"
             "  --prof                time to first token and per-kernel profile of the prompt\n"
             "  --prof-gen            per-kernel profile of generation (ARC_PROF_LAYERS=8: per group of 8 layers)\n"

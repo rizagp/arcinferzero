@@ -401,8 +401,9 @@ test uses port 8091 and needs the GPU memory.
   Files: `<folder>-<folder hash>-<prompt hash>-<tokens>.arcp`.
 - The NPU next to the GPU (`--npu on`; `arc-server start -Npu on`, `pi-arc --npu on`): the Intel AI Boost NPU
   computes part of each prompt chunk's matrix products while the GPU computes the rest, through Level Zero alone.
-  Qwen3.8 27B: prompts +15-20 % (4K: ~133 -> ~157 tok/s), KL vs f32 0.0003 -> 0.003, 0.4 GB of RAM; generation
-  unchanged. Other models gain nothing and stay off (the log says so). The setting is the server's: switching
+  Qwen3.8 27B: prompts +15-20 % (4K: ~133 -> ~157 tok/s), KL vs f32 0.0003 -> 0.003, 0.4 GB of RAM; Gemma 4 12B
+  +10 % (129 -> 142 tok/s, KL 0.0027); generation unchanged. Models where it gains nothing (4B, 9B, E4B, the MoE
+  models 35B, Gemma 4 26B, Flash Next) stay off and say so; `--npu force` runs it on every Qwen and Gemma model. The setting is the server's: switching
   models keeps it, a restart turns it off. Default off. Details: [docs/npu-experiment.md](docs/npu-experiment.md).
 - Conversation slots (`--slots N`, arcinferzero): the server holds N conversations, each with its own KV cache and
   states; requests in different slots take turns step by step (by GPU time), so two clients answer at the same

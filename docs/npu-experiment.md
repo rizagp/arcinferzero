@@ -42,7 +42,22 @@ before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`)
 - Off: logits bit-identical to the engine without the NPU code (27B and Qwen3.6 35B, prompt and generation).
 - On: bit-identical run to run; MTP and DFlash2 drafting give the same logits as plain decoding (with the NPU on
   both); the MTP block's prompt pass uses the NPU too. Generation is unchanged (it never uses the NPU).
-- Not worth it on models whose W8 weights stay resident on the GPU, measured: Qwen3.5 4B +2 % (noise), 9B +4-6 % with
+- Every model, measured on 2026-10-25 (`--npu force` where `--npu on` leaves it off; KL vs the f32 reference;
+  4K prompts, off / NPU alternated; the NPU's results bit-identical run to run on each):
+
+  | Model | Prompt tok/s off -> NPU | KL off -> NPU | `--npu on` |
+  |---|---|---|---|
+  | Qwen3.8 27B-AP IQ4_XS | 133 -> 153-162 (+15-20 %) | 0.00066 -> 0.0028-0.0031 (128 tokens) | on |
+  | Gemma 4 12B (QAT Q4_0) | 126-129 -> 142 (+10 %) | 0.00000 -> 0.0027 (20 tokens) | on |
+  | Qwen3.5 4B | 837-845 -> 796 (`--chunk 4096`; default chunk 512 never reaches the NPU) | 0.00093 -> 0.00215 | off |
+  | Gemma 4 E4B | 780-789 -> 645 (`--chunk 4096`) | 0.00389 -> 0.00342 | off |
+  | Qwen3.6 35B-A3B (attn_qkv only, Q8_0 form) | 756-762 -> 720 (-5 %) | +0.0006 (against an older 35B file's reference: only the difference counts) | off |
+  | Gemma 4 26B-A4B (its dense MLP) | 253-268 -> 230-250 | 0.0101 -> 0.0054 (20 tokens) | off |
+  | Qwen3.8 Flash Next | not measured: its expert file did not fit on the full C: drive | | off |
+
+  Gemma 4 runs its NPU shares in f16 (gate / up and down: 27 % of the columns, 40 % with the two-pass int8 GPU
+  matmuls of the 12B / 26B); Flash Next's attn_qkv share takes the mixer's output as its input.
+- Not worth it on models whose W8 weights stay resident on the GPU, measured earlier: Qwen3.5 4B +2 % (noise), 9B +4-6 % with
   KL 0.008-0.013 (over the 0.01 target), Qwen3.6 35B-A3B +0.5 %. `--npu on` leaves them off (the log says why);
   `--npu force` forces it. Gemma 4 (E4B) was not built: small and resident like the 4B. Other architectures: off.
 - Cost: 0.37 GiB of system RAM outside the GPU budget for the 27B (the shared block) and 33 MiB of GPU staging. The

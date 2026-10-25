@@ -51,7 +51,7 @@ int npu_ng_ = 0, npu_nn_ = 0, npu_min_ = 2048;
 uint8_t* npu_shm_ = nullptr;
 size_t npu_a_ = 0, npu_sa_ = 0, npu_cg_ = 0, npu_cu_ = 0;
 cl_mem npu_xn_ = nullptr, npu_gaq_ = nullptr, npu_gsa_ = nullptr, npu_gcg_ = nullptr, npu_gcu_ = nullptr;
-cl_kernel npu_rowq_ = nullptr, npu_merge_ = nullptr, npu_to16_ = nullptr, npu_norm16_ = nullptr, npu_put_ = nullptr;
+cl_kernel npu_rowq_ = nullptr, npu_merge_ = nullptr, npu_to16_ = nullptr, npu_norm16_ = nullptr, npu_put_ = nullptr, npu_gelu16_ = nullptr;
 // (the f16 part: one input block A16 for the matrix in flight (Mp x K f16, K up to n_ff), an output block per kind)
 size_t npu_a16_ = 0, npu_cd_ = 0, npu_cq_ = 0;
 cl_mem npu_ga16_ = nullptr, npu_gcd_ = nullptr, npu_gcq_ = nullptr;
@@ -74,7 +74,7 @@ void npu_teardown() {
   npu_graphs16_.clear();
   npu_layers_.clear();
   for (int& o : npu_own_) o = -1;
-  for (cl_kernel* k : {&npu_rowq_, &npu_merge_, &npu_to16_, &npu_norm16_, &npu_put_, &npu_w8rows_})
+  for (cl_kernel* k : {&npu_rowq_, &npu_merge_, &npu_to16_, &npu_norm16_, &npu_put_, &npu_w8rows_, &npu_gelu16_})
     if (*k) {
       clReleaseKernel(*k);
       *k = nullptr;
@@ -86,15 +86,18 @@ void npu_teardown() {
 
 void npu_setup() {
   if (!npu_wanted() || opt.dry) return;
-  if (hp.gemma || hp.hc || (hp.arch != "qwen35" && hp.arch != "qwen35moe")) {
-    fprintf(stderr, "ARC_NPU: Qwen3.5 / 3.6 / 3.8 dense and MoE models only; off for this one\n");
+  // (Qwen3.5 / 3.6 / 3.8 dense and MoE, Flash Next (its attn_qkv shares), Gemma 4 (its FFN, f16))
+  if (!hp.gemma && !hp.hc && hp.arch != "qwen35" && hp.arch != "qwen35moe") {
+    fprintf(stderr, "ARC_NPU: Qwen3.5 / 3.6 / 3.8 and Gemma 4 models only; off for this one\n");
     return;
   }
   // (measured 2026-10-25: the NPU's share pays off where the GPU decodes the weights per chunk (W8 just in time: the
-  //  27B, +15-20 % prompt); with resident W8 the GPU's GEMMs are faster than the NPU makes its share (4B +2 %, 9B +4-6 %
-  //  at KL 0.008-0.013, 35B +0.5 %): off there unless ARC_NPU=2)
-  if (w8_resident && npu_level() < 2) {
-    fprintf(stderr, "ARC_NPU: off for this model (its W8 weights stay resident: no gain measured); --npu force forces it\n");
+  //  27B, +15-20 % prompt); with resident W8 the GPU's GEMMs are faster than the NPU makes its share (4B -6 %, 9B
+  //  +4-6 % at KL 0.008-0.013, E4B 0 %), and MoE models' few dense matrices do not pay for the NPU's overhead (35B -5 %,
+  //  Gemma 4 26B -1-8 %): off there unless --npu force. On: Qwen3.8 27B +15 %, Gemma 4 12B +10 %)
+  if ((w8_resident || hp.moe) && npu_level() < 2) {
+    fprintf(stderr, "ARC_NPU: off for this model (%s: no gain measured); --npu force uses it anyway\n",
+            hp.moe ? "a mixture of experts" : "its W8 weights stay resident");
     return;
   }
   const auto t0 = std::chrono::steady_clock::now();
@@ -107,14 +110,19 @@ void npu_setup() {
   const int E = hp.n_embd, F = hp.n_ff, M = max_chunk;
   const double share = getenv("ARC_NPU_SHARE") ? atof(getenv("ARC_NPU_SHARE")) : 1.0 / 3.0;
   if (getenv("ARC_NPU_MIN")) npu_min_ = std::max(16, atoi(getenv("ARC_NPU_MIN")));
-  // (gate / up: dense FFNs only; ARC_NPU_SHARE=0 turns that part off)
-  npu_nn_ = hp.moe || F < 256 || share <= 0 ? 0 : std::clamp((int)std::lround(F * share / 64.0) * 64, 64, F - 64);
+  // (gate / up: dense FFNs only (Qwen MoE layers have none; Gemma 4 26B its dense MLP); ARC_NPU_SHARE=0 turns that part
+  //  off. Gemma: f16 like down (its KL is sensitive: two int8 passes on the GPU), a smaller share by default)
+  const double gdef = q2mm_ ? 0.4 : 0.27;  // (Gemma 4: the f16 shares of gate / up and down, by default)
+  const double gshare = getenv("ARC_NPU_SHARE") ? share : hp.gemma ? gdef : share;
+  npu_nn_ = F < 256 || gshare <= 0 ? 0 : std::clamp((int)std::lround(F * gshare / 64.0) * 64, 64, F - 64);
   npu_ng_ = F - npu_nn_;
   // the f16 shares (ARC_NPU_DOWN / ARC_NPU_QKV, 0: off): about where the NPU (w8g, ~2.9-3.1 TFLOPS at 4096 rows) and
   // the GPU finish together on the 27B
-  auto cols = [](int N, double s) { return s <= 0 ? 0 : std::clamp((int)std::lround(N * s / 64.0) * 64, 64, N - 64); };
-  const int Cq = hp.conv_dim();
-  const int nd = cols(E, getenv("ARC_NPU_DOWN") ? atof(getenv("ARC_NPU_DOWN")) : 0.275);
+  auto cols = [](int N, double s) {
+    return s <= 0 || N < 256 ? 0 : std::clamp((int)std::lround(N * s / 64.0) * 64, 64, N - 64);
+  };
+  const int Cq = hp.gemma ? 0 : hp.conv_dim();  // (Gemma: no DeltaNet layers)
+  const int nd = cols(E, getenv("ARC_NPU_DOWN") ? atof(getenv("ARC_NPU_DOWN")) : hp.gemma ? gdef : 0.275);
   const int nq = cols(Cq, getenv("ARC_NPU_QKV") ? atof(getenv("ARC_NPU_QKV")) : 0.29);
   // shared memory: int8 rows, their scales, the NPU's two f16 outputs, for max_chunk rows; then the f16 part's input
   // (the widest K: n_ff) and its outputs
@@ -131,7 +139,7 @@ void npu_setup() {
   for (int t = 0; t < 4; ++t) {
     npu_wq_[t] = (end + 4095) / 4096 * 4096;
     npu_ws_[t] = (npu_wq_[t] + (size_t)wn[t] * wk[t] + 4095) / 4096 * 4096;
-    end = npu_ws_[t] + (size_t)std::max(wn[t], 64) * (t < 2 ? 1 : wk[t] / 32) * 2;
+    end = npu_ws_[t] + (size_t)std::max(wn[t], 64) * (wk[t] / 32) * 2;
   }
   const size_t total = (end + 65535) / 65536 * 65536;
   npu_shm_ = (uint8_t*)VirtualAlloc(nullptr, total, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -158,7 +166,7 @@ void npu_setup() {
   npu_gcq_ = view(npu_cq_, (size_t)M * std::max(nq, 64) * 2);
   for (int t = 0; t < 4; ++t) {
     npu_gwq_[t] = view(npu_wq_[t], std::max<size_t>((size_t)wn[t] * wk[t], 4096));
-    npu_gws_[t] = view(npu_ws_[t], (size_t)std::max(wn[t], 64) * (t < 2 ? 1 : wk[t] / 32) * 2);
+    npu_gws_[t] = view(npu_ws_[t], (size_t)std::max(wn[t], 64) * (wk[t] / 32) * 2);
   }
   npu_xn_ = buf((size_t)M * E * 4);
   static const char* src = R"CLC(
@@ -168,10 +176,11 @@ void npu_setup() {
 // the header at (g * nsb + s) * 160: d, dmin, the scale words (2 + j), the min words (6 + j); value d * sc * q -
 // dmin * mn). One work-group per group of 16 rows, a superblock at a time through local memory, rows written whole.
 // per_row: int8 with one scale per row, s[r] = f16(absmax) (the "fqi" graph); else one f16 scale per 32 values,
-// s[r][b] = f16(absmax / 127) (the "w8g" graph).
+// s[r][b] = f16(absmax / 127) (the "w8g" graph). q8: the GEMM's Q8_0 form (Q8_0, Q4_0, IQ4_NL, Q2_0: the same words,
+// a header of 8 f32 scales per superblock, one per 32-block, at (g * nsb + s) * 128 + b * 16; value d[b] * q).
 __kernel __attribute__((reqd_work_group_size(256, 1, 1)))
 void npu_w8rows(__global const uint* wq, __global const uint* wh, int K, int sc32, int has_min, int per_row,
-                __global char* oq, __global half* os) {
+                __global char* oq, __global half* os, int q8) {
   const int g = get_group_id(0), t = get_local_id(0), nsb = K / 256;
   const int lane = t & 15, w = t >> 4;   // (loading: this thread's row in the group and word of each chunk)
   const int row = t >> 4, c = t & 15;    // (storing: its row and 16 values of the superblock)
@@ -190,12 +199,13 @@ void npu_w8rows(__global const uint* wq, __global const uint* wh, int K, int sc3
       if (c == 0) os[r] = h;
     }
     for (int s = 0; s < nsb; ++s) {
-      __global const uint* hb = wh + ((size_t)g * nsb + s) * 160;
+      __global const uint* hb = wh + ((size_t)g * nsb + s) * (q8 ? 128 : 160);
       const float d = as_float(hb[lane]), dmin = as_float(hb[16 + lane]);
       for (int j = 0; j < 4; ++j) {
         const uint qw = wq[(((size_t)g * nsb + s) * 4 + j) * 256 + w * 16 + lane];
-        const float ds = d * (float)(char)(hb[(2 + j) * 16 + lane] >> (8 * (sc32 ? 2 * (w >> 3) : w >> 2)));
-        const float mn = has_min ? dmin * (float)((hb[(6 + j) * 16 + lane] >> (8 * (w >> 2))) & 255u) : 0.0f;
+        const float ds = q8 ? as_float(hb[(2 * j + (w >> 3)) * 16 + lane])
+                            : d * (float)(char)(hb[(2 + j) * 16 + lane] >> (8 * (sc32 ? 2 * (w >> 3) : w >> 2)));
+        const float mn = has_min && !q8 ? dmin * (float)((hb[(6 + j) * 16 + lane] >> (8 * (w >> 2))) & 255u) : 0.0f;
         for (int b = 0; b < 4; ++b) tile[lane][j * 64 + 4 * w + b] = ds * (float)(char)(qw >> (8 * b)) - mn;
       }
       barrier(CLK_LOCAL_MEM_FENCE);
@@ -242,13 +252,22 @@ __kernel void npu_rowq(__global const float* x, int K, __global char* q, __globa
 // h[m][ng + j] = silu(gate) * up of the NPU's columns, as the GEMM's fused SwiGLU epilogue computes it
 __kernel void npu_merge(__global const half* cg, __global const half* cu, int nn, __global float* h, int ldh, int ng) {
   const int j = get_global_id(0), m = get_global_id(1);
-  const float g = vload_half((size_t)m * nn + j, cg), u = vload_half((size_t)m * nn + j, cu);
+  const float g = clamp(vload_half((size_t)m * nn + j, cg), -65504.0f, 65504.0f),
+              u = clamp(vload_half((size_t)m * nn + j, cu), -65504.0f, 65504.0f);  // (no inf)
   h[(size_t)m * ldh + ng + j] = u * (g / (1.0f + exp(-g)));
 }
 // the f16 copy of rows of f32 (the NPU's f16 input)
 __kernel void npu_to16(__global const float* x, int ldx, int K, __global half* y) {
   const int k = get_global_id(0), m = get_global_id(1);
   if (k < K) vstore_half(clamp(x[(size_t)m * ldx + k], -65504.0f, 65504.0f), (size_t)m * K + k, y);
+}
+// gelu_tanh(gate) * up as f16 (Gemma 4: the rows of big_ are [gate (F) | up (F)], zero/kernels/ops.cl's formula), the
+// NPU's f16 input of ffn_down
+__kernel void npu_gelu16(__global const float* gu, int F, __global half* y) {
+  const int k = get_global_id(0), m = get_global_id(1);
+  const float g = gu[(size_t)m * 2 * F + k], u = gu[(size_t)m * 2 * F + F + k];
+  const float v = 0.5f * g * (1.0f + tanh(0.7978845608f * (g + 0.044715f * g * g * g))) * u;
+  vstore_half(clamp(v, -65504.0f, 65504.0f), (size_t)m * F + k, y);
 }
 // RMS norm of rows (rmsnorm_quant's formula: x * rsqrt(mean(x^2) + eps) * w, padding rows 0) written as f16
 __kernel void npu_norm16(__global const float* x, __global const float* w, int K, int M_valid, float eps, __global half* y) {
@@ -269,7 +288,7 @@ __kernel void npu_norm16(__global const float* x, __global const float* w, int K
 // out[m][coff + j] (+)= c16[m][j]: the NPU's f16 columns into an f32 result
 __kernel void npu_put(__global const half* c16, int nn, __global float* out, int ldo, int coff, int add) {
   const int j = get_global_id(0), m = get_global_id(1);
-  const float v = vload_half((size_t)m * nn + j, c16);
+  const float v = clamp(vload_half((size_t)m * nn + j, c16), -65504.0f, 65504.0f);  // (an f16 overflow: no inf)
   __global float* o = out + (size_t)m * ldo + coff + j;
   *o = add ? *o + v : v;
 }
@@ -282,11 +301,16 @@ __kernel void npu_put(__global const half* c16, int nn, __global float* out, int
   npu_norm16_ = cl_.kernel(pr, "npu_norm16");
   npu_put_ = cl_.kernel(pr, "npu_put");
   npu_w8rows_ = cl_.kernel(pr, "npu_w8rows");
+  npu_gelu16_ = cl_.kernel(pr, "npu_gelu16");
   // per layer: the GPU's weight copies (N = its share) and where the NPU's rows come from; the MTP block (index
   // n_layer, blk.<n_layer>.) too: its prompt pass (mtp_prefill) runs the same FFN over every chunk. Only matrices in
   // the W8 form (gemm_qtype 100..103: the NPU's rows are decoded from it; Q8_0-form types stay on the GPU)
   npu_layers_.resize(layers_.size() + 1);
-  auto w8 = [](const GpuWeight& w) { return w.gemm_qtype >= 100 && w.gemm_qtype <= 103 && (w.wq || w.raw) && w.K % 256 == 0 && w.N % 16 == 0; };
+  // (the GEMM forms npu_w8rows reads: W8 (100..103) and Q8_0 (Q8_0, Q4_0, IQ4_NL, Q2_0))
+  auto w8 = [](const GpuWeight& w) {
+    return ((w.gemm_qtype >= 100 && w.gemm_qtype <= 103) || w.gemm_qtype == (int)GGML_Q8_0) && (w.wq || w.raw) &&
+           w.K % 256 == 0 && w.N % 16 == 0;
+  };
   size_t stq = 0, sth = 0;
   auto stage = [&](int nn, int K) {
     stq = std::max(stq, w8_bytes_q(nn, K));
@@ -321,7 +345,8 @@ __kernel void npu_put(__global const half* c16, int nn, __global float* out, int
       m.on = true;
       if (!gw.wq) stage(nn, gw.K);
     };
-    if (!hp.moe && L.down.N == E && L.down.K == F) w8g(N.down, L.down, nd);  // (MoE: layer_moe)
+    // (dense FFNs and Gemma 4 26B's dense MLP; Qwen MoE layers have no ffn_down: layer_moe)
+    if ((!hp.moe || hp.gemma) && L.down.N == E && L.down.K == F) w8g(N.down, L.down, nd);
     if (L.il < hp.n_layer && hp.recurrent(L.il) && L.qkv.N == Cq && L.qkv.K == E) w8g(N.qkv, L.qkv, nq);
   }
   if (stq) {
@@ -329,9 +354,9 @@ __kernel void npu_put(__global const half* c16, int nn, __global float* out, int
     npu_sth_ = buf(sth);
   }
   auto count = [&](auto pred) { return (int)std::count_if(npu_layers_.begin(), npu_layers_.end(), pred); };
-  fprintf(stderr, "ARC_NPU: NPU shares (chunks of >= %d rows): ffn_gate / up %d of %d columns int8 in %d layers, "
+  fprintf(stderr, "ARC_NPU: NPU shares (chunks of >= %d rows): ffn_gate / up %d of %d columns %s in %d layers, "
                   "ffn_down %d of %d f16 in %d, attn_qkv %d of %d f16 in %d (ARC_NPU_SHARE / _DOWN / _QKV); set up in %.1f s\n",
-          npu_min_, npu_nn_, F, count([](const NpuLayer& n) { return n.on; }), nd, E,
+          npu_min_, npu_nn_, F, hp.gemma ? "f16" : "int8", count([](const NpuLayer& n) { return n.on; }), nd, E,
           count([](const NpuLayer& n) { return n.down.on; }), nq, Cq, count([](const NpuLayer& n) { return n.qkv.on; }),
           std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
   // (the shared block is system RAM the GPU's budget (--ctx auto, the expert cache) does not count: on an iGPU the
@@ -347,16 +372,16 @@ __kernel void npu_put(__global const half* c16, int nn, __global float* out, int
 void npu_rows(int kind, int il, const GpuWeight& w, int ng, int nn, int per_row) {
   if (npu_own_[kind] == il) return;
   npu_own_[kind] = il;
-  const int K = w.K;
+  const int K = w.K, q8 = w.gemm_qtype == (int)GGML_Q8_0;
   cl_mem dq = npu_stq_, dh = npu_sth_;
-  if (w.wq) {
+  if (w.wq) {  // (header words per row and superblock: 10 in W8, 8 in the Q8_0 form)
     dq = from(w.wq, (size_t)ng * K);
-    dh = from(w.wh, w8_bytes_h(ng, K));
+    dh = from(w.wh, (size_t)ng * (K / 256) * (q8 ? 8 : 10) * 4);
   } else {
     decode_w8(from(w.raw, (size_t)ng * (K / 256) * raw_padded_sb_bytes(w.type)), w.type, nn, K, dq, dh);
   }
-  int KK = K, sc32 = w.gemm_qtype & 1, hm = w.gemm_qtype >= 102, pr = per_row;
-  set_args(npu_w8rows_, 0, dq, dh, KK, sc32, hm, pr, npu_gwq_[kind], npu_gws_[kind]);
+  int KK = K, sc32 = w.gemm_qtype & 1, hm = !q8 && w.gemm_qtype >= 102, pr = per_row, qq = q8;
+  set_args(npu_w8rows_, 0, dq, dh, KK, sc32, hm, pr, npu_gwq_[kind], npu_gws_[kind], qq);
   size_t gws[1] = {(size_t)nn / 16 * 256}, lws[1] = {256};
   run("npu_w8rows", npu_w8rows_, 1, gws, lws);
 }
@@ -387,6 +412,101 @@ ze_graph_handle_t npu_graph16(int kind, int Mp, const NpuMat& m) {
           cached ? "loaded" : "compiled", ms);
   return npu_graphs16_[{kind, Mp}] = gr;
 }
+// Gemma 4's gate / up graph for chunks of Mp rows: the NPU's columns of both in f16 (w8g weights) on one f16 input,
+// G[Mp][nn] = A16 . dq(BG)^T and U likewise, into the gate / up output blocks (cg / cu)
+ze_graph_handle_t npu_graph_gu16(int Mp) {
+  auto it = npu_graphs16_.find({2, Mp});
+  if (it != npu_graphs16_.end()) return it->second;
+  npu::Ir ir;
+  const int K = hp.n_embd, nn = npu_nn_;
+  const auto A = ir.param("A", {"f16", {Mp, K}});
+  for (int t = 0; t < 2; ++t) {
+    const std::string nm = t == 0 ? "G" : "U";
+    const auto qb = ir.param("B" + nm, {"i8", {nn, K}});
+    const auto sb = ir.param("SB" + nm, {"f16", {nn, K / 32, 1}});
+    const auto b3 = ir.convert(nm + "_Bf", ir.reshape(nm + "_B3", qb, {nn, K / 32, 32}), "f16");
+    const auto B = ir.reshape(nm + "_Bdq", ir.multiply(nm + "_Bs", b3, sb), {nn, K});
+    ir.result(ir.matmul_tb(nm, A, B), nm + "_out");
+  }
+  double ms = 0;
+  bool cached = false;
+  ze_graph_handle_t gr = npu_->compile(ir, ms, cached);
+  if (!gr) throw std::runtime_error("ARC_NPU: the NPU's f16 gate / up graph did not compile");
+  const std::vector<int> outs = npu_->outputs(gr);
+  const int og = npu_->output_named(gr, "G"), ou = npu_->output_named(gr, "U");
+  const bool named = og >= 0 && ou >= 0 && og != ou;
+  if (outs.size() != 2 || !npu_->set(gr, "A", npu_shm_ + npu_a16_) ||
+      npu_->g->pfnSetArgumentValue(gr, named ? og : outs[0], npu_shm_ + npu_cg_) != 0 ||
+      npu_->g->pfnSetArgumentValue(gr, named ? ou : outs[1], npu_shm_ + npu_cu_) != 0 ||
+      !npu_->set(gr, "BG", npu_shm_ + npu_wq_[0]) || !npu_->set(gr, "BU", npu_shm_ + npu_wq_[1]) ||
+      !npu_->set(gr, "SBG", npu_shm_ + npu_ws_[0]) || !npu_->set(gr, "SBU", npu_shm_ + npu_ws_[1]))
+    throw std::runtime_error("ARC_NPU: cannot set the NPU f16 gate / up graph's arguments");
+  if (!npu_->initialize(gr)) throw std::runtime_error("ARC_NPU: NPU f16 gate / up graph initialize failed");
+  fprintf(stderr, "ARC_NPU: f16 graph ffn_gate / up for %d rows %s in %.0f ms\n", Mp, cached ? "loaded" : "compiled", ms);
+  return npu_graphs16_[{2, Mp}] = gr;
+}
+
+// Gemma 4's FFN matmuls of a prompt chunk with the NPU's shares (gate / up and down in f16), after its norm; false:
+// not here (layer_gemma_ffn's own). The GPU's share keeps its two int8 passes (q2mm_); the rest of the FFN (the 26B's
+// experts, the norms) follows in layer_gemma_ffn.
+bool npu_gemma_ffn(Layer& L, int T, int Mp, int a_in) {
+  if (!npu_ || !hp.gemma || cur_T_ <= 8 || Mp < npu_min_ || (size_t)L.il >= npu_layers_.size() ||
+      (!npu_layers_[L.il].on && !npu_layers_[L.il].down.on))
+    return false;
+  NpuLayer& N = npu_layers_[L.il];
+  if (npu_->pending) npu_->wait();  // (a run left by an exception: done before its memory is written again)
+  const int E = hp.n_embd, F = hp.n_ff;
+  if (N.on) {
+    {  // (the FFN norm's rows as f16: x_ is still the norm's input)
+      int K = E, mv = T;
+      float eps = hp.eps;
+      set_args(npu_norm16_, 0, x_, L.ffn_norm, K, mv, eps, npu_ga16_);
+      size_t gws[1] = {(size_t)Mp * 256}, lws[1] = {256};
+      run("npu_norm16", npu_norm16_, 1, gws, lws);
+    }
+    npu_rows(0, L.il, *N.src[0], npu_ng_, npu_nn_, 0);
+    npu_rows(1, L.il, *N.src[1], npu_ng_, npu_nn_, 0);
+    ze_graph_handle_t gr = npu_graph_gu16(npu_height(Mp));
+    clFinish(cl_.queue);
+    if (!npu_->start(gr)) throw std::runtime_error("ARC_NPU: NPU start failed");
+    matmul("gemm_gate", N.gate, Mp, big_, 2 * F, 0, 0, a_in);
+    matmul("gemm_up", N.up, Mp, big_, 2 * F, F, 0, a_in);
+    const auto tw = std::chrono::steady_clock::now();
+    if (!npu_->wait()) throw std::runtime_error("ARC_NPU: NPU run failed");
+    npu_wait_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tw).count();
+    ++npu_runs_;
+    for (int t = 0; t < 2; ++t) {  // (the NPU's columns of gate / up into big_'s [gate | up] rows)
+      int nn = npu_nn_, ld = 2 * F, coff = (t ? F : 0) + npu_ng_, ad = 0;
+      set_args(npu_put_, 0, t ? npu_gcu_ : npu_gcg_, nn, big_, ld, coff, ad);
+      size_t gws[2] = {(size_t)npu_nn_, (size_t)Mp};
+      run("npu_put", npu_put_, 2, gws, nullptr);
+    }
+  } else {
+    matmul("gemm_gate", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
+    matmul("gemm_up", L.up, Mp, big_, 2 * F, F, 0, a_in);
+  }
+  if (N.down.on) {  // (gelu(gate) * up as f16 rows for the NPU's share of ffn_down, started before the GPU's)
+    int FF = F;
+    set_args(npu_gelu16_, 0, big_, FF, npu_ga16_);
+    size_t gws[2] = {(size_t)F, (size_t)Mp};
+    run("npu_gelu16", npu_gelu16_, 2, gws, nullptr);
+    npu_start16(0, Mp, N.down, L.il);
+  }
+  const int a_dn = act32_for(false);
+  {
+    int gelu = 1, FF = F, MM = Mp, TT = T, fused = 0;
+    set_args(k_swiglu_, 0, big_, FF, MM, TT, aq_, asc_, absum_, a_dn, fused, gelu);
+    run_rows_quant("swiglu_quant", F, T, Mp);
+  }
+  if (N.down.on) {
+    matmul("gemm_down", N.down.gpu, Mp, big_, E, 0, 0, a_dn);
+    npu_finish16(0, Mp, N.down, big_, E, 0);
+  } else {
+    matmul("gemm_down", L.down, Mp, big_, E, 0, 0, a_dn);
+  }
+  return true;
+}
+
 // starts matrix m's (layer il's) NPU share on the f16 rows already in A16, its weight rows decoded first (the GPU's
 // writes finished before the NPU reads them)
 void npu_start16(int kind, int Mp, NpuMat& m, int il) {
@@ -413,7 +533,12 @@ bool npu_qkv_start(Layer& L, int T, int Mp) {
     return false;
   NpuMat& m = npu_layers_[L.il].qkv;
   if (npu_->pending) npu_->wait();  // (a run left by an exception: done before its memory is written again)
-  {
+  if (hp.hc) {  // (Flash Next: the block input is the mixer's output, hco_, already normed)
+    int ldx = hp.n_embd, KK = hp.n_embd;
+    set_args(npu_to16_, 0, hco_, ldx, KK, npu_ga16_);
+    size_t gws[2] = {(size_t)KK, (size_t)Mp};
+    run("npu_to16", npu_to16_, 2, gws, nullptr);
+  } else {
     int K = hp.n_embd, mv = T;
     float eps = hp.eps;
     set_args(npu_norm16_, 0, x_, L.attn_norm, K, mv, eps, npu_ga16_);

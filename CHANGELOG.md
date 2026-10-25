@@ -8,7 +8,8 @@
   extension alone (no OpenVINO): 2K prompt +15 %, 11K +15 %, 34K +13 % (time to first token 292 -> 258 s), KL vs
   f32 0.0028-0.0031; off bit-identical to before, MTP / DFlash2 still bit-identical to plain decoding. The setting
   is the server's: switching models keeps it, a restart turns it off. Models with resident W8 (4B, 9B, 35B) gain
-  nothing and stay off. RAM: 0.37 GiB (the NPU's weight rows decoded per layer by the GPU into the shared block; a
+  nothing and stay off. Every model can use it (`--npu force`): Gemma 4 (its FFN in f16; the 12B gains +10 % and is
+  on with `--npu on`), the Q8_0-form matrices (Gemma QAT Q4_0, the 35B's attn_qkv), Flash Next's attn_qkv. RAM: 0.37 GiB (the NPU's weight rows decoded per layer by the GPU into the shared block; a
   resident copy took 6.1 GiB, same speed).
 - **Flint is no longer supported** (the user's decision): the `flint` architecture in the engine and the f32
   reference, its pre-tokenizer (and `src/unicode_ps.h`), the GLM-style tool calls, the server's Flint template and
