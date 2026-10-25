@@ -28,6 +28,7 @@
 #include "tool_constraint.h"
 #include "sampler.h"
 #include "web_tools.h"
+#include "server_files.h"
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
@@ -228,6 +229,21 @@ class Server {
       r.set("audio", has_audio());
       r.set("mtp", eng_.has_mtp);
       r.set("mtp_drafts", eng_.opt.mtp_drafts);
+      {  // (the web UI's controls follow the model: its thinking switch, Qwen3.8's effort levels, the GGUF's sampling)
+        const std::string& tpl = eng_.gguf().get_str("tokenizer.chat_template");
+        r.set("thinking", tpl.empty() || tpl.find("enable_thinking") != std::string::npos);
+        Json eff = Json::array();
+        if (q38_)
+          for (const char* e : {"low", "medium", "xhigh"}) eff.push(e);
+        r.set("reasoning_effort", eff);
+        Json smp = Json::object();
+        smp.set("temperature", (double)defaults_.temperature);
+        smp.set("top_p", (double)defaults_.top_p);
+        smp.set("top_k", (double)defaults_.top_k);
+        smp.set("min_p", (double)defaults_.min_p);
+        r.set("sampling", smp);
+        r.set("think_budget", default_think_budget_);
+      }
       {  // GPU memory now (bytes): parts of the loaded model, encoders loaded since (on first use)
         const Engine::MemParts mp = eng_.mem_parts(eng_.ctx);
         Json mem = Json::object();
@@ -712,6 +728,131 @@ class Server {
 
 #include "server_load.h"  // (loading a model)
 
+// /v1/files (POST multipart upload, GET list with the chats using each file), /v1/files/<id> (DELETE),
+// /v1/files/delete_unused (POST), /files/<id> (GET the bytes; ?download=1 as an attachment), /v1/chats (GET list),
+// /v1/chats/<id> (GET, PUT the web UI's JSON, DELETE: also its files no other chat uses, unless ?keep_files=1)
+static void files_api(const HttpRequest& rq, HttpResponse& rs) {
+  auto& st = files::store();
+  auto fail = [&](int code, const std::string& m) {
+    Json e = Json::object(), r = Json::object();
+    e.set("message", m);
+    r.set("error", e);
+    rs.send(code, "application/json", r.dump());
+  };
+  auto q = [&](const std::string& k) { return ("&" + rq.query + "&").find("&" + k + "=1&") != std::string::npos; };
+  try {
+    if (rq.path == "/v1/files" && rq.method == "POST") {
+      const auto form = apic::parse_multipart(rq.header("content-type"), rq.body);
+      const auto f = form.find("file");
+      if (f == form.end() || f->second.data.empty()) return fail(400, "file required (multipart/form-data, field \"file\")");
+      return rs.send(200, "application/json", files::info_json(st.put(f->second.filename, f->second.data)).dump());
+    }
+    if (rq.path == "/v1/files" && rq.method == "GET") {
+      const auto uses = st.uses();
+      std::map<std::string, std::string> titles;  // (chat id -> title, for "used by")
+      for (const auto& [cid, text] : st.chats_all()) {
+        try { titles[cid] = Json::parse(text)["title"].str(); } catch (const std::exception&) { titles[cid] = cid; }
+      }
+      Json d = Json::array();
+      double total = 0;
+      for (const files::Info& i : st.list()) {
+        Json j = files::info_json(i), by = Json::array();
+        if (auto it = uses.find(i.id); it != uses.end())
+          for (const std::string& cid : it->second) {
+            Json c = Json::object();
+            c.set("id", cid);
+            c.set("title", titles.count(cid) ? titles[cid] : cid);
+            by.push(c);
+          }
+        j.set("used_by", by);
+        d.push(j);
+        total += (double)i.bytes;
+      }
+      Json r = Json::object();
+      r.set("object", "list");
+      r.set("data", d);
+      r.set("total_bytes", total);
+      return rs.send(200, "application/json", r.dump());
+    }
+    if (rq.path == "/v1/files/delete_unused" && rq.method == "POST") {
+      const auto uses = st.uses();
+      int n = 0;
+      double freed = 0;
+      for (const files::Info& i : st.list())
+        if (!uses.count(i.id) && st.remove(i.id)) { ++n; freed += (double)i.bytes; }
+      Json r = Json::object();
+      r.set("deleted", n);
+      r.set("freed_bytes", freed);
+      return rs.send(200, "application/json", r.dump());
+    }
+    if (rq.path.rfind("/v1/files/", 0) == 0 && rq.method == "DELETE") {
+      const std::string id = rq.path.substr(10);
+      if (!files::valid_id(id, 16) || !st.remove(id)) return fail(404, "no file " + id);
+      return rs.send(200, "application/json", "{\"deleted\":true}");
+    }
+    if (rq.path.rfind("/files/", 0) == 0 && rq.method == "GET") {
+      files::Info i;
+      std::string data;
+      const std::string id = rq.path.substr(7);
+      if (!files::valid_id(id, 16) || !st.get(id, i) || !files::Store::read(i.path, data)) return fail(404, "no file " + id);
+      // (content-addressed: the same id is always the same bytes)
+      rs.extra = "Cache-Control: max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
+      if (q("download")) rs.extra += "Content-Disposition: attachment; filename=\"" + i.name + "\"\r\n";
+      return rs.send(200, files::mime_of(i.name), data);
+    }
+    if (rq.path == "/v1/chats" && rq.method == "GET") {
+      Json d = Json::array();
+      for (const auto& [cid, text] : st.chats_all()) {
+        Json c;
+        try { c = Json::parse(text); } catch (const std::exception&) { continue; }  // (an unreadable file: left out)
+        Json j = Json::object();
+        j.set("id", cid);
+        j.set("title", c["title"].str("New chat"));
+        j.set("at", c["at"].as_number(0));
+        j.set("model", c["model"].str(""));
+        j.set("snippet", c["snippet"].str(""));
+        d.push(j);
+      }
+      Json r = Json::object();
+      r.set("data", d);
+      return rs.send(200, "application/json", r.dump());
+    }
+    if (rq.path.rfind("/v1/chats/", 0) == 0) {
+      const std::string id = rq.path.substr(10);
+      if (!files::valid_id(id)) return fail(400, "bad chat id");
+      if (rq.method == "GET") {
+        std::string t;
+        if (!st.chat_get(id, t)) return fail(404, "no chat " + id);
+        return rs.send(200, "application/json", t);
+      }
+      if (rq.method == "PUT" || rq.method == "POST") {
+        Json c = Json::parse(rq.body);  // (checked: only JSON objects are kept)
+        if (!c.is_object()) return fail(400, "a chat is a JSON object");
+        st.chat_put(id, rq.body);
+        return rs.send(200, "application/json", "{\"saved\":true}");
+      }
+      if (rq.method == "DELETE") {
+        std::string t;
+        const bool had = st.chat_get(id, t);
+        if (!had || !st.chat_remove(id)) return fail(404, "no chat " + id);
+        int n = 0;
+        if (!q("keep_files")) {  // its files that no other chat uses
+          const auto uses = st.uses();
+          for (const std::string& fid : files::Store::refs(t))
+            if (!uses.count(fid) && st.remove(fid)) ++n;
+        }
+        Json r = Json::object();
+        r.set("deleted", true);
+        r.set("files_deleted", n);
+        return rs.send(200, "application/json", r.dump());
+      }
+    }
+    return fail(405, "method not allowed");
+  } catch (const std::exception& e) {
+    return fail(500, e.what());
+  }
+}
+
 int main(int argc, char** argv) {
   full_speed_process();
   for (int i = 1; i < argc; ++i)
@@ -939,6 +1080,10 @@ int main(int argc, char** argv) {
     return rs.send(503, "application/json", r.dump());
   };
   http.handler = [&](const HttpRequest& rq, HttpResponse& rs) {
+    // the web UI's files and chats on disk (tools/server_files.h): no model involved
+    if (rq.path == "/v1/files" || rq.path.rfind("/v1/files/", 0) == 0 || rq.path.rfind("/files/", 0) == 0 ||
+        rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)
+      return files_api(rq, rs);
     // the web UI's tools (tools/web_tools.h): no model involved, so they answer while a model loads or generates
     if (rq.method == "POST" && (rq.path == "/v1/tools/web_search" || rq.path == "/v1/tools/web_fetch")) {
       auto fail = [&](int st, const std::string& m) {

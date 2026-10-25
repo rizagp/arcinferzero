@@ -349,9 +349,9 @@ test uses port 8091 and needs the GPU memory.
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\arcinferzero\models, model-dirs.txt), as JSON
 ```
 
-- Web UI: http://127.0.0.1:8080/ (chat with images, audio and files; **Web**: the model searches the web and reads
-  pages; **Talk**: a spoken conversation with Gemma 4 E4B / 12B; context use and compaction). Details:
-  [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
+- Web UI: http://127.0.0.1:8080/, laid out like WhatsApp Web: the chats kept in the browser, the model picker in the
+  chat header, chat with images, audio and files, voice messages, **Talk** (a spoken conversation), web search, context
+  use and compaction; the settings behind the gear. Details: [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
 - OpenAI API: `POST /v1/chat/completions` (streaming, `reasoning_content`, tool calls streamed while they are
   generated, string arguments and array / object arguments alike (Pi's `edit` puts its whole change in an array),
   `usage`; the last streamed chunk carries `usage` and llama-server's `timings` together),

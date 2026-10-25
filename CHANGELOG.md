@@ -2,6 +2,22 @@
 
 ## 2026-10-25: the NPU next to the GPU (`--npu on`); Flint support removed; the model list without duplicates
 
+- **Web UI rebuilt, laid out like WhatsApp Web**: the chats kept in the browser (searchable), the model picker in the
+  chat header (the server switches on the next message), message bubbles with times, the settings behind a gear.
+  No max-tokens field any more and nothing sent for it: an answer may use the rest of the context (before, the UI's
+  4096 counted the reasoning too, so a long thinking pass could end the reply before its answer). No temperature
+  sent unless set: the server samples as the model file recommends. Thinking offered as the model has it (Qwen3.8
+  off / low / medium / high, others on / off), from `/props` (new: `thinking`, `reasoning_effort`, `sampling`,
+  `think_budget`). Voice messages (record, then send) next to Talk, both ready for Whisper speech to text
+  (`speech_to_text` in `/props`). Streamed answers are drawn once per frame instead of per token.
+- **Chats and files on disk** (tools/server_files.h): the web UI's chats in `%USERPROFILE%\arcinferzero\chats\`, attached
+  files uploaded once into `uploads\<yyyy-mm>\` (content-addressed: the same file kept once) and sent as references
+  (`{"type": "file", "file": {"file_id"}}` parts; the server reads documents as text with their name, type, size and
+  upload time, images and audio from disk). `@` in the message attaches an earlier file again; a Files panel lists
+  every file with the chats using it and deletes files (one, selected, or all unused). New endpoints: `/v1/files`
+  (POST upload, GET list, DELETE `/v1/files/<id>`, POST `/v1/files/delete_unused`), `/files/<id>`, `/v1/chats`
+  (GET, PUT, DELETE per chat). Every user message carries the time it was sent, so the model knows the day and time.
+
 - **The data folder moved to `%USERPROFILE%\arcinferzero`** (`C:\Users\<name>\arcinferzero`, visible in Explorer;
   `ARC_DATA_DIR` overrides it): kernel cache, NPU graphs, model packages and expert files, sessions, prefix cache,
   logs, settings, and later transcripts and recordings. The exes and scripts move `%LOCALAPPDATA%\arcinferzero` there

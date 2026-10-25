@@ -5,6 +5,12 @@
   void chat(const HttpRequest& rq, HttpResponse& rs) {
     Json body;
     if (!Json::try_parse(rq.body, body)) return rs.send(400, "application/json", err("invalid JSON body").dump());
+    {  // the web UI's saved files ("file" parts): as text, or as references to the image / audio (server_files.h)
+      bool any = false;
+      for (const Json& m : body["messages"].items())
+        for (const Json& p : m["content"].items()) any = any || p["type"].str() == "file" || p["type"].str() == "input_file";
+      if (any) body.set("messages", files::expand_files(body["messages"]));
+    }
     const Json& messages = body["messages"];
     if (!messages.is_array() || messages.size() == 0) return rs.send(400, "application/json", err("messages required").dump());
     const std::string folder = prompt_folder(messages);  // Pi: the project folder (its system-prompt cache)
@@ -121,7 +127,9 @@
               // OpenAI: {"input_audio": {"data": <base64>, "format": "wav" | "mp3" ...}}; a data URL also works
               const Json& a = part[ty == "audio" ? "audio" : "input_audio"];
               const std::string d = a.is_string() ? a.str() : a["data"].str();
-              clips.push_back(d.rfind("data:", 0) == 0 ? img::from_data_url(d) : img::base64_decode(d));
+              std::string f;  // (the web UI's saved file: "/files/<id>", tools/server_files.h)
+              if (files::store().resolve(d, f)) clips.emplace_back(f.begin(), f.end());
+              else clips.push_back(d.rfind("data:", 0) == 0 ? img::from_data_url(d) : img::base64_decode(d));
             }
           }
       } catch (const std::exception& e) {
@@ -144,7 +152,14 @@
           for (int t : P) {
             const bool is_img = t == img_tok_ && ki < urls.size(), is_aud = t == aud_tok_ && ka < clips.size();
             if (!is_img && !is_aud) { P2.push_back(t); continue; }
-            std::vector<uint8_t> bytes = is_img ? img::from_data_url(urls[ki++]) : std::move(clips[ka++]);
+            std::vector<uint8_t> bytes;
+            if (is_img) {
+              std::string f;
+              const std::string& u = urls[ki++];
+              bytes = files::store().resolve(u, f) ? std::vector<uint8_t>(f.begin(), f.end()) : img::from_data_url(u);
+            } else {
+              bytes = std::move(clips[ka++]);
+            }
             const uint64_t h = fnv(bytes) ^ (is_img ? 0 : 0x5bd1e995ull);
             auto it = img_cache_.find(h);
             if (it == img_cache_.end()) {

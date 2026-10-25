@@ -34,6 +34,8 @@ class HttpResponse {
   // set the handler's server-sent events do (sse_begin then writes nothing; the tap writes its own stream).
   std::function<void(int status, const std::string& body)> on_send;
   std::function<bool(const std::string& data)> on_event;
+  // further header lines for send() (each ending in \r\n), e.g. Content-Disposition for a download
+  std::string extra;
   // A stream of another kind (application/x-ndjson, or named server-sent events): headers, then write().
   void begin_stream(const std::string& content_type) {
     std::string h = "HTTP/1.1 200 OK\r\nContent-Type: " + content_type + "\r\nCache-Control: no-cache\r\n";
@@ -54,6 +56,7 @@ class HttpResponse {
     h += "Content-Type: " + content_type + "\r\n";
     h += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     h += cors();
+    h += extra;
     h += "Connection: keep-alive\r\n\r\n";
     raw(h);
     raw(body);
