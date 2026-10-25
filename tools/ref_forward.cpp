@@ -133,6 +133,26 @@ static std::vector<float> fake_quant(const std::string& name, const std::vector<
   return q;
 }
 
+// (REF_NPU=f, the NPU experiment of zero/npu/: the last fraction f of a matrix's output columns as the NPU's int8
+//  product would make them, activations int8 with one scale per token row, weight rows int8 with one scale each,
+//  exact integer sums; REF_NPU_SEL = names, default every matrix but the output head. REF_NPU_F16=1: those columns
+//  in f16 instead, the NPU's f16 product: activations rounded to f16, the weights as the engine holds them (with
+//  REF_WQ8 its per-32 int8 rows) rounded to f16, sums in f32 or better)
+static void f16_round(float* v, int n);
+static int npu_cols(const std::string& name, int N) {
+  const char* f = getenv("REF_NPU");
+  if (!f || atof(f) <= 0) return 0;
+  if (getenv("REF_NPU_SEL") ? !name_sel("REF_NPU_SEL", name) : name == "output.weight" || name == "token_embd.weight") return 0;
+  return std::min(N, (int)std::lround(atof(f) * N));
+}
+static float row_q8(const float* v, int n, int8_t* q) {  // symmetric int8, one scale (absmax / 127) for the row
+  float amax = 0;
+  for (int i = 0; i < n; ++i) amax = std::fmax(amax, std::fabs(v[i]));
+  const float inv = amax > 0 ? 127.0f / amax : 0.0f;
+  for (int i = 0; i < n; ++i) q[i] = (int8_t)std::lrintf(v[i] * inv);
+  return amax / 127.0f;
+}
+
 // Y[T][N] = X[T][K] * W^T ; W from GGUF (any supported type).
 static void matmul(const std::string& name, const std::vector<float>& X0, int T, std::vector<float>& Y) {
   const GgufTensor& t = F->get(name);
@@ -140,13 +160,44 @@ static void matmul(const std::string& name, const std::vector<float>& X0, int T,
   const std::vector<float> X = fake_quant(name, X0, K);
   const size_t rb = t.nbytes / N;
   const bool wq8 = name_sel("REF_WQ8", name);  // (REF_WQ8: the weight rows rounded as Q8_0, per 32 values)
+  const int nn = npu_cols(name, N);
+  const bool npu16 = nn && getenv("REF_NPU_F16") && atoi(getenv("REF_NPU_F16")) != 0;
+  std::vector<int8_t> xq(nn && !npu16 ? (size_t)T * K : 0);
+  std::vector<float> xs(nn && !npu16 ? T : 0), xh(npu16 ? (size_t)T * K : 0);
+  for (int i = 0; nn && !npu16 && i < T; ++i) xs[i] = row_q8(&X0[(size_t)i * K], K, &xq[(size_t)i * K]);
+  if (npu16) {
+    xh = X0;
+    f16_round(xh.data(), (int)xh.size());
+  }
   Y.assign((size_t)T * N, 0.0f);
 #pragma omp parallel
   {
     std::vector<float> w(K);
+    std::vector<int8_t> wq(nn ? K : 0);
 #pragma omp for schedule(dynamic, 16)
     for (int n = 0; n < N; ++n) {
       dequant_row(t.type, t.data + (size_t)n * rb, K, w.data());
+      if (n >= N - nn && npu16) {  // (the NPU's columns in f16)
+        if (wq8) round_int8(w.data(), (size_t)K, 32, 1);
+        f16_round(w.data(), K);
+        for (int i = 0; i < T; ++i) {
+          double acc = 0;
+          const float* x = &xh[(size_t)i * K];
+          for (int k = 0; k < K; ++k) acc += (double)w[k] * x[k];
+          Y[(size_t)i * N + n] = (float)acc;
+        }
+        continue;
+      }
+      if (n >= N - nn) {  // (the NPU's columns)
+        const float ws = row_q8(w.data(), K, wq.data());
+        for (int i = 0; i < T; ++i) {
+          int64_t acc = 0;
+          const int8_t* x = &xq[(size_t)i * K];
+          for (int k = 0; k < K; ++k) acc += (int)wq[k] * x[k];
+          Y[(size_t)i * N + n] = (float)((double)acc * ws * xs[i]);
+        }
+        continue;
+      }
       if (wq8) round_int8(w.data(), (size_t)K, 32, 1);
       for (int i = 0; i < T; ++i) {
         double acc = 0;
