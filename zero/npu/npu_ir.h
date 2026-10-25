@@ -102,7 +102,9 @@ class Ir {
     return add(name, "FakeQuantize", "<data levels=\"" + std::to_string(levels) + "\" auto_broadcast=\"numpy\"/>",
                {a, ilo, ihi, olo, ohi}, a.t, "");
   }
-  void result(const Out& a) { add(a.t.et + "_result", "Result", "", {a}, T{}, "", true); }
+  void result(const Out& a, const std::string& name = "") {
+    add(name.empty() ? a.t.et + "_result" : name, "Result", "", {a}, T{}, "", true);
+  }
 
   std::string xml() const {
     return "<?xml version=\"1.0\"?>\n<net name=\"arc\" version=\"11\">\n<layers>\n" + layers_ + "</layers>\n<edges>\n" + edges_ +
