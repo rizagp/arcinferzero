@@ -145,8 +145,13 @@ struct Rt {
   }
   bool set(ze_graph_handle_t gr, const char* name, void* p, bool output = false) {
     const int i = arg(gr, name, output);
-    if (i < 0) fprintf(stderr, "NPU graph has no %s %s\n", output ? "output" : "input", name);
-    return i >= 0 && g->pfnSetArgumentValue(gr, (uint32_t)i, p) == 0;
+    if (i < 0) {
+      fprintf(stderr, "NPU graph has no %s %s\n", output ? "output" : "input", name);
+      return false;
+    }
+    const ze_result_t r = g->pfnSetArgumentValue(gr, (uint32_t)i, p);
+    if (r != 0) fprintf(stderr, "NPU set argument %s (%d) to %p: 0x%x\n", name, i, p, r);
+    return r == 0;
   }
   // output arguments in order of the graph (their names are the producing layers' output names)
   std::vector<int> outputs(ze_graph_handle_t gr) {
@@ -167,8 +172,16 @@ struct Rt {
     if (a != 0 || s != 0) fprintf(stderr, "NPU graph initialize: append 0x%x, synchronize 0x%x\n", a, s);
     return a == 0 && s == 0;
   }
-  bool start(ze_graph_handle_t gr) { return g->pfnAppendGraphExecute(cl, gr, nullptr, nullptr, 0, nullptr) == 0; }
-  bool wait() { return zeCommandListHostSynchronize(cl, UINT64_MAX) == 0; }
+  bool start(ze_graph_handle_t gr) {
+    const ze_result_t r = g->pfnAppendGraphExecute(cl, gr, nullptr, nullptr, 0, nullptr);
+    if (r != 0) fprintf(stderr, "NPU graph execute: 0x%x\n", r);
+    return r == 0;
+  }
+  bool wait() {
+    const ze_result_t r = zeCommandListHostSynchronize(cl, UINT64_MAX);
+    if (r != 0) fprintf(stderr, "NPU synchronize: 0x%x\n", r);
+    return r == 0;
+  }
 };
 
 }  // namespace npu

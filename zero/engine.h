@@ -9,6 +9,7 @@
 #pragma once
 #include "clrt.h"
 #include "xcache.h"
+#include "npu/npu_rt.h"  // (the NPU experiment, ARC_NPU=1: zero/npu/engine_npu.h)
 #include "../src/gguf.h"
 #include "../src/quants.h"
 #include "../src/json.h"
@@ -113,6 +114,7 @@ class Engine {
   double load_ms = 0;
 
   Engine(const std::string& path, const EngineOptions& o) : opt(o), f_(path), path_(path) {
+    npu_preinit();  // (ARC_NPU=1 only)
     if (!cl_.init(true)) throw std::runtime_error("OpenCL init failed");
     ctx = (o.ctx + 15) / 16 * 16;
     load_hparams();
@@ -153,6 +155,7 @@ class Engine {
       alloc_buffers();
       mem_bufs_ = gpu_bytes - g0;
     }
+    npu_setup();  // (ARC_NPU=1 only)
     if (opt.slots > 1) add_slots(opt.slots);  // (before the expert cache takes what is left)
     if (xc_) size_expert_cache();
     // (--ctx auto: room for an expert cache of 90 % of the experts, as far as what the weights and buffers leave
@@ -186,6 +189,7 @@ class Engine {
   // Frees everything on the GPU (the server switches models in one process).
   ~Engine() {
     if (cl_.queue) clFinish(cl_.queue);
+    if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
     for (cl_program p : progs_) clReleaseProgram(p);
@@ -3657,6 +3661,8 @@ class Engine {
 #include "engine_flashnext.h"  // (Qwen3.8 Flash Next)
 
 #include "engine_qwen.h"  // (Qwen layers)
+
+#include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
 
 #include "engine_moe.h"  // (Mixture-of-experts FFN (qwen35moe, Flash Next, Gemma 4 26B))
 

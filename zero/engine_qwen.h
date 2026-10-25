@@ -255,6 +255,7 @@
   }
 
   void layer_ffn(Layer& L, int T, int Mp) {
+    if (npu_ffn(L, T, Mp)) return;  // (ARC_NPU=1: a share of gate / up on the NPU, zero/npu/engine_npu.h)
     const int E = hp.n_embd, F = hp.n_ff;
     const int a_in = act32_for(false);
     rmsnorm_quant(x_, 0, L.post_norm, E, Mp, T, a_in);
