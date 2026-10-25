@@ -88,6 +88,9 @@ struct EngineOptions {
   double expert_cache_gb = 0, expert_cache_pct = 0;
   size_t stream_reserve = 0;  // bytes the automatic cache size leaves for GPU memory allocated later (image encoders)
   int slots = 1;  // conversations held at once (server --slots): each further one its own KV caches and states
+  // the NPU next to the GPU for prompt chunks (zero/npu/engine_npu.h, --npu): 0 off, 1 on where it pays off (the Qwen3.8
+  // 27B), 2 forced on every Qwen model; -1: the ARC_NPU environment variable (unset: off)
+  int npu = -1;
 };
 
 class VisionQwen3VL;

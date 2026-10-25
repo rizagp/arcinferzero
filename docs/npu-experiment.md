@@ -1,28 +1,44 @@
-# The NPU next to the GPU for prompts (branch npu-experiment)
+# The NPU next to the GPU for prompts (`--npu on`)
 
 The Meteor Lake NPU ("Intel AI Boost", NPU 3720) computes part of some matrix products of a prompt chunk while the
 GPU computes the rest. Everything goes through Level Zero (the NPU's driver is a second Level Zero driver with the
-graph extension); there is no OpenVINO. Opt-in with `ARC_NPU=1`, off by default; with it off the engine gives the
-same bits as `main`.
+graph extension); there is no OpenVINO. Off by default; with it off the engine gives the same bits as before it
+existed (built on the branch npu-experiment, merged into `main` on 2026-10-25).
+
+## Turning it on
+
+| Where | On | Off |
+|---|---|---|
+| `bin\serverz.exe`, `bin\runz.exe` | `--npu on` (`--npu force`: also on models where it does not pay off) | `--npu off` or nothing |
+| `arc-server start` | `-Npu on` | `-Npu off`, `arc-server restart`, or a start after `stop` |
+| `pi-arc` | `--npu on` | `--npu off` |
+| environment (tests) | `ARC_NPU=1` (`2`: force), used when no `--npu` is given | |
+
+The setting belongs to the server, not to a model: a request for another model (Pi's `/model`, an OpenAI client's
+`model` field) loads it with the same setting, and so does `pi-arc` / `arc-server start` on another model while the
+server runs. Models where the NPU gains nothing (below) say so in the log and run without it; switching back to the
+27B uses it again. Only a restart (or a stop) of the server turns it off.
 
 ## Result
 
 Qwen3.8 27B (agentionai Qwen3.8-27B-AP IQ4_XS), code prompts, this laptop (thermals not ideal, runs alternated):
 
-| Prompt | `ARC_NPU` off | `ARC_NPU=1` | KL vs f32 (128 tokens) |
+| Prompt | off | `--npu on` | KL vs f32 (128 tokens) |
 |---|---|---|---|
-| 4,096 tokens | 132-140 tok/s | **150-162 tok/s (+15-20 %)** | 0.00066 -> **0.00278** |
+| 4,096 tokens | 132-140 tok/s | **153-162 tok/s (+15-20 %)** | 0.00066 -> **0.0028-0.0031** |
 | 11,240 tokens | 133.8-134.0 tok/s | **154.7 tok/s (+15.6 %)** | |
 
-- Off: logits bit-identical to `main` (27B and Qwen3.6 35B, prompt and generation).
-- On: bit-identical run to run; MTP and DFlash2 drafting give the same logits as plain decoding (with `ARC_NPU=1`
+- Off: logits bit-identical to the engine without the NPU code (27B and Qwen3.6 35B, prompt and generation).
+- On: bit-identical run to run; MTP and DFlash2 drafting give the same logits as plain decoding (with the NPU on
   both); the MTP block's prompt pass uses the NPU too. Generation is unchanged (it never uses the NPU).
 - Not worth it on models whose W8 weights stay resident on the GPU, measured: Qwen3.5 4B +2 % (noise), 9B +4-6 % with
-  KL 0.008-0.013 (over the 0.01 target), Qwen3.6 35B-A3B +0.5 %. `ARC_NPU=1` stays off for them (it says why);
-  `ARC_NPU=2` forces it. Gemma 4 (E4B) was not built: small and resident like the 4B.
-- Cost: 6.1 GiB of system RAM outside the GPU budget for the 27B (the NPU's weight rows 5.8 GiB, the shared block
-  0.27 GiB); the first prompt with a new chunk height compiles its graphs (10-30 s), later ones load them in
-  milliseconds from `%LOCALAPPDATA%\arcinferzero\npu`.
+  KL 0.008-0.013 (over the 0.01 target), Qwen3.6 35B-A3B +0.5 %. `--npu on` leaves them off (the log says why);
+  `--npu force` forces it. Gemma 4 (E4B) was not built: small and resident like the 4B. Other architectures: off.
+- Cost: 0.37 GiB of system RAM outside the GPU budget for the 27B (the shared block) and 33 MiB of GPU staging. The
+  NPU's weight rows are not kept: per layer the GPU decodes them from its own W8 form into the shared block
+  (`npu_w8rows`, once per layer and prompt segment; until 2026-10-25 a resident copy took 5.8 GiB more, same speed).
+- The first prompt with a new chunk height (multiples of 1024 rows, 2048-4096) compiles its graphs (10-30 s each
+  kind), later ones load them in milliseconds from `%LOCALAPPDATA%\arcinferzero\npu`.
 
 ## What runs where
 
@@ -39,7 +55,7 @@ The shares are where the GPU and the NPU finish together (swept: 1/3 of gate/up 
 
 The flow of one FFN: the FFN norm also writes its f32 rows; a GPU kernel quantizes them per row into a memory block
 that both Level Zero contexts map (`ZE_extension_external_memmap_sysmem`); the NPU starts its graph on its weight
-rows while the GPU runs the engine's GEMMs on its columns (persistent copies of the weights with a smaller N, the
+rows (decoded just before by the GPU into the same block, once per layer and prompt segment) while the GPU runs the engine's GEMMs on its columns (persistent copies of the weights with a smaller N, the
 same JIT decode); the GPU waits for the NPU and writes silu(gate) * up of the NPU's columns. ffn_down and attn_qkv
 go the same way with f16 inputs and outputs.
 
@@ -80,7 +96,7 @@ KL vs f32:
 | E4B | 0.00145 | 0.00112 | 0.0108 | 0.0020 |
 
 Per-row int8 is only safe on inputs that come out of a norm (the activations' outliers decide it, not the weights:
-per-channel weights alone cost little). The engine with `ARC_NPU=1` measures 0.00278 on the 27B (the shares above).
+per-channel weights alone cost little). The engine with `--npu on` measures 0.0028-0.0031 on the 27B (the shares above).
 
 ## Open
 

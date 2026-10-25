@@ -1,0 +1,2 @@
+{"test":"pp512","engine":"arcinferzero","tps":100.2,"model":"27b-ap","time":"2026-10-25T16:10:05"}
+{"test":"tg64","engine":"arcinferzero","tps":4.04,"model":"27b-ap","time":"2026-10-25T16:10:05"}

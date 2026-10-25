@@ -21,7 +21,7 @@ $ErrorActionPreference = "Stop"
 $shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "g12", "e4b", "g26")
 # (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
 function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
-$model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0
+$model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
 $piArgs = New-Object System.Collections.Generic.List[string]
 for ($i = 0; $i -lt $args.Count; $i++) {
   $a = [string]$args[$i]
@@ -127,6 +127,9 @@ LAUNCHER OPTIONS
                                  answers, their next tokens run in one pass (27B prose 7.3 -> 10.5 tok/s together,
                                  35B 20.2 -> 24.7). Each slot gets the context that fits N of them (27B: 2 x 49,152
                                  tokens, 35B: 2 x 65,536, g26: 2 x 32,768)
+  --npu on|off, -Npu             the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
+                                 (Qwen3.8 27B: prompts +15-20 %; other models stay off). Kept when you switch
+                                 models (/model, pi-arc on another model) until the server is restarted
   --help, -h, -?, /?, help       the short help;  --help-all: this text
 
   A launcher option that differs from what the running server uses restarts the server (loading takes
@@ -247,6 +250,7 @@ shortens a long conversation (the details it drops are gone for the model).
   elseif ($a -in "--preserve-thinking", "-PreserveThinking") { $preserve = $true }
   elseif ($a -in "--no-stream", "-NoStream") { $noStream = $true }
   elseif ($a -in "--slots", "-Slots") { $slots = [int]$args[++$i] }  # (conversations the server holds at once)
+  elseif ($a -in "--npu", "-Npu") { $npu = ([string]$args[++$i]).ToLower() }  # (on / off: the NPU next to the GPU)
   else { $piArgs.Add($a) }
 }
 # Which model: the one the server is running, else the one started last, else ask (--pick: always ask).
@@ -271,6 +275,7 @@ if (-not $model -and -not $pick) {
 $sessArg = @{}; if ($null -ne $sessGb) { $sessArg.SessionCacheGb = $sessGb }  # (not given: the server's default, 8 GB)
 if ($preserve) { $sessArg.PreserveThinking = $true }  # (only when given: a plain start keeps the running server)
 if ($slots -gt 0) { $sessArg.Slots = $slots }  # (only when given, as above)
+if ($npu) { $sessArg.Npu = $npu }  # (not given: a running server keeps its setting, also on another model)
 & (Join-Path $PSScriptRoot "arc-server.ps1") start -Model $model -Ctx $ctx -Chunk $chunk @sessArg -NoMtp:$noMtp -Vision $vision -NoStream:$noStream
 if (-not $?) { exit 1 }
 

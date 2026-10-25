@@ -88,6 +88,7 @@ static int run_main(int argc, char** argv) {
             "  --feed-step N         feed the prompt in calls of N tokens (tests resuming mid-prompt)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
             "  --attn-f32            f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
+            "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (Qwen3.8 27B; force: any Qwen)\n"
             "profiling:\n"
             "  --prof                time to first token and per-kernel profile of the prompt\n"
             "  --prof-gen            per-kernel profile of generation (ARC_PROF_LAYERS=8: per group of 8 layers)\n"
@@ -150,6 +151,11 @@ static int run_main(int argc, char** argv) {
     else if (a == "--prof-gen") prof_gen = true;
     else if (a == "--act256") eo.act32_all = false;
     else if (a == "--attn-f32") eo.attn_int8 = false;
+    else if (a == "--npu") {  // the NPU next to the GPU for prompt chunks (zero/npu): on, off, force
+      const std::string v = next();
+      eo.npu = v == "on" ? 1 : v == "off" ? 0 : v == "force" ? 2 : -2;
+      if (eo.npu == -2) { fprintf(stderr, "--npu: on, off or force\n"); return 1; }
+    }
     else if (a == "--mtp") eo.mtp = true;
     else if (a == "--dflash") { eo.dflash = next(); eo.mtp = true; }  // DFlash2 drafter folder
     else if (a == "--draft") {  // auto: DFlash2 and the MTP block, picked per step; mtp: the block only; dflash: DFlash2 only

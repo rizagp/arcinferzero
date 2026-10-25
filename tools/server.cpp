@@ -774,6 +774,11 @@ int main(int argc, char** argv) {
     else if (a == "--webui") so.webui = next();
     else if (a == "--budget") { so.eo.w8_budget_gb = to_double(a, next()); so.budget_given = true; }
     else if (a == "--attn-f32") so.eo.attn_int8 = false;
+    else if (a == "--npu") {  // (kept by every model switch: so.eo)
+      const std::string v = next();
+      so.eo.npu = v == "on" ? 1 : v == "off" ? 0 : v == "force" ? 2 : -2;
+      if (so.eo.npu == -2) throw std::runtime_error("--npu: expected on, off or force");
+    }
     else if (a == "--mtp") so.eo.mtp = true;
     else if (a == "--dflash") { so.eo.dflash = next(); so.eo.mtp = true; }
     else if (a == "--no-dflash") { so.eo.dflash.clear(); so.dflash_auto = false; }
@@ -830,6 +835,9 @@ int main(int argc, char** argv) {
             "  --mtp                 speculative decoding with the model's MTP block or Gemma assistant drafter\n"
             "  --mtp-drafts N        drafts per step: Qwen 1..7, Gemma 1..3 (default: 7 for Qwen 27B-class and with\n"
             "                        DFlash2, 5 for MoE, 3 for 4B and Gemma 4 26B, 2 otherwise)\n"
+            "  --npu on|off|force    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU\n"
+            "                        (Qwen3.8 27B: prompts +15-20 %%; other models stay off, force: on anyway);\n"
+            "                        kept when a request switches models; default off (or ARC_NPU=1)\n"
             "  --slots N             hold N conversations at once (default 1), each with its own KV cache and states\n"
             "                        of --ctx tokens (auto: the context that fits N of them; MoE with experts on the\n"
             "                        SSD: 128K in all, at least 32K each); requests in different slots take turns step\n"

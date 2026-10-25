@@ -124,6 +124,7 @@ struct Rt {
           g->pfnBuildLogGetString(gr, &ln, log.data());
           fprintf(stderr, "NPU build log: %s\n", log.c_str());
         }
+        if (gr) g->pfnDestroy(gr);
         return nullptr;
       }
       size_t bn = 0;
@@ -142,8 +143,8 @@ struct Rt {
             o.close();
             ok = !o.fail();
           }
-          if (ok) std::filesystem::rename(tmp, path, ec);
-          else std::filesystem::remove(tmp, ec);
+          if (ok) std::filesystem::rename(tmp, path, ec);  // (fails if another process has the file open: removed then)
+          if (!ok || ec) std::filesystem::remove(tmp, ec);
         }
       }
     }
@@ -213,11 +214,14 @@ struct Rt {
   }
   bool start(ze_graph_handle_t gr) {
     const ze_result_t r = g->pfnAppendGraphExecute(cl, gr, nullptr, nullptr, 0, nullptr);
+    pending = r == 0;
     if (r != 0) fprintf(stderr, "NPU graph execute: 0x%x\n", r);
     return r == 0;
   }
+  bool pending = false;  // (a run started and not waited for: an exception between start and wait leaves one)
   bool wait() {
     const ze_result_t r = zeCommandListHostSynchronize(cl, UINT64_MAX);
+    pending = false;
     if (r != 0) fprintf(stderr, "NPU synchronize: 0x%x\n", r);
     return r == 0;
   }

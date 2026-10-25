@@ -71,6 +71,7 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 - What made LLM inference fast on this iGPU, and what did not: [docs/lessons-intel-arc-igpu.md](docs/lessons-intel-arc-igpu.md)
 - Results and the story of the build: [docs/review.md](docs/review.md)
 - Speed by date, long contexts, the 4-bit V cache: [docs/speed-progress.md](docs/speed-progress.md)
+- The NPU next to the GPU for prompts (`--npu on`): [docs/npu-experiment.md](docs/npu-experiment.md)
 - arcinferzero development log: [docs/archive/arcinferzero-log.md](docs/archive/arcinferzero-log.md)
 - What changed recently: [CHANGELOG.md](CHANGELOG.md); usage guide (step by step): [USAGE.md](USAGE.md)
 - Open work and decisions: [QUEUE.md](QUEUE.md); the Gemma 4 accurate-mode plan: [docs/f21-q2-speed.md](docs/f21-q2-speed.md);
@@ -397,6 +398,11 @@ test uses port 8091 and needs the GPU memory.
   folders do not replace (27B: ~290 MB each); other clients' prompts: the 8 used last. All models together
   stay under `--prefix-cache-gb` (default 8; least recently used go first); `--no-prefix-cache` turns it off.
   Files: `<folder>-<folder hash>-<prompt hash>-<tokens>.arcp`.
+- The NPU next to the GPU (`--npu on`; `arc-server start -Npu on`, `pi-arc --npu on`): the Intel AI Boost NPU
+  computes part of each prompt chunk's matrix products while the GPU computes the rest, through Level Zero alone.
+  Qwen3.8 27B: prompts +15-20 % (4K: ~133 -> ~157 tok/s), KL vs f32 0.0003 -> 0.003, 0.4 GB of RAM; generation
+  unchanged. Other models gain nothing and stay off (the log says so). The setting is the server's: switching
+  models keeps it, a restart turns it off. Default off. Details: [docs/npu-experiment.md](docs/npu-experiment.md).
 - Conversation slots (`--slots N`, arcinferzero): the server holds N conversations, each with its own KV cache and
   states; requests in different slots take turns step by step (by GPU time), so two clients answer at the same
   time. When several are generating, their next tokens and drafts run in one engine pass (Qwen dense and MoE, Gemma
@@ -625,7 +631,8 @@ zero/       the engine: engine.h (setup, memory, slots, sessions, dispatch) with
             included inside class Engine), clrt.h (OpenCL-style calls on Level Zero), xcache.h +
             expert_store.h (MoE experts on the SSD, GPU cache), serverz.cpp / runz.cpp, vision_gemma4v.h /
             vision_qwen3vl.h / audio_gemma4a.h (encoders), kernels/ (gemm.cl DP4a GEMM, decode.cl JIT decode + GEMV,
-            ops.cl norms / DeltaNet / attention / quantization, moe.cl expert routing and GEMMs), grf_probe.cpp
+            ops.cl norms / DeltaNet / attention / quantization, moe.cl expert routing and GEMMs), npu/ (the NPU
+            next to the GPU: engine_npu.h, npu_rt.h graph runtime, npu_ir.h OpenVINO IR writer, probes), grf_probe.cpp
 tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cache.h / server_chat.h /
             server_catalog.h / server_load.h, api_compat.h (Anthropic / Ollama / Responses formats), web_tools.h (web
             search / page fetch), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash

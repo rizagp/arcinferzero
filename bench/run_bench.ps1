@@ -9,7 +9,7 @@
 param(
   [Parameter(Mandatory)] [string]$Model,
   [Parameter(Mandatory)] [string]$Name,
-  [string[]]$Engines = @("arcinferzero", "vulkan", "sycl"),
+  [string[]]$Engines = @("arcinferzero", "vulkan", "sycl"),  # (also arcinferzero-npu)
   [string[]]$Tests = @("pp", "ttft", "ppl"),
   [string[]]$PromptFiles = @(),
   [string]$Corpus = "",
@@ -54,18 +54,21 @@ function Start-LlamaServer($engine, $ctx, $port) {
 
 foreach ($engine in $Engines) {
   Write-Host "=== $Name / $engine ==="
+  # (arcinferzero-npu: arcinferzero with the NPU next to the GPU for prompt chunks, --npu on)
+  $isArc = $engine -like "arcinferzero*"
+  $npuArgs = if ($engine -eq "arcinferzero-npu") { @("--npu", "on") } else { @() }
   # ---------------------------------------------------------------- synthetic pp / tg
   if ($Tests -contains "pp") {
-    if ($engine -eq "arcinferzero") {
+    if ($isArc) {
       foreach ($n in 512, 2048) {
         Cool
         Push-Location $arcDir
-        $o = & $arc $Model --bench-pp $n --n 64 2>&1 | Out-String
+        $o = & $arc $Model @npuArgs --bench-pp $n --n 64 2>&1 | Out-String
         Pop-Location
         $runs = [regex]::Matches($o, "pp$n run \d: [\d.]+ ms\s+->\s+([\d.]+) tokens/s") | ForEach-Object { [double]$_.Groups[1].Value }
         $tg = [regex]::Match($o, "tg64: [\d.]+ ms\s+->\s+([\d.]+) tokens/s").Groups[1].Value
-        Emit @{ engine = "arcinferzero"; test = "pp$n"; tps = ($runs | Select-Object -Skip 1 | Measure-Object -Maximum).Maximum }
-        if ($n -eq 512) { Emit @{ engine = "arcinferzero"; test = "tg64"; tps = [double]$tg } }
+        Emit @{ engine = $engine; test = "pp$n"; tps = ($runs | Select-Object -Skip 1 | Measure-Object -Maximum).Maximum }
+        if ($n -eq 512) { Emit @{ engine = $engine; test = "tg64"; tps = [double]$tg } }
       }
     } else {
       $exe = Llama $engine "llama-bench.exe"
@@ -85,13 +88,13 @@ foreach ($engine in $Engines) {
       $n = ($ids -split ",").Count
       $tag = [IO.Path]::GetFileNameWithoutExtension($pf) -replace "\.ids$", ""
       Cool
-      if ($engine -eq "arcinferzero") {
+      if ($isArc) {
         Push-Location $arcDir
-        $o = & $arc $Model --tokens-file $pf --n 32 --ctx ($n + 64) 2>&1 | Out-String
+        $o = & $arc $Model @npuArgs --tokens-file $pf --n 32 --ctx ($n + 64) 2>&1 | Out-String
         Pop-Location
         $ttft = [regex]::Match($o, "time to first token ([\d.]+) ms").Groups[1].Value
         $g = [regex]::Match($o, "generation: (\d+) tokens in ([\d.]+) ms \(([\d.]+) t/s\)")
-        Emit @{ engine = "arcinferzero"; test = "ttft"; prompt = $tag; n_prompt = $n; ttft_s = [double]$ttft / 1000;
+        Emit @{ engine = $engine; test = "ttft"; prompt = $tag; n_prompt = $n; ttft_s = [double]$ttft / 1000;
                 pp_tps = $n / ([double]$ttft / 1000); tg_tps = [double]$g.Groups[3].Value; tg_n = [int]$g.Groups[1].Value }
       } else {
         $port = 8097
@@ -113,12 +116,12 @@ foreach ($engine in $Engines) {
   # ---------------------------------------------------------------- perplexity
   if ($Tests -contains "ppl" -and $Corpus) {
     Cool
-    if ($engine -eq "arcinferzero") {
+    if ($isArc) {
       Push-Location $arcDir
-      $o = & $arc $Model --perplexity $Corpus --ppl-ctx 512 --ppl-chunks $PplChunks 2>&1 | Out-String
+      $o = & $arc $Model @npuArgs --perplexity $Corpus --ppl-ctx 512 --ppl-chunks $PplChunks 2>&1 | Out-String
       Pop-Location
       $m = [regex]::Match($o, "perplexity: ([\d.]+) over (\d+) chunks .* in ([\d.]+) s")
-      Emit @{ engine = "arcinferzero"; test = "ppl"; ppl = [double]$m.Groups[1].Value; chunks = [int]$m.Groups[2].Value; seconds = [double]$m.Groups[3].Value }
+      Emit @{ engine = $engine; test = "ppl"; ppl = [double]$m.Groups[1].Value; chunks = [int]$m.Groups[2].Value; seconds = [double]$m.Groups[3].Value }
     } else {
       $exe = Llama $engine "llama-perplexity.exe"
       $t0 = Get-Date

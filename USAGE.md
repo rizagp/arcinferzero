@@ -185,6 +185,14 @@ int8 mode gave 0.0985 / 0.033 / 0.0010). Speed: 26B with its drafter ~25 tokens/
 with its drafter ~32 tokens/s, a 14K prompt in ~23 s. Conversations saved by an older mode are not loaded (they are
 processed again).
 
+**The NPU next to the GPU (`-Npu on`).** `pi-arc 27b --npu on` (or `arc-server start -Model 27b -Npu on`) lets
+the Intel AI Boost NPU compute part of every prompt chunk while the GPU computes the rest: Qwen3.8 27B prompts
++15-20 %, about 0.4 GB more RAM, generation unchanged. The setting stays with the server: Pi's `/model`, another
+client's model, or `pi-arc` on another model keep it (models it does not help, such as the 4B or the 35B, run
+without it and say so in the log); `arc-server restart` or a stop turns it off. The first prompt of a new length
+class compiles the NPU's graphs once (10-30 s; cached in `%LOCALAPPDATA%\arcinferzero\npu`).
+[docs/npu-experiment.md](docs/npu-experiment.md).
+
 **Two conversations at once (`-Slots 2`, arcinferzero).** By default the server holds one conversation and runs one
 request at a time: a second Pi window waits until the first one's answer is finished, and switching between them
 goes through the session cache. `pi-arc 35b --slots 2` (or `arc-server start -Model 35b -Slots 2`) makes the server
