@@ -1,13 +1,15 @@
 # Changelog
 
-## 2026-10-25: Flint support removed; the model list without duplicates
+## 2026-10-25: the NPU next to the GPU (`--npu on`); Flint support removed; the model list without duplicates
 
-- **Branch npu-experiment: the NPU next to the GPU for prompts** (`ARC_NPU=1`, off by default;
-  docs/npu-experiment.md): the Meteor Lake NPU computes part of the Qwen3.8 27B's FFN and DeltaNet projections in each
-  prompt chunk through Level Zero's graph extension alone (no OpenVINO): 4K prompt +15-20 %, 11K +15.6 %, KL vs f32
-  0.00278; off bit-identical to main, MTP / DFlash2 still bit-identical to plain decoding. Models with resident W8
-  (4B, 9B, 35B) gain nothing and stay off. Its RAM: 6.1 -> 0.37 GiB (the NPU's weight rows decoded per layer by the
-  GPU into the shared block instead of a resident copy; same speed).
+- **The NPU next to the GPU for prompts** (`--npu on|off|force` for serverz / runz, `arc-server -Npu on`, `pi-arc
+  --npu on`; off by default; docs/npu-experiment.md; built on the branch npu-experiment, merged): the Meteor Lake NPU
+  computes part of the Qwen3.8 27B's FFN and DeltaNet projections in each prompt chunk through Level Zero's graph
+  extension alone (no OpenVINO): 2K prompt +15 %, 11K +15 %, 34K +13 % (time to first token 292 -> 258 s), KL vs
+  f32 0.0028-0.0031; off bit-identical to before, MTP / DFlash2 still bit-identical to plain decoding. The setting
+  is the server's: switching models keeps it, a restart turns it off. Models with resident W8 (4B, 9B, 35B) gain
+  nothing and stay off. RAM: 0.37 GiB (the NPU's weight rows decoded per layer by the GPU into the shared block; a
+  resident copy took 6.1 GiB, same speed).
 - **Flint is no longer supported** (the user's decision): the `flint` architecture in the engine and the f32
   reference, its pre-tokenizer (and `src/unicode_ps.h`), the GLM-style tool calls, the server's Flint template and
   thinking handling, the catalog entry and the `flint` shortcut, and the kernel options only it used (attention
