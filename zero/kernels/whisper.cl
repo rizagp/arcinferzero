@@ -28,6 +28,12 @@ __kernel void wh_im2col2(__global const float* h, int T, int D, int A, __global 
   col[(size_t)t * 3 * D + kk] = v;
 }
 
+// the NPU encoder's output (f16 [A][D]) as f32 rows, rows A .. Mp - 1 zero. grid (D, Mp).
+__kernel void wh_h2f(__global const half* h, int D, int A, __global float* x) {
+  const int d = get_global_id(0), m = get_global_id(1);
+  x[(size_t)m * D + d] = m < A ? vload_half((size_t)m * D + d, h) : 0.0f;
+}
+
 // y[m][n] = gelu(y[m][n] + b[n]) (+ pos[m][n] when pos is given). grid (N, M).
 __kernel void wh_bias_gelu(__global float* y, int N, __global const half* b, __global const half* pos, int with_pos) {
   const int n = get_global_id(0), m = get_global_id(1);

@@ -7,13 +7,18 @@
 #include "../src/quants.h"
 #include "../src/whisper.h"
 #include "clrt.h"
+#include "npu/whisper_npu.h"
 #include <chrono>
 #include <map>
 
 class WhisperEngine : public whisper::Backend {
  public:
-  WhisperEngine(const whisper::Model& m, const std::string& kernel_dir = "zero/kernels", int max_seq = 5)
+  // npu: the encoder on the NPU (zero/npu/whisper_npu.h), the decoder here
+  WhisperEngine(const whisper::Model& m, const std::string& kernel_dir = "zero/kernels", int max_seq = 5, bool npu = false)
       : m_(m), hp_(m.hp), max_seq_(std::max(1, max_seq)) {
+    // (the NPU's driver is a second Level Zero driver: Level Zero initialized for every type before the GPU runtime,
+    //  which asks for GPUs only)
+    if (npu && ze_load()) zeInit(0);
     if (!cl_.init(true)) throw std::runtime_error("whisper: no Level Zero GPU");
     const auto t0 = std::chrono::steady_clock::now();
     gemm_src_ = read_file(kernel_dir + "/gemm.cl");
@@ -27,7 +32,8 @@ class WhisperEngine : public whisper::Backend {
     Vp_ = (hp_.n_vocab + 15) / 16 * 16;
     const int F = m.file->get("encoder/layer_0/ffn/linear_0/weight").shape[0];
     F_ = F;
-    // weights: Q8_0 GEMM form; biases f16
+    // weights: Q8_0 GEMM form; biases f16 (the encoder's only when it runs here)
+    if (!npu) {
     conv1_ = weight_conv("encoder/conv1/weight", K1p_ = 512);
     conv1_b_ = half_buf("encoder/conv1/bias");
     conv2_ = weight_conv("encoder/conv2/weight", 3 * D);
@@ -52,6 +58,7 @@ class WhisperEngine : public whisper::Backend {
     }
     enc_lng_ = half_buf("encoder/layer_norm/gamma");
     enc_lnb_ = half_buf("encoder/layer_norm/beta");
+    }
     for (int l = 0; l < hp_.dec_layers; ++l) {
       const std::string p = "decoder/layer_" + std::to_string(l) + "/";
       DecL L;
@@ -129,6 +136,10 @@ class WhisperEngine : public whisper::Backend {
       clEnqueueWriteBuffer(cl_.queue, no_save_, CL_TRUE, 0, none.size() * 4, none.data(), 0, nullptr, nullptr);
     }
     lens_.assign(max_seq_, 0);
+    if (npu) {
+      npu_ = std::make_unique<WhisperNpuEncoder>(m);
+      h16_ = buf((size_t)A * D * 2 + 64);
+    }
     load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   }
   ~WhisperEngine() override {
@@ -138,13 +149,27 @@ class WhisperEngine : public whisper::Backend {
     for (cl_mem b : mems_) clReleaseMemObject(b);
   }
 
-  double load_ms = 0;
+  double load_ms = 0, npu_ms = 0;  // (npu_ms: the NPU encoder's time)
   size_t gpu_bytes = 0;
+  const WhisperNpuEncoder* npu() const { return npu_.get(); }
   std::map<std::string, double> prof_ms;  // (ARC_PROF=1: GPU time per kernel name)
 
   // ---------------------------------------------------------------- Backend
   void encode(const float* mel) override {
     const int D = hp_.d, A = hp_.n_audio_ctx, T = whisper::kWindowFrames, C = hp_.n_mels;
+    if (npu_) {  // the encoder on the NPU; its output here for the cross-attention keys / values
+      const auto t0 = std::chrono::steady_clock::now();
+      const uint16_t* h = npu_->encode(mel);
+      npu_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      clEnqueueWriteBuffer(cl_.queue, h16_, CL_FALSE, 0, (size_t)A * D * 2, h, 0, nullptr, nullptr);
+      cl_kernel k = wk("wh_h2f");
+      int d = D, a = A;
+      set_args(k, 0, h16_, d, a, hn_);
+      size_t g[2] = {(size_t)D, (size_t)Ap_};
+      run("h2f", k, 2, g, nullptr);
+      cross_kv();
+      return;
+    }
     clEnqueueWriteBuffer(cl_.queue, mel_, CL_FALSE, 0, (size_t)C * T * 4, mel, 0, nullptr, nullptr);
     {  // conv1 + GELU
       cl_kernel k = wk("wh_im2col1");
@@ -212,7 +237,11 @@ class WhisperEngine : public whisper::Backend {
     }
     two_ = q2_from_ <= hp_.enc_layers;  // (the cross-attention keys / values from the last layer's output too)
     layernorm(x_, D, A, enc_lng_, enc_lnb_, hn_, Ap_);
-    // the decoder layers' cross-attention keys / values of this window
+    cross_kv();
+  }
+  // the decoder layers' cross-attention keys / values of this window, from the encoder output in hn_
+  void cross_kv() {
+    const int D = hp_.d, A = hp_.n_audio_ctx;
     quant(hn_, D, Ap_, A);
     for (DecL& L : dec_) {
       gemm(L.ckv, Ap_, L.ckv_buf, 2 * D);
@@ -300,6 +329,8 @@ class WhisperEngine : public whisper::Backend {
   std::vector<DecL> dec_;
   GW conv1_, conv2_, head_;
   cl_mem conv1_b_, conv2_b_, enc_pos_, enc_lng_, enc_lnb_, dec_lng_, dec_lnb_, emb_, dec_pos_;
+  std::unique_ptr<WhisperNpuEncoder> npu_;
+  cl_mem h16_ = nullptr;
   cl_mem aq2_, asc2_, absum2_;
   std::string q2defs_;
   bool two_ = false;

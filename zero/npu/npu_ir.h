@@ -2,6 +2,7 @@
 // ZE_GRAPH_FORMAT_NGRAPH_LITE) and its serialization, enough for the matrix-product graphs of zero/npu/.
 #pragma once
 #include "ze_npu.h"
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -84,6 +85,50 @@ class Ir {
     return add(name, "MatMul", "<data transpose_a=\"false\" transpose_b=\"true\"/>", {a, b},
                T{a.t.et, {a.t.shape[0], b.t.shape[0]}}, "");
   }
+  // batched a [.. M K] . b [.. K N] (tb: b is [.. N K]); the leading dims of a
+  Out matmul(const std::string& name, const Out& a, const Out& b, bool tb) {
+    std::vector<int> s = a.t.shape;
+    const std::vector<int>& bs = b.t.shape;
+    s.back() = tb ? bs[bs.size() - 2] : bs.back();
+    return add(name, "MatMul", std::string("<data transpose_a=\"false\" transpose_b=\"") + (tb ? "true" : "false") + "\"/>",
+               {a, b}, T{a.t.et, s}, "");
+  }
+  Out add_op(const std::string& name, const Out& a, const Out& b) {  // (numpy broadcast; the result has a's shape)
+    return add(name, "Add", "<data auto_broadcast=\"numpy\"/>", {a, b}, T{a.t.et, a.t.shape}, "");
+  }
+  Out transpose(const std::string& name, const Out& a, const std::vector<int>& order) {
+    std::vector<int64_t> o(order.begin(), order.end());
+    std::vector<int> s(order.size());
+    for (size_t i = 0; i < order.size(); ++i) s[i] = a.t.shape[order[i]];
+    return add(name, "Transpose", "", {a, const_i64(name + "_order", o)}, T{a.t.et, s}, "");
+  }
+  // (x - mean) / sqrt(var + eps) over the last axis (opset6 MVN: the compiler's own LayerNorm path)
+  Out mvn_last(const std::string& name, const Out& a, float eps) {
+    char b[160];
+    snprintf(b, sizeof b, "<data eps=\"%g\" normalize_variance=\"true\" eps_mode=\"inside_sqrt\"/>", eps);
+    return add(name, "MVN", b, {a, const_i64(name + "_axes", {(int64_t)a.t.shape.size() - 1})}, a.t, "", false, "opset6");
+  }
+  Out softmax(const std::string& name, const Out& a, int axis) {
+    return add(name, "Softmax", "<data axis=\"" + std::to_string(axis) + "\"/>", {a}, a.t, "");
+  }
+  Out gelu_erf(const std::string& name, const Out& a) {
+    return add(name, "Gelu", "<data approximation_mode=\"ERF\"/>", {a}, a.t, "", false, "opset7");
+  }
+  // 1-D convolution: x [N][C][W] with weights [O][C][K], stride, padding p on both sides -> [N][O][W']
+  Out conv1d(const std::string& name, const Out& x, const Out& w, int stride, int pad) {
+    const int K = w.t.shape[2], W = (x.t.shape[2] + 2 * pad - K) / stride + 1;
+    const std::string d = "<data strides=\"" + std::to_string(stride) + "\" dilations=\"1\" pads_begin=\"" + std::to_string(pad) +
+                          "\" pads_end=\"" + std::to_string(pad) + "\" auto_pad=\"explicit\"/>";
+    return add(name, "Convolution", d, {x, w}, T{x.t.et, {x.t.shape[0], w.t.shape[0], W}}, "");
+  }
+  // an f16 constant from f16 bits
+  Out const_f16_bits(const std::string& name, const std::vector<int>& shape, const uint16_t* v, size_t n) {
+    const size_t off = w_.size();
+    w_.insert(w_.end(), (const uint8_t*)v, (const uint8_t*)(v + n));
+    const std::string d = "<data element_type=\"f16\" shape=\"" + dims_csv(shape) + "\" offset=\"" + std::to_string(off) +
+                          "\" size=\"" + std::to_string(n * 2) + "\"/>";
+    return add(name, "Const", d, {}, T{"f16", shape}, "");
+  }
   // 1x1 convolution, NCHW: x [1][C][H][W] with weights [O][C][1][1] -> [1][O][H][W]
   Out conv1x1(const std::string& name, const Out& x, const Out& w) {
     return add(name, "Convolution",
@@ -141,9 +186,9 @@ class Ir {
     return r + "</port>";
   }
   Out add(const std::string& name, const char* type, const std::string& data, const std::vector<Out>& in, const T& out,
-          const std::string& out_names, bool is_result = false) {
+          const std::string& out_names, bool is_result = false, const char* opset = "opset1") {
     const int id = next_++;
-    std::string l = "<layer id=\"" + std::to_string(id) + "\" name=\"" + name + "\" type=\"" + type + "\" version=\"opset1\">" + data;
+    std::string l = "<layer id=\"" + std::to_string(id) + "\" name=\"" + name + "\" type=\"" + type + "\" version=\"" + opset + "\">" + data;
     if (!in.empty()) {
       l += "<input>";
       for (size_t i = 0; i < in.size(); ++i) {

@@ -93,7 +93,7 @@ void usage() {
   fprintf(stderr,
           "usage: transcribez <file | folder | wildcard> ... [options]\n"
           "  --model <folder>            a faster-whisper model folder (default: large-v3-turbo from the HF cache)\n"
-          "  --device gpu|cpu            the Arc iGPU (default) or the f32 CPU reference (slow, for checks)\n"
+          "  --device gpu|npu            the Arc iGPU (default), or the encoder on the NPU and the decoder on the iGPU\n"
           "  --lang auto|id|en|id,en     language: detected per 30-s window (auto), fixed, or among the listed ones\n"
           "  --beam 1|5                  greedy or beam search (default 5)\n"
           "  --words / --no-words        word timestamps (default on)\n"
@@ -174,12 +174,15 @@ int main(int argc, char** argv) {
     Model m(model_dir);
     std::unique_ptr<Backend> be;
     WhisperEngine* gpu = nullptr;
-    if (device == "gpu") {
-      auto g = std::make_unique<WhisperEngine>(m);
+    if (device == "gpu" || device == "npu") {  // (npu: the encoder on the NPU, the decoder on the iGPU)
+      auto g = std::make_unique<WhisperEngine>(m, "zero/kernels", 5, device == "npu");
       gpu = g.get();
       be = std::move(g);
+      if (gpu->npu())
+        fprintf(stderr, "whisper: NPU encoder: %.2f GiB of host memory, graphs %s\n", gpu->npu()->host_bytes / 1073741824.0,
+                gpu->npu()->all_cached ? "from the cache" : "compiled");
     } else {
-      throw std::runtime_error("--device " + device + ": gpu here (the CPU reference is tools\\ref_whisper)");
+      throw std::runtime_error("--device " + device + ": gpu or npu (the CPU reference is tools\\ref_whisper)");
     }
     fprintf(stderr, "whisper: %s loaded in %.1f s (%s, %.2f GiB GPU)\n", fs::path(model_dir).filename().string().c_str(),
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), device.c_str(),
@@ -269,7 +272,8 @@ int main(int argc, char** argv) {
       double tot = 0;
       for (auto& [k, ms] : gpu->prof_ms) { v.push_back({ms, k}); tot += ms; }
       std::sort(v.rbegin(), v.rend());
-      fprintf(stderr, "GPU time %.0f ms:\n", tot);
+      fprintf(stderr, "GPU time %.0f ms%s:\n", tot,
+              gpu->npu() ? (" (NPU encoder " + std::to_string((int)gpu->npu_ms) + " ms)").c_str() : "");
       for (auto& [ms, k] : v) fprintf(stderr, "  %-14s %8.0f ms  %4.1f %%\n", k.c_str(), ms, 100 * ms / tot);
     }
     return failed ? 1 : 0;
