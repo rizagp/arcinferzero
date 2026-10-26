@@ -20,8 +20,9 @@ foreach ($src in $Sources) {
   #  /utf-8: the sources are UTF-8, their string literals stay byte for byte;
   #  /W4 /permissive-: our own sources build warning-free, third_party is an external include without warnings)
   $fp = if ($name -match '^(ref_forward|test_|vision_test)') { '/fp:precise' } else { '/fp:fast' }
+  # (/bigobj: serverz has more sections than a default object file holds)
   $pre = if ($vcvars) { "`"$vcvars`" >nul && " } else { "" }  # ("": a Developer prompt, cl already set up)
-  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 $fp /EHsc /MD /W4 /permissive- /Zc:__cplusplus /external:I`"$root\third_party`" /external:W0 /openmp:llvm /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
+  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 $fp /EHsc /bigobj /MD /W4 /permissive- /Zc:__cplusplus /external:I`"$root\third_party`" /external:W0 /openmp:llvm /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
          "/Fe`"$out\$name.exe`" /Fo`"$out\\`" `"$full`" " +
          "/link /MANIFEST:EMBED /MANIFESTINPUT:`"$root\tools\utf8.manifest`""  # (UTF-8 code page: paths with any characters)
   cmd /c $cmd

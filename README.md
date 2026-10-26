@@ -350,8 +350,10 @@ test uses port 8091 and needs the GPU memory.
 ```
 
 - Web UI: http://127.0.0.1:8080/, laid out like WhatsApp Web: the chats kept in the browser, the model picker in the
-  chat header, chat with images, audio and files, voice messages, **Talk** (a spoken conversation), web search, context
-  use and compaction; the settings behind the gear. Details: [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
+  chat header, chat with images, audio and files (one folder per chat), voice messages, **Talk** (a spoken
+  conversation), web search, documents the model writes (DOCX / PDF / DOC / RTF, corrected on request), a terminal the
+  model may use after you allow each command, context use and compaction; the settings behind the gear. Details:
+  [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
 - OpenAI API: `POST /v1/chat/completions` (streaming, `reasoning_content`, tool calls streamed while they are
   generated, string arguments and array / object arguments alike (Pi's `edit` puts its whole change in an array),
   `usage`; the last streamed chunk carries `usage` and llama-server's `timings` together),
@@ -637,7 +639,8 @@ zero/       the engine: engine.h (setup, memory, slots, sessions, dispatch) with
             next to the GPU: engine_npu.h, npu_rt.h graph runtime, npu_ir.h OpenVINO IR writer, probes), grf_probe.cpp
 tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cache.h / server_chat.h /
             server_catalog.h / server_load.h, api_compat.h (Anthropic / Ollama / Responses formats), web_tools.h (web
-            search / page fetch), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
+            search / page fetch), server_files.h (the web UI's chat folders), doc_writer.h (DOCX / PDF / RTF
+            from Markdown), server_terminal.h (the terminal tool), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
             Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.py (ISTA GSQ checkpoint -> GGUF),
             tok_test.cpp, chat_render.cpp, gguf_dump.cpp, clinfo.cpp
 bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, peak_bench, ...), run_bench.ps1
@@ -645,7 +648,7 @@ bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, 
 scripts/    arc-server.ps1 (server in the background), arc-launcher.ps1 (launcher window, arc-launcher.cmd),
             pi-arc.ps1 (Pi launcher), install-pi.ps1 (commands and Pi's model list), pi-models.ps1 (writes that list)
 tests/      run_tests.ps1 and its reference data
-webui/      index.html (chat, web search tools, Talk voice mode)
+webui/      index.html (chat, files and documents, terminal, web search tools, Talk voice mode)
 docs/       before-after.md (every change, before / after, accuracy), review.md (results), speed-progress.md
             (speed by date), lessons-intel-arc-igpu.md, f21-q2-speed.md (Gemma 4 accurate-mode plan),
             flash-next-spec.md, npu-experiment.md (the NPU next to the GPU), archive/ (arcinferzero-log.md, review_notes.md: older logs and notes)

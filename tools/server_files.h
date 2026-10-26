@@ -1,10 +1,17 @@
-// The web UI's files and chats on disk, in the data folder (src/app_dir.h):
-//   uploads\<yyyy-mm>\<id>-<name>   every file attached in a chat (images, audio, video, documents); id = 16 hex digits
-//                                   of the FNV-1a hash of its bytes, so the same file is kept once
-//   chats\<id>.json                 one conversation (the web UI's JSON: title, times, model, messages); messages refer
-//                                   to their files as "/files/<id>"
-// Model-independent: served while a model loads or generates. Names are cut to safe ASCII and ids checked, so nothing
-// is read or written outside these two folders.
+// The web UI's files and chats on disk, in the data folder (src/app_dir.h). One folder per chat:
+//   chats\<yyyy-mm-dd> <title> (<chat id>)\     named at the chat's first save (its date and first words), then kept
+//     chat.json                     the conversation (the web UI's JSON: title, times, model, messages); messages refer
+//                                   to their files as "/files/<id>" (or "file_id": "<id>")
+//     <name>                        every file of the chat under its own name: uploads, recordings, documents the
+//                                   model wrote; a file from another chat (@) is a hard link, so its bytes are kept once
+//     .files.json                   file id -> name and time (a file put into the folder by hand gets an id at the
+//                                   next listing)
+//     .src\<id>.json                a document the model wrote: its Markdown and options (read_file gives them back,
+//                                   so a correction makes a new version from the same source)
+//   uploads\<yyyy-mm>\<id>-<name>   files of the first web UI version (still read; new files go into a chat folder)
+// A file id is 16 hex digits of the FNV-1a hash of its bytes (the media cache's key too). Deleting a chat deletes its
+// folder: its files go with it, unless another chat holds them too. Model-independent: served while a model loads or
+// generates. Names are cut to safe ASCII and ids checked, so nothing is read or written outside these two folders.
 #pragma once
 #include "../src/app_dir.h"
 #include "../src/json.h"
@@ -28,6 +35,7 @@ struct Info {
   std::string id, name, kind, path;
   uint64_t bytes = 0;
   int64_t created = 0;  // (unix seconds)
+  std::string chat;     // (the chat whose folder holds this copy; "" : the old uploads folder)
 };
 
 inline std::string lower(std::string s) {
@@ -53,7 +61,8 @@ inline std::string mime_of(const std::string& name) {
       {"mp4", "video/mp4"}, {"mov", "video/quicktime"}, {"mkv", "video/x-matroska"}, {"webm", "video/webm"},
       {"wmv", "video/x-ms-wmv"}, {"avi", "video/x-msvideo"}, {"txt", "text/plain; charset=utf-8"},
       {"md", "text/markdown; charset=utf-8"}, {"json", "application/json"}, {"csv", "text/csv; charset=utf-8"},
-      {"pdf", "application/pdf"}, {"html", "text/plain; charset=utf-8"}, {"svg", "text/plain; charset=utf-8"}};
+      {"pdf", "application/pdf"}, {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+      {"doc", "application/msword"}, {"rtf", "application/rtf"}, {"html", "text/plain; charset=utf-8"}, {"svg", "text/plain; charset=utf-8"}};
   auto it = m.find(ext_of(name));
   return it == m.end() ? "application/octet-stream" : it->second;  // (html / svg as text: never run as a page)
 }
@@ -84,39 +93,82 @@ class Store {
  public:
   Store() : up_(fs::path(app_dir()) / "uploads"), chats_(fs::path(app_dir()) / "chats") {}
 
-  Info put(const std::string& name_in, const std::string& data) {
-    std::lock_guard<std::mutex> g(mu_);
+  // a file into chat's folder (chat "" : the old uploads folder); the same bytes already there: that file
+  Info put(const std::string& name_in, const std::string& data, const std::string& chat = "") {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     scan();
-    uint64_t h = 1469598103934665603ull;  // (FNV-1a of the bytes: the media cache's key too)
-    for (unsigned char b : data) h = (h ^ b) * 1099511628211ull;
-    const std::string id = hex64(h);
-    if (auto it = by_id_.find(id); it != by_id_.end()) return it->second;
-    char month[16];
+    const std::string id = hash(data);
     const std::time_t now = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &now);
-    strftime(month, sizeof month, "%Y-%m", &tm);
-    const fs::path dir = up_ / month;
     std::error_code ec;
-    fs::create_directories(dir, ec);
-    const std::string name = safe_name(name_in);
-    const fs::path p = dir / (id + "-" + name);
-    {
-      std::ofstream o(p, std::ios::binary);
-      o.write(data.data(), (std::streamsize)data.size());
-      if (!o) throw std::runtime_error("cannot write " + p.string());
+    if (chat.empty() || !valid_id(chat)) {  // (the old layout: uploads\<yyyy-mm>\<id>-<name>)
+      for (const Info& i : copies(id))
+        if (i.chat.empty()) return i;
+      char month[16];
+      std::tm tm{};
+      localtime_s(&tm, &now);
+      strftime(month, sizeof month, "%Y-%m", &tm);
+      fs::create_directories(up_ / month, ec);
+      const std::string name = safe_name(name_in);
+      const fs::path pth = up_ / month / (id + "-" + name);
+      write(pth, data);
+      Info i{id, name, kind_of(name), pth.string(), (uint64_t)data.size(), (int64_t)now, ""};
+      by_id_[id].push_back(i);
+      return i;
     }
-    Info i{id, name, kind_of(name), p.string(), (uint64_t)data.size(), (int64_t)now};
-    by_id_[id] = i;
+    for (const Info& i : copies(id))
+      if (i.chat == chat) return i;
+    const fs::path dir = folder(chat, "");
+    const std::string name = free_name(dir, safe_name(name_in));
+    const fs::path pth = dir / name;
+    bool linked = false;
+    for (const Info& i : copies(id))  // (the bytes are in another chat's folder: a hard link to them)
+      if (fs::create_hard_link(i.path, pth, ec), !ec) { linked = true; break; }
+    if (!linked) write(pth, data);
+    Info i{id, name, kind_of(name), pth.string(), (uint64_t)data.size(), (int64_t)now, chat};
+    by_id_[id].push_back(i);
+    save_index(dir, chat);
     return i;
   }
-  bool get(const std::string& id, Info& out) {
-    std::lock_guard<std::mutex> g(mu_);
+  // a saved file into chat's folder as well (a hard link; a copy if linking fails); false: no such file
+  bool link(const std::string& id, const std::string& chat) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     scan();
-    auto it = by_id_.find(id);
-    if (it == by_id_.end()) return false;
-    out = it->second;
+    const auto v = copies(id);
+    if (v.empty()) return false;
+    for (const Info& i : v)
+      if (i.chat == chat) return true;
+    const fs::path dir = folder(chat, "");
+    const std::string name = free_name(dir, v[0].name);
+    std::error_code ec;
+    fs::create_hard_link(v[0].path, dir / name, ec);
+    if (ec) {
+      ec.clear();
+      fs::copy_file(v[0].path, dir / name, ec);
+      if (ec) return false;
+    }
+    Info i = v[0];
+    i.name = name;
+    i.path = (dir / name).string();
+    i.chat = chat;
+    by_id_[id].push_back(i);
+    std::string src;  // (a document the model wrote: its source goes along)
+    if (source(id, src)) put_source(id, chat, src);
+    save_index(dir, chat);
     return true;
+  }
+  bool get(const std::string& id, Info& out) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();
+    std::error_code ec;
+    for (int pass = 0; pass < 2; ++pass) {
+      for (const Info& i : copies(id))
+        if (fs::exists(i.path, ec)) {
+          out = i;
+          return true;
+        }
+      if (pass == 0) rescan();  // (moved or deleted by hand: the folders again)
+    }
+    return false;
   }
   static bool read(const std::string& path, std::string& out) {
     std::ifstream f(path, std::ios::binary);
@@ -126,23 +178,67 @@ class Store {
     out = ss.str();
     return true;
   }
+  // every file once (its first copy), newest first; the folders read again, so changes made by hand show
   std::vector<Info> list() {
-    std::lock_guard<std::mutex> g(mu_);
-    scan();
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    rescan();
     std::vector<Info> v;
-    for (auto& [id, i] : by_id_) v.push_back(i);
+    for (auto& [id, c] : by_id_)
+      if (!c.empty()) v.push_back(c[0]);
     std::sort(v.begin(), v.end(), [](const Info& a, const Info& b) { return a.created > b.created; });
     return v;
   }
+  // the chats whose folder holds the file
+  std::vector<std::string> holders(const std::string& id) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();
+    std::vector<std::string> r;
+    for (const Info& i : copies(id))
+      if (!i.chat.empty()) r.push_back(i.chat);
+    return r;
+  }
+  // the file everywhere (every chat folder, its sources); false: there was none
   bool remove(const std::string& id) {
-    std::lock_guard<std::mutex> g(mu_);
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();
+    const auto v = copies(id);
+    if (v.empty()) return false;
+    bool ok = true;
+    for (const Info& i : v) ok = remove_copy(i) && ok;
+    by_id_.erase(id);
+    return ok;
+  }
+  // the file out of one chat's folder only (the other chats keep their copy)
+  bool remove_from(const std::string& id, const std::string& chat) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     scan();
     auto it = by_id_.find(id);
     if (it == by_id_.end()) return false;
+    auto& v = it->second;
+    for (size_t k = 0; k < v.size(); ++k)
+      if (v[k].chat == chat) {
+        const Info i = v[k];
+        v.erase(v.begin() + (long long)k);
+        if (v.empty()) by_id_.erase(it);
+        return remove_copy(i);
+      }
+    return false;
+  }
+  // a document's source (the create_document arguments), in its chat's .src folder
+  void put_source(const std::string& id, const std::string& chat, const std::string& json) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    const fs::path dir = (chat.empty() || !valid_id(chat) ? up_ : folder(chat, "")) / ".src";
     std::error_code ec;
-    fs::remove(it->second.path, ec);
-    by_id_.erase(it);
-    return !ec;
+    fs::create_directories(dir, ec);
+    write(dir / (id + ".json"), json);
+  }
+  bool source(const std::string& id, std::string& out) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    if (!valid_id(id, 16)) return false;
+    scan();
+    for (const Info& i : copies(id))
+      if (read((fs::path(i.path).parent_path() / ".src" / (id + ".json")).string(), out)) return true;
+    return read((up_ / ".src" / (id + ".json")).string(), out);
   }
   // the bytes of a message's file reference "/files/<id>" (false: not such a reference)
   bool resolve(const std::string& ref, std::string& out) {
@@ -153,33 +249,90 @@ class Store {
   }
 
   // ---- chats
-  std::string chat_path(const std::string& id) const { return (chats_ / (id + ".json")).string(); }
-  bool chat_get(const std::string& id, std::string& out) { return valid_id(id) && read(chat_path(id), out); }
-  void chat_put(const std::string& id, const std::string& body) {
-    std::error_code ec;
-    fs::create_directories(chats_, ec);
-    const std::string p = chat_path(id), tmp = p + ".tmp";  // (written whole, then renamed: never half a chat)
-    {
-      std::ofstream o(tmp, std::ios::binary);
-      o.write(body.data(), (std::streamsize)body.size());
-      if (!o) throw std::runtime_error("cannot write " + tmp);
-    }
-    fs::rename(tmp, p, ec);
-    if (ec) throw std::runtime_error("cannot write " + p + ": " + ec.message());
+  // the chat's folder ("" : none yet)
+  std::string chat_dir(const std::string& id) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();
+    auto it = folders_.find(id);
+    return it == folders_.end() ? "" : it->second.string();
   }
-  bool chat_remove(const std::string& id) {
+  // the chat's folder, made now if there is none yet (named from its date and the title, if one is given)
+  std::string chat_dir_make(const std::string& id, const std::string& title = "") {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    if (!valid_id(id)) throw std::runtime_error("bad chat id");
+    scan();
+    return folder(id, title).string();
+  }
+  bool chat_get(const std::string& id, std::string& out) {
+    if (!valid_id(id)) return false;
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();
+    auto it = folders_.find(id);
+    if (it != folders_.end() && read((it->second / "chat.json").string(), out)) return true;
+    return read((chats_ / (id + ".json")).string(), out);  // (a chat of the first web UI version)
+  }
+  // the chat's JSON into its folder; the files its messages refer to are linked into the folder too
+  void chat_put(const std::string& id, const std::string& body) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    if (!valid_id(id)) throw std::runtime_error("bad chat id");
+    scan();
+    std::string title;
+    try { title = Json::parse(body)["title"].str(); } catch (const std::exception&) {}
+    fs::path dir = folder(id, title);
     std::error_code ec;
-    return valid_id(id) && fs::remove(chat_path(id), ec);
+    if (!fs::exists(dir / "chat.json", ec) && !title.empty() && title != "New chat") {
+      // (the first save: the folder made at an upload before it gets the chat's date and title now)
+      const fs::path named = chats_ / folder_name(id, title);
+      if (named != dir && !fs::exists(named, ec)) {
+        fs::rename(dir, named, ec);
+        if (!ec) {
+          rescan();
+          dir = named;
+        }
+        ec.clear();
+      }
+    }
+    const fs::path p = dir / "chat.json", tmp = dir / "chat.json.tmp";  // (written whole, then renamed: never half a chat)
+    write(tmp, body);
+    fs::rename(tmp, p, ec);
+    if (ec) throw std::runtime_error("cannot write " + p.string() + ": " + ec.message());
+    fs::remove(chats_ / (id + ".json"), ec);  // (an old-layout copy of this chat: replaced by the folder)
+    for (const std::string& fid : refs(body)) link(fid, id);
+  }
+  // the chat: its folder with its files (keep_files: only chat.json, the files stay in the folder)
+  bool chat_remove(const std::string& id, bool keep_files = false) {
+    if (!valid_id(id)) return false;
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();
+    std::error_code ec;
+    bool any = fs::remove(chats_ / (id + ".json"), ec);
+    auto it = folders_.find(id);
+    if (it != folders_.end()) {
+      if (keep_files) any = fs::remove(it->second / "chat.json", ec) || any;
+      else {
+        any = fs::remove_all(it->second, ec) > 0 || any;
+        rescan();
+      }
+    }
+    return any;
   }
   // every chat: its id and JSON text
   std::vector<std::pair<std::string, std::string>> chats_all() {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();  // (a folder deleted by hand has no chat.json to read; list() reads the folders again)
     std::vector<std::pair<std::string, std::string>> v;
+    std::set<std::string> seen;
+    std::string t;
+    for (const auto& [id, dir] : folders_)
+      if (read((dir / "chat.json").string(), t)) {
+        v.push_back({id, t});
+        seen.insert(id);
+      }
     std::error_code ec;
-    for (const auto& e : fs::directory_iterator(chats_, ec)) {
-      if (!e.is_regular_file() || e.path().extension() != ".json") continue;
-      std::string t;
-      if (read(e.path().string(), t)) v.push_back({e.path().stem().string(), std::move(t)});
-    }
+    for (const auto& e : fs::directory_iterator(chats_, ec))  // (the first web UI version's chats\<id>.json)
+      if (e.is_regular_file() && e.path().extension() == ".json" && !seen.count(e.path().stem().string()) &&
+          read(e.path().string(), t))
+        v.push_back({e.path().stem().string(), t});
     return v;
   }
   // the file ids a chat's JSON refers to: "/files/<id>" (urls) and "file_id":"<id>" (file parts)
@@ -194,7 +347,7 @@ class Store {
       }
     return r;
   }
-  // file id -> the chats that refer to it
+  // file id -> the chats whose messages refer to it
   std::map<std::string, std::vector<std::string>> uses() {
     std::map<std::string, std::vector<std::string>> u;
     for (const auto& [cid, text] : chats_all())
@@ -203,31 +356,161 @@ class Store {
   }
 
  private:
-  // the uploads folder into by_id_, once (later puts and removes keep it current)
+  static std::string hash(const std::string& data) {
+    uint64_t h = 1469598103934665603ull;
+    for (unsigned char b : data) h = (h ^ b) * 1099511628211ull;
+    return hex64(h);
+  }
+  static void write(const fs::path& p, const std::string& data) {
+    std::ofstream o(p, std::ios::binary);
+    o.write(data.data(), (std::streamsize)data.size());
+    if (!o) throw std::runtime_error("cannot write " + p.string());
+  }
+  std::vector<Info> copies(const std::string& id) const {
+    auto it = by_id_.find(id);
+    return it == by_id_.end() ? std::vector<Info>{} : it->second;
+  }
+  // "<yyyy-mm-dd> <title> (<id>)": a name Windows takes (no trailing dot or space, short enough for the path)
+  static std::string folder_name(const std::string& id, const std::string& title) {
+    char day[16];
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &now);
+    strftime(day, sizeof day, "%Y-%m-%d", &tm);
+    std::string t;
+    for (unsigned char c : title) t += c < 128 && (isalnum(c) || strchr(" -_,", c)) ? (char)c : ' ';
+    std::string u;  // (spaces squeezed)
+    for (char c : t)
+      if (!(c == ' ' && (u.empty() || u.back() == ' '))) u += c;
+    if (u.size() > 40) {  // (cut at a word's end)
+      const size_t sp = u.rfind(' ', 40);
+      u = u.substr(0, sp != std::string::npos && sp > 20 ? sp : 40);
+    }
+    while (!u.empty() && (u.back() == ' ' || u.back() == '.' || u.back() == ',')) u.pop_back();
+    return std::string(day) + (u.empty() || u == "New chat" ? "" : " " + u) + " (" + id + ")";
+  }
+  fs::path folder(const std::string& chat, const std::string& title) {
+    if (auto it = folders_.find(chat); it != folders_.end()) return it->second;
+    const fs::path d = chats_ / folder_name(chat, title);
+    std::error_code ec;
+    fs::create_directories(d, ec);
+    if (ec) throw std::runtime_error("cannot make " + d.string() + ": " + ec.message());
+    folders_[chat] = d;
+    return d;
+  }
+  // name, or "name (2).ext" ... when another file has it
+  static std::string free_name(const fs::path& dir, const std::string& name) {
+    std::error_code ec;
+    if (name == "chat.json" || fs::exists(dir / name, ec)) {
+      const size_t d = name.rfind('.');
+      const std::string stem = d == std::string::npos || d == 0 ? name : name.substr(0, d),
+                        ext = d == std::string::npos || d == 0 ? "" : name.substr(d);
+      for (int k = 2;; ++k)
+        if (!fs::exists(dir / (stem + " (" + std::to_string(k) + ")" + ext), ec)) return stem + " (" + std::to_string(k) + ")" + ext;
+    }
+    return name;
+  }
+  void save_index(const fs::path& dir, const std::string& chat) {
+    Json j = Json::object();
+    for (const auto& [id, v] : by_id_)
+      for (const Info& i : v)
+        if (i.chat == chat) {
+          Json e = Json::object();
+          e.set("name", i.name);
+          e.set("created", (double)i.created);
+          e.set("bytes", (double)i.bytes);
+          j.set(id, e);
+        }
+    try { write(dir / ".files.json", j.dump()); } catch (const std::exception&) {}
+  }
+  bool remove_copy(const Info& i) {
+    std::error_code ec;
+    const fs::path dir = fs::path(i.path).parent_path();
+    const bool ok = fs::remove(i.path, ec) || !fs::exists(i.path, ec);
+    std::error_code ec2;
+    fs::remove(dir / ".src" / (i.id + ".json"), ec2);
+    if (i.chat.empty()) fs::remove(up_ / ".src" / (i.id + ".json"), ec2);
+    else {
+      save_index(dir, i.chat);
+      // (a folder left with nothing in it but its index, and no chat: gone too)
+      bool empty = true;
+      for (const auto& e : fs::directory_iterator(dir, ec2))
+        if (e.path().filename() != ".files.json" && !(e.is_directory() && fs::is_empty(e.path(), ec2))) empty = false;
+      if (empty) {
+        fs::remove_all(dir, ec2);
+        folders_.erase(i.chat);
+      }
+    }
+    return ok;
+  }
+  void rescan() {
+    scanned_ = false;
+    scan();
+  }
+  static int64_t mtime(const fs::directory_entry& e) {
+    std::error_code ec;
+    const auto ft = e.last_write_time(ec);
+    return (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::clock_cast<std::chrono::system_clock>(ft).time_since_epoch()).count();
+  }
+  // the chat folders and the old uploads folder into by_id_ and folders_
   void scan() {
     if (scanned_) return;
     scanned_ = true;
+    by_id_.clear();
+    folders_.clear();
     std::error_code ec;
     for (auto it = fs::recursive_directory_iterator(up_, ec); !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+      if (it->is_directory() && it->path().filename().string().rfind(".", 0) == 0) { it.disable_recursion_pending(); continue; }
       if (!it->is_regular_file()) continue;
       const std::string fn = it->path().filename().string();
       if (fn.size() < 18 || fn[16] != '-' || !valid_id(fn.substr(0, 16))) continue;
-      Info i;
-      i.id = fn.substr(0, 16);
-      i.name = fn.substr(17);
-      i.kind = kind_of(i.name);
-      i.path = it->path().string();
-      i.bytes = (uint64_t)it->file_size(ec);
-      const auto ft = it->last_write_time(ec);
-      i.created = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
-                      std::chrono::clock_cast<std::chrono::system_clock>(ft).time_since_epoch()).count();
-      by_id_[i.id] = i;
+      Info i{fn.substr(0, 16), fn.substr(17), kind_of(fn.substr(17)), it->path().string(), (uint64_t)it->file_size(ec), mtime(*it), ""};
+      by_id_[i.id].push_back(i);
+    }
+    ec.clear();
+    for (const auto& d : fs::directory_iterator(chats_, ec)) {
+      if (!d.is_directory()) continue;
+      const std::string dn = d.path().filename().string();
+      const size_t o = dn.rfind('(');
+      if (dn.empty() || dn.back() != ')' || o == std::string::npos) continue;
+      const std::string chat = dn.substr(o + 1, dn.size() - o - 2);
+      if (!valid_id(chat) || folders_.count(chat)) continue;
+      folders_[chat] = d.path();
+      Json idx;
+      std::string t;
+      if (!read((d.path() / ".files.json").string(), t) || !Json::try_parse(t, idx) || !idx.is_object()) idx = Json::object();
+      std::map<std::string, std::pair<std::string, Json>> by_name;  // (name -> id, entry)
+      for (const auto& [id, e] : idx.entries()) by_name[e["name"].str()] = {id, e};
+      bool changed = false;
+      size_t found = 0;
+      std::error_code ec2;
+      for (const auto& f : fs::directory_iterator(d.path(), ec2)) {
+        const std::string fn = f.path().filename().string();
+        if (!f.is_regular_file() || fn.rfind(".", 0) == 0 || fn == "chat.json" || fn == "chat.json.tmp") continue;
+        const uint64_t bytes = (uint64_t)f.file_size(ec2);
+        Info i{"", fn, kind_of(fn), f.path().string(), bytes, mtime(f), chat};
+        auto b = by_name.find(fn);
+        if (b != by_name.end() && (uint64_t)b->second.second["bytes"].as_number(-1) == bytes && valid_id(b->second.first, 16)) {
+          i.id = b->second.first;
+          i.created = (int64_t)b->second.second["created"].as_number((double)i.created);
+        } else {  // (new or changed by hand: hashed now)
+          std::string data;
+          if (!read(i.path, data)) continue;
+          i.id = hash(data);
+          changed = true;
+        }
+        by_id_[i.id].push_back(i);
+        ++found;
+      }
+      if (changed || found != by_name.size()) save_index(d.path(), chat);  // (files added or deleted by hand)
     }
   }
   fs::path up_, chats_;
-  std::mutex mu_;
+  std::recursive_mutex mu_;
   bool scanned_ = false;
-  std::map<std::string, Info> by_id_;
+  std::map<std::string, std::vector<Info>> by_id_;  // (file id -> its copies, one per folder)
+  std::map<std::string, fs::path> folders_;         // (chat id -> its folder)
 };
 
 // one store for the whole server process (every loaded model's Server and the HTTP handler)

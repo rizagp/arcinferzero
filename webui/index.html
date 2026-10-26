@@ -162,6 +162,11 @@ details.think summary { cursor: pointer; }
 details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; overflow-y: auto; }
 .tool { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--think); border-radius: 5px; padding: 6px 8px; margin-top: 6px; white-space: pre-wrap; }
 .tool .st { color: var(--muted); }
+.tool pre.cmd { margin: 6px 0 0; padding: 6px 8px; background: var(--code); border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+.tool pre.out { margin: 4px 0 0; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.tool .ask { margin-top: 6px; display: flex; gap: 8px; align-items: center; font-family: inherit; }
+.tool .ask button { font: inherit; font-family: system-ui, sans-serif; padding: 4px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--input); color: inherit; cursor: pointer; }
+.tool .ask button.run { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .tool summary { cursor: pointer; color: var(--muted); }
 .tool a { color: var(--accent); text-decoration: none; }
 .tool a:hover { text-decoration: underline; }
@@ -266,6 +271,10 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <h3>Answers</h3>
           <div class="opt" id="thinkrow"><div class="lab">Thinking<small id="thinkhelp">The model reasons before it answers: better answers, more time</small></div>
             <select id="thinkmode" aria-label="Thinking"></select></div>
+          <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown) that appear in its answer</small></div>
+            <label class="switch"><input type="checkbox" id="ftools"><span></span></label></div>
+          <div class="opt"><div class="lab">Terminal<small>The model may run PowerShell commands on this computer, in the chat's folder (its files are there): ask each time, or run without asking</small></div>
+            <select id="term" aria-label="Terminal"><option value="off">Off</option><option value="ask">Ask each time</option><option value="auto">Run without asking</option></select></div>
           <div class="opt"><div class="lab">Web search<small>The model may search the web and read pages (web_search / web_fetch on this server)</small></div>
             <label class="switch"><input type="checkbox" id="web"><span></span></label></div>
         </div>
@@ -348,6 +357,8 @@ let prefs = store.get("arcinferzero-prefs", null) ?? store.get("arcinfer-prefs",
 if (prefs.think === undefined) prefs.think = prefs.thinking === false ? "off" : (prefs.effort || "xhigh");
 function loadPrefs() {
   $("web").checked = !!prefs.web;
+  $("ftools").checked = prefs.ftools !== false;  // (on unless turned off)
+  $("term").value = ["ask", "auto"].includes(prefs.term) ? prefs.term : "off";
   if (prefs.ttsrate) $("ttsrate").value = prefs.ttsrate;
   $("tempon").checked = !!prefs.tempon;
   if (prefs.temp !== undefined && prefs.tempon) $("temp").value = prefs.temp;
@@ -357,7 +368,7 @@ function loadPrefs() {
   applyTheme();
 }
 function savePrefs() {
-  prefs = { ...prefs, web: $("web").checked, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
+  prefs = { ...prefs, web: $("web").checked, ftools: $("ftools").checked, term: $("term").value, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
     temp: $("temp").value, sys: $("sys").value, tts: $("tts").value, theme: $("theme").value };
   if ($("thinkmode").value) prefs.think = $("thinkmode").value;
   store.set("arcinferzero-prefs", prefs);
@@ -367,7 +378,7 @@ function applyTheme() {
   else delete document.documentElement.dataset.theme;
 }
 loadPrefs();
-["web", "ttsrate", "temp", "sys", "tts", "thinkmode"].forEach((id) => $(id).addEventListener("change", savePrefs));
+["web", "ftools", "term", "ttsrate", "temp", "sys", "tts", "thinkmode"].forEach((id) => $(id).addEventListener("change", savePrefs));
 $("tempon").addEventListener("change", () => { $("temp").disabled = $("temp").hidden = !$("tempon").checked; savePrefs(); });
 $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
@@ -571,9 +582,10 @@ async function toWav16k(file) {
 function readDataURL(f) {
   return new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(f); });
 }
-// a file into the data folder's uploads (the same file is kept once): { id, filename, kind, bytes, url }
+// a file into this chat's folder (the same file is kept once): { id, filename, kind, bytes, url }
 async function upload(blob, name) {
   const fd = new FormData();
+  fd.append("chat_id", ensureConv());
   fd.append("file", blob, name);
   const res = await fetch("/v1/files", { method: "POST", body: fd });
   const j = await res.json().catch(() => ({}));
@@ -667,7 +679,7 @@ function compactable() {
   return history.length - 2 - lead;
 }
 function sysMessages() {
-  const s = [$("sys").value.trim(), TIME_SYSTEM, $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
+  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", $("term").value !== "off" ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -772,6 +784,59 @@ const WEB_TOOLS = [
 const WEB_SYSTEM = () => "You can look things up on the internet with the web_search and web_fetch tools. Today is " +
   new Date().toDateString() + ". When a question needs current or specific information, search, read the most relevant " +
   "pages, and answer from them, citing the URLs you used.";
+// ---- file tools (Files on): the saved files (uploads) for the model, run on the server (/v1/tools/list_files,
+// read_file, create_document; tools/server.cpp); a document it writes shows as a file card in its answer
+const FILE_TOOLS = [
+  { type: "function", function: { name: "list_files",
+    description: "List the user's saved files (uploaded in chats, or written with create_document): id, name, kind, size, " +
+      "upload time. Use it to find files the user refers to (e.g. 'the files I uploaded today').",
+    parameters: { type: "object", properties: {
+      scope: { type: "string", enum: ["all", "chat"], description: "chat: only the files of this conversation" },
+      kind: { type: "string", enum: ["image", "audio", "video", "document"] },
+      name_contains: { type: "string" },
+      within_hours: { type: "number", description: "only files uploaded in the last N hours" },
+      limit: { type: "integer" } } } } },
+  { type: "function", function: { name: "read_file",
+    description: "Read a saved file by its id. Text in parts of up to 12,000 characters: the result says the offset of the " +
+      "next part. A document you wrote returns its source (the create_document arguments). Images and audio: metadata only.",
+    parameters: { type: "object", properties: { file_id: { type: "string", description: "the id from list_files, or the file's name" }, offset: { type: "integer" } }, required: ["file_id"] } } },
+  { type: "function", function: { name: "create_document",
+    description: "Write a document file for the user: docx (Word), pdf, doc (Word 97-2003 compatible), rtf or md. It appears " +
+      "as a file card in your answer. content is Markdown: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, " +
+      "==highlight==, <span style=\"color:#C00000; background:#FFF2CC; font-size:14pt\">..</span>, lists, tables " +
+      "(an alignment row :--- / :---: / ---:), ``` code, --- rule, '::: center' (or right, justify) ... ':::' blocks, " +
+      "\\pagebreak. To correct a document, read_file it and call this again with the changes (a new version).",
+    parameters: { type: "object", properties: {
+      filename: { type: "string" }, format: { type: "string", enum: ["docx", "pdf", "doc", "rtf", "md"] },
+      content: { type: "string", description: "the document body in Markdown" },
+      title: { type: "string" }, subtitle: { type: "string" }, author: { type: "string" }, date: { type: "string" },
+      page: { type: "string", enum: ["A4", "Letter", "Legal", "A5"] }, orientation: { type: "string", enum: ["portrait", "landscape"] },
+      margins_mm: { type: "number" }, font: { type: "string", description: "e.g. Calibri, Arial, Times New Roman, Georgia" },
+      font_size: { type: "number" }, line_spacing: { type: "number", description: "1.0 - 2.0" },
+      heading_color: { type: "string", description: "#RRGGBB" }, accent_color: { type: "string", description: "table header fill, #RRGGBB" },
+      text_color: { type: "string" }, header: { type: "string" }, footer: { type: "string" }, page_numbers: { type: "boolean" } },
+      required: ["format", "content"] } } }];
+const FILE_SYSTEM = "You can work with the user's saved files: list_files (what is saved, with upload times), read_file (one " +
+  "file; long ones in parts), create_document (write a DOCX / PDF / DOC / RTF / MD file the user downloads from your " +
+  "answer). To read several or all files the user means, call list_files, then read_file for each. To change a document " +
+  "you wrote, read_file it (you get its source) and call create_document again with the corrections. Never say a file was " +
+  "written or changed without calling the tool.";
+// ---- terminal (Settings > Terminal): one PowerShell command in the chat's folder, on this computer only
+// (/v1/tools/run_command, tools/server_terminal.h); "ask": the command waits in its card for Run / Don't run
+const TERM_TOOLS = [
+  { type: "function", function: { name: "run_command",
+    description: "Run one PowerShell command on the user's Windows computer, in this chat's folder (the chat's uploaded " +
+      "files and the documents you wrote are there under their names). For what the other tools cannot do: inspect or " +
+      "convert files, count, compute, run programs such as python or the arcinferzero tools (runz, serverz). The user may " +
+      "have to allow each command. Output (stdout and stderr) up to 64 KB; timeout 120 s unless timeout_s (up to 600).",
+    parameters: { type: "object", properties: {
+      command: { type: "string", description: "PowerShell; several lines are fine" },
+      timeout_s: { type: "integer" } }, required: ["command"] } } }];
+const TERM_SYSTEM = "You can run PowerShell commands on the user's Windows computer with run_command; they run in this " +
+  "chat's folder, next to its files. Use the file tools to read and write documents, the terminal for the rest. Before a " +
+  "command that changes or deletes anything, say what it will do. Never touch anything outside this folder unless the " +
+  "user asked for it. If the user does not allow a command, do not try it again in another form: ask what they want.";
+const toolsOn = () => $("web").checked || $("ftools").checked || $("term").value !== "off";
 const MAX_ROUNDS = 8;
 // While talking (F24.5), the tools run in the background: a call gets an immediate answer ("search #n started"), the
 // AI says it is looking, and the conversation goes on; when results arrive they come as a message of their own and
@@ -797,6 +862,18 @@ function bgDeliver() {
   }
 }
 
+// a document the model wrote, in its tool card: the file's card, to open or download
+function toolCardFile(d, f) {
+  const box = document.createElement("div"), url = "/files/" + f.file_id;
+  box.style.marginTop = "6px";
+  box.appendChild(mediaEl({ kind: f.kind || kindOf(f.filename), url, name: f.filename, bytes: f.bytes }, f.filename));
+  const dl = document.createElement("a");
+  dl.href = url + "?download=1";
+  dl.textContent = " download";
+  dl.style.marginLeft = "8px";
+  box.appendChild(dl);
+  d.appendChild(box);
+}
 function toolCard(el) {
   const d = document.createElement("div");
   d.className = "tool";
@@ -813,16 +890,18 @@ function toolCard(el) {
       det.append(document.createElement("br"), a);
     }
     d.appendChild(det);
-  } };
+  }, file: (f) => toolCardFile(d, f), el: d };
 }
 // one call: its card shows what runs and the outcome; returns the text the model gets as the tool's result
 async function runTool(call, card, signal) {
   const name = call.function.name;
   let args;
   try { args = JSON.parse(call.function.arguments || "{}"); } catch (e) { args = null; }
-  card.head.textContent = name + " " + (args ? (args.query ?? args.url ?? "") + (args.offset ? " @" + args.offset : "") : call.function.arguments);
-  if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
+  card.head.textContent = args ? toolLabel(name, args) : name + " " + call.function.arguments;
   if (!args) { card.status.textContent = "invalid arguments"; return "error: the arguments are not valid JSON"; }
+  if (name === "list_files" || name === "read_file" || name === "create_document") return runFileTool(name, args, card, signal);
+  if (name === "run_command") return runTermTool(args, card, signal);
+  if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
   const body = name === "web_search" ? { query: String(args.query ?? ""), max_results: 6 }
     : { url: String(args.url ?? ""), offset: Math.max(0, parseInt(args.offset, 10) || 0), max_chars: 12000 };
@@ -844,6 +923,96 @@ async function runTool(call, card, signal) {
     (j.next_offset ? "\n\n[the page goes on: call web_fetch with offset " + j.next_offset + " to read more]" : "");
 }
 
+// Run / Don't run under the command in its card (a stop counts as Don't run)
+function askRun(d, signal) {
+  return new Promise((done) => {
+    const box = document.createElement("div");
+    box.className = "ask";
+    box.innerHTML = '<button class="run">Run</button><button class="no">Don\'t run</button>';
+    const end = (ok) => { box.remove(); signal?.removeEventListener("abort", stop); done(ok); };
+    const stop = () => end(false);
+    box.querySelector(".run").onclick = () => end(true);
+    box.querySelector(".no").onclick = () => end(false);
+    signal?.addEventListener("abort", stop);
+    d.appendChild(box);
+    scroll();
+    box.querySelector(".run").focus();
+  });
+}
+function termCmd(d, cmd) {
+  const pre = document.createElement("pre");
+  pre.className = "cmd";
+  pre.textContent = cmd;
+  d.appendChild(pre);
+}
+function termResult(d, j) {
+  d.querySelector(".st").textContent = "· exit " + j.exit_code + (j.timed_out ? ", timed out" : "") +
+    (j.seconds != null ? " · " + Number(j.seconds).toFixed(1) + " s" : "");
+  if (!j.output) return;
+  const det = document.createElement("details"), out = document.createElement("pre");
+  det.innerHTML = "<summary>output</summary>";
+  out.className = "out";
+  out.textContent = j.output;
+  det.appendChild(out);
+  d.appendChild(det);
+}
+async function runTermTool(args, card, signal) {
+  const cmd = String(args.command ?? "").trim();
+  if (!cmd) { card.status.textContent = "· no command"; return "error: command is empty"; }
+  termCmd(card.el, cmd);
+  if ($("term").value === "off") { card.status.textContent = "· terminal is off"; return "error: the terminal is turned off in the settings"; }
+  if ($("term").value !== "auto") {
+    card.status.textContent = "· waiting for you";
+    if (!(await askRun(card.el, signal))) {
+      card.status.textContent = "· not run";
+      return "error: the user did not allow this command";
+    }
+  }
+  card.status.textContent = "· running…";
+  const res = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command: cmd, chat_id: ensureConv(), timeout_s: args.timeout_s }), signal });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const m = j.error?.message || "HTTP " + res.status;
+    card.status.textContent = "· failed: " + m;
+    return "error: " + m;
+  }
+  termResult(card.el, j);
+  if ($("filespanel").classList.contains("open")) loadFiles();
+  return JSON.stringify({ exit_code: j.exit_code, timed_out: j.timed_out, truncated: j.truncated, seconds: Math.round(j.seconds * 10) / 10, output: j.output });
+}
+
+// a call's line in its card: the tool and what it works on
+function toolLabel(name, args) {
+  if (name === "create_document") return name + " " + (args.filename || args.title || "") + "." + (args.format || "docx");
+  if (name === "read_file") return name + " " + args.file_id + (args.offset ? " @" + args.offset : "");
+  if (name === "list_files") return name + " " + [args.kind, args.name_contains, args.within_hours ? args.within_hours + " h" : "", args.scope].filter(Boolean).join(" ");
+  if (name === "run_command") return name;
+  return name + " " + (args.query ?? args.url ?? "") + (args.offset ? " @" + args.offset : "");
+}
+async function runFileTool(name, args, card, signal) {
+  const body = { ...args };
+  if (name === "list_files") { if (args.scope === "chat") body.chat_id = convId || "-"; delete body.scope; }
+  if (name === "create_document") body.chat_id = ensureConv();  // (into this chat's folder)
+  if (name === "read_file" && convId) body.chat_id = convId;    // (a name: this chat's file of that name first)
+  card.head.textContent = toolLabel(name, args);
+  card.status.textContent = name === "create_document" ? "· writing…" : name === "read_file" ? "· reading…" : "· listing…";
+  const res = await fetch("/v1/tools/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const m = j.error?.message || "HTTP " + res.status;
+    card.status.textContent = "· failed: " + m;
+    return "error: " + m;
+  }
+  if (name === "create_document") {
+    card.status.textContent = "· " + kb(j.bytes || 0);
+    card.file(j);
+    if ($("filespanel").classList.contains("open")) loadFiles();
+  } else if (name === "list_files") card.status.textContent = "· " + (j.count || 0) + " files";
+  else card.status.textContent = "· " + (j.filename || "") + (j.total_chars ? " (" + k1(Math.min(j.total_chars, (j.offset || 0) + (j.content || "").length)) + " of " + k1(j.total_chars) + " characters)" : j.source ? " (source)" : "");
+  return JSON.stringify(j);
+}
+
 // one model turn into the assistant element el, filling st { reasoning, answer, toolCalls, timings } as it streams
 // (so a stop keeps what came); onOverflow: when the server says the prompt does not fit, compact and try once more.
 // No max_tokens: the answer may use the rest of the context (the server's reasoning budget bounds the thinking), and
@@ -859,7 +1028,7 @@ async function streamTurn(el, st, onOverflow) {
       chat_template_kwargs: { enable_thinking: think.on } };
     if (think.effort && !(modelId !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
-    if ($("web").checked) body.tools = WEB_TOOLS;
+    if (toolsOn()) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...($("term").value !== "off" ? TERM_TOOLS : [])];
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
     if (res.ok) break;
     const t = await res.text();
@@ -974,7 +1143,7 @@ async function send() {
       if (gone()) throw new DOMException("stopped", "AbortError");
       turnStats(el, st);
       if (switching && round === 0) refreshModel();  // (the server switched: its context and controls)
-      if (!st.toolCalls.length || !$("web").checked || round + 1 >= MAX_ROUNDS) break;
+      if (!st.toolCalls.length || !toolsOn() || round + 1 >= MAX_ROUNDS) break;
       const calls = st.toolCalls.map((c, i) => ({ ...c, id: c.id || "call_" + round + "_" + i }));
       const msg = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, tool_calls: calls, at: Date.now() };
       history.push(msg);
@@ -1073,10 +1242,15 @@ function snippetOf(h) {
   const m = [...h].reverse().find((x) => (x.role === "assistant" || x.role === "user") && textOf(x.content).trim());
   return m ? (m.role === "user" ? "You: " : "") + textOf(m.content).replace(/```[\w+#.-]*|[*_#`>]+/g, "").replace(/\s+/g, " ").trim().slice(0, 120) : "";
 }
+// this chat's id, made at its first file or save (its folder on the server: chats\<date> <title> (<id>))
+function ensureConv() {
+  if (!convId) convId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  return convId;
+}
 let saving = Promise.resolve();
 function saveConv(force) {
   if (!history.length && !(force && convId)) return saving;
-  if (!convId) convId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  ensureConv();
   const c = { id: convId, title: titleOf(history), at: Date.now(), model: modelId, snippet: snippetOf(history), history };
   const body = JSON.stringify(c);
   convs = [{ id: c.id, title: c.title, at: c.at, model: c.model, snippet: c.snippet }, ...convs.filter((x) => x.id !== c.id)];
@@ -1195,11 +1369,24 @@ async function openConv(id) {
       el.querySelector(".progress")?.remove();
       if (m.reasoning_content) { const t = el.querySelector(".think"); t.hidden = false; t.querySelector("div").textContent = m.reasoning_content; }
       el.querySelector(".content").innerHTML = markdown(String(m.content || ""));
-      for (const tc of m.tool_calls || []) toolCard(el).head.textContent = tc.function.name + " " + tc.function.arguments;
+      for (const tc of m.tool_calls || []) {
+        const c = toolCard(el);
+        let a = null;
+        try { a = JSON.parse(tc.function.arguments || "{}"); } catch (e) {}
+        c.head.textContent = a ? toolLabel(tc.function.name, a) : tc.function.name + " " + tc.function.arguments;
+        if (tc.function.name === "run_command" && a) termCmd(c.el, String(a.command ?? ""));
+      }
     } else if (m.role === "tool" && el) {
       // (each result marks its own call's card: the first one still without a status)
       const card = [...el.querySelectorAll(".tools .tool")].find((d) => !d.querySelector(".st").textContent);
-      if (card) card.querySelector(".st").textContent = "· done";
+      if (card) {
+        card.querySelector(".st").textContent = "· done";
+        let j = null;
+        try { j = JSON.parse(m.content); } catch (e) {}
+        if (j && j.object === "file" && j.file_id) toolCardFile(card, j);  // (create_document's result: its file card)
+        else if (j && j.exit_code !== undefined) termResult(card, j);    // (run_command's: its exit code and output)
+        else if (/^error: the user did not allow/.test(m.content)) card.querySelector(".st").textContent = "· not run";
+      }
     }
   }
   if (!history.length) showEmpty("New conversation");
@@ -1301,7 +1488,8 @@ async function clearData(files) {
   if (!confirm("Delete " + what + "? This cannot be undone.")) return;
   try {
     const r = await (await fetch("/v1/chats" + (files ? "?files=1" : ""), { method: "DELETE" })).json();
-    note("deleted " + r.chats_deleted + " chats" + (files ? " and " + r.files_deleted + " files (" + kb(r.freed_bytes || 0) + ")" : ""));
+    const n = (k, w) => k + " " + w + (k === 1 ? "" : "s");
+    note("deleted " + n(r.chats_deleted, "chat") + (files ? " and " + n(r.files_deleted, "file") + " (" + kb(r.freed_bytes || 0) + ")" : ""));
   } catch (e) { note("clearing failed: " + (e.message || e)); }
   convs = [];
   newChat();

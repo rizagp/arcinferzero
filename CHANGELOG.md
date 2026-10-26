@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-10-26: web UI documents, one folder per chat, terminal tool
+
+- **One folder per chat** (tools/server_files.h): `chats\<date> <first words> (<id>)\` with `chat.json` and the
+  chat's files under their own names (a name taken: `name (2).ext`), `.files.json` (id, name, time) and `.src\` (the
+  sources of the documents the model wrote). The folder gets its name at the chat's first save. A file attached from
+  another chat (@) becomes a hard link, so its bytes are kept once; deleting a chat deletes its folder (a file another
+  chat holds stays there); files put into a folder or deleted by hand show up in the Files panel at its next listing.
+  Uploads take a `chat_id` (form field or query). The first version's `uploads\` and `chats\<id>.json` are still read.
+- **Documents the model writes** (tools/doc_writer.h, `POST /v1/tools/create_document`): DOCX (every part in the
+  schema's element order, checked in Word: no repair prompt), PDF 1.4 (standard fonts, real text, justified lines,
+  tables that continue on the next page with their header row, page numbers), DOC (RTF, which Word opens as a
+  document), RTF and Markdown, from Markdown with inline HTML for underline, colors and sizes. Options: page size and
+  orientation, margins, font, size, line spacing, heading / table / text colors, header, footer, page numbers. The
+  file shows as a card in the answer. `POST /v1/tools/list_files` and `/v1/tools/read_file` (a text file in parts; a
+  document the model wrote: its source, so a correction makes a new version; a file's name works as well as its id).
+  The **Files** setting (on) gives the model the three tools.
+- **Terminal tool** (tools/server_terminal.h, `POST /v1/tools/run_command`): one PowerShell command in the chat's
+  folder, with arcinferzero's folder on PATH, 2 minutes by default (up to 10), ended with every process it started
+  (a job object), output up to 64 KB (the start and the end of a longer one). The **Terminal** setting: off (default)
+  / ask each time (Run / Don't run in the command's card) / run without asking. Refused to every connection that does
+  not come from this computer (`--host` too), to foreign pages (Origin check), and with `--no-terminal`.
+- Per-message **Edit** and **Delete** (with the message's files), and **Data** in the settings (clear the chats, or
+  the chats and files). Saved chats show their tool cards again (documents as file cards, commands with their output).
+- Checks: `tests/test_chat_store.cpp` (28 checks: folders, renames, hard links, files changed by hand, deleting; the
+  terminal's output, exit code, timeout and long output), in `tests/run_tests.ps1`; `tools/doc_test.cpp` writes a
+  sample in every format. Tried with Qwen3.5 4B in the web UI: notes to DOCX, a corrected version (Arial, dark red
+  headings; Word opens it), a command allowed and one refused (the model asked instead of trying again), @ a file into
+  a new chat, the old chat deleted.
+
 ## 2026-10-25: the NPU next to the GPU (`--npu on`); Flint support removed; the model list without duplicates
 
 - **Web UI rebuilt, laid out like WhatsApp Web**: the chats kept in the browser (searchable), the model picker in the
