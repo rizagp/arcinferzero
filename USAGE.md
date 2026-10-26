@@ -260,8 +260,12 @@ While the server is running:
   network). Other clients can use the same endpoints: `POST /v1/tools/web_search` with `{"query": "..."}` and
   `POST /v1/tools/web_fetch` with `{"url": "...", "offset": 0}`. `--no-web-tools` turns them off.
 - **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
-  (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: text in parts of 12K characters;
-  "read all the files I uploaded today" works) and write documents (`create_document`): **DOCX** (opens in Word without
+  (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, text, Markdown, CSV;
+  "read all the files I uploaded today" works) and write documents (`create_document`). A **long document** (more
+  than ~6K tokens, e.g. a report of 100+ pages) is not put into the prompt whole, which would take minutes: the model
+  gets its outline (chapters with pages) and reads the chapters or pages the question needs, or searches it
+  (`search_file`: the passages with the question's words, with their pages), and says where its answer comes from.
+  Scanned PDFs (images without text) need OCR, which is not there yet. Documents it writes: **DOCX** (opens in Word without
   repair), **PDF**, **DOC** (Word 97-2003 compatible, written as RTF, which Word opens as a document), RTF or Markdown,
   from Markdown with headings, bold / italic / underline / strike / highlight, colors and font sizes, lists, tables
   (column alignment, a header row repeated on each page), code, rules, centered or justified blocks and page breaks;

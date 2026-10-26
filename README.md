@@ -351,7 +351,8 @@ test uses port 8091 and needs the GPU memory.
 
 - Web UI: http://127.0.0.1:8080/, laid out like WhatsApp Web: the chats kept in the browser, the model picker in the
   chat header, chat with images, audio and files (one folder per chat), voice messages, **Talk** (a spoken
-  conversation), web search, documents the model writes (DOCX / PDF / DOC / RTF, corrected on request), a terminal the
+  conversation), web search, documents the model writes (DOCX / PDF / DOC / RTF, corrected on request) and reads (long DOCX / PDF through
+  their outline and a search, not a prompt of the whole file), a terminal the
   model may use after you allow each command, context use and compaction; the settings behind the gear. Details:
   [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
 - OpenAI API: `POST /v1/chat/completions` (streaming, `reasoning_content`, tool calls streamed while they are
@@ -642,7 +643,8 @@ zero/       the engine: engine.h (setup, memory, slots, sessions, dispatch) with
 tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cache.h / server_chat.h /
             server_catalog.h / server_load.h, api_compat.h (Anthropic / Ollama / Responses formats), web_tools.h (web
             search / page fetch), server_files.h (the web UI's chat folders), doc_writer.h (DOCX / PDF / RTF
-            from Markdown), server_terminal.h (the terminal tool), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
+            from Markdown), doc_reader.h + inflate.h (reading DOCX / PDF: outline, BM25 search),
+            server_terminal.h (the terminal tool), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
             Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.py (ISTA GSQ checkpoint -> GGUF),
             tok_test.cpp, chat_render.cpp, gguf_dump.cpp, clinfo.cpp
 bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, peak_bench, ...), run_bench.ps1

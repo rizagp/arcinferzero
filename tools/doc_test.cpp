@@ -45,7 +45,7 @@ Paragraf ini rata kiri-kanan dan cukup panjang untuk memenuhi beberapa baris, se
 Perintah yang dipakai: `arc-transcribe rapat.m4a --format docx`
 
 ```
-arc-transcribe rapat.m4a --lang id --beam 5 --words --format docx,pdf,srt --out C:\Users\rizag\arcinferzero\transcripts\rapat-26-okt
+arc-transcribe rapat.m4a --lang id --beam 5 --words --format docx,pdf,srt --out %USERPROFILE%\arcinferzero\transcripts\rapat-26-okt
 ```
 
 \pagebreak

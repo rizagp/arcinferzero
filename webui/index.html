@@ -797,9 +797,22 @@ const FILE_TOOLS = [
       within_hours: { type: "number", description: "only files uploaded in the last N hours" },
       limit: { type: "integer" } } } } },
   { type: "function", function: { name: "read_file",
-    description: "Read a saved file by its id. Text in parts of up to 12,000 characters: the result says the offset of the " +
-      "next part. A document you wrote returns its source (the create_document arguments). Images and audio: metadata only.",
-    parameters: { type: "object", properties: { file_id: { type: "string", description: "the id from list_files, or the file's name" }, offset: { type: "integer" } }, required: ["file_id"] } } },
+    description: "Read a saved file (DOCX, PDF, text, Markdown, CSV ...) by its id. A long document first gives its outline " +
+      "(numbered sections with pages and sizes): then read only the sections or pages the question needs. Text comes in " +
+      "parts of up to 12,000 characters (next_offset reads on). A document you wrote returns its source (the " +
+      "create_document arguments). Images and audio: metadata only.",
+    parameters: { type: "object", properties: {
+      file_id: { type: "string", description: "the id from list_files, or the file's name" },
+      section: { type: "integer", description: "a section number from the outline" },
+      pages: { type: "string", description: "e.g. \"12\" or \"12-15\"" },
+      offset: { type: "integer", description: "0 reads the whole text from the start, in parts" } }, required: ["file_id"] } } },
+  { type: "function", function: { name: "search_file",
+    description: "Find the passages of a long document that answer a question (word search, BM25): the best passages with " +
+      "their section and pages. Without file_id it searches every document of this chat. Use the document's own words " +
+      "(names, terms, numbers); search again with other words when nothing fits.",
+    parameters: { type: "object", properties: {
+      query: { type: "string", description: "keywords, e.g. \"anggaran pemasaran 2026\"" },
+      file_id: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
   { type: "function", function: { name: "create_document",
     description: "Write a document file for the user: docx (Word), pdf, doc (Word 97-2003 compatible), rtf or md. It appears " +
       "as a file card in your answer. content is Markdown: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, " +
@@ -817,10 +830,14 @@ const FILE_TOOLS = [
       text_color: { type: "string" }, header: { type: "string" }, footer: { type: "string" }, page_numbers: { type: "boolean" } },
       required: ["format", "content"] } } }];
 const FILE_SYSTEM = "You can work with the user's saved files: list_files (what is saved, with upload times), read_file (one " +
-  "file; long ones in parts), create_document (write a DOCX / PDF / DOC / RTF / MD file the user downloads from your " +
-  "answer). To read several or all files the user means, call list_files, then read_file for each. To change a document " +
-  "you wrote, read_file it (you get its source) and call create_document again with the corrections. Never say a file was " +
-  "written or changed without calling the tool.";
+  "file; a long document gives its outline, then read the sections or pages you need), search_file (the passages of a " +
+  "long document that fit a question: facts, names, numbers), create_document (write a DOCX / PDF / DOC / RTF / MD file the user downloads from " +
+  "your answer). For a fact in a long document, search_file; to summarize or explain a chapter or section, read_file it by " +
+  "its section number from the outline (it comes with its subsections). Do not read a long document all " +
+  "unless the user asks for the whole of it (a summary of everything: section by section). Say which section or page an " +
+  "answer comes from. To read several or all files the user means, call list_files, then read_file for each. To change a " +
+  "document you wrote, read_file it (you get its source) and call create_document again with the corrections. Never say " +
+  "a file was written or changed without calling the tool, and never make up what a document says.";
 // ---- terminal (Settings > Terminal): one PowerShell command in the chat's folder, on this computer only
 // (/v1/tools/run_command, tools/server_terminal.h); "ask": the command waits in its card for Run / Don't run
 const TERM_TOOLS = [
@@ -899,7 +916,7 @@ async function runTool(call, card, signal) {
   try { args = JSON.parse(call.function.arguments || "{}"); } catch (e) { args = null; }
   card.head.textContent = args ? toolLabel(name, args) : name + " " + call.function.arguments;
   if (!args) { card.status.textContent = "invalid arguments"; return "error: the arguments are not valid JSON"; }
-  if (name === "list_files" || name === "read_file" || name === "create_document") return runFileTool(name, args, card, signal);
+  if (name === "list_files" || name === "read_file" || name === "search_file" || name === "create_document") return runFileTool(name, args, card, signal);
   if (name === "run_command") return runTermTool(args, card, signal);
   if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
@@ -985,7 +1002,8 @@ async function runTermTool(args, card, signal) {
 // a call's line in its card: the tool and what it works on
 function toolLabel(name, args) {
   if (name === "create_document") return name + " " + (args.filename || args.title || "") + "." + (args.format || "docx");
-  if (name === "read_file") return name + " " + args.file_id + (args.offset ? " @" + args.offset : "");
+  if (name === "read_file") return name + " " + args.file_id + (args.section ? " § " + args.section : args.pages ? " p. " + args.pages : args.offset ? " @" + args.offset : "");
+  if (name === "search_file") return name + " \u201c" + (args.query || "") + "\u201d" + (args.file_id ? " in " + args.file_id : "");
   if (name === "list_files") return name + " " + [args.kind, args.name_contains, args.within_hours ? args.within_hours + " h" : "", args.scope].filter(Boolean).join(" ");
   if (name === "run_command") return name;
   return name + " " + (args.query ?? args.url ?? "") + (args.offset ? " @" + args.offset : "");
@@ -994,7 +1012,7 @@ async function runFileTool(name, args, card, signal) {
   const body = { ...args };
   if (name === "list_files") { if (args.scope === "chat") body.chat_id = convId || "-"; delete body.scope; }
   if (name === "create_document") body.chat_id = ensureConv();  // (into this chat's folder)
-  if (name === "read_file" && convId) body.chat_id = convId;    // (a name: this chat's file of that name first)
+  if ((name === "read_file" || name === "search_file") && convId) body.chat_id = convId;  // (a name: this chat's file first; no file: this chat's documents)
   card.head.textContent = toolLabel(name, args);
   card.status.textContent = name === "create_document" ? "· writing…" : name === "read_file" ? "· reading…" : "· listing…";
   const res = await fetch("/v1/tools/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
@@ -1009,7 +1027,10 @@ async function runFileTool(name, args, card, signal) {
     card.file(j);
     if ($("filespanel").classList.contains("open")) loadFiles();
   } else if (name === "list_files") card.status.textContent = "· " + (j.count || 0) + " files";
-  else card.status.textContent = "· " + (j.filename || "") + (j.total_chars ? " (" + k1(Math.min(j.total_chars, (j.offset || 0) + (j.content || "").length)) + " of " + k1(j.total_chars) + " characters)" : j.source ? " (source)" : "");
+  else if (name === "search_file") card.status.textContent = "· " + (j.results || []).length + " passages" +
+    ((j.results || []).length ? " (" + [...new Set(j.results.map((x) => x.pages ? "p. " + x.pages : "§ " + x.section))].slice(0, 4).join(", ") + ")" : "");
+  else card.status.textContent = "· " + (j.filename || "") + (j.outline ? " (outline: " + j.outline.length + " sections, ~" + k1(j.total_tokens) + " tokens)"
+    : j.title ? " (" + j.title + ")" : j.total_chars ? " (" + k1(Math.min(j.total_chars, (j.offset || 0) + (j.content || "").length)) + " of " + k1(j.total_chars) + " characters)" : j.source ? " (source)" : "");
   return JSON.stringify(j);
 }
 

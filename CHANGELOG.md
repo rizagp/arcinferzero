@@ -17,6 +17,27 @@
   phase (a 14-minute 48-kHz MP3: 21.4 s -> 1.6 s; bit-identical samples). Checked: MP3 and M4A through
   `arc-transcribe` and `/v1/audio/transcriptions`.
 
+## 2026-10-26: long DOCX / PDF without a long prompt
+
+- **Uploaded DOCX and PDF are read** (tools/doc_reader.h, tools/inflate.h: DEFLATE, ZIP, a PDF object and content
+  stream reader, no libraries): paragraphs with their page and heading level. DOCX: headings from the styles
+  ("heading N", outline levels), tables as `a | b | c` rows, lists, pages from Word's page breaks or, when it marked
+  few, from `docProps/app.xml` spread over the text. PDF: fonts with ToUnicode maps, simple encodings and their
+  Differences, glyph widths for the spaces, form XObjects, object streams; lines grouped into paragraphs by their
+  spacing, headings by font size and by short bold lines, table rows by column gaps, running headers and footers
+  (the same line on most pages) left out; a scan without a text layer, an encrypted PDF or a binary .doc gets a note
+  instead. A 227-page PDF reads in 0.25 s, the same document as DOCX in 0.04 s.
+- **A long document is not put into the prompt whole**: above ~6K tokens the model gets its outline (the top heading
+  levels, at most ~60-120 sections, with pages and sizes) and its beginning, and reads what the question needs:
+  `read_file` with `section` (a chapter with its subsections) or `pages`, or the new `search_file` (BM25 over chunks
+  of ~2,400 characters within sections; Indonesian particles -nya / -lah / -kah / -pun folded, words of 5+ letters
+  also find longer words; one document or every document of the chat), each passage with its section and pages.
+  Tried with Qwen3.5 4B on a 227-page PDF (~219K tokens whole): the question about a fact on page 151 took a 6,357-token
+  prompt (8.1 s) and one search, and the answer named the page; a chapter summary came from its pages 8-10.
+- Checks: `tests/test_doc_read.cpp` (inflate, Word-made DOCX and PDF fixtures in `tests/data/`, doc_writer output,
+  search, damaged and hostile files: delimiter runs, self-referencing forms, a 512 MB decode budget per PDF), in
+  `tests/run_tests.ps1`, CI and setup. `test_doc_read FILE [QUERY]` shows any document's outline or search hits.
+
 ## 2026-10-26: web UI documents, one folder per chat, terminal tool
 
 - **One folder per chat** (tools/server_files.h): `chats\<date> <first words> (<id>)\` with `chat.json` and the

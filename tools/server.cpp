@@ -746,8 +746,11 @@ class Server {
 //                    heading_color, accent_color, text_color, header, footer, page_numbers, chat_id}: writes the file
 //                    into the chat's folder (and its source next to it), returns it as a file
 //   list_files {kind, name_contains, within_hours, chat_id, limit}: the saved files, newest first, with their metadata
-//   read_file {file_id (or its name), offset, max_chars, chat_id}: a text file's content in parts; a document the model wrote: its source
-//                    (to make a corrected version); an image / audio / other binary file: its metadata
+//   read_file {file_id (or its name), section, pages, offset, max_chars, chat_id}: a document's text (DOCX, PDF and
+//                    text files, tools/doc_reader.h) in parts; a long one without section / pages / offset: its outline;
+//                    a document the model wrote: its source (to make a corrected version); images, audio: metadata
+//   search_file {query, file_id, chat_id, top_k}: the passages of a document (or of every document of the chat)
+//                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
 //   run_command {command, chat_id, timeout_s}: one PowerShell command in the chat's folder (tools/server_terminal.h),
 //                    sent by the page only after the user allowed it; refused (403) to any computer but this one
 static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
@@ -841,24 +844,81 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
       r.set("count", (double)d.size());
       return reply(200, r);
     }
-    if (rq.path == "/v1/tools/read_file") {
+    // the call's file: by its id, or by its name (models often pass the name they see: the newest file of that
+    // name, this chat's first)
+    auto find_file = [&](files::Info& i) {
       std::string id = a["file_id"].str();
       if (id.rfind("file-", 0) == 0) id = id.substr(5);
       if (id.rfind("/files/", 0) == 0) id = id.substr(7);
-      files::Info i;
-      if (!files::valid_id(id, 16) || !st.get(id, i)) {
-        // (models often pass the name they see: the newest file of that name, this chat's first)
-        const std::string want = files::lower(a["file_id"].str()), chat = a["chat_id"].str();
-        bool found = false;
-        for (const files::Info& x : st.list()) {
-          if (files::lower(x.name) != want) continue;
-          const auto held = st.holders(x.id);
-          const bool here = std::find(held.begin(), held.end(), chat) != held.end();
-          if (!found || here) { i = x; found = true; }
-          if (here) break;
-        }
-        if (!found) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+      if (files::valid_id(id, 16) && st.get(id, i)) return true;
+      const std::string want = files::lower(a["file_id"].str()), chat = a["chat_id"].str();
+      bool found = false;
+      for (const files::Info& x : st.list()) {
+        if (files::lower(x.name) != want) continue;
+        const auto held = st.holders(x.id);
+        const bool here = std::find(held.begin(), held.end(), chat) != held.end();
+        if (!found || here) { i = x; found = true; }
+        if (here) break;
       }
+      return found;
+    };
+    if (rq.path == "/v1/tools/search_file") {
+      const std::string query = a["query"].str();
+      if (query.empty()) return fail(400, "query required");
+      const size_t top = (size_t)std::clamp(a["top_k"].as_number(5), 1.0, 10.0);
+      std::vector<files::Info> targets;
+      if (!a["file_id"].str().empty()) {
+        files::Info i;
+        if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+        targets.push_back(i);
+      } else if (files::valid_id(a["chat_id"].str())) {  // (every document of this chat)
+        const std::string chat = a["chat_id"].str();
+        const auto uses = st.uses();
+        for (const files::Info& i : st.list()) {
+          if (i.kind != "document") continue;
+          const auto held = st.holders(i.id);
+          auto u = uses.find(i.id);
+          if (std::find(held.begin(), held.end(), chat) != held.end() ||
+              (u != uses.end() && std::find(u->second.begin(), u->second.end(), chat) != u->second.end()))
+            targets.push_back(i);
+        }
+      } else return fail(400, "file_id (or chat_id: every document of the chat) required");
+      struct Found { double score; size_t file, chunk; };
+      std::vector<Found> all;
+      std::vector<std::shared_ptr<const rdoc::Index>> ixs;
+      for (size_t f = 0; f < targets.size(); ++f) {
+        ixs.push_back(files::doc_index(targets[f]));
+        if (!ixs.back()) continue;
+        for (const auto& h : ixs.back()->search(query, top)) all.push_back({h.score, f, h.chunk});
+      }
+      std::sort(all.begin(), all.end(), [](const Found& x, const Found& y) { return x.score > y.score; });
+      if (all.size() > top) all.resize(top);
+      Json res = Json::array();
+      for (const Found& h : all) {
+        const rdoc::Index& ix = *ixs[h.file];
+        const rdoc::Chunk& c = ix.chunks[h.chunk];
+        Json j = Json::object();
+        j.set("file_id", targets[h.file].id);
+        j.set("filename", targets[h.file].name);
+        j.set("section", (double)(c.section + 1));
+        j.set("section_title", ix.outline[(size_t)c.section].title);
+        if (ix.doc.pages > 1) j.set("pages", c.page_from == c.page_to ? std::to_string(c.page_from) : std::to_string(c.page_from) + "-" + std::to_string(c.page_to));
+        char sc[16];
+        snprintf(sc, sizeof sc, "%.1f", h.score);
+        j.set("score", std::string(sc));
+        j.set("text", c.text);
+        res.push(j);
+      }
+      Json r = Json::object();
+      r.set("results", res);
+      r.set("files_searched", (double)targets.size());
+      if (res.size() == 0)
+        r.set("note", "no passage has these words: try other words (the document's own terms, synonyms), or read the outline (read_file)");
+      return reply(200, r);
+    }
+    if (rq.path == "/v1/tools/read_file") {
+      files::Info i;
+      if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
       Json r = Json::object();
       r.set("file_id", i.id);
       r.set("filename", i.name);
@@ -872,15 +932,63 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
         r.set("note", "a document written with create_document: 'source' holds its arguments; to correct it, change them and call create_document again");
         return reply(200, r);
       }
-      std::string data;
-      if (!files::Store::read(i.path, data)) return fail(500, "cannot read the file");
-      const bool binary = data.find('\0') < std::min<size_t>(data.size(), 8192);
-      if (i.kind != "document" || binary) {
+      if (i.kind != "document") {
         r.set("note", i.kind == "image" || i.kind == "audio"
                           ? "an " + i.kind + ": its content is not text; the user can attach it to a message (@) for a model that " +
                                 (i.kind == "image" ? "sees images" : "hears audio")
-                          : "a binary file (" + files::ext_of(i.name) + "): its text cannot be read here yet");
+                          : "a " + i.kind + " file: its content is not text");
         return reply(200, r);
+      }
+      const auto ix = files::doc_index(i);
+      if (!ix) return fail(500, "cannot read the file");
+      if (ix->doc.paras.empty()) {
+        r.set("note", ix->doc.note.empty() ? "no text in the file" : ix->doc.note);
+        return reply(200, r);
+      }
+      if (!ix->doc.note.empty()) r.set("warning", ix->doc.note);
+      if (ix->doc.pages > 0) r.set("pages", (double)ix->doc.pages);
+      std::string data;  // (what this call reads: a section, pages, or the whole text)
+      const size_t n = ix->doc.paras.size();
+      if (a["section"].is_number()) {
+        const size_t k = (size_t)std::max(1.0, a["section"].as_number()) - 1;
+        if (k >= ix->outline.size()) return fail(400, "no section " + std::to_string(k + 1) + " (the outline has " + std::to_string(ix->outline.size()) + ")");
+        const rdoc::Section& s = ix->outline[k];
+        data = ix->text(s.first, s.span);  // (with its subsections)
+        r.set("section", (double)(k + 1));
+        r.set("title", s.title);
+        if (ix->doc.pages > 1) r.set("pages_read", files::pages_of(s));
+        Json subs = Json::array();  // (its subsections' numbers, to read one of them alone)
+        for (size_t j = k + 1; j < ix->outline.size() && ix->outline[j].first < s.span && subs.size() < 40; ++j) {
+          Json x = Json::object();
+          x.set("section", (double)(j + 1));
+          x.set("title", ix->outline[j].title);
+          subs.push(x);
+        }
+        if (subs.size()) r.set("subsections", subs);
+        size_t next = k + 1;
+        while (next < ix->outline.size() && ix->outline[next].first < s.span) ++next;
+        if (next < ix->outline.size()) r.set("next_section", (double)(next + 1));
+      } else if (!a["pages"].str().empty() || a["pages"].is_number()) {
+        const std::string pg = a["pages"].is_number() ? std::to_string((int)a["pages"].as_number()) : a["pages"].str();
+        const int from = std::max(1, atoi(pg.c_str())), to = pg.find('-') != std::string::npos ? std::max(from, atoi(pg.c_str() + pg.find('-') + 1)) : from;
+        size_t first = n, last = 0;
+        for (size_t k = 0; k < n; ++k)
+          if (ix->doc.paras[k].page >= from && ix->doc.paras[k].page <= to) { first = std::min(first, k); last = k + 1; }
+        if (first >= last) return fail(400, "no text on page" + std::string(from == to ? " " : "s ") + pg + (ix->doc.pages > 0 ? " (the document has " + std::to_string(ix->doc.pages) + ")" : ""));
+        data = ix->text(first, last);
+        r.set("pages_read", pg);
+      } else {
+        data = ix->text(0, n);
+        if (data.size() > files::kInlineChars && !a["offset"].is_number()) {  // (a long document: its outline first)
+          r.set("total_tokens", (double)files::tokens_of(data.size()));
+          r.set("outline", files::outline_json(*ix));
+          size_t cut = std::min(data.size(), (size_t)2000);
+          while (cut < data.size() && cut > 0 && ((unsigned char)data[cut] & 0xC0) == 0x80) --cut;
+          r.set("beginning", data.substr(0, cut));
+          r.set("note", "a long document: read the sections the question needs (read_file with section: N, or pages: \"A-B\"), "
+                        "or find passages with search_file; offset: 0 reads it from the start in parts");
+          return reply(200, r);
+        }
       }
       const size_t off = (size_t)std::max(0.0, a["offset"].as_number(0)), mx = (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
       size_t end = std::min(data.size(), off + mx);
@@ -1368,7 +1476,8 @@ int main(int argc, char** argv) {
         rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)
       return files_api(rq, rs);
     if (rq.method == "POST" && (rq.path == "/v1/tools/create_document" || rq.path == "/v1/tools/list_files" ||
-                                rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/run_command"))
+                                rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/search_file" ||
+                                rq.path == "/v1/tools/run_command"))
       return file_tools(rq, rs, terminal);
     // the web UI's tools (tools/web_tools.h): no model involved, so they answer while a model loads or generates
     if (rq.method == "POST" && (rq.path == "/v1/tools/web_search" || rq.path == "/v1/tools/web_fetch")) {

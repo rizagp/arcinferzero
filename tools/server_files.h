@@ -15,6 +15,9 @@
 #pragma once
 #include "../src/app_dir.h"
 #include "../src/json.h"
+#include "doc_reader.h"
+#include <list>
+#include <memory>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -519,12 +522,76 @@ inline Store& store() {
   return s;
 }
 
+// A document's text, outline and search index (tools/doc_reader.h), kept for the last 8 files read (a 227-page PDF
+// reads in 0.25 s; a question about it often comes in several tool calls)
+inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
+  static std::mutex mu;
+  static std::list<std::pair<std::string, std::shared_ptr<const rdoc::Index>>> lru;
+  {
+    std::lock_guard<std::mutex> g(mu);
+    for (auto it = lru.begin(); it != lru.end(); ++it)
+      if (it->first == i.id) {
+        lru.splice(lru.begin(), lru, it);
+        return it->second;
+      }
+  }
+  std::string data;
+  if (!Store::read(i.path, data)) return nullptr;
+  auto ix = std::make_shared<const rdoc::Index>(rdoc::read(i.name, data));
+  std::lock_guard<std::mutex> g(mu);
+  lru.push_front({i.id, ix});
+  if (lru.size() > 8) lru.pop_back();
+  return ix;
+}
+// a document longer than this goes to the model as its outline and beginning (~6K tokens; 100 pages are ~60K)
+inline constexpr size_t kInlineChars = 24000;
+inline int tokens_of(size_t chars) { return (int)(chars / 4 + 1); }  // (an estimate: ~4 characters a token)
+// the outline as the model gets it: the top levels only, at most max entries (a section read whole includes its
+// subsections, and its numbers stay those of the full outline, so reading section 7 of a chapter shows its parts)
+inline constexpr size_t kOutlineMax = 60;
+inline std::string pages_of(const rdoc::Section& s) {
+  return s.page == s.page_to ? std::to_string(s.page) : std::to_string(s.page) + "-" + std::to_string(s.page_to);
+}
+inline Json outline_json(const rdoc::Index& ix, int depth = 0) {
+  if (!depth) depth = ix.outline_depth(kOutlineMax);
+  Json o = Json::array();
+  size_t n = 0;
+  for (size_t k = 0; k < ix.outline.size(); ++k) {
+    const rdoc::Section& s = ix.outline[k];
+    if (s.level > depth) continue;
+    if (++n > kOutlineMax * 2) break;
+    Json j = Json::object();
+    j.set("section", (double)(k + 1));
+    j.set("title", s.title);
+    j.set("level", (double)s.level);
+    if (ix.doc.pages > 1) j.set("pages", pages_of(s));
+    j.set("tokens", (double)tokens_of(s.span_chars));
+    o.push(j);
+  }
+  return o;
+}
+inline std::string outline_text(const rdoc::Index& ix) {
+  const int depth = ix.outline_depth(kOutlineMax);
+  std::string o;
+  size_t n = 0, hidden = 0;
+  for (size_t k = 0; k < ix.outline.size(); ++k) {
+    const rdoc::Section& s = ix.outline[k];
+    if (s.level > depth) { ++hidden; continue; }
+    if (++n > kOutlineMax * 2) { o += "...\n"; break; }
+    o += std::string((size_t)std::max(0, s.level - 1) * 2, ' ') + "section " + std::to_string(k + 1) + ": " + s.title +
+         (ix.doc.pages > 1 ? " (p. " + pages_of(s) + ", ~" : " (~") + std::to_string(tokens_of(s.span_chars)) + " tokens)\n";
+  }
+  if (hidden) o += "(" + std::to_string(hidden) + " subsections not listed: reading a section shows its subsections)\n";
+  return o;
+}
+
 // A message's saved files ({"type": "file", "file": {"file_id": "<id>" | "file-<id>" | "/files/<id>"}}, OpenAI's
 // form) as what the model reads: an image or audio file as an image_url / input_audio part referring to it, any other
-// file as a text part with its content. (The place where a document too long for the context will be cut down to its
-// parts that matter for the question: the RAG index of docs/whisper-native.md's follow-up.)
+// file as a text part with its text (DOCX and PDF too, tools/doc_reader.h). With the file tools (tools: true) a long
+// document goes in as its outline and beginning: the model reads the sections it needs (read_file) or searches it
+// (search_file) instead of a prompt of the whole document.
 inline constexpr size_t kMaxDocChars = 400000;
-inline Json expand_files(const Json& messages) {
+inline Json expand_files(const Json& messages, bool tools = false) {
   Json out = Json::array();
   for (const Json& m : messages.items()) {
     if (!m["content"].is_array()) { out.push(m); continue; }
@@ -580,10 +647,26 @@ inline Json expand_files(const Json& messages) {
         t.set("type", "input_audio");
         t.set("input_audio", a);
       } else {
-        const bool binary = data.find('\0') < std::min<size_t>(data.size(), 8192);
-        std::string text = binary ? "[" + i.kind + " file, not readable as text]" : data;
-        if (!binary) meta.insert(meta.size() - 1, ", " + std::to_string(std::count(data.begin(), data.end(), '\n') + 1) + " lines");
-        if (text.size() > kMaxDocChars) text = text.substr(0, kMaxDocChars) + "\n[... cut: the file goes on]";
+        const auto ix = doc_index(i);
+        std::string text;
+        if (!ix || ix->doc.paras.empty()) text = "[" + (ix && !ix->doc.note.empty() ? ix->doc.note : i.kind + " file, not readable as text") + "]";
+        else {
+          const std::string full = ix->text(0, ix->doc.paras.size());
+          meta.insert(meta.size() - 1, (ix->doc.pages > 0 ? ", " + std::to_string(ix->doc.pages) + " pages" : std::string()) + ", ~" +
+                                           std::to_string(tokens_of(full.size())) + " tokens");
+          if (!ix->doc.note.empty()) meta += "\n[" + ix->doc.note + "]";
+          if (!tools || full.size() <= kInlineChars) {
+            text = full;
+            if (text.size() > kMaxDocChars) text = text.substr(0, kMaxDocChars) + "\n[... cut: the file goes on]";
+          } else {
+            size_t cut = std::min(full.size(), (size_t)3000);
+            while (cut < full.size() && cut > 0 && ((unsigned char)full[cut] & 0xC0) == 0x80) --cut;
+            text = "[A long document: only its outline and beginning are here. Read the parts the question needs with "
+                   "read_file {\"file_id\": \"" + i.id + "\", \"section\": N} (or \"pages\": \"A-B\"), or find passages "
+                   "with search_file {\"file_id\": \"" + i.id + "\", \"query\": \"...\"}. Do not guess its content.]\n"
+                   "Outline:\n" + outline_text(*ix) + "--- beginning ---\n" + full.substr(0, cut) + "\n[...]";
+          }
+        }
         t.set("type", "text");
         t.set("text", "=== FILE: " + i.name + " ===\n" + meta + "\n" + text);
       }
