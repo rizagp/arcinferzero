@@ -1,0 +1,358 @@
+// Transcript formats (src/whisper.h's Result): the full JSON (the source every other format is made from), OpenAI's
+// json / verbose_json / text, the faster-whisper-style JSON the Remotion channel pipeline reads ("fw"), Remotion's
+// Caption[] ("captions"), and subtitles cut from the word timestamps: SRT, WebVTT (with word timing), YouTube SBV and
+// SRV3 (word-by-word), ASS (karaoke \k), TTML; plain text, Markdown, CSV / TSV.
+#pragma once
+#include "whisper.h"
+#include <cstdio>
+#include <string>
+#include <vector>
+
+namespace whisper {
+
+struct CueOptions {
+  int max_chars = 42, max_lines = 2;
+  double max_s = 7.0, min_s = 1.0, pause_s = 0.5;
+  bool one_word = false;  // a cue per word (vertical short-form video)
+};
+
+inline std::string json_str(const std::string& s) {
+  std::string o = "\"";
+  for (unsigned char c : s) {
+    if (c == '"' || c == '\\') { o += '\\'; o += (char)c; }
+    else if (c == '\n') o += "\\n";
+    else if (c == '\r') o += "\\r";
+    else if (c == '\t') o += "\\t";
+    else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+    else o += (char)c;
+  }
+  return o + "\"";
+}
+inline std::string num(double v, int prec = 3) {
+  char b[64];
+  snprintf(b, sizeof b, "%.*f", prec, v);
+  return b;
+}
+inline std::string xml(const std::string& s) {
+  std::string o;
+  for (char c : s) {
+    if (c == '&') o += "&amp;";
+    else if (c == '<') o += "&lt;";
+    else if (c == '>') o += "&gt;";
+    else if (c == '"') o += "&quot;";
+    else o += c;
+  }
+  return o;
+}
+inline std::string trim_copy(const std::string& s) {
+  size_t a = 0, b = s.size();
+  while (a < b && isspace((unsigned char)s[a])) ++a;
+  while (b > a && isspace((unsigned char)s[b - 1])) --b;
+  return s.substr(a, b - a);
+}
+// times: h:mm:ss with a separator and digits of fractions (SRT ",", 3; VTT ".", 3; ASS ".", 2)
+inline std::string clock(double t, char sep, int frac_digits, bool two_digit_hours = true) {
+  if (t < 0) t = 0;
+  const long long ms = (long long)std::llround(t * 1000);
+  const long long h = ms / 3600000, m = ms / 60000 % 60, s = ms / 1000 % 60, f = ms % 1000;
+  char b[48];
+  if (frac_digits == 2) snprintf(b, sizeof b, two_digit_hours ? "%02lld:%02lld:%02lld%c%02lld" : "%lld:%02lld:%02lld%c%02lld", h, m, s, sep, f / 10);
+  else snprintf(b, sizeof b, two_digit_hours ? "%02lld:%02lld:%02lld%c%03lld" : "%lld:%02lld:%02lld%c%03lld", h, m, s, sep, f);
+  return b;
+}
+
+// ---------------------------------------------------------------- subtitle cues from the words
+struct Cue {
+  double start = 0, end = 0;
+  std::vector<Word> words;
+  std::vector<std::string> lines;
+};
+inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
+  std::vector<Word> all;
+  for (const Segment& g : r.segments) {
+    if (!g.words.empty()) {
+      for (const Word& w : g.words) all.push_back(w);
+    } else {  // (no word timestamps: the segment's words spread over its time)
+      std::vector<std::string> ws;
+      std::string cur;
+      for (char c : g.text + " ") {
+        if (isspace((unsigned char)c)) { if (!cur.empty()) ws.push_back(cur); cur.clear(); }
+        else cur += c;
+      }
+      for (size_t i = 0; i < ws.size(); ++i) {
+        Word w;
+        w.text = ws[i];
+        w.start = g.start + (g.end - g.start) * i / ws.size();
+        w.end = g.start + (g.end - g.start) * (i + 1) / ws.size();
+        w.p = 1;
+        all.push_back(w);
+      }
+    }
+  }
+  std::vector<Cue> cues;
+  const size_t limit = (size_t)o.max_chars * o.max_lines;
+  auto text_len = [](const Cue& c) {
+    size_t n = 0;
+    for (const Word& w : c.words) n += w.text.size() + (n ? 1 : 0);
+    return n;
+  };
+  Cue cur;
+  for (size_t i = 0; i < all.size(); ++i) {
+    const Word& w = all[i];
+    if (!cur.words.empty()) {
+      const bool long_text = text_len(cur) + 1 + w.text.size() > limit;
+      const bool long_time = w.end - cur.start > o.max_s;
+      const bool pause = w.start - cur.words.back().end > o.pause_s;
+      const char last = cur.words.back().text.empty() ? 0 : cur.words.back().text.back();
+      const bool sentence = (last == '.' || last == '?' || last == '!') && cur.end - cur.start >= o.min_s;
+      if (o.one_word || long_text || long_time || pause || sentence) { cues.push_back(cur); cur = Cue(); }
+    }
+    if (cur.words.empty()) cur.start = w.start;
+    cur.words.push_back(w);
+    cur.end = w.end;
+  }
+  if (!cur.words.empty()) cues.push_back(cur);
+  for (Cue& c : cues) {  // lines of at most max_chars, balanced
+    std::string line;
+    for (const Word& w : c.words) {
+      if (!line.empty() && line.size() + 1 + w.text.size() > (size_t)o.max_chars && (int)c.lines.size() + 1 < o.max_lines) {
+        c.lines.push_back(line);
+        line.clear();
+      }
+      line += (line.empty() ? "" : " ") + w.text;
+    }
+    if (!line.empty()) c.lines.push_back(line);
+    if (c.end <= c.start) c.end = c.start + 0.3;
+  }
+  for (size_t i = 0; i + 1 < cues.size(); ++i)  // (no overlap)
+    if (cues[i].end > cues[i + 1].start) cues[i].end = cues[i + 1].start;
+  return cues;
+}
+
+// ---------------------------------------------------------------- the formats
+inline std::string to_json(const Result& r) {
+  std::string o = "{\"duration\": " + num(r.duration) + ", \"segments\": [";
+  for (size_t i = 0; i < r.segments.size(); ++i) {
+    const Segment& g = r.segments[i];
+    o += (i ? ",\n" : "\n") + std::string(" {\"id\": ") + std::to_string(i) + ", \"start\": " + num(g.start) + ", \"end\": " +
+         num(g.end) + ", \"lang\": " + json_str(g.lang) + ", \"text\": " + json_str(trim_copy(g.text)) +
+         ", \"avg_logprob\": " + num(g.avg_logprob, 4) + ", \"no_speech_prob\": " + num(g.no_speech_prob, 4) +
+         ", \"compression_ratio\": " + num(g.compression_ratio, 3) + ", \"temperature\": " + num(g.temperature, 1) + ", \"words\": [";
+    for (size_t w = 0; w < g.words.size(); ++w)
+      o += (w ? ", " : "") + std::string("{\"start\": ") + num(g.words[w].start) + ", \"end\": " + num(g.words[w].end) +
+           ", \"word\": " + json_str(g.words[w].text) + ", \"p\": " + num(g.words[w].p, 3) + "}";
+    o += "]}";
+  }
+  return o + "\n]}\n";
+}
+// the JSON tools/audio/transcribe.py (faster-whisper) wrote for the Remotion pipeline (edit.py, timeline.py)
+inline std::string to_fw(const Result& r) {
+  std::string o = "{\"duration\": " + num(r.duration) + ", \"segments\": [";
+  for (size_t i = 0; i < r.segments.size(); ++i) {
+    const Segment& g = r.segments[i];
+    o += (i ? ",\n" : "\n") + std::string(" {\"start\": ") + num(g.start) + ", \"end\": " + num(g.end) + ", \"text\": " +
+         json_str(trim_copy(g.text)) + ", \"lang\": " + json_str(g.lang) + ", \"words\": [";
+    for (size_t w = 0; w < g.words.size(); ++w)
+      o += (w ? ", " : "") + std::string("{\"start\": ") + num(g.words[w].start) + ", \"end\": " + num(g.words[w].end) +
+           ", \"word\": " + json_str(g.words[w].text) + ", \"p\": " + num(g.words[w].p, 3) + "}";
+    o += "]}";
+  }
+  return o + "\n]}\n";
+}
+// Remotion's Caption[] (@remotion/captions): one per word, text with its leading space
+inline std::string to_captions(const Result& r) {
+  std::string o = "[";
+  bool first = true;
+  for (const Segment& g : r.segments) {
+    std::vector<Word> ws = g.words;
+    if (ws.empty()) { Word w; w.text = trim_copy(g.text); w.start = g.start; w.end = g.end; w.p = 1; ws.push_back(w); }
+    for (const Word& w : ws) {
+      const long long s = std::llround(w.start * 1000), e = std::llround(w.end * 1000);
+      o += (first ? "\n" : ",\n") + std::string(" {\"text\": ") + json_str((first ? "" : " ") + w.text) + ", \"startMs\": " +
+           std::to_string(s) + ", \"endMs\": " + std::to_string(e) + ", \"timestampMs\": " + std::to_string((s + e) / 2) +
+           ", \"confidence\": " + num(w.p, 3) + "}";
+      first = false;
+    }
+  }
+  return o + "\n]\n";
+}
+// OpenAI /v1/audio/transcriptions response_format=verbose_json
+inline std::string to_verbose_json(const Result& r, const std::string& task) {
+  std::string lang = r.segments.empty() ? "" : r.segments[0].lang;
+  std::string o = "{\"task\": " + json_str(task) + ", \"language\": " + json_str(lang) + ", \"duration\": " + num(r.duration) +
+                  ", \"text\": " + json_str(trim_copy(r.text())) + ", \"segments\": [";
+  bool any_words = false;
+  for (size_t i = 0; i < r.segments.size(); ++i) {
+    const Segment& g = r.segments[i];
+    any_words = any_words || !g.words.empty();
+    o += (i ? ", " : "") + std::string("{\"id\": ") + std::to_string(i) + ", \"seek\": " +
+         std::to_string((long long)std::llround(g.start * 100)) + ", \"start\": " + num(g.start) + ", \"end\": " + num(g.end) +
+         ", \"text\": " + json_str(g.text) + ", \"tokens\": [";
+    for (size_t t = 0; t < g.tokens.size(); ++t) o += (t ? ", " : "") + std::to_string(g.tokens[t]);
+    o += "], \"temperature\": " + num(g.temperature, 1) + ", \"avg_logprob\": " + num(g.avg_logprob, 4) +
+         ", \"compression_ratio\": " + num(g.compression_ratio, 3) + ", \"no_speech_prob\": " + num(g.no_speech_prob, 4) + "}";
+  }
+  o += "]";
+  if (any_words) {
+    o += ", \"words\": [";
+    bool first = true;
+    for (const Segment& g : r.segments)
+      for (const Word& w : g.words) {
+        o += (first ? "" : ", ") + std::string("{\"word\": ") + json_str(w.text) + ", \"start\": " + num(w.start) + ", \"end\": " + num(w.end) + "}";
+        first = false;
+      }
+    o += "]";
+  }
+  return o + "}\n";
+}
+inline std::string to_openai_json(const Result& r) { return "{\"text\": " + json_str(trim_copy(r.text())) + "}\n"; }
+inline std::string to_txt(const Result& r, bool times = false) {
+  std::string o;
+  for (const Segment& g : r.segments) {
+    if (times) o += "[" + clock(g.start, '.', 3).substr(0, 8) + "] ";
+    o += trim_copy(g.text) + "\n";
+  }
+  return o;
+}
+inline std::string to_srt(const std::vector<Cue>& cues) {
+  std::string o;
+  for (size_t i = 0; i < cues.size(); ++i) {
+    o += std::to_string(i + 1) + "\n" + clock(cues[i].start, ',', 3) + " --> " + clock(cues[i].end, ',', 3) + "\n";
+    for (const std::string& l : cues[i].lines) o += l + "\n";
+    o += "\n";
+  }
+  return o;
+}
+// WebVTT; word_timing: <hh:mm:ss.mmm> before each word after the first (karaoke-style highlighting)
+inline std::string to_vtt(const std::vector<Cue>& cues, bool word_timing) {
+  std::string o = "WEBVTT\n\n";
+  for (const Cue& c : cues) {
+    o += clock(c.start, '.', 3) + " --> " + clock(c.end, '.', 3) + "\n";
+    if (word_timing && c.words.size() > 1) {
+      std::string line;
+      size_t chars = 0;
+      int lines = 1;
+      for (size_t w = 0; w < c.words.size(); ++w) {
+        const std::string& t = c.words[w].text;
+        if (w && chars + 1 + t.size() > 42 && lines < 2) { line += "\n"; chars = 0; ++lines; }
+        else if (w) { line += " "; ++chars; }
+        if (w) line += "<" + clock(c.words[w].start, '.', 3) + ">";
+        line += xml(t);
+        chars += t.size();
+      }
+      o += line + "\n\n";
+    } else {
+      for (const std::string& l : c.lines) o += xml(l) + "\n";
+      o += "\n";
+    }
+  }
+  return o;
+}
+inline std::string to_sbv(const std::vector<Cue>& cues) {
+  std::string o;
+  for (const Cue& c : cues) {
+    o += clock(c.start, '.', 3, false) + "," + clock(c.end, '.', 3, false) + "\n";
+    for (const std::string& l : c.lines) o += l + "\n";
+    o += "\n";
+  }
+  return o;
+}
+// YouTube SRV3 (timed text format 3): each cue a <p>, each word an <s> with its offset (word-by-word display)
+inline std::string to_srv3(const std::vector<Cue>& cues) {
+  std::string o = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<timedtext format=\"3\">\n<body>\n";
+  for (const Cue& c : cues) {
+    const long long t = std::llround(c.start * 1000), d = std::llround((c.end - c.start) * 1000);
+    o += "<p t=\"" + std::to_string(t) + "\" d=\"" + std::to_string(d) + "\">";
+    for (size_t w = 0; w < c.words.size(); ++w) {
+      const long long off = std::max(0LL, std::llround(c.words[w].start * 1000) - t);
+      o += "<s" + (w ? " t=\"" + std::to_string(off) + "\"" : std::string()) + ">" + xml((w ? " " : "") + c.words[w].text) + "</s>";
+    }
+    o += "</p>\n";
+  }
+  return o + "</body>\n</timedtext>\n";
+}
+// ASS (Aegisub, mpv, ffmpeg burn-in): one Dialogue per cue, \k karaoke timing per word (centiseconds)
+inline std::string to_ass(const std::vector<Cue>& cues) {
+  std::string o =
+      "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 0\n\n"
+      "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+      "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+      "Style: Default,Arial,64,&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,60,1\n\n"
+      "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
+  for (const Cue& c : cues) {
+    std::string text;
+    for (size_t w = 0; w < c.words.size(); ++w) {
+      const double nxt = w + 1 < c.words.size() ? c.words[w + 1].start : c.end;
+      const long long k = std::max(1LL, std::llround((nxt - c.words[w].start) * 100));
+      std::string t = c.words[w].text;
+      for (char& ch : t) if (ch == '{' || ch == '}') ch = ' ';
+      text += "{\\k" + std::to_string(k) + "}" + t + (w + 1 < c.words.size() ? " " : "");
+    }
+    o += "Dialogue: 0," + clock(c.start, '.', 2, false) + "," + clock(c.end, '.', 2, false) + ",Default,,0,0,0,," + text + "\n";
+  }
+  return o;
+}
+inline std::string to_ttml(const std::vector<Cue>& cues, const std::string& lang) {
+  std::string o = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<tt xmlns=\"http://www.w3.org/ns/ttml\" xml:lang=\"" + xml(lang) +
+                  "\">\n<body>\n<div>\n";
+  for (const Cue& c : cues) {
+    o += "<p begin=\"" + clock(c.start, '.', 3) + "\" end=\"" + clock(c.end, '.', 3) + "\">";
+    for (size_t i = 0; i < c.lines.size(); ++i) o += (i ? "<br/>" : "") + xml(c.lines[i]);
+    o += "</p>\n";
+  }
+  return o + "</div>\n</body>\n</tt>\n";
+}
+inline std::string to_md(const Result& r, const std::string& title) {
+  std::string o = "# " + title + "\n\n";
+  for (const Segment& g : r.segments)
+    o += "**[" + clock(g.start, '.', 3).substr(0, 8) + "]** " + trim_copy(g.text) + "\n\n";
+  return o;
+}
+inline std::string to_table(const Result& r, char sep) {
+  auto cell = [&](const std::string& s) {
+    if (sep == '\t') { std::string t = s; for (char& c : t) if (c == '\t' || c == '\n') c = ' '; return t; }
+    std::string t = "\"";
+    for (char c : s) { if (c == '"') t += '"'; t += c; }
+    return t + "\"";
+  };
+  std::string o = std::string("start") + sep + "end" + sep + "lang" + sep + "text\n";
+  for (const Segment& g : r.segments)
+    o += num(g.start) + sep + num(g.end) + sep + g.lang + sep + cell(trim_copy(g.text)) + "\n";
+  return o;
+}
+
+// every format by its name; ext: the file extension
+struct Format {
+  const char* name;
+  const char* ext;
+};
+inline const std::vector<Format>& formats() {
+  static const std::vector<Format> f = {
+      {"json", ".json"}, {"fw", ".fw.json"}, {"captions", ".captions.json"}, {"verbose_json", ".openai.json"},
+      {"srt", ".srt"}, {"vtt", ".vtt"}, {"sbv", ".sbv"}, {"srv3", ".srv3"}, {"ass", ".ass"}, {"ttml", ".ttml"},
+      {"txt", ".txt"}, {"md", ".md"}, {"csv", ".csv"}, {"tsv", ".tsv"}};
+  return f;
+}
+inline std::string render(const std::string& fmt, const Result& r, const CueOptions& co, const std::string& title,
+                          const std::string& task = "transcribe") {
+  const std::string lang = r.segments.empty() ? "und" : r.segments[0].lang;
+  if (fmt == "json") return to_json(r);
+  if (fmt == "fw") return to_fw(r);
+  if (fmt == "captions") return to_captions(r);
+  if (fmt == "verbose_json") return to_verbose_json(r, task);
+  if (fmt == "openai_json") return to_openai_json(r);
+  if (fmt == "txt" || fmt == "text") return to_txt(r);
+  if (fmt == "md") return to_md(r, title);
+  if (fmt == "csv") return to_table(r, ',');
+  if (fmt == "tsv") return to_table(r, '\t');
+  const std::vector<Cue> cues = make_cues(r, co);
+  if (fmt == "srt") return to_srt(cues);
+  if (fmt == "vtt") return to_vtt(cues, true);
+  if (fmt == "sbv") return to_sbv(cues);
+  if (fmt == "srv3") return to_srv3(cues);
+  if (fmt == "ass") return to_ass(cues);
+  if (fmt == "ttml") return to_ttml(cues, lang);
+  throw std::runtime_error("unknown transcript format '" + fmt + "'");
+}
+
+}  // namespace whisper

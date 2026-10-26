@@ -13,6 +13,52 @@ and one on the command line:
 
 Both web UI functions open only once the encoder, the decoder and the timestamps are done and checked (phases 0-4).
 
+## The five functions (the user, 2026-10-25)
+
+| # | Function | Where | What it does |
+|---|---|---|---|
+| 1 | **Realtime transcript** | web UI (Transcript and Meeting tabs), `arc-transcribe --live` | text ~1 s after each sentence from the microphone and / or an app's sound (system / process loopback), recorded to `sound-recordings\` at the same time |
+| 2 | **Accurate transcript after recording** | button after a realtime session, `arc-transcribe <recording>` | the whole recording again: full 30-s windows, beam 5, word timestamps; replaces the live draft (marks and edits kept) |
+| 3 | **Audio upload** | drop / choose files, `arc-transcribe <file>` | wav, mp3, m4a / aac, flac, wma, ogg / opus, ... |
+| 4 | **Video upload** | the same | mp4, mov, mkv, webm, wmv, avi, ...: the audio track is read, the video itself is not touched; timestamps match the video's timeline |
+| 5 | **Output formats, chosen per export** | checkboxes in the web UI, `--format a,b,c` | Remotion, subtitles (SRT, VTT, YouTube), standard formats: table below |
+
+### Output formats
+
+| Format | File | For |
+|---|---|---|
+| Remotion captions | `.captions.json` | `Caption[]` of `@remotion/captions` (`text`, `startMs`, `endMs`, `timestampMs`, `confidence`), one per word: `<Captions>`, `createTikTokStyleCaptions` |
+| Remotion pipeline | `.fw.json` | the JSON arcinferzero-channel's `edit.py` / `verify_cut.py` / `timeline.py` read (faster-whisper's: segments with words, `start` / `end` / `word` / `p`) |
+| SubRip | `.srt` | the common subtitle file: YouTube, video editors (Premiere, DaVinci Resolve, CapCut), VLC |
+| WebVTT | `.vtt` | web players, YouTube; with word timing (`<00:00:01.200>` cues) for karaoke-style highlighting |
+| YouTube SBV | `.sbv` | YouTube's own subtitle format (SubViewer) |
+| YouTube SRV3 / YTT | `.srv3` | YouTube's timed text with per-word timing (auto-caption style word-by-word display) |
+| Advanced SubStation | `.ass` | styled subtitles (Aegisub, mpv, burned in with ffmpeg); `\k` word timing for karaoke |
+| TTML / DFXP | `.ttml` | broadcast / streaming platforms, Premiere import |
+| Plain text | `.txt` | the text only, one segment per line, optionally with `[hh:mm:ss]` |
+| Markdown | `.md` | readable transcript with timestamps, speakers, marks; the meeting summary on top |
+| JSON | `.json` | everything (segments, words with probabilities, languages, speakers, marks): the source the others are made from |
+| CSV / TSV | `.csv`, `.tsv` | start, end, speaker, language, text per segment (spreadsheets) |
+
+Subtitle cues (SRT, VTT, SBV, ASS, TTML) are cut from the word timestamps, not from Whisper's segments: at most 2
+lines of 42 characters (YouTube's guidance), 1-7 s per cue, a break at sentence ends and pauses > 0.5 s, never inside
+a word; all of it adjustable (`--max-chars`, `--max-lines`, `--max-cue-s`, or one word per cue for vertical
+short-form video). Every export comes from the saved JSON, so a format can be added later without transcribing again.
+
+### Progress
+
+Every transcription that is not live shows its progress, the same numbers everywhere:
+- **stage**: reading the file (decoding a video's audio track) -> transcribing -> word timestamps -> writing the
+  formats;
+- **position**: audio done / total (`00:09:55 / 00:13:58`, 71 %), from the windows finished;
+- **speed and time left**: x realtime so far (e.g. 31x), elapsed, estimated time left;
+- **the text so far**: segments appear as they are finished.
+
+Where: a bar per file in the Transcript tab (several files queued, each with its own bar, one running at a time), in
+the Meeting tab during the accurate pass; on the command line a one-line bar on stderr
+(`02-clean.wav  [██████████░░░░]  71 %  09:55 / 13:58  31x  ~0:08 left`), or one JSON line per update with
+`--progress` for scripts; through the API as server-sent `progress` events (`stream=true`).
+
 ## Why, and the target
 
 Measured 2026-10-24 (arcinferzero-channel, `work/bench/hasil.md`): one 14-minute recording, Whisper large-v3-turbo
@@ -144,17 +190,21 @@ arc-transcribe <file | folder | wildcard> ... [options]
   --vad                       skip silence (meetings; off by default for exact timestamps)
   --translate                 to English instead of transcribing
   --from <s> --to <s>         only part of the file
-  --format json,srt,vtt,txt,md,fw,remotion   (default json,srt,txt)
+  --format <list>             json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv, tsv, captions (Remotion
+                              Caption[]), fw (the Remotion pipeline's JSON); default json,srt,txt
+  --max-chars N --max-lines N --max-cue-s S   subtitle cue shape (default 42, 2, 7); --word-cues: one word per cue
   --out <folder | file>       default %USERPROFILE%\arcinferzero\transcripts\
-  --progress                  one JSON line per segment on stdout (for scripts and other tools)
+  --live [--app chrome|zoom|...] [--mic]   realtime from the microphone / an app's sound, recorded to
+                              sound-recordings\; Ctrl+C stops, then the accurate pass runs unless --no-accurate
+  --progress                  progress and segments as JSON lines on stdout (default: a bar on stderr)
   --local / --server <url>    force the in-process engine or a server
 ```
 
-Output formats beyond the usual ones:
+The two Remotion formats (the full list is under "Output formats" above):
 - `fw`: the JSON the Remotion channel pipeline reads today (`tools/audio/transcribe.py`'s output:
   `{"duration", "segments": [{"start", "end", "text", "words": [{"start", "end", "word", "p"}]}]}`), so
   `edit.py`, `verify_cut.py` and `timeline.py` work unchanged; each segment also carries `"lang"`.
-- `remotion`: `Caption[]` of `@remotion/captions` (`text`, `startMs`, `endMs`, `timestampMs`, `confidence`), one
+- `captions`: `Caption[]` of `@remotion/captions` (`text`, `startMs`, `endMs`, `timestampMs`, `confidence`), one
   caption per word with the leading space Remotion's `createTikTokStyleCaptions` expects, for `<Captions>` /
   subtitle components directly.
 
@@ -163,7 +213,7 @@ narration workflow without Python's faster-whisper:
 
 ```
 arc-transcribe work\audio\02-clean.wav --lang id --prompt-file tools\audio\prompt.txt --format fw --out work\audio\transcript.json
-arc-transcribe work\audio\03-edited.wav --lang id --format fw,remotion --out work\audio\transcript-edited.json
+arc-transcribe work\audio\03-edited.wav --lang id --format fw,captions --out work\audio\transcript-edited.json
 ```
 
 Recording from the command line too: `arc-server record start [--app chrome] [--title "..."]` / `record stop`
@@ -175,7 +225,7 @@ transcript. A Pi skill / tool can call the same command.
 - `POST /v1/audio/transcriptions` (exists today for Gemma 4 audio) gains Whisper: `model` = `whisper-large-v3-turbo`
   (the default speech model once installed), multipart `file`, `language`, `prompt`, `temperature`, `beam`,
   `response_format` = `json` | `text` | `srt` | `vtt` | `verbose_json` (segments with their language, and words
-  with `timestamp_granularities[]=word`) | `fw` | `remotion`. `POST /v1/audio/translations`: Whisper's translate
+  with `timestamp_granularities[]=word`) | every format of the table above (`srt`, `sbv`, `captions`, `fw`, ...). `POST /v1/audio/translations`: Whisper's translate
   task. Uploads of any size (a 3-hour file is ~350 MB as m4a): streamed to disk, not held in memory.
 - **Streaming**: `stream=true` sends the segments as server-sent events while a long file is processed (the web UI's
   progress bar and `arc-transcribe --progress` use it); the live meeting sends each VAD piece with the text so far as
@@ -190,7 +240,7 @@ A tab in the web UI header, next to Chat and Meeting:
 
 ```
 [ Chat ]  [ Transkrip ]  [ Rapat ]
-Drop audio / video files here, or [Choose files]           Language: (•) auto ( ) id ( ) en ...
+Drop audio / video files here, or [Choose files]   or [● Live: mic / app sound]   Language: (•) auto ( ) id ( ) en ...
                                                            [✓] word timestamps  Beam: (•) 5 ( ) greedy
 Glossary: arcinferzero, Qwen, GGUF, ...                    [✓] write filler words (eh, em, hmm)
 ───────────────────────────────────────────────────────────────────────────
@@ -198,7 +248,9 @@ Glossary: arcinferzero, Qwen, GGUF, ...                    [✓] write filler wo
 03-edited.wav    13:03   queued
 ───────────────────────────────────────────────────────────────────────────
 00:00:01.20  id  Halo, jadi di video ini saya mau cerita...        (words: click to play from there)
-[Download: TXT  SRT  VTT  JSON  MD  fw (Remotion pipeline)  Remotion captions]   Saved in transcripts\
+Formats: [✓] SRT  [ ] VTT  [ ] YouTube SBV  [ ] YouTube SRV3  [ ] ASS  [ ] TTML  [✓] TXT  [ ] MD  [ ] CSV
+         [ ] Remotion captions  [ ] Remotion pipeline (fw)  [✓] JSON      Cues: 42 chars x 2 lines, <= 7 s  [ ] one word
+[Export]   Saved in transcripts\  (the format choice is remembered)
 ```
 
 - Several files queued, each with its progress; the transcript appears segment by segment while it is processed.
@@ -245,8 +297,8 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 | 1 | GPU mel + encoder (convs, bidirectional attention, W8 GEMMs), several windows per batch | encoder output vs f32 within tolerance; <= 12 s for the 14-minute file |
 | 2 | Decoder: greedy and beam 5 (hypotheses as rows of one pass), cross-attention K / V once per window, timestamp rules, fallback, no-speech, languages per window, prompt | KL <= 0.015 vs f32; transcript checks above; <= 9 s decoder greedy |
 | 3 | Word timestamps (alignment heads on the GPU, DTW) | mean <= 100 ms, p90 <= 300 ms vs faster-whisper; <= 1 s |
-| 4 | `transcribez` / `arc-transcribe` (all formats incl. `fw` and `remotion`) and the server endpoint (formats, streaming, memory budget, taking turns with the LLM) | total <= 25 s greedy for the 14-minute file; the channel pipeline runs on `fw` output unchanged; bench row; docs |
-| 5 | Transcript tab: queue, progress, playback, term replace, exports, history | |
+| 4 | `transcribez` / `arc-transcribe` (all formats, progress bar) and the server endpoint (formats, streaming, memory budget, taking turns with the LLM) | total <= 25 s greedy for the 14-minute file; the channel pipeline runs on `fw` output unchanged; bench row; docs |
+| 5 | Transcript tab: audio and video upload, queue with a progress bar per file, playback, term replace, the format choice (every format above), history; realtime from the microphone / app sound with the accurate pass after it | every format opens in its target (YouTube upload, Premiere / Resolve import, Remotion `<Captions>`) |
 | 6 | Meeting tab with files and the browser microphone / screen audio: live transcript, accurate pass, summary | text ~1 s after a sentence |
 | 7 | `arc-recorder.exe`: WASAPI process loopback + microphone, Me / Others, `arc-server record` | a 3-hour test recording without a gap |
 | 8 | Summaries per segment while recording, questions over the transcript (search + cached prefix) | |
@@ -258,6 +310,8 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
   the command line feeding the Remotion pipeline.
 - Multilingual: `auto` per window by default.
 - Folders: `%USERPROFILE%\arcinferzero\sound-recordings\` and `%USERPROFILE%\arcinferzero\transcripts\`.
+- The five functions: realtime, accurate after recording, audio upload, video upload, a choice of output formats
+  (Remotion, subtitles incl. YouTube's, the common standard ones); a progress bar for every transcription.
 
 ## Still open
 

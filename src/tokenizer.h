@@ -75,6 +75,21 @@ class Tokenizer {
     bos = (int)f.get_int("tokenizer.ggml.bos_token_id", -1);
     // Gemma 4: SentencePiece-style BPE (spaces as U+2581, merges over UTF-8 characters, <0xXX> byte fallback)
     spm_ = f.get_str("tokenizer.ggml.model") == "gemma4";
+    static const std::vector<std::string> none;
+    auto m = f.get_strs("tokenizer.ggml.merges");
+    init(m ? *m : none);
+  }
+  // From a Hugging Face tokenizer.json's parts (Whisper: GPT-2 byte-level BPE, the GPT-2 pre-tokenizer; the added
+  // tokens typed 3, control): toks[id], their types, the merges ("a b", by rank)
+  Tokenizer(std::vector<std::string> toks, std::vector<int64_t> tys, const std::vector<std::string>& merges, bool gpt2) {
+    tokens = std::move(toks);
+    types = std::move(tys);
+    gpt2_ = gpt2;
+    init(merges);
+  }
+
+ private:
+  void init(const std::vector<std::string>& merges) {
     for (size_t i = 0; i < tokens.size(); ++i) {
       if (i < types.size() && (types[i] == 3 || types[i] == 4)) {
         special[tokens[i]] = (int)i;
@@ -85,8 +100,7 @@ class Tokenizer {
     }
     std::sort(specials_by_len_.begin(), specials_by_len_.end(),
               [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
-    if (auto m = f.get_strs("tokenizer.ggml.merges"))
-      for (size_t r = 0; r < m->size(); ++r) merge_rank_[(*m)[r]] = (int)r;
+    for (size_t r = 0; r < merges.size(); ++r) merge_rank_[merges[r]] = (int)r;
     int n = 0;
     for (int b = 0; b < 256; ++b) {
       const bool printable = (b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255);
@@ -96,6 +110,8 @@ class Tokenizer {
       uni::utf8_append(byte_to_str_[b], cp);
     }
   }
+
+ public:
 
   int token(const std::string& s) const {
     auto it = special.find(s);
@@ -162,7 +178,38 @@ class Tokenizer {
   }
 
  private:
-  bool spm_ = false;
+  bool spm_ = false, gpt2_ = false;
+
+  // GPT-2's pre-tokenizer (Whisper), the regex 's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+  static void pretokenize_gpt2(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words) {
+    const size_t n = c.size();
+    auto F = [&](size_t i) -> uint16_t { return i < n ? uni::flags(c[i]) : 0; };
+    auto L = [&](size_t i) { return i < n && (F(i) & uni::LETTER); };
+    auto N_ = [&](size_t i) { return i < n && (F(i) & uni::NUMBER); };
+    auto WS = [&](size_t i) { return i < n && uni::is_ws(c[i]); };
+    auto P = [&](size_t i) { return i < n && !WS(i) && !(F(i) & (uni::LETTER | uni::NUMBER)); };
+    size_t i = 0;
+    while (i < n) {
+      size_t e = 0;
+      if (c[i] == '\'' && i + 1 < n) {  // contractions (case-sensitive, as GPT-2)
+        const uint32_t a = c[i + 1], b = i + 2 < n ? c[i + 2] : 0;
+        if (a == 's' || a == 't' || a == 'm' || a == 'd') e = i + 2;
+        else if ((a == 'r' && b == 'e') || (a == 'v' && b == 'e') || (a == 'l' && b == 'l')) e = i + 3;
+      }
+      const size_t j = c[i] == ' ' ? i + 1 : i;  // (an optional leading space)
+      if (!e && L(j)) { e = j; while (L(e)) ++e; }
+      if (!e && N_(j)) { e = j; while (N_(e)) ++e; }
+      if (!e && P(j)) { e = j; while (P(e)) ++e; }
+      if (!e && WS(i)) {
+        size_t k = i;
+        while (WS(k)) ++k;
+        e = (k < n && k - i >= 2) ? k - 1 : k;  // \s+(?!\S): leave the last space to the next word
+      }
+      if (!e) e = i + 1;
+      words.push_back({i, e});
+      i = e;
+    }
+  }
   static constexpr const char* kSpace = "\xe2\x96\x81";  // U+2581, SentencePiece's visible space
   std::unordered_map<std::string, int> token_id_;
   std::unordered_map<std::string, int> merge_rank_;
@@ -337,7 +384,8 @@ class Tokenizer {
     std::vector<size_t> offs;
     uni::utf8_decode(text, cps, offs);
     std::vector<std::pair<size_t, size_t>> words;
-    pretokenize(cps, words);
+    if (gpt2_) pretokenize_gpt2(cps, words);
+    else pretokenize(cps, words);
     for (auto& [a, b] : words) bpe_word(text.substr(offs[a], offs[b] - offs[a]), out);
   }
 };

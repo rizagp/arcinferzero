@@ -169,15 +169,17 @@ inline std::vector<float> resample(const std::vector<float>& x, int from, int to
 }
 
 // Any supported audio file -> 16 kHz mono samples.
-inline std::vector<float> decode_16k(const std::vector<uint8_t>& bytes) {
+// max_seconds: longer clips are refused (chat audio: 10 minutes, an hours-long clip takes minutes of CPU and more
+// context than any model has); 0: no limit (Whisper transcribes recordings of hours)
+inline std::vector<float> decode_16k(const std::vector<uint8_t>& bytes, double max_seconds = 600) {
   std::vector<float> s;
   int rate = 0;
   if (!parse_wav(bytes, s, rate)) s = decode_mf(bytes, rate);
   if (s.empty()) throw std::runtime_error("audio: no samples");
-  // (a hostile or broken file: an odd sample rate makes the resampling window huge, an hours-long clip takes
-  //  minutes of CPU and more context than any model has)
+  // (a hostile or broken file: an odd sample rate makes the resampling window huge)
   if (rate < 1000 || rate > 384000) throw std::runtime_error("audio: unsupported sample rate " + std::to_string(rate));
-  if (s.size() / (size_t)rate > 600) throw std::runtime_error("audio: longer than 10 minutes");
+  if (max_seconds > 0 && (double)s.size() / rate > max_seconds)
+    throw std::runtime_error("audio: longer than " + std::to_string((int)(max_seconds / 60)) + " minutes");
   return resample(s, rate, 16000);
 }
 
