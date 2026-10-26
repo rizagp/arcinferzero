@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cctype>
 #include <charconv>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <string>
@@ -18,6 +19,7 @@
 struct HttpRequest {
   std::string method, path, query, body;
   std::map<std::string, std::string> headers;  // lower-case keys
+  bool local_peer = false;  // (the connection comes from this machine: 127.x.x.x or ::1, whatever the Host header says)
   std::string header(const std::string& k) const {
     auto it = headers.find(k);
     return it == headers.end() ? "" : it->second;
@@ -34,6 +36,8 @@ class HttpResponse {
   // set the handler's server-sent events do (sse_begin then writes nothing; the tap writes its own stream).
   std::function<void(int status, const std::string& body)> on_send;
   std::function<bool(const std::string& data)> on_event;
+  // further header lines for send() (each ending in \r\n), e.g. Content-Disposition for a download
+  std::string extra;
   // A stream of another kind (application/x-ndjson, or named server-sent events): headers, then write().
   void begin_stream(const std::string& content_type) {
     std::string h = "HTTP/1.1 200 OK\r\nContent-Type: " + content_type + "\r\nCache-Control: no-cache\r\n";
@@ -54,6 +58,7 @@ class HttpResponse {
     h += "Content-Type: " + content_type + "\r\n";
     h += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     h += cors();
+    h += extra;
     h += "Connection: keep-alive\r\n\r\n";
     raw(h);
     raw(body);
@@ -237,6 +242,20 @@ class HttpServer {
     setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, (const char*)&stmo, sizeof stmo);
     BOOL nodelay = TRUE;  // (streamed tokens go out at once)
     setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof nodelay);
+    bool local_peer = false;
+    {
+      sockaddr_storage sa{};
+      int sl = sizeof sa;
+      if (getpeername(c, (sockaddr*)&sa, &sl) == 0) {
+        if (sa.ss_family == AF_INET) local_peer = (ntohl(((sockaddr_in*)&sa)->sin_addr.s_addr) >> 24) == 127;
+        else if (sa.ss_family == AF_INET6) {
+          const unsigned char* a6 = ((sockaddr_in6*)&sa)->sin6_addr.s6_addr;
+          static const unsigned char lo[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                                     v4map[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+          local_peer = memcmp(a6, lo, 16) == 0 || (memcmp(a6, v4map, 12) == 0 && a6[12] == 127);
+        }
+      }
+    }
     std::string buf;
     char tmp[65536];
     while (true) {
@@ -267,6 +286,7 @@ class HttpServer {
         }
       }
       HttpRequest rq;
+      rq.local_peer = local_peer;
       const std::string head = buf.substr(0, he);
       size_t p = head.find("\r\n");
       const std::string line = head.substr(0, p);

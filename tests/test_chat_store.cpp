@@ -1,0 +1,103 @@
+// CPU-only checks of the web UI's chat folders (tools/server_files.h) and its terminal tool (tools/server_terminal.h),
+// in a scratch data folder under %TEMP% (deleted at the end): files into a chat's folder, the folder named at the first
+// save, hard links between chats, a file put in or deleted by hand, deleting a chat; a command's output, exit code,
+// timeout (with the processes it started) and long output.
+#include <cstdlib>
+#include <string>
+#include "../tools/server_files.h"
+#include "../tools/server_terminal.h"
+#include <cstdio>
+
+static int fails = 0;
+static void check(const char* name, bool ok, const std::string& got = "") {
+  printf("%s %s%s%s\n", ok ? "ok  " : "FAIL", name, ok || got.empty() ? "" : "  got: ", ok ? "" : got.c_str());
+  fails += !ok;
+}
+
+int main() {
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / ("arcinferzero_store_test_" + std::to_string(GetCurrentProcessId()));
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  fs::create_directories(root, ec);
+  _putenv_s("ARC_DATA_DIR", root.string().c_str());
+  {
+    files::Store st;
+    // an upload before the chat's first save: a folder with only the date and id
+    const files::Info a = st.put("notes.txt", "hello", "c1");
+    check("upload into the chat's folder", fs::path(a.path).parent_path().filename().string().find("(c1)") != std::string::npos &&
+                                              fs::path(a.path).filename() == "notes.txt", a.path);
+    // the first save names the folder from its title; the file follows
+    st.chat_put("c1", "{\"title\":\"Rapat mingguan: tim A\",\"history\":[{\"content\":\"/files/" + a.id + "\"}]}");
+    const std::string d1 = st.chat_dir("c1");
+    check("folder named at the first save", fs::path(d1).filename().string().find(" Rapat mingguan tim A (c1)") == 10, d1);
+    files::Info g;
+    check("the file found after the rename", st.get(a.id, g) && g.path == (fs::path(d1) / "notes.txt").string(), g.path);
+    std::string t;
+    check("chat.json read back", st.chat_get("c1", t) && t.find("Rapat") != std::string::npos);
+    // a later save with another title keeps the folder
+    st.chat_put("c1", "{\"title\":\"Other\",\"history\":[{\"content\":\"/files/" + a.id + "\"}]}");
+    check("the folder keeps its name", st.chat_dir("c1") == d1, st.chat_dir("c1"));
+    // the same name with other bytes: a second name
+    const files::Info b = st.put("notes.txt", "hello again", "c1");
+    check("a name taken: notes (2).txt", fs::path(b.path).filename() == "notes (2).txt", b.path);
+    // the same bytes again in the same chat: the same file
+    check("the same bytes: the same file", st.put("x.txt", "hello", "c1").path == (fs::path(d1) / "notes.txt").string());
+    // another chat refers to the file (@): a hard link into its folder
+    st.chat_put("c2", "{\"title\":\"Second\",\"history\":[{\"content\":[{\"type\":\"file\",\"file\":{\"file_id\":\"" + a.id + "\"}}]}]}");
+    const fs::path l2 = fs::path(st.chat_dir("c2")) / "notes.txt";
+    check("linked into the other chat", fs::exists(l2, ec) && fs::hard_link_count(l2, ec) == 2, l2.string());
+    check("two holders", st.holders(a.id).size() == 2);
+    // a document's source goes along with the link
+    const files::Info doc = st.put("report.docx", "PK-fake", "c1");
+    st.put_source(doc.id, "c1", "{\"content\":\"# R\"}");
+    st.chat_put("c3", "{\"title\":\"Third\",\"history\":[{\"content\":\"/files/" + doc.id + "\"}]}");
+    std::string src;
+    check("the source found", st.source(doc.id, src) && src.find("# R") != std::string::npos);
+    check("the source copied to the other chat", fs::exists(fs::path(st.chat_dir("c3")) / ".src" / (doc.id + ".json"), ec));
+    // a file put into a folder by hand: listed with an id; one deleted by hand: gone from the list
+    { std::ofstream o(fs::path(d1) / "dropped.csv", std::ios::binary); o << "a,b\n1,2\n"; }
+    fs::remove(fs::path(d1) / "notes (2).txt", ec);
+    bool dropped = false, gone = true;
+    for (const files::Info& i : st.list()) {
+      dropped = dropped || (i.name == "dropped.csv" && i.chat == "c1");
+      gone = gone && i.id != b.id;
+    }
+    check("a file put in by hand is listed", dropped);
+    check("a file deleted by hand is not", gone);
+    // deleting a chat deletes its folder; the copy in the other chat stays
+    check("chat deleted", st.chat_remove("c1"));
+    check("its folder is gone", !fs::exists(d1, ec));
+    check("the other chat's copy stays", st.get(a.id, g) && g.chat == "c2", g.path);
+    check("the other copy is whole", files::Store::read(g.path, t) && t == "hello");
+    // a file out of one chat only, then everywhere
+    st.put("keep.txt", "k", "c3");
+    const files::Info k2 = st.put("keep.txt", "k", "c2");
+    check("out of one chat", st.remove_from(k2.id, "c2") && st.holders(k2.id).size() == 1);
+    check("removed everywhere", st.remove(k2.id) && !st.get(k2.id, g));
+    // keep_files: chat.json goes, the files stay
+    check("chat deleted, files kept", st.chat_remove("c2", true) && st.get(a.id, g) && !st.chat_get("c2", t));
+    // a bad chat id never names a path
+    bool threw = false;
+    try { st.chat_put("..\\x", "{}"); } catch (const std::exception&) { threw = true; }
+    check("a bad chat id is refused", threw);
+  }
+  {
+    const std::string cwd = root.string();
+    term::Result r = term::run("Get-Location | Select-Object -ExpandProperty Path; 'h\xc3\xa9llo'; Write-Error 'oops'; exit 3", cwd, "C:\\nowhere", 60);
+    check("exit code", r.exit_code == 3, std::to_string(r.exit_code));
+    check("runs in its folder", r.output.find(cwd) != std::string::npos, r.output);
+    check("UTF-8 output", r.output.find("h\xc3\xa9llo") != std::string::npos, r.output);
+    check("stderr too", r.output.find("oops") != std::string::npos, r.output);
+    r = term::run("$env:PATH.Split(';')[0]", cwd, "C:\\nowhere", 60);
+    check("PATH first", r.output.find("C:\\nowhere") == 0, r.output);
+    r = term::run("Start-Process ping.exe -ArgumentList '-n','60','127.0.0.1' -NoNewWindow; Start-Sleep 60", cwd, "", 3);
+    check("timeout ends it and its children", r.timed_out && r.seconds < 15, std::to_string(r.seconds));
+    r = term::run("1..100000", cwd, "", 60);
+    check("long output cut", r.truncated && r.output.size() < term::kMaxOut + 200 && r.output.find("100000") != std::string::npos,
+          std::to_string(r.output.size()));
+  }
+  fs::remove_all(root, ec);
+  printf(fails ? "test_chat_store: %d FAILED\n" : "test_chat_store: all passed\n", fails);
+  return fails ? 1 : 0;
+}

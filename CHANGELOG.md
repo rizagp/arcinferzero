@@ -14,7 +14,52 @@
   `stream=true`) plus the formats above; its GPU memory comes off `--ctx auto`'s context; it takes turns with the
   model on the GPU; limits: 180 minutes, one at a time and 4 waiting. Details: [docs/whisper-native.md](docs/whisper-native.md).
 
+## 2026-10-26: web UI documents, one folder per chat, terminal tool
+
+- **One folder per chat** (tools/server_files.h): `chats\<date> <first words> (<id>)\` with `chat.json` and the
+  chat's files under their own names (a name taken: `name (2).ext`), `.files.json` (id, name, time) and `.src\` (the
+  sources of the documents the model wrote). The folder gets its name at the chat's first save. A file attached from
+  another chat (@) becomes a hard link, so its bytes are kept once; deleting a chat deletes its folder (a file another
+  chat holds stays there); files put into a folder or deleted by hand show up in the Files panel at its next listing.
+  Uploads take a `chat_id` (form field or query). The first version's `uploads\` and `chats\<id>.json` are still read.
+- **Documents the model writes** (tools/doc_writer.h, `POST /v1/tools/create_document`): DOCX (every part in the
+  schema's element order, checked in Word: no repair prompt), PDF 1.4 (standard fonts, real text, justified lines,
+  tables that continue on the next page with their header row, page numbers), DOC (RTF, which Word opens as a
+  document), RTF and Markdown, from Markdown with inline HTML for underline, colors and sizes. Options: page size and
+  orientation, margins, font, size, line spacing, heading / table / text colors, header, footer, page numbers. The
+  file shows as a card in the answer. `POST /v1/tools/list_files` and `/v1/tools/read_file` (a text file in parts; a
+  document the model wrote: its source, so a correction makes a new version; a file's name works as well as its id).
+  The **Files** setting (on) gives the model the three tools.
+- **Terminal tool** (tools/server_terminal.h, `POST /v1/tools/run_command`): one PowerShell command in the chat's
+  folder, with arcinferzero's folder on PATH, 2 minutes by default (up to 10), ended with every process it started
+  (a job object), output up to 64 KB (the start and the end of a longer one). The **Terminal** setting: off (default)
+  / ask each time (Run / Don't run in the command's card) / run without asking. Refused to every connection that does
+  not come from this computer (`--host` too), to foreign pages (Origin check), and with `--no-terminal`.
+- Per-message **Edit** and **Delete** (with the message's files), and **Data** in the settings (clear the chats, or
+  the chats and files). Saved chats show their tool cards again (documents as file cards, commands with their output).
+- Checks: `tests/test_chat_store.cpp` (28 checks: folders, renames, hard links, files changed by hand, deleting; the
+  terminal's output, exit code, timeout and long output), in `tests/run_tests.ps1`; `tools/doc_test.cpp` writes a
+  sample in every format. Tried with Qwen3.5 4B in the web UI: notes to DOCX, a corrected version (Arial, dark red
+  headings; Word opens it), a command allowed and one refused (the model asked instead of trying again), @ a file into
+  a new chat, the old chat deleted.
+
 ## 2026-10-25: the NPU next to the GPU (`--npu on`); Flint support removed; the model list without duplicates
+
+- **Web UI rebuilt, laid out like WhatsApp Web**: the chats kept in the browser (searchable), the model picker in the
+  chat header (the server switches on the next message), message bubbles with times, the settings behind a gear.
+  No max-tokens field any more and nothing sent for it: an answer may use the rest of the context (before, the UI's
+  4096 counted the reasoning too, so a long thinking pass could end the reply before its answer). No temperature
+  sent unless set: the server samples as the model file recommends. Thinking offered as the model has it (Qwen3.8
+  off / low / medium / high, others on / off), from `/props` (new: `thinking`, `reasoning_effort`, `sampling`,
+  `think_budget`). Voice messages (record, then send) next to Talk, both ready for Whisper speech to text
+  (`speech_to_text` in `/props`). Streamed answers are drawn once per frame instead of per token.
+- **Chats and files on disk** (tools/server_files.h): the web UI's chats in `%USERPROFILE%\arcinferzero\chats\`, attached
+  files uploaded once into `uploads\<yyyy-mm>\` (content-addressed: the same file kept once) and sent as references
+  (`{"type": "file", "file": {"file_id"}}` parts; the server reads documents as text with their name, type, size and
+  upload time, images and audio from disk). `@` in the message attaches an earlier file again; a Files panel lists
+  every file with the chats using it and deletes files (one, selected, or all unused). New endpoints: `/v1/files`
+  (POST upload, GET list, DELETE `/v1/files/<id>`, POST `/v1/files/delete_unused`), `/files/<id>`, `/v1/chats`
+  (GET, PUT, DELETE per chat). Every user message carries the time it was sent, so the model knows the day and time.
 
 - **The data folder moved to `%USERPROFILE%\arcinferzero`** (`C:\Users\<name>\arcinferzero`, visible in Explorer;
   `ARC_DATA_DIR` overrides it): kernel cache, NPU graphs, model packages and expert files, sessions, prefix cache,

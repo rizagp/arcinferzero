@@ -28,6 +28,9 @@
 #include "tool_constraint.h"
 #include "sampler.h"
 #include "web_tools.h"
+#include "server_files.h"
+#include "doc_writer.h"
+#include "server_terminal.h"
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
@@ -237,6 +240,21 @@ class Server {
       if (!whisper_props_.is_null()) r.set("whisper", whisper_props_);
       r.set("mtp", eng_.has_mtp);
       r.set("mtp_drafts", eng_.opt.mtp_drafts);
+      {  // (the web UI's controls follow the model: its thinking switch, Qwen3.8's effort levels, the GGUF's sampling)
+        const std::string& tpl = eng_.gguf().get_str("tokenizer.chat_template");
+        r.set("thinking", tpl.empty() || tpl.find("enable_thinking") != std::string::npos);
+        Json eff = Json::array();
+        if (q38_)
+          for (const char* e : {"low", "medium", "xhigh"}) eff.push(e);
+        r.set("reasoning_effort", eff);
+        Json smp = Json::object();
+        smp.set("temperature", (double)defaults_.temperature);
+        smp.set("top_p", (double)defaults_.top_p);
+        smp.set("top_k", (double)defaults_.top_k);
+        smp.set("min_p", (double)defaults_.min_p);
+        r.set("sampling", smp);
+        r.set("think_budget", default_think_budget_);
+      }
       {  // GPU memory now (bytes): parts of the loaded model, encoders loaded since (on first use)
         const Engine::MemParts mp = eng_.mem_parts(eng_.ctx);
         Json mem = Json::object();
@@ -722,13 +740,365 @@ class Server {
 #include "server_load.h"  // (loading a model)
 #include "server_whisper.h"  // (Whisper: /v1/audio/transcriptions)
 
+// The web UI's file tools for the model (it calls them as functions, the page runs them here):
+//   create_document {filename, format: docx | pdf | doc | rtf | md, content (Markdown, tools/doc_writer.h), title,
+//                    subtitle, author, date, page, orientation, margins_mm, font, font_size, line_spacing,
+//                    heading_color, accent_color, text_color, header, footer, page_numbers, chat_id}: writes the file
+//                    into the chat's folder (and its source next to it), returns it as a file
+//   list_files {kind, name_contains, within_hours, chat_id, limit}: the saved files, newest first, with their metadata
+//   read_file {file_id (or its name), offset, max_chars, chat_id}: a text file's content in parts; a document the model wrote: its source
+//                    (to make a corrected version); an image / audio / other binary file: its metadata
+//   run_command {command, chat_id, timeout_s}: one PowerShell command in the chat's folder (tools/server_terminal.h),
+//                    sent by the page only after the user allowed it; refused (403) to any computer but this one
+static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
+  auto& st = files::store();
+  auto reply = [&](int code, const Json& j) { rs.send(code, "application/json", j.dump()); };
+  auto fail = [&](int code, const std::string& m) {
+    Json e = Json::object(), r = Json::object();
+    e.set("message", m);
+    r.set("error", e);
+    reply(code, r);
+  };
+  Json a;
+  if (!Json::try_parse(rq.body, a) || !a.is_object()) return fail(400, "expected a JSON object");
+  auto when = [](int64_t t) {
+    char b[40] = "";
+    const std::time_t ct = (std::time_t)t;
+    std::tm tm{};
+    if (localtime_s(&tm, &ct) == 0) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+    return std::string(b);
+  };
+  try {
+    if (rq.path == "/v1/tools/create_document") {
+      const std::string content = a["content"].str();
+      if (content.empty()) return fail(400, "content (Markdown) required");
+      std::string fmt = files::lower(a["format"].str("docx"));
+      if (fmt != "docx" && fmt != "pdf" && fmt != "doc" && fmt != "rtf" && fmt != "md") return fail(400, "format: docx, pdf, doc, rtf or md");
+      doc::Options o;
+      o.title = a["title"].str();
+      o.subtitle = a["subtitle"].str();
+      o.author = a["author"].str();
+      o.date = a["date"].str();
+      o.page = a["page"].str("A4");
+      o.landscape = files::lower(a["orientation"].str()) == "landscape";
+      if (a["font"].is_string() && !a["font"].str().empty()) o.font = a["font"].str();
+      if (a["font_size"].is_number()) o.font_size = std::clamp(a["font_size"].as_number(), 6.0, 36.0);
+      if (a["line_spacing"].is_number()) o.line_spacing = std::clamp(a["line_spacing"].as_number(), 0.8, 3.0);
+      if (a["margins_mm"].is_number()) for (double& m : o.margin_mm) m = std::clamp(a["margins_mm"].as_number(), 5.0, 60.0);
+      else if (a["margins_mm"].is_array())
+        for (size_t k = 0; k < 4 && k < a["margins_mm"].items().size(); ++k) o.margin_mm[k] = std::clamp(a["margins_mm"].items()[k].as_number(20), 5.0, 60.0);
+      for (auto [key, dst] : {std::pair<const char*, std::string*>{"heading_color", &o.heading_color}, {"accent_color", &o.accent_color}, {"text_color", &o.text_color}})
+        if (const std::string c = doc::hex_color(a[key].str()); !c.empty()) *dst = c;
+      o.header = a["header"].str();
+      o.footer = a["footer"].str();
+      if (a["page_numbers"].is_bool()) o.page_numbers = a["page_numbers"].as_bool();
+      std::string name = files::safe_name(a["filename"].str(o.title.empty() ? "document" : o.title));
+      if (files::ext_of(name) != fmt) name += "." + fmt;
+      std::string data;
+      if (fmt == "docx") data = doc::docx(content, o);
+      else if (fmt == "pdf") data = doc::pdf(content, o);
+      else if (fmt == "doc" || fmt == "rtf") data = doc::rtf(content, o);
+      else data = (o.title.empty() ? "" : "# " + o.title + "\n\n") + content;
+      const std::string chat = files::valid_id(a["chat_id"].str()) ? a["chat_id"].str() : "";
+      const files::Info i = st.put(name, data, chat);
+      st.put_source(i.id, chat, rq.body);
+      Json r = files::info_json(i);
+      r.set("file_id", i.id);
+      r.set("note", "created; the user sees it as a file card in your answer (download / open). To change it, read its "
+                    "source with read_file and call create_document again: that makes a new version.");
+      return reply(200, r);
+    }
+    if (rq.path == "/v1/tools/list_files") {
+      const std::string kind = files::lower(a["kind"].str()), q = files::lower(a["name_contains"].str()), chat = a["chat_id"].str();
+      const double hours = a["within_hours"].as_number(0);
+      const int limit = (int)std::clamp(a["limit"].as_number(50), 1.0, 200.0);
+      const auto uses = st.uses();
+      const int64_t now = (int64_t)std::time(nullptr);
+      Json d = Json::array();
+      for (const files::Info& i : st.list()) {
+        if (!kind.empty() && i.kind != kind) continue;
+        if (!q.empty() && files::lower(i.name).find(q) == std::string::npos) continue;
+        if (hours > 0 && now - i.created > hours * 3600) continue;
+        auto u = uses.find(i.id);
+        const auto held = st.holders(i.id);
+        if (!chat.empty() && std::find(held.begin(), held.end(), chat) == held.end() &&
+            (u == uses.end() || std::find(u->second.begin(), u->second.end(), chat) == u->second.end()))
+          continue;
+        Json j = Json::object();
+        j.set("file_id", i.id);
+        j.set("filename", i.name);
+        j.set("kind", i.kind);
+        j.set("bytes", (double)i.bytes);
+        j.set("uploaded", when(i.created));
+        std::string src;
+        j.set("written_by_model", st.source(i.id, src));
+        j.set("chats", (double)std::max(held.size(), u == uses.end() ? size_t(0) : u->second.size()));
+        d.push(j);
+        if ((int)d.size() >= limit) break;
+      }
+      Json r = Json::object();
+      r.set("files", d);
+      r.set("count", (double)d.size());
+      return reply(200, r);
+    }
+    if (rq.path == "/v1/tools/read_file") {
+      std::string id = a["file_id"].str();
+      if (id.rfind("file-", 0) == 0) id = id.substr(5);
+      if (id.rfind("/files/", 0) == 0) id = id.substr(7);
+      files::Info i;
+      if (!files::valid_id(id, 16) || !st.get(id, i)) {
+        // (models often pass the name they see: the newest file of that name, this chat's first)
+        const std::string want = files::lower(a["file_id"].str()), chat = a["chat_id"].str();
+        bool found = false;
+        for (const files::Info& x : st.list()) {
+          if (files::lower(x.name) != want) continue;
+          const auto held = st.holders(x.id);
+          const bool here = std::find(held.begin(), held.end(), chat) != held.end();
+          if (!found || here) { i = x; found = true; }
+          if (here) break;
+        }
+        if (!found) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+      }
+      Json r = Json::object();
+      r.set("file_id", i.id);
+      r.set("filename", i.name);
+      r.set("kind", i.kind);
+      r.set("bytes", (double)i.bytes);
+      r.set("uploaded", when(i.created));
+      std::string src;
+      if (st.source(i.id, src)) {  // (the model's own document: its source)
+        Json sj;
+        if (Json::try_parse(src, sj)) r.set("source", sj);
+        r.set("note", "a document written with create_document: 'source' holds its arguments; to correct it, change them and call create_document again");
+        return reply(200, r);
+      }
+      std::string data;
+      if (!files::Store::read(i.path, data)) return fail(500, "cannot read the file");
+      const bool binary = data.find('\0') < std::min<size_t>(data.size(), 8192);
+      if (i.kind != "document" || binary) {
+        r.set("note", i.kind == "image" || i.kind == "audio"
+                          ? "an " + i.kind + ": its content is not text; the user can attach it to a message (@) for a model that " +
+                                (i.kind == "image" ? "sees images" : "hears audio")
+                          : "a binary file (" + files::ext_of(i.name) + "): its text cannot be read here yet");
+        return reply(200, r);
+      }
+      const size_t off = (size_t)std::max(0.0, a["offset"].as_number(0)), mx = (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
+      size_t end = std::min(data.size(), off + mx);
+      while (end < data.size() && end > off && ((unsigned char)data[end] & 0xC0) == 0x80) --end;  // (not inside a UTF-8 character)
+      r.set("content", off < data.size() ? data.substr(off, end - off) : std::string());
+      r.set("offset", (double)off);
+      r.set("total_chars", (double)data.size());
+      if (end < data.size()) r.set("next_offset", (double)end);
+      return reply(200, r);
+    }
+    if (rq.path == "/v1/tools/run_command") {
+      if (!terminal) return fail(404, "the terminal tool is off (--no-terminal)");
+      if (!rq.local_peer) return fail(403, "run_command is only for this computer (the web UI on 127.0.0.1)");
+      const std::string cmd = a["command"].str();
+      if (cmd.empty()) return fail(400, "command required");
+      // (a command line holds 32767 characters: the script goes in as base64 of UTF-16, 2.7 characters a byte)
+      if (cmd.size() > 8000) return fail(400, "command too long (8000 characters at most): split it, e.g. write a script with Set-Content in parts, then run it");
+      const std::string chat = a["chat_id"].str();
+      const std::string cwd = files::valid_id(chat) ? st.chat_dir_make(chat) : app_dir();
+      const int tmo = (int)std::clamp(a["timeout_s"].as_number(120), 1.0, 600.0);
+      std::string path = term::exe_dir();
+      std::error_code ec;
+      if (std::filesystem::is_directory(std::filesystem::path(app_dir()) / "bin", ec)) path = (std::filesystem::path(app_dir()) / "bin").string() + ";" + path;
+      const term::Result t = term::run(cmd, cwd, path, tmo);
+      Json r = Json::object();
+      r.set("exit_code", (double)t.exit_code);
+      r.set("output", t.output);
+      r.set("timed_out", t.timed_out);
+      r.set("truncated", t.truncated);
+      r.set("seconds", std::round(t.seconds * 10) / 10);
+      r.set("cwd", cwd);
+      return reply(200, r);
+    }
+    return fail(404, "no such tool");
+  } catch (const std::exception& e) {
+    return fail(500, e.what());
+  }
+}
+
+// /v1/files (POST multipart upload, GET list with the chats using each file), /v1/files/<id> (DELETE),
+// /v1/files/delete_unused (POST), /files/<id> (GET the bytes; ?download=1 as an attachment), /v1/chats (GET list),
+// /v1/chats/<id> (GET, PUT the web UI's JSON, DELETE: its folder with its files, unless ?keep_files=1)
+static void files_api(const HttpRequest& rq, HttpResponse& rs) {
+  auto& st = files::store();
+  auto fail = [&](int code, const std::string& m) {
+    Json e = Json::object(), r = Json::object();
+    e.set("message", m);
+    r.set("error", e);
+    rs.send(code, "application/json", r.dump());
+  };
+  auto q = [&](const std::string& k) { return ("&" + rq.query + "&").find("&" + k + "=1&") != std::string::npos; };
+  try {
+    if (rq.path == "/v1/files" && rq.method == "POST") {
+      const auto form = apic::parse_multipart(rq.header("content-type"), rq.body);
+      const auto f = form.find("file");
+      if (f == form.end() || f->second.data.empty()) return fail(400, "file required (multipart/form-data, field \"file\")");
+      std::string chat;  // (the chat's folder: a form field chat_id, or ?chat_id=)
+      if (auto c = form.find("chat_id"); c != form.end()) chat = c->second.data;
+      else if (const size_t k = ("&" + rq.query).find("&chat_id="); k != std::string::npos) chat = rq.query.substr(k + 8, rq.query.find('&', k + 8) - k - 8);
+      if (!chat.empty() && !files::valid_id(chat)) return fail(400, "bad chat_id");
+      return rs.send(200, "application/json", files::info_json(st.put(f->second.filename, f->second.data, chat)).dump());
+    }
+    if (rq.path == "/v1/files" && rq.method == "GET") {
+      const auto uses = st.uses();
+      std::map<std::string, std::string> titles;  // (chat id -> title, for "used by")
+      for (const auto& [cid, text] : st.chats_all()) {
+        try { titles[cid] = Json::parse(text)["title"].str(); } catch (const std::exception&) { titles[cid] = cid; }
+      }
+      Json d = Json::array();
+      double total = 0;
+      for (const files::Info& i : st.list()) {
+        Json j = files::info_json(i), by = Json::array();
+        std::vector<std::string> cids = st.holders(i.id);
+        if (auto it = uses.find(i.id); it != uses.end())
+          for (const std::string& cid : it->second)
+            if (std::find(cids.begin(), cids.end(), cid) == cids.end()) cids.push_back(cid);
+        for (const std::string& cid : cids) {
+          if (!titles.count(cid)) continue;  // (a folder whose chat was deleted: its files are unused)
+            Json c = Json::object();
+            c.set("id", cid);
+            c.set("title", titles.count(cid) ? titles[cid] : cid);
+            by.push(c);
+          }
+        j.set("used_by", by);
+        d.push(j);
+        total += (double)i.bytes;
+      }
+      Json r = Json::object();
+      r.set("object", "list");
+      r.set("data", d);
+      r.set("total_bytes", total);
+      return rs.send(200, "application/json", r.dump());
+    }
+    if (rq.path == "/v1/files/delete_unused" && rq.method == "POST") {
+      // (a body {"ids": [...]}: only those files, e.g. the ones of a deleted message; no body: every file)
+      std::set<std::string> only;
+      Json b;
+      const bool limited = !rq.body.empty() && Json::try_parse(rq.body, b) && b["ids"].is_array();  // ([] : none)
+      if (!rq.body.empty() && !limited) return fail(400, "expected no body (every unused file) or {\"ids\": [...]}");
+      if (limited)
+        for (const Json& x : b["ids"].items()) only.insert(x.str());
+      // (a file out of each folder whose chat does not refer to it any more; gone when no chat holds it)
+      const auto uses = st.uses();
+      int n = 0;
+      double freed = 0;
+      for (const files::Info& i : st.list()) {
+        if (limited && !only.count(i.id)) continue;
+        const auto u = uses.find(i.id);
+        auto used_by = [&](const std::string& c) { return u != uses.end() && std::find(u->second.begin(), u->second.end(), c) != u->second.end(); };
+        for (const std::string& c : st.holders(i.id))
+          if (!used_by(c)) st.remove_from(i.id, c);
+        if (u == uses.end()) st.remove(i.id);  // (the old uploads folder's copy)
+        files::Info left;
+        if (!st.get(i.id, left)) { ++n; freed += (double)i.bytes; }
+      }
+      Json r = Json::object();
+      r.set("deleted", n);
+      r.set("freed_bytes", freed);
+      return rs.send(200, "application/json", r.dump());
+    }
+    if (rq.path.rfind("/v1/files/", 0) == 0 && rq.method == "DELETE") {
+      const std::string id = rq.path.substr(10);
+      if (!files::valid_id(id, 16) || !st.remove(id)) return fail(404, "no file " + id);
+      return rs.send(200, "application/json", "{\"deleted\":true}");
+    }
+    if (rq.path.rfind("/files/", 0) == 0 && rq.method == "GET") {
+      files::Info i;
+      std::string data;
+      const std::string id = rq.path.substr(7);
+      if (!files::valid_id(id, 16) || !st.get(id, i) || !files::Store::read(i.path, data)) return fail(404, "no file " + id);
+      // (content-addressed: the same id is always the same bytes)
+      rs.extra = "Cache-Control: max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
+      if (q("download")) rs.extra += "Content-Disposition: attachment; filename=\"" + i.name + "\"\r\n";
+      return rs.send(200, files::mime_of(i.name), data);
+    }
+    if (rq.path == "/v1/chats" && rq.method == "DELETE") {  // every chat; ?files=1: every uploaded file too
+      int nc = 0, nf = 0;
+      double freed = 0;
+      const auto before = st.list();
+      for (const auto& [cid, text] : st.chats_all())
+        if (st.chat_remove(cid, !q("files"))) ++nc;
+      if (q("files"))
+        for (const files::Info& i : st.list()) st.remove(i.id);
+      for (const files::Info& i : before) {
+        files::Info left;
+        if (!st.get(i.id, left)) { ++nf; freed += (double)i.bytes; }
+      }
+      Json r = Json::object();
+      r.set("chats_deleted", nc);
+      r.set("files_deleted", nf);
+      r.set("freed_bytes", freed);
+      return rs.send(200, "application/json", r.dump());
+    }
+    if (rq.path == "/v1/chats" && rq.method == "GET") {
+      Json d = Json::array();
+      for (const auto& [cid, text] : st.chats_all()) {
+        Json c;
+        try { c = Json::parse(text); } catch (const std::exception&) { continue; }  // (an unreadable file: left out)
+        Json j = Json::object();
+        j.set("id", cid);
+        j.set("title", c["title"].str("New chat"));
+        j.set("at", c["at"].as_number(0));
+        j.set("model", c["model"].str(""));
+        j.set("snippet", c["snippet"].str(""));
+        d.push(j);
+      }
+      Json r = Json::object();
+      r.set("data", d);
+      return rs.send(200, "application/json", r.dump());
+    }
+    if (rq.path.rfind("/v1/chats/", 0) == 0) {
+      const std::string id = rq.path.substr(10);
+      if (!files::valid_id(id)) return fail(400, "bad chat id");
+      if (rq.method == "GET") {
+        std::string t;
+        if (!st.chat_get(id, t)) return fail(404, "no chat " + id);
+        return rs.send(200, "application/json", t);
+      }
+      if (rq.method == "PUT" || rq.method == "POST") {
+        Json c = Json::parse(rq.body);  // (checked: only JSON objects are kept)
+        if (!c.is_object()) return fail(400, "a chat is a JSON object");
+        st.chat_put(id, rq.body);
+        return rs.send(200, "application/json", "{\"saved\":true}");
+      }
+      if (rq.method == "DELETE") {
+        std::string t;
+        if (!st.chat_get(id, t)) return fail(404, "no chat " + id);
+        const auto before = st.list();
+        if (!st.chat_remove(id, q("keep_files"))) return fail(404, "no chat " + id);  // (its folder, with its files)
+        int n = 0;
+        if (!q("keep_files")) {
+          const auto uses = st.uses();
+          for (const std::string& fid : files::Store::refs(t))  // (old-layout files of it that no other chat uses)
+            if (!uses.count(fid) && st.holders(fid).empty()) st.remove(fid);
+          for (const files::Info& i : before) {
+            files::Info left;
+            if (!st.get(i.id, left)) ++n;
+          }
+        }
+        Json r = Json::object();
+        r.set("deleted", true);
+        r.set("files_deleted", n);
+        return rs.send(200, "application/json", r.dump());
+      }
+    }
+    return fail(405, "method not allowed");
+  } catch (const std::exception& e) {
+    return fail(500, e.what());
+  }
+}
+
 int main(int argc, char** argv) {
   full_speed_process();
   for (int i = 1; i < argc; ++i)
     if (std::string(argv[i]) == "--list-models") return list_models();
   std::string model, host = "127.0.0.1", alias;
   int port = 8080;
-  bool swap = true, help = false, web_tools = true;
+  bool swap = true, help = false, web_tools = true, terminal = true;
   std::string whisper_opt = "off", whisper_dev = "gpu";
   double whisper_max_min = 180;
   ServeOpts so;
@@ -820,6 +1190,7 @@ int main(int argc, char** argv) {
       if (whisper_dev != "gpu" && whisper_dev != "npu") throw std::runtime_error("--whisper-device: gpu or npu");
     }
     else if (a == "--whisper-max-minutes") whisper_max_min = std::clamp(to_double(a, next()), 1.0, 600.0);
+    else if (a == "--no-terminal") terminal = false;
     else if (a == "--no-prefix-cache") so.prefix_cache = false;
     else if (a == "--prefix-cache-gb") so.prefix_gb = std::clamp(to_double(a, next()), 0.0, 4096.0);
     else if (a == "--help" || a == "-h") help = true;
@@ -909,6 +1280,8 @@ int main(int argc, char** argv) {
             "                        asks the loaded model, if it hears audio); --ctx auto keeps its GPU memory free\n"
             "  --whisper-device gpu|npu  Whisper's encoder on the iGPU (default) or the NPU (the decoder: the iGPU)\n"
             "  --whisper-max-minutes N  longest upload (default 180)\n"
+            "  --no-terminal         no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell in the\n"
+            "                        chat's folder after the user allows it; default: on, this computer only)\n"
             "  A client that closes its connection (Pi: Esc) cancels its request: prompt processing stops within a\n"
             "  layer, generation before the next token.\n");
     return help ? 0 : 1;
@@ -990,6 +1363,13 @@ int main(int argc, char** argv) {
     return rs.send(503, "application/json", r.dump());
   };
   http.handler = [&](const HttpRequest& rq, HttpResponse& rs) {
+    // the web UI's files and chats on disk (tools/server_files.h): no model involved
+    if (rq.path == "/v1/files" || rq.path.rfind("/v1/files/", 0) == 0 || rq.path.rfind("/files/", 0) == 0 ||
+        rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)
+      return files_api(rq, rs);
+    if (rq.method == "POST" && (rq.path == "/v1/tools/create_document" || rq.path == "/v1/tools/list_files" ||
+                                rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/run_command"))
+      return file_tools(rq, rs, terminal);
     // the web UI's tools (tools/web_tools.h): no model involved, so they answer while a model loads or generates
     if (rq.method == "POST" && (rq.path == "/v1/tools/web_search" || rq.path == "/v1/tools/web_fetch")) {
       auto fail = [&](int st, const std::string& m) {

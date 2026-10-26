@@ -226,20 +226,64 @@ before moving or rebuilding the arcinferzero folder.
 
 While the server is running:
 
-- **Web UI**: open http://127.0.0.1:8090/ in a browser to chat directly (text files can be attached with
-  drag-and-drop; images too for Gemma 4 12B / E4B / 26B, Qwen3.5 4B / 9B, Qwen3.8 27B and Qwen3.6 35B: the **Image** button,
-  drag-and-drop, or paste).
-- **Web UI: web search.** Tick **Web** under the message box and the model can search the web (`web_search`) and
+- **Web UI**: open http://127.0.0.1:8090/ in a browser to chat directly. It is laid out like WhatsApp Web:
+  - **Chats** on the left: every conversation is kept by the server in the data folder, **one folder per chat**:
+    `%USERPROFILE%\arcinferzero\chats\<date> <first words> (<id>)\` holds `chat.json` and the chat's files under their
+    own names (uploads, voice messages, documents the model wrote). Search the chats; the pencil starts a new one; the
+    bin on a chat deletes its folder with its files (a file another chat uses too stays there).
+  - **The model** in the chat header: click its name to pick another model or variant; the server loads it with the
+    next message (5-40 s). Under the name: the context used, and whether thinking and web search are on.
+  - **Attachments** with the paperclip, drag-and-drop or paste: text files, images (Gemma 4 12B / E4B / 26B, Qwen3.5
+    4B / 9B, Qwen3.8 27B, Qwen3.6 35B), audio. Each file goes into the chat's folder; messages refer to it, and the model also gets its name,
+    type, size and upload time.
+  - **@ in the message** lists the files uploaded before (filtered as you type): Enter or a click attaches one again,
+    without uploading it again (in another chat's folder it becomes a hard link: the bytes are kept once).
+  - **Files** in the left rail: every saved file of every chat with its size, date and the chats that use it;
+    filter, sort, search, attach it to the message, or delete files one by one, several at once, or all files no chat
+    uses. Files put into a chat's folder by hand show up too.
+  - A message's menu (the arrow on its bubble): **Edit** (correct it and send again) or **Delete** (the message with
+    its answer, and its files when no other message uses them).
+  - The model knows when each message was sent (day, date, time and time zone go with every message).
+  - **Settings** behind the gear (bottom left; on a phone in the chats' header): **Thinking** as the model offers it
+    (Qwen3.8: off / low / medium / high; the other models: on / off), **Files**, **Terminal**, **Web search**, the **Voice** of Talk mode
+    (the Windows voice that reads answers aloud and its rate), **Advanced** (your own temperature instead of the
+    model maker's recommended sampling, which the server takes from the model file; a system prompt), the theme,
+    **Data** (what is stored; clear the chats, or the chats and their files).
+  - There is no answer length limit to set: an answer may use the rest of the context (the reasoning is bounded by
+    the server's thinking budget), and **Compact** in the chat header (or automatically when the context is nearly
+    full) summarizes the earlier messages.
+  - Transcripts and Meetings in the left rail come with Whisper native ([docs/whisper-native.md](docs/whisper-native.md)).
+- **Web UI: web search.** Turn on **Web search** in the settings and the model can search the web (`web_search`) and
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
   on with what it found. The server does the requests itself (Brave Search, Bing when Brave gives nothing) and
   turns pages into plain text; it only reaches public http(s) addresses (nothing on this machine or the local
   network). Other clients can use the same endpoints: `POST /v1/tools/web_search` with `{"query": "..."}` and
   `POST /v1/tools/web_fetch` with `{"url": "...", "offset": 0}`. `--no-web-tools` turns them off.
-- **Web UI: talking.** With Gemma 4 E4B or 12B (they hear audio), press **Talk** and speak: the microphone stays
-  on, the end of each sentence is detected after a second of quiet, the model hears the recording itself and its
-  answer is read aloud while it is written. Speak while it talks to interrupt it; press Talk again to stop. Pick
-  the reading voice and speed in the settings (Windows: Settings > Time & language > Speech adds an Indonesian
-  voice). The audio goes only to this server. Headphones avoid the AI hearing itself.
+- **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
+  (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: text in parts of 12K characters;
+  "read all the files I uploaded today" works) and write documents (`create_document`): **DOCX** (opens in Word without
+  repair), **PDF**, **DOC** (Word 97-2003 compatible, written as RTF, which Word opens as a document), RTF or Markdown,
+  from Markdown with headings, bold / italic / underline / strike / highlight, colors and font sizes, lists, tables
+  (column alignment, a header row repeated on each page), code, rules, centered or justified blocks and page breaks;
+  page size and orientation, margins, font, line spacing, heading and table colors, header, footer and page numbers.
+  The document shows as a file card in the answer (open or download) and is saved in the chat's folder. Ask for a
+  change ("the spacing is too tight", "make the title dark red") and the model reads the document's source and writes
+  a new version next to it (`name (2).docx`).
+- **Web UI: terminal.** **Terminal** in the settings (off by default) lets the model run PowerShell commands on this
+  computer (`run_command`), in the chat's folder, so it can use the chat's files and the programs installed here
+  (arcinferzero's own tools are on its PATH). **Ask each time**: every command waits in its card with **Run** /
+  **Don't run**; **Run without asking**: commands run at once. A command stops after 2 minutes (the model may ask for up
+  to 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
+  on this computer can use it: the server refuses it to other computers (also with `--host`), to pages of other sites,
+  and entirely with `--no-terminal`.
+- **Web UI: voice messages and talking.** The microphone in the message box records a voice message (the bin
+  discards it, Send sends it). The headset in the chat header starts **Talk**: the microphone stays on, the end of
+  each sentence is detected after a second of quiet, and the answer is read aloud while it is written. Speak while
+  it talks to interrupt it; press the headset again to stop. Once the server has Whisper (speech to text, planned:
+  [docs/whisper-native.md](docs/whisper-native.md)) your speech is written as text first, so both work with every
+  model; until then they need Gemma 4 E4B or 12B, which hear the recording themselves. Pick the reading voice and
+  speed in the settings (Windows: Settings > Time & language > Speech adds an Indonesian voice). The audio goes only
+  to this server. Headphones avoid the AI hearing itself.
   With **Web** ticked as well, searches run in the background while you talk: the AI says it is looking, and
   talks about the results when they arrive.
 - **OpenAI API**: base URL `http://127.0.0.1:8090/v1`, any API key (for example `arcinferzero`), model `qwen3.8-27b`
