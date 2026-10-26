@@ -13,6 +13,9 @@
   `/v1/audio/transcriptions` and `/translations` as OpenAI's API (json, text, srt, vtt, verbose_json with words,
   `stream=true`) plus the formats above; its GPU memory comes off `--ctx auto`'s context; it takes turns with the
   model on the GPU; limits: 180 minutes, one at a time and 4 waiting. Details: [docs/whisper-native.md](docs/whisper-native.md).
+- **MP3 / M4A / video audio 13x faster to decode**: the resampler to 16 kHz computes its filter weights once per
+  phase (a 14-minute 48-kHz MP3: 21.4 s -> 1.6 s; bit-identical samples). Checked: MP3 and M4A through
+  `arc-transcribe` and `/v1/audio/transcriptions`.
 
 ## 2026-10-26: web UI documents, one folder per chat, terminal tool
 

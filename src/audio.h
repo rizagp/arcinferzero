@@ -11,9 +11,11 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <shlwapi.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -151,21 +153,37 @@ inline std::vector<float> resample(const std::vector<float>& x, int from, int to
   const size_t n = (size_t)std::floor((double)x.size() * r);
   std::vector<float> y(n);
   const double pi = 3.14159265358979323846;
-#pragma omp parallel for if (n > 100000)
-  for (int64_t i = 0; i < (int64_t)n; ++i) {
-    const double c = i / r;  // position in input samples
-    const int64_t j0 = (int64_t)std::floor(c) - W + 1, j1 = (int64_t)std::floor(c) + W;
-    double acc = 0, wsum = 0;
-    for (int64_t j = j0; j <= j1; ++j) {
-      const double d = c - j, a = 2 * fc * d;
+  // output i sits at input position i * M / L (the rates over their gcd): its taps depend only on the phase
+  // (i * M) % L, so the windowed-sinc weights are computed once per phase (they took a sin and two cos per tap and
+  // output sample: 21 s for 14 minutes of 48-kHz MP3 before)
+  int64_t g = std::gcd(from, to);
+  const int64_t L = to / g, M = from / g, T = 2 * W;
+  std::vector<double> tab((size_t)(L * T)), wsum((size_t)L);
+  for (int64_t p = 0; p < L; ++p) {
+    const double frac = (double)p / L;
+    double ws = 0;
+    for (int64_t k = 0; k < T; ++k) {
+      const double d = frac + W - 1 - k, a = 2 * fc * d;  // (tap k: input sample floor(c) - W + 1 + k)
       const double s = std::fabs(a) < 1e-12 ? 1.0 : std::sin(pi * a) / (pi * a);
       const double t = (d + W) / (2.0 * W);  // window position 0..1
       const double w = (t <= 0 || t >= 1) ? 0 : 0.42 - 0.5 * std::cos(2 * pi * t) + 0.08 * std::cos(4 * pi * t);
-      const double h = 2 * fc * s * w;
-      wsum += h;
-      if (j >= 0 && j < (int64_t)x.size()) acc += h * x[(size_t)j];
+      tab[(size_t)(p * T + k)] = 2 * fc * s * w;
+      ws += tab[(size_t)(p * T + k)];
     }
-    y[(size_t)i] = (float)(wsum != 0 ? acc / wsum : 0);
+    wsum[(size_t)p] = ws;
+  }
+#pragma omp parallel for if (n > 100000)
+  for (int64_t i = 0; i < (int64_t)n; ++i) {
+    const int64_t q = i * M, p = q % L, j0 = q / L - W + 1;
+    const double* h = &tab[(size_t)(p * T)];
+    double acc = 0;
+    if (j0 >= 0 && j0 + T <= (int64_t)x.size()) {
+      for (int64_t k = 0; k < T; ++k) acc += h[k] * x[(size_t)(j0 + k)];
+    } else {
+      for (int64_t k = 0; k < T; ++k)
+        if (j0 + k >= 0 && j0 + k < (int64_t)x.size()) acc += h[k] * x[(size_t)(j0 + k)];
+    }
+    y[(size_t)i] = (float)(wsum[(size_t)p] != 0 ? acc / wsum[(size_t)p] : 0);
   }
   return y;
 }
