@@ -11,6 +11,8 @@ The plan is [whisper-native.md](whisper-native.md). This page records where the 
 | `tools/ref_whisper.cpp` | the f32 CPU reference (0.2x realtime): `--dump-encoder` / `--dump-logits`, `WH_DUMP_DIR` per-layer dumps, `WH_Q8W=1` (weights rounded as Q8_0) |
 | `zero/whisper_engine.h`, `zero/kernels/whisper.cl` | the iGPU engine: Q8_0 int8 GEMMs (gemm.cl), `vit_attn_rows` for the encoder attention, the cross-attention split over the positions (flash decoding) on f16 head-major keys / values, `ARC_WH_Q2=n` (two int8 passes from encoder layer n on; off by default) |
 | `zero/transcribez.cpp` | the CLI: files / folders / wildcards, every format, `--out`, a progress bar or `--progress` JSON lines |
+| `zero/npu/whisper_npu.h`, `zero/npu/npu_ir.h` | the NPU path (`--device npu`): the encoder as three graphs (front, one layer for all 32 layers with its weights as int8 + per-32 f16 scale inputs, the final LayerNorm), compiled once (blob cache); the decoder on the iGPU |
+| `tools/server_whisper.h`, `tools/server.cpp` | the server: `--whisper auto\|DIR`, `--whisper-device gpu\|npu`, `--whisper-max-minutes`; `/v1/audio/transcriptions` and `/translations` as OpenAI's API; Whisper loads before the model and `--ctx auto` keeps its GPU memory free; each Whisper step takes the model engine's lock (one GPU command list) |
 | `src/tokenizer.h`, `src/audio.h`, `build.ps1` | GPT-2 pre-tokenizer constructor; `decode_16k(bytes, max_seconds)` (0 = no limit); `ref_whisper` with `/fp:precise` |
 
 ## Measured
@@ -39,17 +41,22 @@ GPU time on the 60-s clip (greedy): encoder GEMMs 27 % (6.6 TOPS), decoder GEMMs
 (~0.8 TFLOPS: vit_attn_rows is shuffle-bound; FT 8 and more sub-groups per work-group change nothing), cross-attention
 10 %.
 
+**NPU mode** (14-minute file): NPU + iGPU greedy 81 s (10.5x realtime; OpenVINO NPU 144 s + 253 s compiling), beam 5
+91 s; logits KL 0.00052 against the f32 reference (64 / 64 top tokens). It keeps the iGPU free for the LLM: 0.73 GiB
+of GPU memory instead of 1.39 GiB.
+
+**Server** (Qwen3.5 4B loaded, 60-s clip): json / srt / verbose_json with words / text / stream / translations
+answered; beam 5 in 5.2 s with the upload (iGPU), 9.6 s in NPU mode; a chat request at the same time answered
+normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-audio file and an unknown format get
+400.
+
 ## Next steps
 
-1. The NPU path (`--device npu`): one encoder-layer graph (all 32 layers share its shapes: weights as inputs, compiled
-   once) and the decoder per token, through `zero/npu/npu_ir.h` and the graph extension.
-2. The server: `/v1/audio/transcriptions` and `/translations` with Whisper, following OpenAI's API (json, text, srt,
-   verbose_json, vtt; `timestamp_granularities[]`), the other formats as extensions; security (size / duration
-   limits, uploads streamed to disk, content checks, no client paths, temp files cleaned, a bounded queue).
-3. Speed: a faster encoder attention (not shuffle-bound), the decoder through the GEMV kernels, fewer small launches.
-4. Dual decode on windows whose language is ambiguous; the mixed-language sample prompt.
-5. The formats opened in their targets (YouTube, Premiere / Resolve, Remotion), the bench row, docs (README,
-   CHANGELOG, before-after), audit, commit, push.
-6. Then the web UI tabs (Transcript, Meeting), `arc-recorder.exe` (separate process, WASAPI process loopback +
+1. Speed: a faster encoder attention (not shuffle-bound), the decoder through the GEMV kernels, fewer small launches.
+2. Speed: a faster encoder attention (not shuffle-bound), the decoder through the GEMV kernels, fewer small launches.
+2. Dual decode on windows whose language is ambiguous; the mixed-language sample prompt.
+3. The formats opened in their targets (YouTube, Premiere / Resolve, Remotion), the bench row, docs (README,
+   CHANGELOG, before-after).
+4. Then the web UI tabs (Transcript, Meeting), `arc-recorder.exe` (separate process, WASAPI process loopback +
    microphone, `recorder.json` + named pipe, reconnect after a server crash), Talk mode with the choice of Gemma
    hearing directly or Whisper -> any model.

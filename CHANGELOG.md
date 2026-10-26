@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-26: Whisper native (speech to text on the iGPU or the NPU)
+
+- **`arc-transcribe` / `bin\transcribez.exe`**: Whisper large-v3-turbo (faster-whisper's `model.bin` from the
+  Hugging Face cache) on Level Zero: files, folders or wildcards to json, fw / captions (Remotion), srt, vtt, sbv,
+  srv3, ass, ttml, txt, md, csv, tsv in `%USERPROFILE%\arcinferzero\transcripts`; language auto per window, fixed or
+  a list (`id,en`); greedy or beam 5; word timestamps; a progress bar or `--progress` JSON lines. `--device npu`: the
+  encoder on the NPU, the decoder on the iGPU. 14-minute file: iGPU greedy 31.8 s (26.7x realtime, 1.8x OpenVINO's
+  iGPU), beam 5 39.3 s; NPU mode 81 s (OpenVINO NPU 144 s); decoder logits KL 0.00039 (iGPU) / 0.00052 (NPU) against
+  the f32 reference (`tools\ref_whisper`).
+- **Server**: `serverz --whisper auto [--whisper-device npu]` (`arc-server -Whisper auto`) answers
+  `/v1/audio/transcriptions` and `/translations` as OpenAI's API (json, text, srt, vtt, verbose_json with words,
+  `stream=true`) plus the formats above; its GPU memory comes off `--ctx auto`'s context; it takes turns with the
+  model on the GPU; limits: 180 minutes, one at a time and 4 waiting. Details: [docs/whisper-native.md](docs/whisper-native.md).
+
 ## 2026-10-25: the NPU next to the GPU (`--npu on`); Flint support removed; the model list without duplicates
 
 - **The data folder moved to `%USERPROFILE%\arcinferzero`** (`C:\Users\<name>\arcinferzero`, visible in Explorer;

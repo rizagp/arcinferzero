@@ -1009,4 +1009,24 @@ class Transcriber {
   }
 };
 
+// a faster-whisper model folder (model.bin, tokenizer.json) in the Hugging Face cache: large-v3-turbo first
+inline std::string find_model() {
+  namespace fs = std::filesystem;
+  std::vector<fs::path> roots;
+  if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
+  if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
+  if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
+  for (const char* name : {"models--mobiuslabsgmbh--faster-whisper-large-v3-turbo", "models--deepdml--faster-whisper-large-v3-turbo-ct2",
+                           "models--Systran--faster-whisper-large-v3"}) {
+    for (const fs::path& r : roots) {
+      std::error_code ec;
+      const fs::path snaps = r / name / "snapshots";
+      if (!fs::is_directory(snaps, ec)) continue;
+      for (const auto& d : fs::directory_iterator(snaps, ec))
+        if (fs::exists(d.path() / "model.bin", ec) && fs::exists(d.path() / "tokenizer.json", ec)) return d.path().string();
+    }
+  }
+  return "";
+}
+
 }  // namespace whisper

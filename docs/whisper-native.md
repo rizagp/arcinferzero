@@ -222,17 +222,28 @@ transcript. A Pi skill / tool can call the same command.
 
 ## Server API
 
-- `POST /v1/audio/transcriptions` (exists today for Gemma 4 audio) gains Whisper: `model` = `whisper-large-v3-turbo`
-  (the default speech model once installed), multipart `file`, `language`, `prompt`, `temperature`, `beam`,
-  `response_format` = `json` | `text` | `srt` | `vtt` | `verbose_json` (segments with their language, and words
-  with `timestamp_granularities[]=word`) | every format of the table above (`srt`, `sbv`, `captions`, `fw`, ...). `POST /v1/audio/translations`: Whisper's translate
-  task. Uploads of any size (a 3-hour file is ~350 MB as m4a): streamed to disk, not held in memory.
-- **Streaming**: `stream=true` sends the segments as server-sent events while a long file is processed (the web UI's
-  progress bar and `arc-transcribe --progress` use it); the live meeting sends each VAD piece with the text so far as
-  `prompt`.
-- **Next to the LLM**: Whisper loads on its first request and stays loaded while there is GPU memory for it; its
-  requests take turns with the LLM's steps the way slots do (a live meeting keeps transcribing while a summary is
-  written). `serverz --whisper auto|off|<model folder>`; `arc-server -Whisper`; the launcher shows its memory.
+Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` (default off),
+`--whisper-device gpu|npu`, `--whisper-max-minutes N` (default 180); `arc-server -Whisper auto [-WhisperDevice npu]`.
+
+- `POST /v1/audio/transcriptions` and `POST /v1/audio/translations`, multipart as OpenAI's API: `file`, `model`,
+  `language`, `prompt`, `temperature` (0 = the fallback through higher temperatures), `response_format` = `json`
+  (`{"text", "usage"}`) | `text` | `srt` | `vtt` | `verbose_json` (segments, and `words` with
+  `timestamp_granularities[]=word`), `stream=true` (server-sent events `transcript.text.delta`, then
+  `transcript.text.done` with `usage`). Extensions: `response_format` = `fw` | `captions` | `full_json` | `sbv` | `srv3`
+  | `ass` | `ttml` | `md` | `csv` | `tsv`; `language` = `auto` or a list (`id,en`); `beam_size` 1..5 (default 5);
+  `condition_on_previous_text=false`; `transcript.progress` events (`done`, `total` seconds) while streaming.
+- Which model answers: Whisper, unless `model` names a chat model (the loaded one or one of `--list-models`: then the
+  old path, Gemma 4 hearing the clip). Without `--whisper`, a `model` containing "whisper" gets a 400 that says so.
+- Translation: large-v3-turbo was not trained for the translate task and mostly answers in the spoken language; a
+  chat model translating the transcript is the better route.
+- **Next to the LLM**: Whisper loads before the model; `--ctx auto` keeps its GPU memory free (iGPU 1.39 GiB, NPU mode
+  0.73 GiB plus 0.63 GiB of RAM for the NPU's weights). Each Whisper step (a window's encoder, a decoder token) takes
+  the model engine's lock, as a request's step does: both engines share one GPU command list. A model switch can come
+  between two steps. `/props` has a `whisper` entry (model, device, max_minutes).
+- **Safety**: the upload is held in memory within the HTTP body limit (256 MB) and decoded from memory by Media
+  Foundation (WAV directly); no path or file name from the client is used; decoding stops past the length limit; one
+  transcription runs at a time, at most 4 requests are running or waiting (429 past that); a client that closes its
+  connection stops its transcription at the next window; the server listens on 127.0.0.1 unless `--host` says otherwise.
 
 ## The Transcript function ("Transkrip")
 

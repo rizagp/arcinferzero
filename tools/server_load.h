@@ -25,6 +25,8 @@ struct ServeOpts {
   int img_min = 0, img_max = 0;  // image tokens per image (0 = the encoder's default)
   bool budget_given = false;     // --budget: no automatic choice of resident weights
   bool dflash_auto = true;       // arcinferzero, with MTP: a DFlash2 drafter found for the model drafts too (--no-dflash: not)
+  size_t whisper_bytes = 0;      // GPU memory of the Whisper engine loaded before the model (--whisper): kept free
+  Json whisper_props;            // its /props entry
 };
 struct Loaded {  // destroyed in reverse order: the server before the tokenizer and engine it refers to
   std::unique_ptr<Engine> eng;
@@ -65,8 +67,8 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     if (gemma && (proj || !so.mmproj.empty())) eo.min_chunk = std::max(so.img_max, 2048);
   }
   if (so.ctx_auto) {
-    const size_t enc = encoder_reserve(model, so.mmproj, so.img_max);
-    if (enc) fprintf(stderr, "--ctx auto: %.2f GiB kept for the image / audio encoders\n", enc / 1073741824.0);
+    const size_t enc = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;
+    if (enc) fprintf(stderr, "--ctx auto: %.2f GiB kept for the image / audio encoders%s\n", enc / 1073741824.0, so.whisper_bytes ? " and Whisper" : "");
     AutoCtx a = auto_ctx(model, eo, so.budget_given, enc);
     if (dfl_auto && eo.mtp_block && a.ctx < kDflashMinCtx) {  // (a drafter that leaves little context: the MTP block only)
       fprintf(stderr, "DFlash2 drafter not used: it would leave %d tokens of context (--dflash DIR: use it anyway)\n", a.ctx);
@@ -76,7 +78,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     eo.ctx = a.ctx;
     if (!so.budget_given) eo.w8_budget_gb = a.resident ? 1e9 : eo.w8_budget_gb;
   }
-  if (so.mmproj != "-") eo.stream_reserve = encoder_reserve(model, so.mmproj, so.img_max);  // (streamed experts' cache)
+  eo.stream_reserve = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;  // (streamed experts' cache)
   L->eng = std::make_unique<Engine>(model, eo);
   Engine& eng = *L->eng;
   L->tok = std::make_unique<Tokenizer>(eng.gguf());
@@ -93,6 +95,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   L->srv = std::make_unique<Server>(eng, *L->tok, alias, so.webui);
   Server& srv = *L->srv;
   srv.model_bytes_ = gguf_bytes(model);
+  srv.whisper_props_ = so.whisper_props;
   std::string mmproj = so.mmproj;
   if (!eng.hp.gemma && mmproj != "-") {
     // Qwen vision (dense and MoE): --mmproj, or an mmproj-*.gguf next to the model with a Qwen3-VL projector arcinferzero runs

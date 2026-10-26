@@ -181,6 +181,14 @@ class Server {
   bool has_vision() const { return vision_ != nullptr || qvision_ != nullptr; }
   bool has_audio() const { return audio_ != nullptr && aud_tok_ >= 0; }  // (what a chat request with audio needs)
   uint64_t model_bytes_ = 0;  // the model file's size (/v1/models "models": "size"), set by load_model
+  Json whisper_props_;        // /props "whisper" (the speech model next to this one), set by load_model
+  // f with the engine lock, as a request's step holds it: another engine of the process (Whisper) shares the GPU
+  // runtime's command list with this one
+  void with_engine(const std::function<void()>& f) {
+    std::unique_lock<std::mutex> lk(mu_, std::defer_lock);
+    acquire(lk);
+    f();
+  }
   // The prompt tokens of a chat request (Anthropic's count_tokens): its rendered prompt, each image or audio part
   // counted as its placeholder token
   int count_tokens(const Json& body) {
@@ -226,6 +234,7 @@ class Server {
       mod.set("audio", has_audio());
       r.set("modalities", mod);
       r.set("audio", has_audio());
+      if (!whisper_props_.is_null()) r.set("whisper", whisper_props_);
       r.set("mtp", eng_.has_mtp);
       r.set("mtp_drafts", eng_.opt.mtp_drafts);
       {  // GPU memory now (bytes): parts of the loaded model, encoders loaded since (on first use)
@@ -711,6 +720,7 @@ class Server {
 #include "server_catalog.h"  // (model catalog, --ctx auto)
 
 #include "server_load.h"  // (loading a model)
+#include "server_whisper.h"  // (Whisper: /v1/audio/transcriptions)
 
 int main(int argc, char** argv) {
   full_speed_process();
@@ -719,6 +729,8 @@ int main(int argc, char** argv) {
   std::string model, host = "127.0.0.1", alias;
   int port = 8080;
   bool swap = true, help = false, web_tools = true;
+  std::string whisper_opt = "off", whisper_dev = "gpu";
+  double whisper_max_min = 180;
   ServeOpts so;
   so.eo.ctx = 40960;
   // A bad option value is a message, not an uncaught std::stoi exception (which aborted the process).
@@ -802,6 +814,12 @@ int main(int argc, char** argv) {
     else if (a == "--slots") so.eo.slots = std::clamp(to_int(a, next()), 1, 8);
     else if (a == "--no-swap") swap = false;
     else if (a == "--no-web-tools") web_tools = false;
+    else if (a == "--whisper") whisper_opt = next();
+    else if (a == "--whisper-device") {
+      whisper_dev = next();
+      if (whisper_dev != "gpu" && whisper_dev != "npu") throw std::runtime_error("--whisper-device: gpu or npu");
+    }
+    else if (a == "--whisper-max-minutes") whisper_max_min = std::clamp(to_double(a, next()), 1.0, 600.0);
     else if (a == "--no-prefix-cache") so.prefix_cache = false;
     else if (a == "--prefix-cache-gb") so.prefix_gb = std::clamp(to_double(a, next()), 0.0, 4096.0);
     else if (a == "--help" || a == "-h") help = true;
@@ -885,6 +903,12 @@ int main(int argc, char** argv) {
             "                        --list-models, by id, name or file, makes the server load that one, context auto)\n"
             "  --no-web-tools        no POST /v1/tools/web_search and /v1/tools/web_fetch (the web UI's search and page\n"
             "                        tools; default: on, public http(s) addresses only)\n"
+            "  --whisper auto|DIR|off  speech to text for POST /v1/audio/transcriptions and /translations (OpenAI's\n"
+            "                        API; docs/whisper-native.md): auto = faster-whisper-large-v3-turbo from the Hugging\n"
+            "                        Face cache, DIR = a faster-whisper model folder; default off (the endpoint then\n"
+            "                        asks the loaded model, if it hears audio); --ctx auto keeps its GPU memory free\n"
+            "  --whisper-device gpu|npu  Whisper's encoder on the iGPU (default) or the NPU (the decoder: the iGPU)\n"
+            "  --whisper-max-minutes N  longest upload (default 180)\n"
             "  A client that closes its connection (Pi: Esc) cancels its request: prompt processing stops within a\n"
             "  layer, generation before the next token.\n");
     return help ? 0 : 1;
@@ -900,6 +924,27 @@ int main(int argc, char** argv) {
   if (so.webui.empty()) so.webui = find_dir("webui");
   if (alias.empty()) alias = std::filesystem::path(model).stem().string();
 
+  // Whisper before the model: --ctx auto then leaves its GPU memory free (so.whisper_bytes); the NPU's driver is
+  // initialized before the GPU runtime (which asks for GPUs only) when Whisper or the model uses the NPU
+  std::unique_ptr<srvwh::Service> wh;
+  if (whisper_opt != "off") {
+    const std::string dir = whisper_opt == "auto" ? whisper::find_model() : whisper_opt;
+    try {
+      if (dir.empty()) throw std::runtime_error("no faster-whisper model in the Hugging Face cache (hf download mobiuslabsgmbh/faster-whisper-large-v3-turbo)");
+      const bool npu_wanted = whisper_dev == "npu" || so.eo.npu > 0 || (getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0);
+      if (npu_wanted && ze_load()) zeInit(0);
+      const auto t0 = std::chrono::steady_clock::now();
+      wh = std::make_unique<srvwh::Service>(dir, whisper_dev == "npu", so.eo.kernel_dir);
+      wh->max_seconds = whisper_max_min * 60;
+      so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
+      so.whisper_props = wh->props();
+      fprintf(stderr, "whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), wh->gpu_bytes() / 1073741824.0);
+    } catch (const std::exception& e) {
+      fprintf(stderr, "arcinferzero-server: --whisper: %s\n", e.what());
+      return 1;
+    }
+  }
   std::unique_ptr<Loaded> cur;
   try {  // (a model that cannot load: its reason, not a silent abort)
     cur = load_model(model, alias, so);
@@ -909,6 +954,12 @@ int main(int argc, char** argv) {
   }
   std::vector<ModelInfo> catalog = swap ? scan_models() : std::vector<ModelInfo>();
   std::shared_mutex swap_mu;  // requests share it; switching models takes it exclusively
+  if (wh)  // (each Whisper step: with the loaded model's engine lock; a model switch can come between two)
+    wh->gpu_turn = [&](const std::function<void()>& f) {
+      std::shared_lock<std::shared_mutex> lk(swap_mu);
+      if (cur && cur->srv) cur->srv->with_engine(f);
+      else f();
+    };
   // the catalog entry a request's "model" names (alias, org/repo name or file), rescanning once for new downloads
   // names no catalog entry has (clients send their own: "gpt-4o", "claude-..."): the request stays on the loaded model,
   // and for a minute it takes neither the exclusive lock (it would wait for every running request) nor a rescan
@@ -1044,6 +1095,18 @@ int main(int argc, char** argv) {
       Json req = Json::object();
       auto field = [&](const char* k) { auto it = form.find(k); return it == form.end() ? std::string() : it->second.data; };
       const bool translate = rq.path == "/v1/audio/translations";
+      {  // Whisper (--whisper) unless the request names a chat model (the loaded one or one of the catalog)
+        const std::string want = apic::strip_tag(field("model"));
+        bool chat_model = false;
+        if (!want.empty()) {
+          std::shared_lock<std::shared_mutex> lk(swap_mu);
+          chat_model = cur && want == cur->alias;
+          for (const ModelInfo& m : catalog) chat_model = chat_model || (m.supported && (m.alias == want || m.name == want || m.file == want));
+        }
+        if (wh && !chat_model) return wh->handle(rs, form, translate);
+        if (!wh && want.find("whisper") != std::string::npos)
+          return rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
+      }
       req.set("model", apic::strip_tag(field("model")));
       req.set("response_format", field("response_format").empty() ? "json" : field("response_format"));
       req.set("language", field("language"));

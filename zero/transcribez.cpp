@@ -19,24 +19,6 @@ using namespace whisper;
 
 namespace {
 
-std::string find_model() {
-  std::vector<fs::path> roots;
-  if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
-  if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
-  if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
-  for (const char* name : {"models--mobiuslabsgmbh--faster-whisper-large-v3-turbo", "models--deepdml--faster-whisper-large-v3-turbo-ct2",
-                           "models--Systran--faster-whisper-large-v3"}) {
-    for (const fs::path& r : roots) {
-      std::error_code ec;
-      const fs::path snaps = r / name / "snapshots";
-      if (!fs::is_directory(snaps, ec)) continue;
-      for (const auto& d : fs::directory_iterator(snaps, ec))
-        if (fs::exists(d.path() / "model.bin", ec) && fs::exists(d.path() / "tokenizer.json", ec)) return d.path().string();
-    }
-  }
-  return "";
-}
-
 // files from the arguments: a file, every audio / video file of a folder, or a wildcard (* ?) in the file name
 std::vector<fs::path> expand(const std::string& a) {
   std::vector<fs::path> out;

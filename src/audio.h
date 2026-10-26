@@ -71,7 +71,8 @@ inline bool parse_wav(const std::vector<uint8_t>& b, std::vector<float>& mono, i
 }
 
 // Any container Media Foundation can read (mp3, m4a/aac, flac, wma, wav, ...), decoded to float, mixed to mono.
-inline std::vector<float> decode_mf(const std::vector<uint8_t>& bytes, int& rate) {
+// max_seconds > 0: decoding stops past it (the caller refuses the clip; a long file does not fill the memory first)
+inline std::vector<float> decode_mf(const std::vector<uint8_t>& bytes, int& rate, double max_seconds = 0) {
   struct Com {
     bool ok;
     Com() { ok = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)); MFStartup(MF_VERSION, MFSTARTUP_LITE); }
@@ -124,6 +125,7 @@ inline std::vector<float> decode_mf(const std::vector<uint8_t>& bytes, int& rate
         s->Release();
       }
       if (flags & (MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READERF_ERROR)) break;
+      if (max_seconds > 0 && (double)mono.size() > max_seconds * rate) break;
     }
   } catch (...) {
     if (cur) cur->Release();
@@ -174,7 +176,7 @@ inline std::vector<float> resample(const std::vector<float>& x, int from, int to
 inline std::vector<float> decode_16k(const std::vector<uint8_t>& bytes, double max_seconds = 600) {
   std::vector<float> s;
   int rate = 0;
-  if (!parse_wav(bytes, s, rate)) s = decode_mf(bytes, rate);
+  if (!parse_wav(bytes, s, rate)) s = decode_mf(bytes, rate, max_seconds);
   if (s.empty()) throw std::runtime_error("audio: no samples");
   // (a hostile or broken file: an odd sample rate makes the resampling window huge)
   if (rate < 1000 || rate > 384000) throw std::runtime_error("audio: unsupported sample rate " + std::to_string(rate));

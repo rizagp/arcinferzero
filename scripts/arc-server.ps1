@@ -30,6 +30,8 @@ param(
   [switch]$NoStream,
   [int]$Slots = 0,
   [ValidateSet("", "on", "off")] [string]$Npu = "",
+  [string]$Whisper = "",
+  [ValidateSet("", "gpu", "npu")] [string]$WhisperDevice = "",
   # the other server options (0 / empty / off = the server's default)
   [int]$MtpDrafts = 0,
   [int]$ThinkBudget = 8192,
@@ -210,6 +212,10 @@ Options for start / restart:
   -Npu on|off                    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
                                  the model changes (pi-arc, Pi's /model); off again after restart / stop
+  -Whisper auto|off|<folder>     speech to text at /v1/audio/transcriptions (OpenAI's API) with Whisper
+                                 large-v3-turbo from the Hugging Face cache (auto) or a faster-whisper folder;
+                                 its GPU memory (iGPU 1.4 GB, NPU mode 0.7 GB) comes off the context. Kept like -Npu
+  -WhisperDevice gpu|npu         Whisper's encoder on the iGPU (default) or the NPU
   -NoStream                      every expert on the GPU: no expert file, no SSD reads; MoE models then get a
                                  smaller context. Without it, MoE models (35B, Flash Next, Gemma 4 26B) keep their
                                  experts (MTP layer included) on the SSD and the most used ones in a GPU cache
@@ -319,6 +325,11 @@ if (-not $PSBoundParameters.ContainsKey("Slots") -and $st -and "$($st.extra)" -m
 # -Npu on: the NPU next to the GPU for prompts (serverz --npu on). A start on another model (pi-arc, Pi's /model
 # inside the server) keeps a running server's setting; restart, or a start after stop, is off unless -Npu on is given
 if (-not $Npu -and $Action -eq "start" -and $st -and "$($st.extra)" -match "--npu on") { $Npu = "on" }
+# -Whisper: kept the same way (with its device)
+if (-not $Whisper -and $Action -eq "start" -and $st -and "$($st.extra)" -match '--whisper ("[^"]*"|\S+)') {
+  $Whisper = $Matches[1].Trim('"')
+  if (-not $WhisperDevice -and "$($st.extra)" -match "--whisper-device (\S+)") { $WhisperDevice = $Matches[1] }
+}
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
 # the other options, as server arguments (also kept in the state file: a change restarts the server)
@@ -326,6 +337,10 @@ $extra = @()
 if ($MtpDrafts -gt 0) { $extra += @("--mtp-drafts", $MtpDrafts) }
 if ($Slots -gt 1) { $extra += @("--slots", $Slots) }
 if ($Npu -eq "on") { $extra += @("--npu", "on") }
+if ($Whisper -and $Whisper -ne "off") {
+  $extra += @("--whisper", $(if ($Whisper -eq "auto") { "auto" } else { "`"$Whisper`"" }))
+  if ($WhisperDevice -eq "npu") { $extra += @("--whisper-device", "npu") }
+}
 if ($ImageMinTokens -gt 0) { $extra += @("--image-min-tokens", $ImageMinTokens) }
 if ($ImageMaxTokens -gt 0) { $extra += @("--image-max-tokens", $ImageMaxTokens) }
 if ($BudgetGb -gt 0) { $extra += @("--budget", $BudgetGb) }
@@ -340,7 +355,7 @@ if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with
 $extraKey = "$($extra -join ' ')|think $ThinkBudget"
 # (compared with the running server's only when given: pi-arc's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Whisper", "WhisperDevice" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and

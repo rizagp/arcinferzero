@@ -73,7 +73,10 @@ inline std::map<std::string, FormField> parse_multipart(const std::string& conte
     if (n != std::string::npos) name = head.substr(n + 6, head.find('"', n + 6) - n - 6);
     const size_t fn = head.find("filename=\"");
     if (fn != std::string::npos) ff.filename = head.substr(fn + 10, head.find('"', fn + 10) - fn - 10);
-    if (!name.empty()) f[name] = ff;
+    // (a repeated array field, "timestamp_granularities[]": its values joined with commas)
+    const bool arr = name.size() > 2 && name.compare(name.size() - 2, 2, "[]") == 0;
+    if (arr && f.count(name)) f[name].data += "," + ff.data;
+    else if (!name.empty()) f[name] = ff;
     pos = next + 2;
   }
   return f;
