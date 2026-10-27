@@ -17,6 +17,8 @@
 #include "../src/whisper_formats.h"
 #include "../zero/whisper_engine.h"
 #include "api_compat.h"
+#include "server_files.h"
+#include "../src/image.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -305,6 +307,103 @@ class Service {
       body = whisper::render(fmt == "full_json" ? "json" : fmt, r, co, "transcript", opt.task);
     }
     rs.send(200, ty->second, body);
+  }
+
+  // ---------------------------------------------------------------- audio in a chat
+  // A chat request's audio parts as text, for a model that does not hear audio (or when the request says "speech":
+  // "whisper"): a file part of an audio file (the web UI's attachments, voice messages) or an input_audio part
+  // (base64, a data URL, "/files/<id>"), each transcribed (beam 5, the engine a window at a time) and cached by its
+  // bytes, since every turn of the chat sends it again. A transcript of more than kInlineChars characters becomes a
+  // text file in the chat's folder, given as that file: the chat reads it as a document (with the file tools, its
+  // outline and the parts it needs). False and the reason when a clip cannot be read.
+  static constexpr size_t kInlineChars = 12000;
+  static bool has_audio_parts(const Json& body) {
+    for (const Json& m : body["messages"].items())
+      for (const Json& p : m["content"].items()) {
+        const std::string ty = p["type"].str();
+        if (ty == "input_audio" || ty == "audio") return true;
+        if (ty == "file" || ty == "input_file") {
+          std::string id = p[ty == "file" ? "file" : "input_file"]["file_id"].str(p["file_id"].str());
+          if (id.rfind("/files/", 0) == 0) id = id.substr(7);
+          if (id.rfind("file-", 0) == 0) id = id.substr(5);
+          files::Info i;
+          if (files::valid_id(id, 16) && files::store().get(id, i) && i.kind == "audio") return true;
+        }
+      }
+    return false;
+  }
+  bool audio_to_text(Json& body, std::string& bad) {
+    Json msgs = Json::array();
+    for (const Json& m : body["messages"].items()) {
+      if (!m["content"].is_array()) { msgs.push(m); continue; }
+      Json mm = Json::object(), parts = Json::array();
+      for (const auto& [k, v] : m.entries())
+        if (k != "content") mm.set(k, v);
+      for (const Json& p : m["content"].items()) {
+        const std::string ty = p["type"].str();
+        std::string data, name = "audio", chat;
+        bool audio = false;
+        try {
+          if (ty == "file" || ty == "input_file") {
+            std::string fid = p[ty == "file" ? "file" : "input_file"]["file_id"].str(p["file_id"].str());
+            if (fid.rfind("/files/", 0) == 0) fid = fid.substr(7);
+            if (fid.rfind("file-", 0) == 0) fid = fid.substr(5);
+            files::Info i;
+            if (files::valid_id(fid, 16) && files::store().get(fid, i) && i.kind == "audio" && files::Store::read(i.path, data)) {
+              audio = true;
+              name = i.name;
+              chat = i.chat;
+            }
+          } else if (ty == "input_audio" || ty == "audio") {
+            const Json& a = p[ty == "audio" ? "audio" : "input_audio"];
+            const std::string d = a.is_string() ? a.str() : a["data"].str();
+            if (!files::store().resolve(d, data)) {
+              const std::vector<uint8_t> b = d.rfind("data:", 0) == 0 ? img::from_data_url(d) : img::base64_decode(d);
+              data.assign(b.begin(), b.end());
+            }
+            audio = true;
+          }
+        } catch (const std::exception& e) {
+          bad = std::string("audio: ") + e.what();
+          return false;
+        }
+        if (!audio) { parts.push(p); continue; }
+        double secs = 0;
+        std::string text;
+        try {
+          text = clip_text(data, secs);
+        } catch (const std::exception& e) {
+          bad = "audio " + name + ": " + e.what();
+          return false;
+        }
+        const int s = (int)std::lround(secs);
+        char len[32];
+        snprintf(len, sizeof len, "%d:%02d", s / 60, s % 60);
+        Json t = Json::object();
+        if (text.size() > kInlineChars) {  // (a long one: as a document)
+          std::string stem = name;
+          const size_t dot = stem.rfind('.');
+          if (dot != std::string::npos && dot > 0) stem.resize(dot);
+          const files::Info f = files::store().put(stem + " (transcript).txt", "Transcript of " + name + " (" + len + ", Whisper):\n\n" + text, chat);
+          Json fr = Json::object();
+          fr.set("file_id", f.id);
+          fr.set("filename", f.name);
+          t.set("type", "file");
+          t.set("file", fr);
+        } else {
+          t.set("type", "text");
+          // (ended by a blank line: the template joins a message's text parts as they are, and the question after it
+          //  ran into the transcript's last word)
+          t.set("text", "[audio: " + name + ", " + len + ", written by Whisper]\n" +
+                            (text.empty() ? std::string("(no speech)") : text) + "\n[end of the audio]\n\n");
+        }
+        parts.push(t);
+      }
+      mm.set("content", parts);
+      msgs.push(mm);
+    }
+    body.set("messages", msgs);
+    return true;
   }
 
   // ---------------------------------------------------------------- saved transcripts (the Transcript tab)
@@ -855,6 +954,33 @@ class Service {
     std::vector<float> x;
     bool finish = false, partial = false;
   };
+  // a clip's text (beam 5, word timestamps off), from the cache when the same bytes came before (64 clips kept)
+  std::string clip_text(const std::string& data, double& secs) {
+    uint64_t h = 1469598103934665603ull;  // (FNV-1a of the bytes)
+    for (unsigned char b : data) h = (h ^ b) * 1099511628211ull;
+    {
+      std::lock_guard<std::mutex> lk(clip_mu_);
+      auto it = clips_.find(h);
+      if (it != clips_.end()) {
+        secs = it->second.second;
+        return it->second.first;
+      }
+    }
+    const std::vector<float> a = audio::decode_16k(std::vector<uint8_t>(data.begin(), data.end()), max_seconds);
+    whisper::Options o;
+    o.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
+    LockedBackend be(*eng_, gpu_turn);
+    whisper::Transcriber tr(*m_, be);
+    const whisper::Result r = tr.run(a, o);
+    std::string text;
+    for (const whisper::Segment& g : r.segments) text += g.text;
+    text = whisper::trim_copy(text);
+    secs = r.duration;
+    std::lock_guard<std::mutex> lk(clip_mu_);
+    if (clips_.size() >= 64) clips_.clear();
+    clips_[h] = {text, secs};
+    return text;
+  }
   // the recording closed: the open utterances and what the resamplers hold go to the queue, then its end (the draft
   // finished, the accurate pass queued)
   void live_stop(const std::shared_ptr<Live>& s) {
@@ -1298,6 +1424,9 @@ class Service {
   std::string running_;
   bool cancel_running_ = false, delete_running_ = false, stop_ = false;
   std::thread worker_;
+  // chat audio's texts, by the clip's bytes
+  std::mutex clip_mu_;
+  std::map<uint64_t, std::pair<std::string, double>> clips_;
   // live recordings
   std::mutex live_mu_;
   std::condition_variable live_cv_;

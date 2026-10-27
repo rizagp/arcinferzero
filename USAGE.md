@@ -278,6 +278,10 @@ While the server is running:
     too. Afterwards **Summarize** (the loaded chat model writes the summary, decisions, action items and open
     questions with their minute, in the meeting's language) and **Minutes DOCX / PDF** (also in the Files panel).
     A recording made elsewhere can be dropped in the Meetings list too.
+  - **Audio in a chat**: an attached audio file or a voice message reaches every model as text written by
+    Whisper (long recordings as a document the model reads by parts). Settings > Voice > **Speech**: "Whisper
+    writes it" (every model), or "The model hears it" (Gemma 4 E4B / 12B get the sound itself; ~0.2 s quicker in
+    Talk).
 - **Web UI: web search.** Turn on **Web search** in the settings and the model can search the web (`web_search`) and
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
   on with what it found. The server does the requests itself (Brave Search, Bing when Brave gives nothing) and

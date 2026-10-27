@@ -183,6 +183,25 @@ panel too). Checked with the browser's capture fed from two test files: Me / Oth
 pass, a mark, the MP3, an Indonesian summary, a 15-KB DOCX; a 56-minute meeting summarized in 3 parts with the 4B
 model (16K context) in ~6 minutes (each part's summary now at most 700 tokens).
 
+**W9 (2026-10-28): speech in a chat.** A chat request's audio (a file part of an audio file: the web UI's
+attachments and voice messages; or an `input_audio` part) is written by Whisper on the server, in `dispatch`
+before the model's lock, when the loaded model does not hear audio or the request says `"speech": "whisper"`
+(`"model"`: a model that hears it, Gemma 4 E4B / 12B, gets the clip). The text goes in as a text part (ended by a
+blank line: the template joins a message's parts, and the question after it ran into the transcript's last word);
+one of more than 12,000 characters becomes a text file in the chat's folder, read as a document. Transcripts are
+cached by the clip's bytes (each turn sends the audio again). The web UI's setting **Speech** (Voice section):
+Whisper for every model, or the model hears it. Measured:
+
+| | First turn | Next turn |
+|---|---|---|
+| 10-minute voice note (Ogg Opus), Qwen3.5 4B | 38.8 s (Whisper beam 5 + the answer) | 4.3 s (transcript cached) |
+| the same, Qwen3.6 35B-A3B | 46.4 s | 5.8 s |
+| 56-minute recording (MP3), 4B: the transcript as a document (7.7K tokens) | 150.7 s | 12.6 s |
+
+Talk mode, Gemma 4 E4B, a 5-s spoken question to the answer's first token (median of 3): Whisper -> text 0.72 s
+(0.55 s Whisper greedy + 0.17 s), the model hearing the clip 0.50 s (its first call 21.9 s: the audio encoder's
+kernels built once). Whisper costs ~0.2 s and works with every model.
+
 **NPU mode** (14-minute file): NPU + iGPU greedy 81 s (10.5x realtime; OpenVINO NPU 144 s + 253 s compiling), beam 5
 91 s; logits KL 0.00052 against the f32 reference (64 / 64 top tokens). It keeps the iGPU free for the LLM: 0.73 GiB
 of GPU memory instead of 1.39 GiB.
@@ -201,6 +220,7 @@ normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-a
 4. The Transcripts tab, live recording, the Meetings tab with summaries and minutes: done (W5-W7, above). Left:
    `arc-recorder.exe` (W8: a desktop app's own sound without sharing a tab, recordings that outlive the browser),
    `@` on a recording in a chat (QUEUE 8).
+5. Speech in a chat and the Talk mode choice: done (W9, above).
 4. Then the web UI tabs (Transcript, Meeting), `arc-recorder.exe` (separate process, WASAPI process loopback +
    microphone, `recorder.json` + named pipe, reconnect after a server crash), Talk mode with the choice of Gemma
    hearing directly or Whisper -> any model.

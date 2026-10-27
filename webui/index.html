@@ -414,6 +414,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         </div>
         <div class="sec">
           <h3>Voice (Talk)</h3>
+          <div class="opt"><div class="lab">Speech<small id="speechhelp">How voice messages, Talk and audio files reach the model</small></div>
+            <select id="speech" aria-label="Speech"><option value="whisper">Whisper writes it (every model)</option><option value="model">The model hears it (Gemma 4 E4B / 12B)</option></select></div>
           <div class="opt"><div class="lab">Voice<small>Reads the answers aloud in Talk mode (Windows: Settings &gt; Time &amp; language &gt; Speech adds voices; Edge has natural online voices)</small></div></div>
           <div class="opt"><select id="tts" aria-label="Voice" style="max-width:100%;flex:1"></select></div>
           <div class="opt"><div class="lab">Speaking rate<small>1 = normal</small></div><input type="number" id="ttsrate" step="0.1" min="0.5" max="2" value="1.1" aria-label="Speaking rate"></div>
@@ -545,11 +547,12 @@ function loadPrefs() {
   $("temp").disabled = $("temp").hidden = !$("tempon").checked;
   if (prefs.sys) $("sys").value = prefs.sys;
   $("theme").value = prefs.theme || "";
+  $("speech").value = prefs.speech === "model" ? "model" : "whisper";
   applyTheme();
 }
 function savePrefs() {
   prefs = { ...prefs, web: $("web").checked, ftools: $("ftools").checked, term2: $("term").value, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
-    temp: $("temp").value, sys: $("sys").value, tts: $("tts").value, theme: $("theme").value };
+    temp: $("temp").value, sys: $("sys").value, tts: $("tts").value, theme: $("theme").value, speech: $("speech").value };
   if ($("thinkmode").value) prefs.think = $("thinkmode").value;
   store.set("arcinferzero-prefs", prefs);
 }
@@ -558,7 +561,7 @@ function applyTheme() {
   else delete document.documentElement.dataset.theme;
 }
 loadPrefs();
-["web", "ftools", "term", "ttsrate", "temp", "sys", "tts", "thinkmode"].forEach((id) => $(id).addEventListener("change", savePrefs));
+["web", "ftools", "term", "ttsrate", "temp", "sys", "tts", "thinkmode", "speech"].forEach((id) => $(id).addEventListener("change", savePrefs));
 $("tempon").addEventListener("change", () => { $("temp").disabled = $("temp").hidden = !$("tempon").checked; savePrefs(); });
 $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
@@ -938,7 +941,7 @@ function updateButtons() {
   $("attach").hidden = rec.on;
   document.querySelector(".pill").hidden = rec.on;
   $("talk").classList.toggle("on", voice.on);
-  const how = caps.stt ? "speech to text by Whisper, for every model" : "Gemma 4 E4B / 12B, which hear audio";
+  const how = sttOn() ? "speech to text by Whisper, for every model" : "Gemma 4 E4B / 12B, which hear audio";
   $("talk").title = voice.on ? "Talking: click to stop" : "Talk with the AI: the microphone stays on, you speak, it answers aloud; speak to interrupt it (" + how + ")";
   $("rec").title = "Voice message: record, then send (" + how + ")";
 }
@@ -1623,6 +1626,7 @@ async function streamTurn(el, st, onOverflow, job) {
       chat_template_kwargs: { enable_thinking: think.on } };
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
+    if (caps.stt) body.speech = sttOn() ? "whisper" : "model";  // (audio attached: the server's Whisper writes it, or the model hears it)
     if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termUsable(job.id) ? TERM_TOOLS : [])];
     kick();
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
@@ -2271,6 +2275,8 @@ const fileRefs = (h) => [...JSON.stringify(h).matchAll(/\/files\/([0-9a-f]{16})|
 // it the recording goes to a model that hears audio itself (Gemma 4 E4B / 12B) as before.
 const NEED_STT = "Voice needs Whisper on the server (coming: docs/whisper-native.md) or a model that hears audio (Gemma 4 E4B / 12B)";
 const canHear = () => !!caps.stt || hasAudio;
+// Whisper writes the speech (every model gets text), unless the setting says the model hears it itself and it can
+function sttOn() { return !!caps.stt && !($("speech").value === "model" && hasAudio); }
 async function transcribe(url, signal) {
   const fd = new FormData();
   fd.append("file", await (await fetch(url)).blob(), "speech.wav");
@@ -2338,7 +2344,7 @@ async function sendVoice() {
   let url;
   try { url = await pcmToWav16k(joinPcm(r.frames), r.rate); }
   catch (e) { note("the recording could not be converted: " + (e.message || e)); return; }
-  if (caps.stt) {
+  if (sttOn()) {
     voice.status("writing the voice message as text…");
     try {
       const text = await transcribe(url);
@@ -2470,7 +2476,7 @@ const voice = {
     try { url = await pcmToWav16k(pcm, rate); }  // (not awaited by its caller: no rejection left unhandled)
     catch (e) { this.status(String(e.message || e)); return; }
     let said = "";
-    if (caps.stt) {  // (Whisper writes it down: the model gets text)
+    if (sttOn()) {  // (Whisper writes it down: the model gets text)
       try { said = await transcribe(url); } catch (e) { this.status(String(e.message || e)); return; }
       if (!said) { this.status("listening…"); return; }
     }
@@ -2480,12 +2486,12 @@ const voice = {
       // started again: it belonged to the Talk that ended, and the new one's first utterance must not carry it along
       if (!this.on) {
         if (said) input.value = said;
-        else if (!caps.stt) { pending.push({ kind: "audio", url }); renderAtts(); }
+        else if (!sttOn()) { pending.push({ kind: "audio", url }); renderAtts(); }
       }
       this.merge = null;
       return;
     }
-    if (!caps.stt) pending.push({ kind: "audio", url });  // (no Whisper: the model hears the clip itself)
+    if (!sttOn()) pending.push({ kind: "audio", url });  // (the model hears the clip itself)
     // the previous utterance and its answer leave the conversation: only while that message is still this chat's
     // (another chat opened, or a deleted message, and nothing is removed)
     const m = this.merge;

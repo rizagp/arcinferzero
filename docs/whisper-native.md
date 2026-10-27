@@ -258,6 +258,9 @@ Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` 
   format; `max_chars`, `max_lines`, `max_cue_s`, `word_cues=1`) with the file name; `GET /v1/transcripts/<id>/media`
   (byte ranges); `POST /v1/transcripts/<id>/cancel`; `DELETE /v1/transcripts/<id>`. One file at a time, after the
   OpenAI endpoint's requests in its lock; 507 when the disk lacks the file's size + 512 MB.
+- **Audio in a chat**: `/v1/chat/completions` (and the APIs routed through it) writes a request's audio with
+  Whisper when the loaded model does not hear audio, or with `"speech": "whisper"`; `"speech": "model"` keeps
+  it as audio for Gemma 4 E4B / 12B. A long transcript (12,000+ characters) goes in as a text file (a document).
 - **Live recordings** (the Transcripts tab's Live, the Meetings tab): `POST /v1/live` `{name, language, terms,
   beam_size, tracks: 1 | 2, rate, speakers, kind, mp3_kbps}` -> a transcript record with status `live`;
   `POST /v1/live/<id>/audio?since=N` 16-bit PCM, the tracks interleaved -> `{segments, partial, count, heard_s,

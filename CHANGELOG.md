@@ -2,6 +2,9 @@
 
 ## 2026-10-28: Transcripts and Meetings in the web UI
 
+- **Every model hears**: an audio file or voice note attached in a chat is written by Whisper, so Qwen and the
+  others answer about it (a 10-minute voice note: 39 s the first time, 4 s for each next question). Settings >
+  Voice > **Speech** chooses, for Gemma 4 E4B / 12B, whether Whisper writes it or the model hears it itself.
 - **Transcripts tab**: drop audio or video files; each is transcribed in the queue with its progress; the
   transcript plays with its media, the word being said lit; click a word to play from it, double-click a line to
   correct it, find and replace a term everywhere, and export SRT, VTT, YouTube, ASS, TTML, text, Markdown, CSV,

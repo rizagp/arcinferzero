@@ -1938,6 +1938,28 @@ int main(int argc, char** argv) {
         return rs.send(503, "application/json", r.dump());
       }
     }
+    // audio the model does not hear itself (or "speech": "whisper" in the request): Whisper writes it as text first,
+    // here, before the model's lock (Whisper's GPU turns take it), for every API the adapters bring through here;
+    // "speech": "model" keeps it as audio for a model that hears it (Gemma 4 E4B / 12B)
+    if (chat_post && wh) {
+      Json in;
+      if (Json::try_parse(rq.body, in) && srvwh::Service::has_audio_parts(in)) {
+        bool hears = false;
+        {
+          std::shared_lock<std::shared_mutex> lk(swap_mu);
+          hears = cur && cur->srv->has_audio();
+        }
+        const std::string speech = in["speech"].str();
+        if (speech == "whisper" || (speech != "model" && !hears)) {
+          std::string bad;
+          if (!wh->audio_to_text(in, bad))
+            return rs.send(400, "application/json", "{\"error\":{\"message\":" + Json(bad).dump() + ",\"type\":\"invalid_request_error\"}}");
+          HttpRequest rq2 = rq;
+          rq2.body = in.dump();
+          return dispatch(rq2, rs);
+        }
+      }
+    }
     // n > 1 (several answers to one chat request; here in dispatch, which the API adapters call too, so that
     // /v1/completions takes n): the request runs n times (the prompt is cached after the first;
     // a given seed changes per answer); not with streaming
