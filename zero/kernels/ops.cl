@@ -633,7 +633,7 @@ inline uint4 pack_p(int q) {
 // swamp the rest). The GEMM-like loops always go over the KC 64-dim chunks of a row.
 // Scores of a 16-key tile for HS q heads (lane = key): int8 DP4a sums scaled by q and K scales -> sacc.
 // KW_EXPR reads K word w of chunk c for this lane's key; sob = scale index of (tile, block 0, this lane).
-#if SB == 1
+#if SB == 1 && HS >= 4
 #define QK_TILE(KW_EXPR, sob)                                                           \
   {                                                                                     \
     int acc[HS];                                                                        \
@@ -646,6 +646,32 @@ inline uint4 pack_p(int q) {
       }                                                                                 \
     const float ks = ksc[sob];                                                          \
     _Pragma("unroll") for (int r = 0; r < HS; ++r) sacc[r] = (float)acc[r] * qs[r][0] * ks; \
+  }
+#elif SB == 1
+// (HS <= 3: two integer sums per head, even and odd words, added before the conversion: exact, so the same scores,
+//  with twice the independent DP4a chains; 27B (HS 3) 11.6K prompt attention 5.09-5.14 -> 4.61-4.72 s. HS 4 (35B):
+//  no faster, one chain per head kept)
+#define QK_TILE(KW_EXPR, sob)                                                           \
+  {                                                                                     \
+    int acc[HS], acc1[HS];                                                              \
+    _Pragma("unroll") for (int r = 0; r < HS; ++r) acc[r] = acc1[r] = 0;                \
+    _Pragma("unroll") for (int c = 0; c < KC; ++c)                                      \
+      _Pragma("unroll") for (int w = 0; w < 16; w += 2) {                               \
+        {                                                                               \
+          const uint kw = KW_EXPR;                                                      \
+          _Pragma("unroll") for (int r = 0; r < HS; ++r)                                \
+            acc[r] += dot_4x8packed_ss_int(intel_sub_group_shuffle(qw[r][c], w), kw);   \
+        }                                                                               \
+        {                                                                               \
+          const int w0_ = w;                                                            \
+          const int w = w0_ + 1;                                                        \
+          const uint kw = KW_EXPR;                                                      \
+          _Pragma("unroll") for (int r = 0; r < HS; ++r)                                \
+            acc1[r] += dot_4x8packed_ss_int(intel_sub_group_shuffle(qw[r][c], w), kw);  \
+        }                                                                               \
+      }                                                                                 \
+    const float ks = ksc[sob];                                                          \
+    _Pragma("unroll") for (int r = 0; r < HS; ++r) sacc[r] = (float)(acc[r] + acc1[r]) * qs[r][0] * ks; \
   }
 #else
 #define QK_TILE(KW_EXPR, sob)                                                           \

@@ -11,6 +11,7 @@
 - `runz --bench-batch N --prof-gen`: the GPU time per kernel of a step alone and batched.
 - Prompt MoE on the 35B 2 % faster (an emulated integer multiply in the expert kernel done in float, same results);
   found by reading the kernels' GPU assembly with ocloc ([docs/kernel-audit-2026-10-27.md](docs/kernel-audit-2026-10-27.md)).
+- Prompt attention of the 27B 9 % faster (two independent sums per head in the score loop, same results).
 
 ## 2026-10-27: Qwen vision encoder faster on the dense models
 
