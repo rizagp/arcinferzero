@@ -1,6 +1,7 @@
 // Checks of tools/doc_reader.h and tools/inflate.h: DOCX and PDF files written by Word (tests/data/doc_sample.docx,
-// doc_sample.pdf: deflated parts and streams, ToUnicode fonts) and by tools/doc_writer.h (stored ZIP, standard PDF
-// fonts) read back as paragraphs with headings and pages; the outline, chunks and BM25 search; damaged input.
+// doc_sample.pdf: deflated parts and streams, ToUnicode fonts; doc_bookmarks.pdf: heading bookmarks, bold list items)
+// and by tools/doc_writer.h (stored ZIP, standard PDF fonts) read back as paragraphs with headings and pages; PDF
+// bookmarks as the outline; the outline, chunks and BM25 search; damaged input.
 //   test_doc_read.exe                 the checks
 //   test_doc_read.exe FILE [QUERY]    a file's outline (and the chunks a query finds): to look at any document
 #include "../tools/doc_reader.h"
@@ -171,6 +172,65 @@ int main(int argc, char** argv) {
     const rdoc::Index ix(p);
     check("outline from the headings", ix.by_headings && ix.outline.size() >= 3, std::to_string(ix.outline.size()));
     check("chunks within their size", std::all_of(ix.chunks.begin(), ix.chunks.end(), [](const rdoc::Chunk& c) { return c.text.size() <= 3700; }));
+  }
+  // a Word PDF with heading bookmarks (tests/data/doc_bookmarks.pdf: headings 1-3, bold list items, bold lines ending
+  // in ':'): the bookmarks are the outline; without them (the catalog's /Outlines renamed) the font rules still keep
+  // the list items out
+  {
+    const std::string pdfs = slurp(dir + "doc_bookmarks.pdf");
+    check("bookmarked PDF fixture present", !pdfs.empty());
+    const rdoc::pdf::File f(pdfs);
+    const auto marks = f.bookmarks(f.pages());
+    check("bookmarks: all seven", marks.size() == 7, std::to_string(marks.size()));
+    check("bookmarks: titles, levels, pages", marks.size() == 7 && marks[0].title == "Bab 1 Pendahuluan" && marks[0].level == 1 &&
+          marks[5].title == "2.1.1 Wilayah Timur" && marks[5].level == 3 && marks[5].page == 2 && marks[6].page == 3);
+    check("bookmarks: a UTF-16 title", marks.size() == 7 && marks[2].title == "1.2 Ringkasan Biaya \xe2\x80\x93 Tahap Awal",
+          marks.size() == 7 ? marks[2].title : "");
+    const rdoc::Doc d = rdoc::read("doc_bookmarks.pdf", pdfs);
+    check("bookmarks: headings at their levels", has(d, "Bab 2 Hasil Kajian", 1) && has(d, "1.1 Latar Belakang", 2) &&
+          has(d, "2.1.1 Wilayah Timur", 3) && has(d, "Bab 3 Rencana Tindak Lanjut", 1));
+    size_t heads = 0;
+    for (const auto& p : d.paras) heads += p.level > 0;
+    check("bookmarks: no other headings", heads == 7, std::to_string(heads));
+    const rdoc::Index ix(d);
+    check("bookmarks: the outline", ix.by_headings && ix.outline.size() == 7 && ix.outline[3].title == "Bab 2 Hasil Kajian" &&
+          ix.outline[3].page == 2, std::to_string(ix.outline.size()));
+    std::string plain = pdfs;
+    for (size_t at = 0; (at = plain.find("/Outlines", at)) != std::string::npos; at += 9) plain[at + 8] = 'X';
+    const rdoc::Doc n = rdoc::read("x.pdf", plain);
+    check("no bookmarks: headings by font", has(n, "Bab 1 Pendahuluan") && !has(n, "Bab 1 Pendahuluan", 0) && !has(n, "2.1.1 Wilayah Timur", 0));
+    bool lists = true;
+    for (const auto& p : n.paras)
+      if (p.text.rfind("a. Cakupan", 0) == 0 || p.text.rfind("b. Pelayanan", 0) == 0 || p.text.rfind("Rincian kegiatan", 0) == 0 ||
+          p.text.rfind("Tiga hal", 0) == 0 || p.text.find("Rendahnya pertumbuhan") != std::string::npos ||
+          p.text.find("Kunjungan ke perusahaan") != std::string::npos)
+        lists = lists && p.level == 0;
+    check("no bookmarks: bold list items and lines ending in ':' are not headings", lists);
+  }
+  // bookmarks by a named destination (name tree) and by a GoTo action; a title that starts a paragraph is split off
+  // from it, one not on its page is put in; PDF text strings
+  {
+    const std::string pg = "BT /F1 12 Tf 72 700 Td (Ringkasan awal) Tj 0 -14 Td (Isi halaman satu tentang anggaran.) Tj ET";
+    const std::string p2 = "BT /F1 12 Tf 72 700 Td (Teks halaman dua tanpa judul.) Tj ET";
+    const std::string pdfs =
+        "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R /Outlines 7 0 R /Names << /Dests 10 0 R >> >> endobj\n"
+        "2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >> endobj\n"
+        "3 0 obj << /Type /Page /Parent 2 0 R /Contents 5 0 R /Resources << /Font << /F1 11 0 R >> >> >> endobj\n"
+        "4 0 obj << /Type /Page /Parent 2 0 R /Contents 6 0 R /Resources << /Font << /F1 11 0 R >> >> >> endobj\n"
+        "5 0 obj << /Length " + std::to_string(pg.size()) + " >> stream\n" + pg + "\nendstream endobj\n"
+        "6 0 obj << /Length " + std::to_string(p2.size()) + " >> stream\n" + p2 + "\nendstream endobj\n"
+        "7 0 obj << /Type /Outlines /First 8 0 R /Last 9 0 R >> endobj\n"
+        "8 0 obj << /Title (Ringkasan awal) /Dest (sec1) /Next 9 0 R >> endobj\n"
+        "9 0 obj << /Title <FEFF00420061006700690061006E0020004B0065006400750061> /A << /S /GoTo /D [4 0 R /Fit] >> >> endobj\n"
+        "10 0 obj << /Kids [12 0 R] >> endobj\n"
+        "11 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+        "12 0 obj << /Limits [(sec1) (sec1)] /Names [(sec1) [3 0 R /XYZ 0 792 0]] >> endobj\n";
+    const rdoc::Doc d = rdoc::read("x.pdf", pdfs);
+    check("named destination: the title split off its paragraph", has(d, "Ringkasan awal", 1) && has(d, "Isi halaman satu tentang anggaran.", 0));
+    check("GoTo action: a title not in the text put in", has(d, "Bagian Kedua", 1) && d.paras.size() == 4 && d.paras[2].page == 2,
+          std::to_string(d.paras.size()));
+    check("PDFDocEncoding text string", rdoc::pdf::File::text_string("a\x84" "b\x93") == "a\xe2\x80\x94" "b\xef\xac\x81");
+    check("UTF-16 text string with a surrogate pair", rdoc::pdf::File::text_string(std::string("\xfe\xff\xd8\x3d\xde\x00", 6)) == "\xf0\x9f\x98\x80");
   }
   // search: the chunk with the words first; Indonesian particles
   {

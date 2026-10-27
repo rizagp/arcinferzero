@@ -6,8 +6,9 @@
 //                          paragraphs, and a BM25 index over them: search(query) gives the chunks that fit best
 // DOCX: word/document.xml (headings from styles.xml's "heading N" / outline levels, tables as "a | b | c" rows, pages
 // from Word's rendered page breaks). PDF: the content streams' text (fonts with ToUnicode maps or simple encodings,
-// form XObjects), lines grouped into paragraphs by their spacing, headings by font size. Not read: scans without a
-// text layer (that needs OCR), encrypted PDFs, legacy binary .doc.
+// form XObjects), lines grouped into paragraphs by their spacing, headings from the bookmarks or else by font size and
+// bold lines that stand apart (list items, table cells and lines ending in ':' are not headings). Not read: scans
+// without a text layer (that needs OCR), encrypted PDFs, legacy binary .doc.
 #pragma once
 #include <algorithm>
 #include <array>
@@ -420,6 +421,96 @@ class File {
       for (const auto& [num, o] : objs_)
         if (P t = get(o, "Type"); t && t->t == Obj::Name && t->s == "Page") v.push_back({o, get(o, "Resources")});
     return v;
+  }
+  struct Mark {
+    std::string title;  // (UTF-8)
+    int level, page;    // (page: 1-based)
+  };
+  // the bookmarks (/Outlines: /First, /Next, /Title, /Dest or a GoTo action's /D, explicit or named) in order, with
+  // the page each points at; bookmarks without a page in this document are left out
+  std::vector<Mark> bookmarks(const std::vector<std::pair<P, P>>& pages) const {
+    std::vector<Mark> v;
+    const P root = trailer_root();
+    P first = get(get(root, "Outlines"), "First");
+    if (!first) return v;
+    std::map<const Obj*, int> page_no;
+    for (size_t k = 0; k < pages.size(); ++k) page_no[pages[k].first.get()] = (int)k + 1;
+    // named destinations: the catalog's /Dests dictionary (PDF 1.1) or the /Names /Dests name tree
+    auto named = [&](const std::string& name) -> P {
+      if (P d = get(get(root, "Dests"), name)) return d;
+      std::set<const Obj*> seen;
+      std::function<P(P, int)> tree = [&](P node, int depth) -> P {
+        node = resolve(node);
+        if (!node || depth > 32 || seen.count(node.get())) return nullptr;
+        seen.insert(node.get());
+        if (P lim = get(node, "Limits"); lim && lim->t == Obj::Arr && lim->a.size() == 2) {
+          P lo = resolve(lim->a[0]), hi = resolve(lim->a[1]);
+          if (lo && hi && lo->t == Obj::Str && hi->t == Obj::Str && (name < lo->s || name > hi->s)) return nullptr;
+        }
+        if (P names = get(node, "Names"); names && names->t == Obj::Arr)
+          for (size_t k = 0; k + 1 < names->a.size(); k += 2)
+            if (P key = resolve(names->a[k]); key && key->t == Obj::Str && key->s == name) return resolve(names->a[k + 1]);
+        if (P kids = get(node, "Kids"); kids && kids->t == Obj::Arr)
+          for (auto& kid : kids->a)
+            if (P r = tree(kid, depth + 1)) return r;
+        return nullptr;
+      };
+      return tree(get(get(root, "Names"), "Dests"), 0);
+    };
+    auto page_of = [&](P dest) {
+      dest = resolve(dest);
+      for (int hop = 0; dest && hop < 4; ++hop) {
+        if (dest->t == Obj::Str || dest->t == Obj::Name) dest = named(dest->s);
+        else if (dest->t == Obj::Dict) dest = get(dest, "D");  // (a named destination's {/D [...]})
+        else break;
+      }
+      if (!dest || dest->t != Obj::Arr || dest->a.empty()) return 0;
+      const P& target = dest->a[0];
+      if (target->t == Obj::Num) return (int)target->n + 1;  // (a page index: remote-style destinations)
+      const P pg = resolve(target);
+      auto it = pg ? page_no.find(pg.get()) : page_no.end();
+      return it == page_no.end() ? 0 : it->second;
+    };
+    std::set<const Obj*> seen;
+    std::function<void(P, int)> walk = [&](P item, int level) {
+      for (item = resolve(item); item && !seen.count(item.get()) && v.size() < 20000 && level <= 32; item = get(item, "Next")) {
+        seen.insert(item.get());
+        P dest = get(item, "Dest");
+        if (!dest)
+          if (P act = get(item, "A"); act && get(act, "S") && get(act, "S")->s == "GoTo") dest = get(act, "D");
+        const int pg = page_of(dest);
+        const P title = get(item, "Title");
+        std::string t = title && title->t == Obj::Str ? tidy(text_string(title->s)) : "";
+        if (pg >= 1 && pg <= (int)pages.size() && !t.empty()) v.push_back({t, std::min(level, 6), pg});
+        walk(get(item, "First"), level + 1);
+      }
+    };
+    walk(first, 1);
+    return v;
+  }
+  // a PDF text string as UTF-8: UTF-16BE (BOM FE FF), UTF-8 (BOM EF BB BF) or PDFDocEncoding
+  static std::string text_string(const std::string& s) {
+    std::string o;
+    if (s.size() >= 2 && (unsigned char)s[0] == 0xFE && (unsigned char)s[1] == 0xFF) {
+      for (size_t i = 2; i + 1 < s.size(); i += 2) {
+        uint32_t c = (unsigned char)s[i] << 8 | (unsigned char)s[i + 1];
+        if (c >= 0xD800 && c < 0xDC00 && i + 3 < s.size()) {
+          const uint32_t lo = (unsigned char)s[i + 2] << 8 | (unsigned char)s[i + 3];
+          c = 0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00);
+          i += 2;
+        }
+        put_utf8(o, c);
+      }
+      return o;
+    }
+    if (s.size() >= 3 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
+      return valid_utf8(s.substr(3)) ? s.substr(3) : "";
+    static const uint16_t lo[8] = {0x02D8, 0x02C7, 0x02C6, 0x02D9, 0x02DD, 0x02DB, 0x02DA, 0x02DC};  // (0x18..0x1F)
+    static const uint16_t hi[33] = {0x2022, 0x2020, 0x2021, 0x2026, 0x2014, 0x2013, 0x0192, 0x2044, 0x2039, 0x203A, 0x2212,
+                                    0x2030, 0x201E, 0x201C, 0x201D, 0x2018, 0x2019, 0x201A, 0x2122, 0xFB01, 0xFB02, 0x0141,
+                                    0x0152, 0x0160, 0x0178, 0x017D, 0x0131, 0x0142, 0x0153, 0x0161, 0x017E, '?', 0x20AC};  // (0x80..0xA0)
+    for (unsigned char b : s) put_utf8(o, b >= 0x18 && b < 0x20 ? lo[b - 0x18] : b >= 0x80 && b <= 0xA0 ? hi[b - 0x80] : b);
+    return o;
   }
 
  private:
@@ -881,18 +972,64 @@ inline Doc read_pdf(const std::string& data) {
       if (std::abs(sz - head_sizes[k]) < 0.3) return (int)k + 1;
     return 0;
   };
+  // the usual line gap (in font sizes): the median over lines that follow each other in one size
+  std::vector<double> gaps;
+  for (size_t k = 1; k < r.lines.size(); ++k) {
+    const pdf::Line &a = r.lines[k - 1], &b = r.lines[k];
+    const double dy = a.y - b.y;
+    if (a.page == b.page && std::abs(a.size - b.size) < 0.6 && b.size > 0 && dy > 0 && dy < b.size * 1.9) gaps.push_back(dy / b.size);
+  }
+  std::nth_element(gaps.begin(), gaps.begin() + (ptrdiff_t)(gaps.size() / 2), gaps.end());
+  const double line_gap = gaps.empty() ? 1.2 : gaps[gaps.size() / 2];
+  auto bullet = [](const std::string& t) {  // ("•", "-", "–", "o ", a Symbol-font bullet)
+    return t.rfind("\xe2\x80\xa2", 0) == 0 || t.rfind("\xe2\x80\x93 ", 0) == 0 || t.rfind("- ", 0) == 0 || t.rfind("o ", 0) == 0 ||
+           t.rfind("\xef\x82\xb7", 0) == 0 || t.rfind("\xef\x82\xa7", 0) == 0 || t.rfind("\xe2\x96\xaa", 0) == 0 ||
+           t.rfind("\xe2\x9e\xa2", 0) == 0;
+  };
+  auto item = [&](const std::string& t) {  // (a list item's marker: a bullet, "1.", "a)")
+    if (bullet(t)) return true;
+    size_t k = 0;
+    while (k < t.size() && k < 3 && isalnum((unsigned char)t[k])) ++k;
+    return k > 0 && k < t.size() && (t[k] == '.' || t[k] == ')') && k + 1 < t.size() && t[k + 1] == ' ' &&
+           (isdigit((unsigned char)t[0]) || k == 1);
+  };
+  // not a heading whatever its font: a table of contents' line (dot leaders), a line that leads into what follows
+  // (":"), a part of a sentence (",", ";"), a sentence of more than a few words, a number ("39,84%": a table's value)
+  auto not_heading = [](const std::string& t) {
+    if (t.find(".....") != std::string::npos || t.find(". . . .") != std::string::npos ||
+        t.find("\xe2\x80\xa6\xe2\x80\xa6") != std::string::npos ||
+        std::count_if(t.begin(), t.end(), [](char c) { return isalpha((unsigned char)c) || (unsigned char)c >= 0xC0; }) < 3)
+      return true;
+    const char e = t.back();
+    if (e == ':' || e == ',' || e == ';') return true;
+    return e == '.' && std::count(t.begin(), t.end(), ' ') >= 6;
+  };
   // lines into paragraphs: a new one at another page, another size or style, or a gap clearly larger than a line's
   Para cur;
   double prev_y = 0, prev_size = 0, gap = 0;
-  bool prev_bold = false, all_bold = true, prev_columns = false;
+  int prev_page = 0;
+  bool prev_bold = false, all_bold = true, prev_columns = false, apart = true, cell = false;
   const int bold_level = std::min(6, (int)head_sizes.size() + 1);
   auto end_para = [&] {
+    apart = apart && !cell;  // (the next line a little up the page: the next cell of a table's row, this one a cell)
     cur.text = tidy(cur.text);
     if (!cur.text.empty()) {
-      if (cur.level && cur.text.size() > 200) cur.level = 0;
-      // (a short bold paragraph that is not a sentence, e.g. "BAB II LANDASAN TEORI": a heading)
-      if (!cur.level && all_bold && cur.text.size() < 120 && cur.text.back() != '.' && cur.text.back() != ':' &&
-          cur.text.back() != ',')
+      const bool caps = std::none_of(cur.text.begin(), cur.text.end(), [](char c) { return islower((unsigned char)c); });
+      // (in a larger font: not a bulleted line, nor a numbered one longer than a title, "a. SB1. Optimalisasi
+      //  kepesertaan melalui strategi ekstensifikasi, ..."; "1. Peserta" is a heading)
+      if (cur.level && (cur.text.size() > 200 || bullet(cur.text) || not_heading(cur.text) ||
+                        (item(cur.text) && !caps && cur.text.size() > 80)))
+        cur.level = 0;
+      // (a short bold paragraph that stands apart and is not a sentence or a list item, e.g. "BAB II LANDASAN TEORI":
+      //  a heading. Bold words inside a list or a table, "a. Coverage:", "- Risiko Siber", are not; a numbered line in
+      //  capitals, "II. PIHAK KEDUA", is, also without a gap before it)
+      const size_t sp = cur.text.find(' ');  // (the first word a number: "II.", "1.2.", "A)")
+      const bool numbered_caps = caps && sp != std::string::npos && sp >= 2 && sp <= 6 &&
+                                 (cur.text[sp - 1] == '.' || cur.text[sp - 1] == ')') &&
+                                 std::all_of(cur.text.begin(), cur.text.begin() + (ptrdiff_t)sp - 1,
+                                             [](char c) { return isalnum((unsigned char)c) || c == '.'; });
+      if (!cur.level && all_bold && (apart || numbered_caps) && cur.text.size() < 120 && cur.text.back() != '.' &&
+          !not_heading(cur.text) && (!item(cur.text) || numbered_caps))
         cur.level = bold_level;
       d.paras.push_back(cur);
     }
@@ -902,22 +1039,17 @@ inline Doc read_pdf(const std::string& data) {
   for (const auto& l : r.lines) {
     const int lvl = level_of(l.size);
     const double dy = prev_y - l.y;
-    auto item = [](const std::string& t) {  // (a list item's marker: "•", "-", "o ", "1.", "a)")
-      if (t.rfind("\xe2\x80\xa2", 0) == 0 || t.rfind("\xe2\x80\x93 ", 0) == 0 || t.rfind("- ", 0) == 0 || t.rfind("o ", 0) == 0 ||
-          t.rfind("\xef\x82\xb7", 0) == 0)
-        return true;
-      size_t k = 0;
-      while (k < t.size() && k < 3 && isalnum((unsigned char)t[k])) ++k;
-      return k > 0 && k < t.size() && (t[k] == '.' || t[k] == ')') && k + 1 < t.size() && t[k + 1] == ' ' &&
-             (isdigit((unsigned char)t[0]) || k == 1);
-    };
     const bool same = !cur.text.empty() && !l.columns && !prev_columns && !item(l.text) && l.page == cur.page && std::abs(l.size - prev_size) < 0.6 && lvl == cur.level &&
                       dy > 0 && dy < std::max(l.size, prev_size) * 1.9 && (gap == 0 || dy < gap * 1.35) && l.bold == prev_bold;
     if (!same) {
+      cell = l.page == prev_page && dy < 0 && dy >= -std::max(l.size, prev_size) * 3;
       end_para();
       cur.page = l.page;
       cur.level = l.columns ? 0 : lvl;
       gap = 0;
+      // (a gap before it clearly larger than a line's, or the page's first line; a line far up the page from the last
+      //  one, e.g. the next column or text box, counts too, a little up does not: the next cell of a table's row)
+      apart = l.page != prev_page || dy < -std::max(l.size, prev_size) * 3 || dy > line_gap * l.size * 1.25;
     } else if (gap == 0) gap = dy;
     if (!cur.text.empty() && cur.text.back() == '-' && cur.text.size() > 1 && isalpha((unsigned char)cur.text[cur.text.size() - 2]))
       cur.text.pop_back();  // (a word broken at the line's end)
@@ -928,8 +1060,93 @@ inline Doc read_pdf(const std::string& data) {
     prev_y = l.y;
     prev_size = l.size;
     prev_bold = l.bold;
+    prev_page = l.page;
   }
+  cell = false;
   end_para();
+  // (the same bold line three times or more, "Done", "Risiko Fraud": a table's labels, not sections)
+  std::map<std::string, int> bold_seen;
+  for (const Para& p : d.paras) bold_seen[p.text] += p.level == bold_level;
+  for (Para& p : d.paras)
+    if (p.level == bold_level && bold_seen[p.text] >= 3) p.level = 0;
+  // bookmarks, when the PDF has them, are its outline (the author's headings, not guessed from fonts): each one marks
+  // the first paragraph on its page that starts with its title (the rest of that paragraph split off as body text),
+  // or is put in before the page's text when none does
+  const auto marks = f.bookmarks(pages);
+  if (marks.size() >= 2) {
+    auto invisible = [](const std::string& s, size_t i) {  // (a zero-width space or mark, a BOM, a soft hyphen: bytes)
+      const unsigned char a = (unsigned char)s[i], b = i + 1 < s.size() ? (unsigned char)s[i + 1] : 0,
+                          c = i + 2 < s.size() ? (unsigned char)s[i + 2] : 0;
+      return a == 0xE2 && b == 0x80 && c >= 0x8B && c <= 0x8F ? 3 : a == 0xEF && b == 0xBB && c == 0xBF ? 3 : a == 0xC2 && b == 0xAD ? 2 : 0;
+    };
+    // (letters and digits, lower case: the comparison ignores spaces, dashes and invisible characters)
+    auto key = [&](const std::string& s) {
+      std::string o;
+      for (size_t i = 0; i < s.size(); ++i) {
+        if (const int n = invisible(s, i)) { i += n - 1; continue; }
+        const unsigned char c = (unsigned char)s[i];
+        if (isalnum(c) || c >= 0x80) o += (char)tolower(c);
+      }
+      return o;
+    };
+    // (the headings by font, negative: for bookmarks not found as text; on pages before the first bookmark's, kept:
+    //  bookmarks for only a part of the document)
+    const int first_page = std::min_element(marks.begin(), marks.end(), [](const auto& a, const auto& b) { return a.page < b.page; })->page;
+    for (Para& p : d.paras)
+      if (p.page >= first_page) p.level = -p.level;
+    size_t at = 0;  // (paragraphs before it are past the last bookmark's)
+    for (const auto& m : marks) {
+      if (at < d.paras.size() && d.paras[at].page > m.page) at = 0;  // (a bookmark out of order)
+      while (at < d.paras.size() && d.paras[at].page < m.page) ++at;
+      const std::string want = key(m.title);
+      size_t hit = std::string::npos;
+      for (size_t k = at; k < d.paras.size() && d.paras[k].page == m.page && hit == std::string::npos; ++k) {
+        if (d.paras[k].level > 0) continue;
+        // (a title over two paragraphs: their text together)
+        std::string have = key(d.paras[k].text);
+        size_t n = 1;
+        while (have.size() < want.size() && want.compare(0, have.size(), have) == 0 && k + n < d.paras.size() &&
+               d.paras[k + n].page == m.page && n < 4)
+          have += key(d.paras[k + n++].text);
+        if (want.empty() || have.compare(0, want.size(), want) != 0) continue;
+        std::string t = d.paras[k].text;
+        for (size_t j = 1; j < n; ++j) t += " " + d.paras[k + j].text;
+        // (the title's end in the text: as many letters and digits as the title has)
+        size_t e = 0, got = 0;
+        while (e < t.size() && got < want.size()) {
+          if (const int inv = invisible(t, e)) { e += inv; continue; }
+          const unsigned char c = (unsigned char)t[e++];
+          got += isalnum(c) || c >= 0x80;
+        }
+        while (e < t.size() && ((unsigned char)t[e] & 0xC0) == 0x80) ++e;
+        if (e < t.size() && isalnum((unsigned char)t[e - 1]) && isalnum((unsigned char)t[e])) continue;  // (it ends inside a word)
+        hit = k;
+        d.paras.erase(d.paras.begin() + (ptrdiff_t)k + 1, d.paras.begin() + (ptrdiff_t)(k + n));
+        const std::string rest = tidy(t.substr(e));
+        d.paras[k].text = t;
+        if (rest.find_first_not_of(".:-\xe2\x80\x93 ") != std::string::npos) {
+          d.paras.insert(d.paras.begin() + (ptrdiff_t)k + 1, {rest, m.page, 0});
+          d.paras[k].text = tidy(t.substr(0, e));
+        }
+      }
+      // (a title not in the page's text, e.g. PowerPoint's "Slide 5": the page's top heading by font, the largest
+      //  and first with some letters in it; the title itself put in before the page's text when it has none)
+      if (hit == std::string::npos)
+        for (size_t k = at; k < d.paras.size() && d.paras[k].page == m.page; ++k) {
+          const Para& p = d.paras[k];
+          if (p.level >= 0 || std::count_if(p.text.begin(), p.text.end(), [](char c) { return isalpha((unsigned char)c); }) < 3) continue;
+          if (hit == std::string::npos || -p.level < -d.paras[hit].level) hit = k;
+        }
+      if (hit == std::string::npos) {
+        hit = at;
+        while (hit < d.paras.size() && d.paras[hit].page == m.page && d.paras[hit].level > 0) ++hit;
+        d.paras.insert(d.paras.begin() + (ptrdiff_t)hit, {m.title, m.page, 0});
+      }
+      d.paras[hit].level = m.level;
+      at = hit + 1;
+    }
+    for (Para& p : d.paras) p.level = std::max(0, p.level);
+  }
   if (d.paras.empty()) d.note = d.pages ? "the PDF has no text layer (a scan or images: it needs OCR)" : "no pages found in the PDF";
   else if (d.pages >= 3 && d.chars() < (size_t)d.pages * 80) {  // (a few words on most pages: scanned pages)
     int with_text = 0;
