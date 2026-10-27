@@ -735,6 +735,62 @@ const wire = (msgs) => msgs.map(({ at, voice, ...m }) => {
   const tag = "[" + fmtAt(at) + "]";
   return { ...m, content: typeof m.content === "string" ? tag + " " + m.content : [{ type: "text", text: tag }, ...m.content] };
 });
+// Long tool results of earlier exchanges (a document part or a web page of up to 12,000 characters, search passages,
+// command output) go to the server as a short stub that says what was read and how to read it again: the context
+// does not fill after a few reads, and compaction comes later. Only in what is sent: the saved chat keeps them whole.
+// Whole: everything from the previous user message on (the last exchange and the answer running now, all its rounds)
+// and the last KEEP_TOOLS results before that. The cut moves only when the user sends a message, so the server's
+// prompt cache (it reuses the prompt while its start stays the same) holds through every round of an answer; with a
+// cut that moved each round (e.g. "the last 2 results"), each new result would shorten an older one and the prompt
+// from there on would be processed again. list_files and create_document results stay (small; the file card's data).
+const KEEP_TOOLS = 2, TRIM_MIN = 1500;
+const TRIM_TOOLS = new Set(["read_file", "web_fetch", "search_file", "run_command"]);
+const n1 = (n) => Number(n).toLocaleString("en-US");
+function toolStub(name, args, text) {
+  let j = null;
+  try { j = name !== "web_fetch" ? JSON.parse(text) : null; } catch (e) {}
+  if (name === "read_file" && j) {
+    const what = j.outline ? "its outline (" + j.outline.length + " sections)"
+      : j.source ? "the source of a document written with create_document"
+      : [j.section ? "section " + j.section + (j.title ? " “" + j.title + "”" : "") : "", j.pages_read ? "pages " + j.pages_read : "",
+         j.offset ? "from offset " + n1(j.offset) : ""].filter(Boolean).join(" ") || "the text";
+    return "[read earlier: read_file " + (j.file_id || args.file_id || "") + (j.filename ? " (" + j.filename + ")" : "") + ", " + what +
+      (j.content != null ? ", " + n1(j.content.length) + " characters" + (j.total_chars ? " of " + n1(j.total_chars) : "") : "") +
+      (j.next_offset ? ", next_offset " + j.next_offset : "") + "; shortened here: read it again with read_file if needed]";
+  }
+  if (name === "search_file" && j) {
+    const where = [...new Set((j.results || []).map((x) => "§ " + x.section + (x.section_title ? " “" + x.section_title + "”" : "") +
+      (x.pages ? " p. " + x.pages : "") + (args.file_id ? "" : " in " + x.file_id)))];
+    return "[searched earlier: search_file “" + (args.query || "") + "”" + (args.file_id ? " in " + args.file_id : "") + ", " +
+      (j.results || []).length + " passages" + (where.length ? ": " + where.join(", ") : "") +
+      "; shortened here: search again or read_file those sections if needed]";
+  }
+  if (name === "web_fetch") {
+    const title = /^Title: (.*)$/m.exec(text)?.[1], url = /^URL: (.*)$/m.exec(text)?.[1] || args.url || "";
+    const next = /call web_fetch with offset (\d+)/.exec(text)?.[1];
+    return "[read earlier: web_fetch " + url + (title ? " “" + title + "”" : "") + (args.offset ? " from offset " + args.offset : "") +
+      ", " + n1(text.length) + " characters" + (next ? ", the page goes on at offset " + next : "") +
+      "; shortened here: fetch it again with web_fetch if needed]";
+  }
+  if (name === "run_command" && j)
+    return "[ran earlier: run_command, exit " + j.exit_code + (j.timed_out ? ", timed out" : "") + ", " + n1((j.output || "").length) +
+      " characters of output; shortened here: run it again if needed]";
+  return "[earlier result of " + toolLabel(name, args) + ", " + n1(text.length) + " characters; shortened here: call it again if needed]";
+}
+function trimTools(h) {
+  let cut = -1;
+  for (let i = h.length - 1, users = 0; i >= 0; i--) if (h[i].role === "user" && ++users === 2) { cut = i; break; }
+  if (cut < 0) return h;
+  const keep = new Set(), args = new Map();
+  for (let i = cut - 1; i >= 0 && keep.size < KEEP_TOOLS; i--) if (h[i].role === "tool") keep.add(i);
+  for (let i = 0; i < cut; i++) for (const c of h[i].tool_calls || []) args.set(c.id, c.function);
+  return h.map((m, i) => {
+    if (i >= cut || m.role !== "tool" || keep.has(i) || !TRIM_TOOLS.has(m.name) || typeof m.content !== "string" || m.content.length < TRIM_MIN) return m;
+    let a = {};
+    try { a = JSON.parse(args.get(m.tool_call_id)?.arguments || "{}") || {}; } catch (e) {}
+    return { ...m, content: toolStub(m.name, a, m.content) };
+  });
+}
 const TIME_SYSTEM = "Each user message starts with the day, date and local time it was sent, in brackets. Use it for " +
   "\"today\", \"now\", \"yesterday\" and how long ago something was said; do not repeat it in your answers.";
 const textOf = (c) => typeof c === "string" ? c
@@ -1112,7 +1168,7 @@ async function streamTurn(el, st, onOverflow, job) {
   const think = thinkingNow();
   let res;
   for (let attempt = 0; ; attempt++) {
-    const body = { model: job.model, messages: wire([...sysMessages(), ...job.history]), stream: true, stream_options: { include_usage: true },
+    const body = { model: job.model, messages: wire([...sysMessages(), ...trimTools(job.history)]), stream: true, stream_options: { include_usage: true },
       chat_template_kwargs: { enable_thinking: think.on } };
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
@@ -1241,7 +1297,7 @@ function freeSlot(job) {
 // or slot change, before the server says how much it took
 function estTokens(h) {
   let n = 1500;
-  for (const m of h) {
+  for (const m of trimTools(h)) {  // (as sent: earlier tool results shortened)
     n += 8;
     if (typeof m.content === "string") n += m.content.length / 3.5;
     else for (const q of m.content || [])

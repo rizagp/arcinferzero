@@ -279,6 +279,9 @@ While the server is running:
   The document shows as a file card in the answer (open or download) and is saved in the chat's folder. Ask for a
   change ("the spacing is too tight", "make the title dark red") and the model reads the document's source and writes
   a new version next to it (`name (2).docx`).
+  Long results of earlier questions (document parts, web pages, search passages, command output) go back to the
+  model as a one-line note of what was read, so a few reads do not fill the context; the model reads a part again
+  when it needs it. The last exchange and the answer running now get them whole, and the chat keeps them all.
 - **Web UI: terminal.** **Terminal** in the settings (off by default) lets the model run PowerShell commands on this
   computer (`run_command`), in the chat's folder, so it can use the chat's files and the programs installed here
   (arcinferzero's own tools are on its PATH). **Ask each time**: every command waits in its card with **Run** /

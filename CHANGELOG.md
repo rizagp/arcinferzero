@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-27: web UI sends earlier tool results shortened
+
+- **Long tool results of earlier exchanges go to the server as a short stub** (webui/index.html `trimTools`): a
+  `read_file` part, a `web_fetch` page, `search_file` passages or `run_command` output (1,500+ characters) from
+  before the previous user message becomes one line with what was read and how to read it again (file id and name,
+  section and title, pages, size, next_offset; the query and the passages' sections; the URL), e.g. `[read earlier:
+  read_file doc1 (kontrak.docx), section 3 "PASAL 3" pages 3, 12,000 characters of 20,000; shortened here: read it
+  again with read_file if needed]`. Whole: the last exchange, every round of the answer running now, and the last 2
+  results before them; `list_files` and `create_document` results always. Only in the request: the saved chat and
+  the screen keep every result. The cut moves only when the user sends a message, so the server's prompt cache holds
+  through the rounds of an answer. A few reads of a long document no longer fill the context, and compaction comes
+  later (the context estimate counts the shortened form). Checked in the browser with a scripted fake server: three
+  12,000-character reads, a search and a page over four questions; the fourth request had the two oldest reads as
+  stubs, the requests within one answer kept the same start, and the saved history stayed whole.
+
 ## 2026-10-26: Whisper native (speech to text on the iGPU or the NPU)
 
 - **`arc-transcribe` / `bin\transcribez.exe`**: Whisper large-v3-turbo (faster-whisper's `model.bin` from the
