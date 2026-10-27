@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-27: Excel spreadsheets in the web UI (read and written)
+
+- **Uploaded .xlsx / .xlsm are read** (tools/xlsx.h, no library; `read_file` / `search_file` and attachments): each
+  sheet is a heading "Sheet: <name>" and each row a line "A | B | C"; with a header row every line repeats the
+  column names ("Nama: Budi | Nilai: 80"), so a passage `search_file` finds still says what each value is. Shared and
+  inline strings (rich text joined), numbers, booleans, errors, formula cells as their cached value, dates and
+  times from the cell's number format (built-in and custom) as yyyy-mm-dd / hh:mm, percentages, a currency prefix
+  ("Rp 1234000"), merged cells (the value in the first cell), hidden sheets marked; empty rows and columns left out,
+  at most 200,000 cells (a note says so). A binary .xls gets a note (save it as XLSX). **CSV / TSV** now read the same
+  way (delimiter , ; or tab, quotes, line breaks inside quotes) instead of as plain text.
+- **`create_document` format "xlsx"**: from the same Markdown, each table becomes a sheet named by the heading before
+  it (31 characters, no `[ ] : * ? / \`, a repeated name gets "(2)"); the text around the tables goes to a first
+  "Notes" sheet (with a line where each table was), and the workbook opens on the first table. Numbers become real
+  numbers with a number format ("1.234,5", "1,234.5", "12.500", "Rp 1.234.000", "$12.50", "15 %", "12,5%"), dates
+  real dates ("2026-10-27", "27/10/2026", with a time); a leading zero ("0812...") or a text starting with "=" stays
+  text. The header row is bold on a fill, frozen, with an autofilter; column widths from the content. Checked with
+  Excel itself (COM): the file opens without repair (a copy with one element out of order does not open), values,
+  number formats, frozen pane and filter as written, and Excel's own re-save reads back the same.
+- Checks: `tests/test_xlsx.cpp` (a workbook made in Excel, `tests/data/xlsx_sample.xlsx`, metadata scrubbed: dates,
+  percent, currency, formulas, an error, rich text, merged cells; Markdown -> xlsx -> text; the element order;
+  hostile input: huge references, bad shared string indexes, 200,000-deep nesting, 20,000 merges over the whole
+  sheet, 260,000 cells; CSV), in `tests/run_tests.ps1`, CI and setup. It runs in 0.5 s.
+
 ## 2026-10-26: Whisper native (speech to text on the iGPU or the NPU)
 
 - **`arc-transcribe` / `bin\transcribez.exe`**: Whisper large-v3-turbo (faster-whisper's `model.bin` from the

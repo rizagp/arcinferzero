@@ -279,7 +279,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
             <select id="thinkmode" aria-label="Thinking"></select></div>
           <div class="opt"><div class="lab">Conversations at once<small id="slothelp">Chats that answer at the same time</small></div>
             <select id="slots" aria-label="Conversations at once"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
-          <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown) that appear in its answer</small></div>
+          <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown, Excel XLSX) that appear in its answer</small></div>
             <label class="switch"><input type="checkbox" id="ftools"><span></span></label></div>
           <div class="opt"><div class="lab">Terminal<small>The model may run PowerShell commands on this computer, in the chat's folder (its files are there): ask each time, or run without asking</small></div>
             <select id="term" aria-label="Terminal"><option value="off">Off</option><option value="ask">Ask each time</option><option value="auto">Run without asking</option></select></div>
@@ -335,7 +335,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <div id="vstat" hidden></div>
       <div class="composer">
         <button class="iconbtn" id="attach" title="Attach images (Qwen3.5 / 3.8, Gemma 4), audio (Gemma 4 E4B / 12B) or text files" aria-label="Attach"><svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6h-1.5z"/></svg></button>
-        <input type="file" id="file" accept="image/*,audio/*,text/*,.md,.json,.csv,.py,.js,.ts,.html,.css,.c,.cpp,.h,.cs,.java,.go,.rs,.ps1,.sh,.yaml,.yml,.toml,.xml,.sql,.txt" multiple hidden>
+        <input type="file" id="file" accept="image/*,audio/*,text/*,.md,.json,.csv,.tsv,.docx,.pdf,.xlsx,.xlsm,.py,.js,.ts,.html,.css,.c,.cpp,.h,.cs,.java,.go,.rs,.ps1,.sh,.yaml,.yml,.toml,.xml,.sql,.txt" multiple hidden>
         <div class="pill"><textarea id="input" rows="1" placeholder="Type a message (@ attaches a saved file)" aria-label="Message"></textarea></div>
         <div class="recbar" id="recbar" hidden><button class="iconbtn" id="reccancel" title="Discard the recording" aria-label="Discard the recording"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button><span class="dot"></span><span id="rectime">0:00</span><span class="grow"></span></div>
         <button class="iconbtn" id="send" title="Send (Enter; Shift+Enter: new line)" aria-label="Send" hidden><svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg></button>
@@ -845,7 +845,8 @@ const FILE_TOOLS = [
       within_hours: { type: "number", description: "only files uploaded in the last N hours" },
       limit: { type: "integer" } } } } },
   { type: "function", function: { name: "read_file",
-    description: "Read a saved file (DOCX, PDF, text, Markdown, CSV ...) by its id. A long document first gives its outline " +
+    description: "Read a saved file (DOCX, PDF, XLSX, text, Markdown, CSV ...) by its id. A spreadsheet reads as one heading per " +
+      "sheet and one line per row (\"Column: value | ...\" when it has a header row). A long document first gives its outline " +
       "(numbered sections with pages and sizes): then read only the sections or pages the question needs. Text comes in " +
       "parts of up to 12,000 characters (next_offset reads on). A document you wrote returns its source (the " +
       "create_document arguments). Images and audio: metadata only.",
@@ -862,13 +863,15 @@ const FILE_TOOLS = [
       query: { type: "string", description: "keywords, e.g. \"anggaran pemasaran 2026\"" },
       file_id: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
   { type: "function", function: { name: "create_document",
-    description: "Write a document file for the user: docx (Word), pdf, doc (Word 97-2003 compatible), rtf or md. It appears " +
+    description: "Write a document file for the user: docx (Word), pdf, doc (Word 97-2003 compatible), rtf, md or xlsx (Excel). It appears " +
       "as a file card in your answer. content is Markdown: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, " +
       "==highlight==, <span style=\"color:#C00000; background:#FFF2CC; font-size:14pt\">..</span>, lists, tables " +
       "(an alignment row :--- / :---: / ---:), ``` code, --- rule, '::: center' (or right, justify) ... ':::' blocks, " +
-      "\\pagebreak. To correct a document, read_file it and call this again with the changes (a new version).",
+      "\\pagebreak. xlsx: each Markdown table becomes a sheet named by the ## heading before it; numbers (1.234,5), " +
+      "Rp amounts, percentages and dates (2026-10-27) become real values; the other text goes to a first Notes sheet. " +
+      "To correct a document, read_file it and call this again with the changes (a new version).",
     parameters: { type: "object", properties: {
-      filename: { type: "string" }, format: { type: "string", enum: ["docx", "pdf", "doc", "rtf", "md"] },
+      filename: { type: "string" }, format: { type: "string", enum: ["docx", "pdf", "doc", "rtf", "md", "xlsx"] },
       content: { type: "string", description: "the document body in Markdown" },
       title: { type: "string" }, subtitle: { type: "string" }, author: { type: "string" }, date: { type: "string" },
       page: { type: "string", enum: ["A4", "Letter", "Legal", "A5"] }, orientation: { type: "string", enum: ["portrait", "landscape"] },
@@ -879,7 +882,7 @@ const FILE_TOOLS = [
       required: ["format", "content"] } } }];
 const FILE_SYSTEM = "You can work with the user's saved files: list_files (what is saved, with upload times), read_file (one " +
   "file; a long document gives its outline, then read the sections or pages you need), search_file (the passages of a " +
-  "long document that fit a question: facts, names, numbers), create_document (write a DOCX / PDF / DOC / RTF / MD file the user downloads from " +
+  "long document that fit a question: facts, names, numbers), create_document (write a DOCX / PDF / DOC / RTF / MD / XLSX file the user downloads from " +
   "your answer). For a fact in a long document, search_file; to summarize or explain a chapter or section, read_file it by " +
   "its section number from the outline (it comes with its subsections). Do not read a long document all " +
   "unless the user asks for the whole of it (a summary of everything: section by section). Say which section or page an " +

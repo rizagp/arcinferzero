@@ -990,6 +990,8 @@ inline std::string lower_ext(const std::string& name) {
   for (char& c : e) c = (char)tolower((unsigned char)c);
   return e;
 }
+inline Doc read_xlsx(const std::string& zip);            // (tools/xlsx.h, included at the end)
+inline Doc read_csv(const std::string& data, char delim);
 // a file's text by its name and bytes; binary formats it cannot read: a note
 inline Doc read(const std::string& name, const std::string& data) {
   const std::string e = lower_ext(name);
@@ -999,12 +1001,14 @@ inline Doc read(const std::string& name, const std::string& data) {
     return d;
   }
   if (e == "docx" || e == "docm" || e == "dotx") return read_docx(data);
+  if (e == "xlsx" || e == "xlsm" || e == "xls") return read_xlsx(data);
   if (e == "pdf" || data.compare(0, 5, "%PDF-") == 0) return read_pdf(data);
   if (data.find('\0') < std::min<size_t>(data.size(), 8192)) {
     Doc d;
     d.note = e == "doc" ? "a Word 97-2003 .doc (binary): save it as DOCX to read it" : "a binary file (" + e + "): its text cannot be read";
     return d;
   }
+  if (e == "csv" || e == "tsv") return read_csv(data, e == "tsv" ? '\t' : 0);
   return read_text(data, e == "md" || e == "markdown");
 }
 
@@ -1226,3 +1230,5 @@ class Index {
 };
 
 }  // namespace rdoc
+
+#include "xlsx.h"  // (read_xlsx, read_csv: they use Doc)

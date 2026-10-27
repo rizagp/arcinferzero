@@ -30,6 +30,7 @@
 #include "web_tools.h"
 #include "server_files.h"
 #include "doc_writer.h"
+#include "xlsx.h"
 #include "server_terminal.h"
 #include <atomic>
 #include <condition_variable>
@@ -741,13 +742,14 @@ class Server {
 #include "server_whisper.h"  // (Whisper: /v1/audio/transcriptions)
 
 // The web UI's file tools for the model (it calls them as functions, the page runs them here):
-//   create_document {filename, format: docx | pdf | doc | rtf | md, content (Markdown, tools/doc_writer.h), title,
+//   create_document {filename, format: docx | pdf | doc | rtf | md | xlsx, content (Markdown, tools/doc_writer.h;
+//                    xlsx: each table a sheet, tools/xlsx.h), title,
 //                    subtitle, author, date, page, orientation, margins_mm, font, font_size, line_spacing,
 //                    heading_color, accent_color, text_color, header, footer, page_numbers, chat_id}: writes the file
 //                    into the chat's folder (and its source next to it), returns it as a file
 //   list_files {kind, name_contains, within_hours, chat_id, limit}: the saved files, newest first, with their metadata
-//   read_file {file_id (or its name), section, pages, offset, max_chars, chat_id}: a document's text (DOCX, PDF and
-//                    text files, tools/doc_reader.h) in parts; a long one without section / pages / offset: its outline;
+//   read_file {file_id (or its name), section, pages, offset, max_chars, chat_id}: a document's text (DOCX, PDF, XLSX
+//                    and text files, tools/doc_reader.h) in parts; a long one without section / pages / offset: its outline;
 //                    a document the model wrote: its source (to make a corrected version); images, audio: metadata
 //   search_file {query, file_id, chat_id, top_k}: the passages of a document (or of every document of the chat)
 //                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
@@ -776,7 +778,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
       const std::string content = a["content"].str();
       if (content.empty()) return fail(400, "content (Markdown) required");
       std::string fmt = files::lower(a["format"].str("docx"));
-      if (fmt != "docx" && fmt != "pdf" && fmt != "doc" && fmt != "rtf" && fmt != "md") return fail(400, "format: docx, pdf, doc, rtf or md");
+      if (fmt != "docx" && fmt != "pdf" && fmt != "doc" && fmt != "rtf" && fmt != "md" && fmt != "xlsx") return fail(400, "format: docx, pdf, doc, rtf, md or xlsx");
       doc::Options o;
       o.title = a["title"].str();
       o.subtitle = a["subtitle"].str();
@@ -801,6 +803,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
       if (fmt == "docx") data = doc::docx(content, o);
       else if (fmt == "pdf") data = doc::pdf(content, o);
       else if (fmt == "doc" || fmt == "rtf") data = doc::rtf(content, o);
+      else if (fmt == "xlsx") data = xlsx::write(content, o);
       else data = (o.title.empty() ? "" : "# " + o.title + "\n\n") + content;
       const std::string chat = files::valid_id(a["chat_id"].str()) ? a["chat_id"].str() : "";
       const files::Info i = st.put(name, data, chat);
