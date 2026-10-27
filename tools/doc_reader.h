@@ -1111,15 +1111,23 @@ class Index {
       for (size_t k = s.first; k < s.span; ++k) s.span_chars += doc.paras[k].text.size() + 2;
       s.page_to = s.span > s.first ? doc.paras[s.span - 1].page : s.page;
     }
-    // chunks: paragraphs together up to chunk_chars, never across a section; a longer paragraph cut at sentences
-    for (size_t si = 0; si < outline.size(); ++si) {
+    // chunks: paragraphs together up to chunk_chars, never across a section the outline shows (a deeper heading, e.g.
+    // a slide's or a table's bold line, stays inside its chunk: a chunk of one line finds nothing); a longer
+    // paragraph cut at sentences
+    std::vector<size_t> majors;
+    const int depth = outline_depth(60);
+    for (size_t si = 0; si < outline.size(); ++si)
+      if (!by_headings || outline[si].level <= depth || si == 0) majors.push_back(si);
+    for (size_t mi = 0; mi < majors.size(); ++mi) {
+      const size_t si = majors[mi];
       const Section& s = outline[si];
+      const size_t end = mi + 1 < majors.size() ? outline[majors[mi + 1]].first : (by_headings ? doc.paras.size() : s.last);
       Chunk c{s.first, s.first, doc.paras[s.first].page, doc.paras[s.first].page, (int)si, ""};
       auto emit = [&] {
         if (!c.text.empty()) chunks.push_back(c);
         c.text.clear();
       };
-      for (size_t k = s.first; k < s.last; ++k) {
+      for (size_t k = s.first; k < end; ++k) {
         const Para& p = doc.paras[k];
         std::string t = p.level ? std::string((size_t)p.level, '#') + " " + p.text : p.text;
         if (!c.text.empty() && c.text.size() + t.size() > chunk_chars) emit();

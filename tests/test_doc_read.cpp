@@ -68,7 +68,45 @@ static std::string long_markdown(int chapters) {
   return md;
 }
 
+// counts only (no text): words, words run together (> 25 letters, no URL or path), one-letter words (spaces inside
+// words), characters that did not decode (U+FFFD, '?' between letters), headings by level
+static void quality(const std::string& path) {
+  const rdoc::Doc d = rdoc::read(path, slurp(path));
+  size_t words = 0, glued = 0, single = 0, bad = 0, levels[7] = {};
+  for (const auto& p : d.paras) {
+    levels[std::min(p.level, 6)]++;
+    std::string w;
+    auto end = [&] {
+      if (!w.empty()) {
+        ++words;
+        const bool link = w.find("://") != std::string::npos || w.find('\\') != std::string::npos || w.find('/') != std::string::npos ||
+                          w.find('_') != std::string::npos || w.find('@') != std::string::npos;
+        size_t letters = 0;
+        for (unsigned char c : w) letters += isalpha(c) != 0;
+        if (letters > 25 && !link) ++glued;
+        if (w.size() == 1 && isalpha((unsigned char)w[0]) && w != "a" && w != "A" && w != "I") ++single;
+      }
+      w.clear();
+    };
+    for (size_t i = 0; i < p.text.size(); ++i) {
+      const char c = p.text[i];
+      if (p.text.compare(i, 3, "\xef\xbf\xbd") == 0) ++bad;
+      if (c == '?' && i > 0 && i + 1 < p.text.size() && isalpha((unsigned char)p.text[i - 1]) && isalpha((unsigned char)p.text[i + 1])) ++bad;
+      if (c == ' ') end();
+      else w += c;
+    }
+    end();
+  }
+  printf("%zu words | run together %zu (%.2f%%) | one-letter %zu (%.2f%%) | undecoded %zu | headings h1 %zu h2 %zu h3 %zu h4+ %zu%s%s\n",
+         words, glued, words ? 100.0 * glued / words : 0, single, words ? 100.0 * single / words : 0, bad, levels[1], levels[2],
+         levels[3], levels[4] + levels[5] + levels[6], d.note.empty() ? "" : " | note: ", d.note.c_str());
+}
+
 int main(int argc, char** argv) {
+  if (argc > 2 && std::string(argv[1]) == "--quality") {
+    quality(argv[2]);
+    return 0;
+  }
   if (argc > 2 && std::string(argv[1]) == "--make-long") {
     doc::Options o;
     o.title = "Dokumen uji panjang";
