@@ -335,7 +335,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <div id="vstat" hidden></div>
       <div class="composer">
         <button class="iconbtn" id="attach" title="Attach images (Qwen3.5 / 3.8, Gemma 4), audio (Gemma 4 E4B / 12B) or text files" aria-label="Attach"><svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6h-1.5z"/></svg></button>
-        <input type="file" id="file" accept="image/*,audio/*,text/*,.md,.json,.csv,.tsv,.docx,.pdf,.xlsx,.xlsm,.py,.js,.ts,.html,.css,.c,.cpp,.h,.cs,.java,.go,.rs,.ps1,.sh,.yaml,.yml,.toml,.xml,.sql,.txt" multiple hidden>
+        <input type="file" id="file" accept="image/*,audio/*,text/*,.md,.json,.csv,.tsv,.docx,.pdf,.xlsx,.xlsm,.pptx,.py,.js,.ts,.html,.css,.c,.cpp,.h,.cs,.java,.go,.rs,.ps1,.sh,.yaml,.yml,.toml,.xml,.sql,.txt" multiple hidden>
         <div class="pill"><textarea id="input" rows="1" placeholder="Type a message (@ attaches a saved file)" aria-label="Message"></textarea></div>
         <div class="recbar" id="recbar" hidden><button class="iconbtn" id="reccancel" title="Discard the recording" aria-label="Discard the recording"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button><span class="dot"></span><span id="rectime">0:00</span><span class="grow"></span></div>
         <button class="iconbtn" id="send" title="Send (Enter; Shift+Enter: new line)" aria-label="Send" hidden><svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg></button>
@@ -845,8 +845,9 @@ const FILE_TOOLS = [
       within_hours: { type: "number", description: "only files uploaded in the last N hours" },
       limit: { type: "integer" } } } } },
   { type: "function", function: { name: "read_file",
-    description: "Read a saved file (DOCX, PDF, XLSX, text, Markdown, CSV ...) by its id. A spreadsheet reads as one heading per " +
-      "sheet and one line per row (\"Column: value | ...\" when it has a header row). A long document first gives its outline " +
+    description: "Read a saved file (DOCX, PDF, XLSX, PPTX, text, Markdown, CSV ...) by its id. A spreadsheet reads as one heading per " +
+      "sheet and one line per row (\"Column: value | ...\" when it has a header row); a presentation as one heading per " +
+      "slide (its pages are the slides) with its speaker notes. A long document first gives its outline " +
       "(numbered sections with pages and sizes): then read only the sections or pages the question needs. Text comes in " +
       "parts of up to 12,000 characters (next_offset reads on). A document you wrote returns its source (the " +
       "create_document arguments). Images and audio: metadata only.",

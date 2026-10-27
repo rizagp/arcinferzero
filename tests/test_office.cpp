@@ -1,10 +1,13 @@
-// Checks of tools/xlsx.h: a workbook saved by Excel (tests/data/xlsx_sample.xlsx: dates, percentages, a currency
-// format, formulas with cached values, rich text, merged cells, an empty sheet) reads as headed rows; workbooks written
-// from Markdown read back (numbers, Rp amounts, percentages, dates as real values, sheet names); the XML element order
-// Excel needs; CSV; hostile input (huge references, bad shared string indexes, deep nesting, too many cells).
-//   test_xlsx.exe                 the checks
-//   test_xlsx.exe --write FILE    the sample workbook from Markdown (to open in Excel: tests/run_tests.ps1 does not)
-#include "../tools/xlsx.h"
+// Checks of tools/xlsx.h and tools/pptx.h. Excel: a workbook saved by Excel (tests/data/xlsx_sample.xlsx: dates,
+// percentages, a currency format, formulas with cached values, rich text, merged cells, an empty sheet) reads as headed
+// rows; workbooks written from Markdown read back (numbers, Rp amounts, percentages, dates as real values, Indonesian
+// or US number style, sheet names); the XML element order Excel needs; CSV; hostile input (huge references, bad
+// shared string indexes, deep nesting, too many cells). PowerPoint: a deck saved by PowerPoint
+// (tests/data/pptx_sample.pptx: titles, bullet levels, a table, speaker notes, alt text, a hidden slide) reads as one
+// heading per slide; SmartArt, merged table cells and odd or hostile parts.
+//   test_office.exe                 the checks
+//   test_office.exe --write FILE    the sample workbook from Markdown (to open in Excel: tests/run_tests.ps1 does not)
+#include "../tools/doc_reader.h"
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -228,6 +231,76 @@ int main(int argc, char** argv) {
     const rdoc::Doc b = rdoc::read("x.xlsx", book({big, "<worksheet><sheetData><row><c><v>1</v></c></row></sheetData></worksheet>"}));
     check("hostile: 260,000 cells cut at the limit with a note", b.note.find("200000") != std::string::npos && b.paras.size() < 20100 && has(b, "(not read: the cell limit was reached)"), b.note);
   }
+  // a presentation saved by PowerPoint
+  {
+    const std::string x = slurp(dir + "pptx_sample.pptx");
+    check("PowerPoint fixture present", !x.empty());
+    const rdoc::Doc d = rdoc::read("pptx_sample.pptx", x);
+    check("PowerPoint: five slides as pages, no note", d.pages == 5 && d.note.empty(), d.note);
+    check("PowerPoint: slide titles as headings", has(d, "Slide 1: Laporan Kuartal 3", 1) && has(d, "Slide 2: Ringkasan", 1) && has(d, "Slide 5: Proses", 1), all(d));
+    check("PowerPoint: subtitle, bullets with their level", has(d, "Tim Data, Oktober 2026") && has(d, "- Penjualan naik 12 %") && has(d, "  - Jawa Barat paling tinggi"), all(d));
+    check("PowerPoint: speaker notes", has(d, "Notes: Sebutkan target Q4 sebesar 15 %"), all(d));
+    check("PowerPoint: a table with its header", has(d, "Wilayah: Jawa Timur | Juli: 7 | Agustus: 9"), all(d));
+    check("PowerPoint: a picture's alt text", has(d, "[image: grafik penjualan per wilayah]"), all(d));
+    check("PowerPoint: a slide without a title, hidden", has(d, "Slide 4: Catatan penutup tanpa judul (hidden)", 1), all(d));
+    bool pages = true;
+    for (const auto& p : d.paras) pages = pages && p.page >= 1 && p.page <= 5;
+    check("PowerPoint: each line on its slide's page", pages && d.paras.back().page == 5);
+    const rdoc::Index ix(d);
+    check("PowerPoint: the outline is the slides", ix.by_headings && ix.outline.size() == 5, std::to_string(ix.outline.size()));
+  }
+  // presentations from hand-written parts: SmartArt, merged table cells, placeholders left out, odd and hostile input
+  {
+    auto deck = [](const std::vector<std::string>& slides, const std::vector<std::pair<std::string, std::string>>& extra = {}) {
+      std::vector<std::pair<std::string, std::string>> p;
+      std::string pres = "<p:presentation><p:sldIdLst>", rels = "<Relationships>";
+      for (size_t k = 0; k < slides.size(); ++k) {
+        const std::string n = std::to_string(k + 1);
+        pres += "<p:sldId id=\"" + std::to_string(256 + k) + "\" r:id=\"rId" + n + "\"/>";
+        rels += "<Relationship Id=\"rId" + n + "\" Type=\"x/slide\" Target=\"slides/slide" + n + ".xml\"/>";
+        p.push_back({"ppt/slides/slide" + n + ".xml", slides[k]});
+      }
+      p.push_back({"ppt/presentation.xml", pres + "</p:sldIdLst></p:presentation>"});
+      p.push_back({"ppt/_rels/presentation.xml.rels", rels + "</Relationships>"});
+      for (const auto& e : extra) p.push_back(e);
+      return doc::zip(p);
+    };
+    const std::string s1 = "<p:sld><p:cSld><p:spTree>"
+                           "<p:sp><p:nvSpPr><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Alur &amp; Tahap</a:t></a:r></a:p></p:txBody></p:sp>"
+                           "<p:sp><p:nvSpPr><p:nvPr><p:ph idx=\"1\"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:pPr><a:buNone/></a:pPr><a:r><a:t>tanpa</a:t></a:r>"
+                           "<a:br/><a:r><a:t>bullet</a:t></a:r></a:p></p:txBody></p:sp>"
+                           "<p:sp><p:nvSpPr><p:nvPr><p:ph type=\"sldNum\"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:fld><a:t>7</a:t></a:fld></a:p></p:txBody></p:sp>"
+                           "<p:sp><p:nvSpPr><p:nvPr><p:ph type=\"ftr\"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>Rahasia</a:t></a:r></a:p></p:txBody></p:sp>"
+                           "<p:graphicFrame><a:tbl><a:tr><a:tc gridSpan=\"2\"><a:txBody><a:p><a:r><a:t>Gabung</a:t></a:r></a:p></a:txBody></a:tc>"
+                           "<a:tc hMerge=\"1\"><a:txBody><a:p><a:r><a:t>Gabung</a:t></a:r></a:p></a:txBody></a:tc></a:tr>"
+                           "<a:tr><a:tc><a:txBody><a:p><a:r><a:t>1</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>2</a:t></a:r></a:p></a:txBody></a:tc></a:tr>"
+                           "</a:tbl></p:graphicFrame></p:spTree></p:cSld></p:sld>";
+    const std::string smart = "<dgm:dataModel><dgm:ptLst><dgm:pt><dgm:t><a:bodyPr/><a:p><a:r><a:t>Rencana</a:t></a:r></a:p></dgm:t></dgm:pt>"
+                              "<dgm:pt><dgm:t><a:p><a:r><a:t>Eksekusi</a:t></a:r></a:p></dgm:t></dgm:pt></dgm:ptLst></dgm:dataModel>";
+    const rdoc::Doc d = rdoc::read("a.pptx", deck({s1}, {{"ppt/slides/_rels/slide1.xml.rels",
+        "<Relationships><Relationship Id=\"rId9\" Type=\"http://schemas/relationships/diagramData\" Target=\"../diagrams/data1.xml\"/></Relationships>"},
+        {"ppt/diagrams/data1.xml", smart}}));
+    check("pptx: title with an entity, no bullet, a line break", has(d, "Slide 1: Alur & Tahap", 1) && has(d, "tanpa bullet"), all(d));
+    check("pptx: slide number and footer left out", all(d).find("Rahasia") == std::string::npos && all(d).find("7\n") == std::string::npos, all(d));
+    check("pptx: a merged table cell once", has(d, "Gabung") && has(d, "1 | 2") && all(d).find("Gabung | Gabung") == std::string::npos, all(d));
+    check("pptx: SmartArt text", has(d, "Rencana") && has(d, "Eksekusi"), all(d));
+    check("pptx resolve", pptx::resolve("ppt/slides/", "../media/a.png") == "ppt/media/a.png" && pptx::resolve("ppt/slides/", "/ppt/x.xml") == "ppt/x.xml" &&
+          pptx::resolve("ppt/", "../../../x") == "x");
+    // hostile: missing slide parts, a relationship to itself, deep nesting, a binary .ppt, garbage
+    std::string deep = "<p:sld>";
+    for (int k = 0; k < 200000; ++k) deep += "<p:grpSp>";
+    deep += "<p:sp><p:txBody><a:p><a:r><a:t>dalam</a:t></a:r></a:p></p:txBody></p:sp></p:sld>";
+    const rdoc::Doc h = rdoc::read("h.pptx", deck({deep, "<p:sld/>"}, {{"ppt/slides/_rels/slide2.xml.rels",
+        "<Relationships><Relationship Id=\"r\" Type=\"x/notesSlide\" Target=\"slide2.xml\"/></Relationships>"}}));
+    check("pptx hostile: deep nesting, a slide's notes pointing at itself", has(h, "Slide 1: dalam", 1) && h.pages == 2, all(h));
+    std::string many = "<p:presentation><p:sldIdLst>";
+    for (int k = 0; k < 100000; ++k) many += "<p:sldId r:id=\"rId1\"/>";
+    const std::string mz = doc::zip({{"ppt/presentation.xml", many + "</p:sldIdLst></p:presentation>"},
+                                     {"ppt/_rels/presentation.xml.rels", "<Relationships><Relationship Id=\"rId1\" Target=\"slides/none.xml\"/></Relationships>"}});
+    check("pptx hostile: 100,000 slide ids to a missing part, capped", rdoc::read("m.pptx", mz).pages <= 5000);
+    check("pptx hostile: binary .ppt", rdoc::read("x.ppt", std::string("\xd0\xcf\x11\xe0\0\0\0\0", 8)).note.find("PPTX") != std::string::npos);
+    check("pptx hostile: not a ZIP", !rdoc::read("x.pptx", "PK\x03\x04garbage").note.empty());
+  }
   // CSV and TSV
   {
     const rdoc::Doc d = rdoc::read("a.csv", "Nama;Nilai;Catatan\r\nBudi;80;\"baik; rajin\"\r\nSiti;92,5;\"kata \"\"hebat\"\"\nbaris dua\"\r\n");
@@ -237,6 +310,6 @@ int main(int argc, char** argv) {
     check("TSV", has(rdoc::read("c.tsv", "a\tb\nx\ty\n"), "a: x | b: y"));
     check("CSV: ANSI text", has(rdoc::read("d.csv", "kota\ncaf\xe9\n"), "kota: caf\xc3\xa9") || has(rdoc::read("d.csv", "kota\ncaf\xe9\n"), "caf\xc3\xa9"));
   }
-  printf(fails ? "test_xlsx: %d FAILED\n" : "test_xlsx: all passed\n", fails);
+  printf(fails ? "test_office: %d FAILED\n" : "test_office: all passed\n", fails);
   return fails ? 1 : 0;
 }

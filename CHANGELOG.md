@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-27: Excel spreadsheets in the web UI (read and written)
+## 2026-10-27: Excel spreadsheets in the web UI (read and written), PowerPoint read
 
 - **Uploaded .xlsx / .xlsm are read** (tools/xlsx.h, no library; `read_file` / `search_file` and attachments): each
   sheet is a heading "Sheet: <name>" and each row a line "A | B | C"; with a header row every line repeats the
@@ -21,10 +21,17 @@
   text. The header row is bold on a fill, frozen, with an autofilter; column widths from the content. Checked with
   Excel itself (COM): the file opens without repair (a copy with one element out of order does not open), values,
   number formats, frozen pane and filter as written, and Excel's own re-save reads back the same.
-- Checks: `tests/test_xlsx.cpp` (a workbook made in Excel, `tests/data/xlsx_sample.xlsx`, metadata scrubbed: dates,
-  percent, currency, formulas, an error, rich text, merged cells; Markdown -> xlsx -> text; the element order;
-  hostile input: huge references, bad shared string indexes, 200,000-deep nesting, 20,000 merges over the whole
-  sheet, 260,000 cells; CSV), in `tests/run_tests.ps1`, CI and setup. It runs in 0.5 s.
+- **Uploaded PowerPoint .pptx / .pptm / .ppsx / .potx are read** (tools/pptx.h): each slide is a heading "Slide N:
+  <title>" on page N (the outline lists the slides, `read_file` pages are slides), then its text in the slide's
+  order: bullet points with their level, tables as rows ("Column: value" with a header row), SmartArt text, a
+  picture's alt text as "[image: ...]", the speaker notes as "Notes: ..."; footer, date and slide number left out,
+  hidden slides marked. A binary .ppt gets a note (save it as PPTX). Not read: text inside charts and embedded objects.
+- Checks: `tests/test_office.cpp` (a workbook made in Excel, `tests/data/xlsx_sample.xlsx`, and a deck made in
+  PowerPoint, `tests/data/pptx_sample.pptx`, metadata scrubbed: dates, percent, currency, formulas, an error, rich
+  text, merged cells; titles, bullet levels, a table, notes, alt text, a hidden slide; Markdown -> xlsx -> text; the
+  element order; hostile input: huge references, bad shared string indexes, 200,000-deep nesting, 20,000 merges over
+  the whole sheet, 260,000 cells, 100,000 slide ids, a part whose notes point at itself; CSV), in
+  `tests/run_tests.ps1`, CI and setup. It runs in 0.5 s.
 
 ## 2026-10-26: Whisper native (speech to text on the iGPU or the NPU)
 

@@ -992,6 +992,7 @@ inline std::string lower_ext(const std::string& name) {
 }
 inline Doc read_xlsx(const std::string& zip);            // (tools/xlsx.h, included at the end)
 inline Doc read_csv(const std::string& data, char delim);
+inline Doc read_pptx(const std::string& zip);            // (tools/pptx.h, included at the end)
 // a file's text by its name and bytes; binary formats it cannot read: a note
 inline Doc read(const std::string& name, const std::string& data) {
   const std::string e = lower_ext(name);
@@ -1002,6 +1003,7 @@ inline Doc read(const std::string& name, const std::string& data) {
   }
   if (e == "docx" || e == "docm" || e == "dotx") return read_docx(data);
   if (e == "xlsx" || e == "xlsm" || e == "xls") return read_xlsx(data);
+  if (e == "pptx" || e == "pptm" || e == "ppsx" || e == "potx" || e == "ppt") return read_pptx(data);
   if (e == "pdf" || data.compare(0, 5, "%PDF-") == 0) return read_pdf(data);
   if (data.find('\0') < std::min<size_t>(data.size(), 8192)) {
     Doc d;
@@ -1232,3 +1234,4 @@ class Index {
 }  // namespace rdoc
 
 #include "xlsx.h"  // (read_xlsx, read_csv: they use Doc)
+#include "pptx.h"  // (read_pptx)

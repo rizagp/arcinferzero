@@ -266,8 +266,8 @@ While the server is running:
   network). Other clients can use the same endpoints: `POST /v1/tools/web_search` with `{"query": "..."}` and
   `POST /v1/tools/web_fetch` with `{"url": "...", "offset": 0}`. `--no-web-tools` turns them off.
 - **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
-  (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, Excel XLSX / XLSM, text,
-  Markdown, CSV; "read all the files I uploaded today" works; a spreadsheet reads as one heading per sheet and one
+  (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, Excel XLSX / XLSM, PowerPoint
+  PPTX (one heading per slide, with its speaker notes), text, Markdown, CSV; "read all the files I uploaded today" works; a spreadsheet reads as one heading per sheet and one
   line per row, "Nama: Budi | Nilai: 80" when it has a header row, dates as yyyy-mm-dd, formulas as their values) and write documents (`create_document`). A **long document** (more
   than ~6K tokens, e.g. a report of 100+ pages) is not put into the prompt whole, which would take minutes: the model
   gets its outline (chapters with pages) and reads the chapters or pages the question needs, or searches it
