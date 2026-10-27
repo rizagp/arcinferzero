@@ -24,7 +24,11 @@ inline void* import_memory(ze_context_handle_t ctx, void* mem, size_t bytes) {
   ExtMemDesc ed{kExtMemStype, nullptr, mem, bytes};
   ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, &ed, 0};
   void* p = nullptr;
-  if (zeMemAllocHost(ctx, &hd, bytes, 4096, &p) != 0 || p != mem) return nullptr;
+  if (zeMemAllocHost(ctx, &hd, bytes, 4096, &p) != 0 || !p) return nullptr;
+  if (p != mem) {  // (a driver that allocated instead of importing: not the memory asked for, freed)
+    zeMemFree(ctx, p);
+    return nullptr;
+  }
   return p;
 }
 

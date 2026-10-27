@@ -196,6 +196,19 @@ class GgufFile {
     }
   }
   // tensors without data (arcinferzero packages): names, types and shapes from the metadata
+  // bytes of tensor t of a type with blk values per bytes-byte block: its shape must not overflow and must hold whole
+  // blocks (a count that is not a multiple would undercount the bytes the kernels read)
+  static uint64_t tensor_bytes(const GgufTensor& t, int blk, int bytes) {
+    uint64_t ne = 1;
+    for (uint64_t d : t.dims) {
+      if (d && ne > UINT64_MAX / d) throw std::runtime_error("gguf: bad shape for " + t.name);
+      ne *= d;
+    }
+    if (blk <= 0 || bytes <= 0 || ne / (uint64_t)blk > UINT64_MAX / (uint64_t)bytes)
+      throw std::runtime_error("gguf: bad tensor type for " + t.name);
+    if (ne % (uint64_t)blk) throw std::runtime_error("gguf: " + t.name + " is not a whole number of blocks");
+    return ne / blk * bytes;
+  }
   void add_virtual() {
     const auto* names = get_strs("arcinferzero.virtual.names");
     const auto* types = get_ints("arcinferzero.virtual.types");
@@ -208,9 +221,9 @@ class GgufFile {
       t.type = (uint32_t)(*types)[i];
       for (int d = 0; d < 4; ++d)
         if ((*dims)[i * 4 + d] > 0) t.dims.push_back((uint64_t)(*dims)[i * 4 + d]);
-      int blk, bytes;
+      int blk = 0, bytes = 0;
       ggml_block_info(t.type, blk, bytes);
-      t.nbytes = t.nelements() / blk * bytes;
+      t.nbytes = tensor_bytes(t, blk, bytes);
       tensor_index[t.name] = tensors.size();
       tensors.push_back(t);
     }
@@ -301,14 +314,7 @@ class GgufFile {
       auto& t = tensors[i];
       int blk = 0, bytes = 0;
       ggml_block_info(t.type, blk, bytes);
-      uint64_t ne = 1;
-      for (uint64_t d : t.dims) {
-        if (d && ne > UINT64_MAX / d) throw std::runtime_error("gguf: bad shape for " + t.name);
-        ne *= d;
-      }
-      if (blk <= 0 || bytes <= 0 || ne / (uint64_t)blk > UINT64_MAX / (uint64_t)bytes)
-        throw std::runtime_error("gguf: bad tensor type for " + t.name);
-      t.nbytes = ne / blk * bytes;
+      t.nbytes = tensor_bytes(t, blk, bytes);
       if (offs[i] > size_ - data_start || t.nbytes > size_ - data_start - offs[i])
         throw std::runtime_error("gguf: tensor out of range " + t.name);
       t.data = base_ + data_start + offs[i];

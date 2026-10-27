@@ -10,6 +10,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <wincodec.h>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
@@ -26,16 +27,16 @@ struct ImageRGB {
 namespace img {
 
 inline std::vector<uint8_t> base64_decode(const std::string& s) {
-  static int8_t T[256];
-  static bool init = false;
-  if (!init) {
-    for (int i = 0; i < 256; ++i) T[i] = -1;
+  // (built once by a static initializer: thread-safe, as the server decodes requests on several threads at once)
+  static const std::array<int8_t, 256> T = [] {
+    std::array<int8_t, 256> t;
+    t.fill(-1);
     const char* a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    for (int i = 0; i < 64; ++i) T[(uint8_t)a[i]] = (int8_t)i;
-    T['-'] = 62;  // URL-safe variants
-    T['_'] = 63;
-    init = true;
-  }
+    for (int i = 0; i < 64; ++i) t[(uint8_t)a[i]] = (int8_t)i;
+    t['-'] = 62;  // URL-safe variants
+    t['_'] = 63;
+    return t;
+  }();
   std::vector<uint8_t> out;
   out.reserve(s.size() * 3 / 4);
   uint32_t acc = 0;
@@ -93,7 +94,12 @@ inline ImageRGB decode(const std::vector<uint8_t>& bytes) {
   if (SUCCEEDED(hr)) {
     im.w = (int)w;
     im.h = (int)h;
-    im.px.resize((size_t)w * h * 3);
+    try {  // (up to 192 MB: the COM objects released if the allocation throws)
+      im.px.resize((size_t)w * h * 3);
+    } catch (...) {
+      release();
+      throw;
+    }
     hr = cv->CopyPixels(nullptr, w * 3, (UINT)im.px.size(), im.px.data());
   }
   release();

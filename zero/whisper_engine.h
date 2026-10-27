@@ -16,6 +16,26 @@ class WhisperEngine : public whisper::Backend {
   // npu: the encoder on the NPU (zero/npu/whisper_npu.h), the decoder here
   WhisperEngine(const whisper::Model& m, const std::string& kernel_dir = "zero/kernels", int max_seq = 5, bool npu = false)
       : m_(m), hp_(m.hp), max_seq_(std::max(1, max_seq)) {
+    try {  // (a constructor that throws runs no destructor: what init() made on the GPU so far is freed here)
+      init(m, kernel_dir, npu);
+    } catch (...) {
+      release_all();
+      throw;
+    }
+  }
+  ~WhisperEngine() override { release_all(); }
+
+ private:
+  void release_all() {
+    clFinish(cl_.queue);
+    for (auto& [k, v] : kc_map_) clReleaseKernel(v);
+    for (cl_program p : progs_) clReleaseProgram(p);
+    for (cl_mem b : mems_) clReleaseMemObject(b);
+    kc_map_.clear();
+    progs_.clear();
+    mems_.clear();
+  }
+  void init(const whisper::Model& m, const std::string& kernel_dir, bool npu) {
     // (the NPU's driver is a second Level Zero driver: Level Zero initialized for every type before the GPU runtime,
     //  which asks for GPUs only)
     if (npu && ze_load()) zeInit(0);
@@ -142,13 +162,8 @@ class WhisperEngine : public whisper::Backend {
     }
     load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   }
-  ~WhisperEngine() override {
-    clFinish(cl_.queue);
-    for (auto& [k, v] : kc_map_) clReleaseKernel(v);
-    for (cl_program p : progs_) clReleaseProgram(p);
-    for (cl_mem b : mems_) clReleaseMemObject(b);
-  }
 
+ public:
   double load_ms = 0, npu_ms = 0;  // (npu_ms: the NPU encoder's time)
   size_t gpu_bytes = 0;
   const WhisperNpuEncoder* npu() const { return npu_.get(); }

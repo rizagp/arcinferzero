@@ -177,9 +177,11 @@ class HttpServer {
  private:
   SOCKET ls_ = INVALID_SOCKET;
   std::atomic<int> conns_{0};
+  std::atomic<size_t> body_bytes_{0};  // (request bodies being read or handled now, see kBodyBudget)
   bool loopback_ = false;  // (bound to this machine only: requests must name it in Host, see serve)
   static constexpr int kMaxConns = 64;
   static constexpr size_t kMaxBody = 256u << 20;  // (base64 images and audio; larger requests get 413)
+  static constexpr size_t kBodyBudget = 1ull << 30;  // all connections' bodies at once (more: 503)
   static constexpr size_t kMaxHead = 1u << 20;    // request line + headers; a body may follow
 
   // http://127.0.0.1:PORT, http://localhost:PORT, http://[::1]:PORT (any port / pathless origin)
@@ -342,7 +344,21 @@ class HttpServer {
         p = e;
       }
       buf.erase(0, he + 4);
-      // body
+      // body. The bodies of all connections together stay within kBodyBudget (64 connections x 256 MiB would be
+      // 16 GiB): a request past it gets 503; its share is given back once it is answered
+      struct BodyHold {
+        std::atomic<size_t>& total;
+        size_t n = 0;
+        bool add(size_t k) {
+          if (total.fetch_add(k) + k > kBodyBudget) {
+            total.fetch_sub(k);
+            return false;
+          }
+          n += k;
+          return true;
+        }
+        ~BodyHold() { total.fetch_sub(n); }
+      } hold{body_bytes_};
       if (rq.header("transfer-encoding").find("chunked") != std::string::npos) {
         while (true) {
           size_t le;
@@ -355,6 +371,7 @@ class HttpServer {
           size_t len = 0;
           if (!parse_size(buf.substr(0, le), 16, len)) return reply_close(c, 400, "malformed chunk size");
           if (len > kMaxBody || rq.body.size() + len > kMaxBody) return reply_close(c, 413, "request body too large");
+          if (!hold.add(len)) return reply_close(c, 503, "the server is receiving too much at once; try again");
           if (len == 0) {  // the last chunk: optional trailer lines (ignored), then an empty line
             size_t te;
             while ((te = buf.find("\r\n\r\n", le)) == std::string::npos) {
@@ -379,6 +396,7 @@ class HttpServer {
         if (rq.headers.count("content-length") && !parse_size(rq.header("content-length"), 10, len))
           return reply_close(c, 400, "malformed Content-Length");
         if (len > kMaxBody) return reply_close(c, 413, "request body too large");
+        if (!hold.add(len)) return reply_close(c, 503, "the server is receiving too much at once; try again");
         while (buf.size() < len) {
           const int n = recv(c, tmp, sizeof tmp, 0);
           if (n <= 0) { closesocket(c); return; }

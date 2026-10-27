@@ -77,8 +77,15 @@ inline bool parse_wav(const std::vector<uint8_t>& b, std::vector<float>& mono, i
 inline std::vector<float> decode_mf(const std::vector<uint8_t>& bytes, int& rate, double max_seconds = 0) {
   struct Com {
     bool ok;
-    Com() { ok = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)); MFStartup(MF_VERSION, MFSTARTUP_LITE); }
-    ~Com() { MFShutdown(); if (ok) CoUninitialize(); }
+    bool mf;
+    Com() {
+      ok = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+      mf = SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE));
+    }
+    ~Com() {
+      if (mf) MFShutdown();
+      if (ok) CoUninitialize();
+    }
   } com;
   auto check = [](HRESULT hr, const char* what) {
     if (FAILED(hr)) throw std::runtime_error(std::string("audio decoding failed (") + what + ")");
@@ -108,11 +115,22 @@ inline std::vector<float> decode_mf(const std::vector<uint8_t>& bytes, int& rate
       IMFSample* s = nullptr;
       check(rd->ReadSample((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, nullptr, &flags, nullptr, &s), "read");
       if (s) {
-        IMFMediaBuffer* mb = nullptr;
-        if (SUCCEEDED(s->ConvertToContiguousBuffer(&mb))) {
+        // (the sample, its buffer and the lock let go however the block ends: mono's growth can throw)
+        struct Held {
+          IMFSample* s;
+          IMFMediaBuffer* mb = nullptr;
+          bool locked = false;
+          ~Held() {
+            if (locked) mb->Unlock();
+            if (mb) mb->Release();
+            s->Release();
+          }
+        } held{s};
+        if (SUCCEEDED(s->ConvertToContiguousBuffer(&held.mb))) {
           BYTE* p = nullptr;
           DWORD len = 0;
-          if (SUCCEEDED(mb->Lock(&p, nullptr, &len))) {
+          if (SUCCEEDED(held.mb->Lock(&p, nullptr, &len))) {
+            held.locked = true;
             const size_t n = len / (4 * ch);
             const float* f = (const float*)p;
             for (size_t i = 0; i < n; ++i) {
@@ -120,11 +138,8 @@ inline std::vector<float> decode_mf(const std::vector<uint8_t>& bytes, int& rate
               for (UINT32 c = 0; c < ch; ++c) acc += f[i * ch + c];
               mono.push_back(acc / ch);
             }
-            mb->Unlock();
           }
-          mb->Release();
         }
-        s->Release();
       }
       if (flags & (MF_SOURCE_READERF_ENDOFSTREAM | MF_SOURCE_READERF_ERROR)) break;
       if (max_seconds > 0 && (double)mono.size() > max_seconds * rate) break;

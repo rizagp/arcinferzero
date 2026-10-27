@@ -259,7 +259,7 @@ inline bool load() {
   if (context) return true;  // (a second engine in the process: the same compiler context, no second DLL reference)
   HMODULE h = LoadLibraryA("OpenCL.dll");
   if (!h) return false;
-#define RCL(var, name) var = (decltype(var))(void*)GetProcAddress(h, name); if (!var) return false;
+#define RCL(var, name) var = (decltype(var))(void*)GetProcAddress(h, name); if (!var) { FreeLibrary(h); return false; }
   RCL(getPlatformIDs, "clGetPlatformIDs") RCL(getDeviceIDs, "clGetDeviceIDs") RCL(getDeviceInfo, "clGetDeviceInfo")
   RCL(createContext, "clCreateContext") RCL(createProgramWithSource, "clCreateProgramWithSource")
   RCL(buildProgram, "clBuildProgram") RCL(getProgramBuildInfo, "clGetProgramBuildInfo")
@@ -576,7 +576,12 @@ struct ClRt {
       }
       size_t bn = 0;
       zrt::rcl::getProgramInfo(prog, 0x1165, sizeof(bn), &bn, nullptr);
-      bin.resize(bn);
+      try {
+        bin.resize(bn);
+      } catch (...) {
+        zrt::rcl::releaseProgram(prog);
+        throw;
+      }
       uint8_t* bp = bin.data();
       zrt::rcl::getProgramInfo(prog, 0x1166, sizeof(bp), &bp, nullptr);
       zrt::rcl::releaseProgram(prog);

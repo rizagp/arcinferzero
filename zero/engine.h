@@ -117,6 +117,39 @@ class Engine {
   double load_ms = 0;
 
   Engine(const std::string& path, const EngineOptions& o) : opt(o), f_(path), path_(path) {
+    // (a constructor that throws runs no destructor: what init() made on the GPU so far is freed here, or a failed
+    //  model switch in the server would keep it until the process ends)
+    try {
+      init(o);
+    } catch (...) {
+      release_all();
+      throw;
+    }
+  }
+
+  // Frees everything on the GPU (the server switches models in one process).
+  ~Engine() { release_all(); }
+  Engine(const Engine&) = delete;
+  Engine& operator=(const Engine&) = delete;
+
+ private:
+  void release_all() {
+    if (cl_.queue) clFinish(cl_.queue);
+    if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
+    npu_teardown();  // (ARC_NPU=1 only)
+    for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
+    for (auto& kv : kcache_) clReleaseKernel(kv.second);
+    for (cl_program p : progs_) clReleaseProgram(p);
+    for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
+      if (*it) clReleaseMemObject(*it);
+    if (cl_.queue) clReleaseCommandQueue(cl_.queue);
+    if (cl_.ctx) clReleaseContext(cl_.ctx);
+    kcache_.clear();
+    progs_.clear();
+    mems_.clear();
+    orig_ptrs_.clear();
+  }
+  void init(const EngineOptions& o) {
     npu_preinit();  // (ARC_NPU=1 only)
     if (!cl_.init(true)) throw std::runtime_error("OpenCL init failed");
     ctx = (o.ctx + 15) / 16 * 16;
@@ -189,22 +222,7 @@ class Engine {
     reset();
   }
 
-  // Frees everything on the GPU (the server switches models in one process).
-  ~Engine() {
-    if (cl_.queue) clFinish(cl_.queue);
-    if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
-    npu_teardown();  // (ARC_NPU=1 only)
-    for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
-    for (auto& kv : kcache_) clReleaseKernel(kv.second);
-    for (cl_program p : progs_) clReleaseProgram(p);
-    for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
-      if (*it) clReleaseMemObject(*it);
-    if (cl_.queue) clReleaseCommandQueue(cl_.queue);
-    if (cl_.ctx) clReleaseContext(cl_.ctx);
-  }
-  Engine(const Engine&) = delete;
-  Engine& operator=(const Engine&) = delete;
-
+ public:
   // Clears the KV cache and recurrent states.
   void reset() {
     pos = 0;

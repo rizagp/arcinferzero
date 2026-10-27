@@ -181,6 +181,15 @@
   }
   // The state is copied to host memory and written to disk in the background while the request goes on (with less
   // than 2 GiB of RAM left over: written to disk first).
+  // a background write: its thread is joined when the last owner lets go, however that happens (a std::thread still
+  // joinable when it is destroyed ends the process: an allocation that threw between starting the thread and
+  // storing it would have done that)
+  template <typename F> static std::shared_ptr<std::thread> start_writer(F&& f) {
+    return std::shared_ptr<std::thread>(new std::thread(std::forward<F>(f)), [](std::thread* t) {
+      if (t->joinable()) t->join();
+      delete t;
+    });
+  }
   std::shared_ptr<std::thread> prefix_writer_;
   void prefix_written() {
     if (prefix_writer_ && prefix_writer_->joinable()) prefix_writer_->join();
@@ -218,7 +227,7 @@
         return true;
       }, (int)n, false);
       if (!ok) return;
-      prefix_writer_ = std::make_shared<std::thread>([pieces, file, finish] {
+      prefix_writer_ = start_writer([pieces, file, finish] {
         FILE* f = fopen((file + ".tmp").c_str(), "wb");
         bool w = f != nullptr;
         for (const auto& pc : *pieces)
@@ -321,7 +330,7 @@
         return true;
       }, last_gen_cut_);
       if (ok)
-        writer = std::make_shared<std::thread>([pieces, file, failed] {
+        writer = start_writer([pieces, file, failed] {
           FILE* f = fopen((file + ".tmp").c_str(), "wb");
           bool w = f != nullptr;
           for (const auto& pc : *pieces)

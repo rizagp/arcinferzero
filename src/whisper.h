@@ -73,8 +73,29 @@ class Ct2File {
     file_ = CreateFileW(std::filesystem::path(path).wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file_ == INVALID_HANDLE_VALUE) throw std::runtime_error("whisper: cannot open " + path);
+    try {  // (a constructor that throws runs no destructor: the handles and the view closed here)
+      parse(path);
+    } catch (...) {
+      close();
+      throw;
+    }
+  }
+  ~Ct2File() { close(); }
+  Ct2File(const Ct2File&) = delete;
+  Ct2File& operator=(const Ct2File&) = delete;
+
+ private:
+  void close() {
+    if (base_) UnmapViewOfFile(base_);
+    if (map_) CloseHandle(map_);
+    if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
+    base_ = nullptr;
+    map_ = nullptr;
+    file_ = INVALID_HANDLE_VALUE;
+  }
+  void parse(const std::string& path) {
     LARGE_INTEGER sz;
-    GetFileSizeEx(file_, &sz);
+    if (!GetFileSizeEx(file_, &sz)) throw std::runtime_error("whisper: cannot read the size of " + path);
     size_ = (size_t)sz.QuadPart;
     map_ = CreateFileMappingW(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
     if (!map_) throw std::runtime_error("whisper: cannot map " + path);
@@ -118,14 +139,8 @@ class Ct2File {
       }
     }
   }
-  ~Ct2File() {
-    if (base_) UnmapViewOfFile(base_);
-    if (map_) CloseHandle(map_);
-    if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
-  }
-  Ct2File(const Ct2File&) = delete;
-  Ct2File& operator=(const Ct2File&) = delete;
 
+ public:
   bool has(const std::string& name) const { return vars_.count(resolve(name)) != 0; }
   const Ct2Var& get(const std::string& name) const {
     auto it = vars_.find(resolve(name));

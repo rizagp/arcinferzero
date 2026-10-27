@@ -147,7 +147,9 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   std::string head, tail;
   size_t total = 0;
   std::atomic<bool> read_done{false};
-  std::thread reader([&] {
+  std::thread reader;
+  try {  // (no reader thread: the command is stopped and its handles closed, not left running with a full pipe)
+  reader = std::thread([&] {
     char b[8192];
     DWORD n;
     while (ReadFile(rd, b, sizeof b, &n, nullptr) && n) {
@@ -161,6 +163,14 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
     }
     read_done = true;
   });
+  } catch (...) {
+    if (in_job) TerminateJobObject(job, 1);
+    TerminateProcess(pi.hProcess, 1);
+    CloseHandle(pi.hProcess);
+    CloseHandle(rd);
+    if (job) CloseHandle(job);
+    throw;
+  }
   // the command's end, its timeout, or the client gone (polled: a request whose page stopped it)
   const auto deadline = t0 + std::chrono::seconds(timeout_s);
   while (WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT) {

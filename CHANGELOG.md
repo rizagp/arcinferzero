@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-27: failure paths cleaned up (a static audit by DeepSeek, each finding checked)
+
+- **A model or Whisper that fails to load frees what it already put on the GPU**: a constructor that throws runs
+  no destructor, so a failed model switch in the server kept the half-loaded engine's buffers, kernels and programs
+  until the process ended (Engine, WhisperEngine); Whisper's `model.bin` is closed when it is malformed.
+- **No more process abort from a background save**: the threads writing saved conversations and system-prompt
+  states are joined by their owner however it lets go (a `std::thread` still joinable when destroyed ends the process).
+- **Request bodies: 1 GiB for all connections at once** (64 connections x 256 MiB could ask for 16 GiB); past it,
+  503. The per-request limit stays 256 MiB.
+- **Gemma 4 image and audio projectors of another model size are refused** at load, as the Qwen one already was
+  (their embeddings would have been read at the wrong width).
+- GGUF tensors must hold whole blocks (also the virtual expert tensors, whose unknown type divided by zero); the
+  base64 table is built thread-safely; WIC and Media Foundation objects, the terminal tool's pipe / job / process
+  and a compiled program are released when an allocation throws; the expert cache's saved state is written whole
+  or not at all, never from a throwing destructor; NPU memory import and `OpenCL.dll` cleaned up on failure.
+- Checked and not changed: the encoders' GPU buffers when a projector is refused (they load lazily: nothing is
+  allocated yet); tokenizing before the context check (memory now bounded by the body budget).
+
 ## 2026-10-27: web UI audit: every function tried, security and robustness fixes
 
 - **Tried with Qwen3.5 4B (vision, Whisper) in the web UI**, each passing:

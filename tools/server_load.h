@@ -137,6 +137,9 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
           what = std::to_string(g->patch) + "-pixel patches";
           v = std::move(g);
         }
+        if (v->out_dim() != eng.hp.n_embd)  // (a projector of another model size; checked before its lazy load)
+          throw std::runtime_error("the projector outputs " + std::to_string(v->out_dim()) + " values per token, the model takes " +
+                                   std::to_string(eng.hp.n_embd));
         if (so.img_min > 0) v->min_tokens = so.img_min;
         if (so.img_max > 0) v->max_tokens = so.img_max;
         v->min_tokens = std::min(v->min_tokens, v->max_tokens);
@@ -146,12 +149,19 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
         fprintf(stderr, "vision disabled: %s\n", e.what());
       }
       try {
+        auto width_ok = [&](const GemmaAudioEncoder& a) {  // (a projector of another model size)
+          if (a.out_dim() != eng.hp.n_embd)
+            throw std::runtime_error("the projector outputs " + std::to_string(a.out_dim()) + " values per token, the model takes " +
+                                     std::to_string(eng.hp.n_embd));
+        };
         if (GgufFile(mmproj).get_str("clip.audio.projector_type", "") == "gemma4a") {
           auto a = std::make_unique<AudioGemma4A>(mmproj, eng);
+          width_ok(*a);
           fprintf(stderr, "audio: %d-layer conformer on the GPU (25 tokens per second of audio)\n", a->n_layer);
           srv.set_audio(std::move(a));
         } else {
           auto a = std::make_unique<AudioGemma4>(mmproj);
+          width_ok(*a);
           fprintf(stderr, "audio: %d-sample frames at %d Hz (%.0f tokens per second of audio)\n", a->frame, a->rate, (double)a->rate / a->frame);
           srv.set_audio(std::move(a));
         }

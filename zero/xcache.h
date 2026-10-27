@@ -181,7 +181,7 @@ struct XCache {
   // left behind made the next model run out of memory and lose the device).
   ~XCache() {
     try { join(); } catch (const std::exception&) {}  // (a failed prefetch: its experts are dropped, nothing to report)
-    save_state();
+    try { save_state(); } catch (const std::exception&) {}  // (a destructor must not throw: no state saved then)
     if (zrt::oom_hook && active() == this) { zrt::oom_hook = nullptr; active() = nullptr; }
     zrt::sync();
     for (Pool& P : pools) {
@@ -389,17 +389,17 @@ struct XCache {
     FILE* f = fopen((state_path + ".tmp").c_str(), "wb");
     if (!f) return;
     const int hdr[3] = {NL, NE, (int)pools.size()};
-    fwrite(hdr, 4, 3, f);
+    bool ok = fwrite(hdr, 4, 3, f) == 3;
     for (auto& P : pools) {
       std::vector<int> keys;
       for (int s = P.head; s >= 0; s = P.next[s]) keys.push_back(P.key[s]);
       const int n = (int)keys.size();
-      fwrite(&n, 4, 1, f);
-      fwrite(keys.data(), 4, keys.size(), f);
+      ok = ok && fwrite(&n, 4, 1, f) == 1 && fwrite(keys.data(), 4, keys.size(), f) == keys.size();
     }
-    fclose(f);
+    ok = fclose(f) == 0 && ok;
     std::error_code ec;
-    std::filesystem::rename(state_path + ".tmp", state_path, ec);
+    if (ok) std::filesystem::rename(state_path + ".tmp", state_path, ec);  // (a short write keeps the old state)
+    else std::filesystem::remove(state_path + ".tmp", ec);
     saved_at = std::chrono::steady_clock::now();
   }
   void warm() {
