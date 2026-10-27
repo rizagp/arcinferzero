@@ -1057,15 +1057,24 @@ async function streamTurn(el, st, onOverflow) {
     throw new Error(t);
   }
   const reader = res.body.getReader(), dec = new TextDecoder();
-  let buf = "", first = true, frame = 0;
-  // the screen follows at most once per frame (a long answer re-rendered per token made streaming slow down)
-  const paint = () => {
+  let buf = "", first = true, frame = 0, painted = 0;
+  // the screen follows at most every 120 ms (a long answer re-rendered per token made streaming slow down, and while
+  // the model runs on the same iGPU the browser gets little GPU time to draw: parts of the page stayed blank), and
+  // the thinking text only while its box is open (filled when it is opened)
+  const paint = (all) => {
     frame = 0;
-    if (st.reasoning) { thinkBox.hidden = false; thinkText.textContent = st.reasoning; }
+    painted = performance.now();
+    if (st.reasoning) {
+      thinkBox.hidden = false;
+      if (thinkBox.open || all) thinkText.textContent = st.reasoning;
+    }
     content.innerHTML = markdown(st.answer);
     scroll();
   };
-  const later = () => { if (!frame) frame = requestAnimationFrame(paint); };
+  thinkBox.ontoggle = () => { if (thinkBox.open) thinkText.textContent = st.reasoning; };
+  const later = () => {
+    if (!frame) frame = setTimeout(() => requestAnimationFrame(() => paint()), Math.max(0, 120 - (performance.now() - painted)));
+  };
   try {
   while (true) {
     const { value, done } = await reader.read();
@@ -1102,8 +1111,8 @@ async function streamTurn(el, st, onOverflow) {
     }
   }
   } finally {  // (the last pieces at once, also when stopped)
-    if (frame) cancelAnimationFrame(frame);
-    if (!first) paint();
+    if (frame) clearTimeout(frame);
+    if (!first) paint(true);
   }
 }
 function turnStats(el, st) {
