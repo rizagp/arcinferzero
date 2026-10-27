@@ -104,7 +104,20 @@ inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
   std::vector<const std::string*> who;  // (each word's speaker: a cue holds one)
   for (const Segment& g : r.segments) {
     if (!g.words.empty()) {
-      for (const Word& w : g.words) all.push_back(w);
+      // (a word's own line breaks or tabs as one space: a blank line inside a word ended an SRT / VTT cue there, and
+      //  broke an ASS line; a word of white space only left out)
+      for (const Word& w : g.words) {
+        Word x = w;
+        x.text.clear();
+        bool sp = false;
+        for (char c : w.text) {
+          if (isspace((unsigned char)c)) { sp = !x.text.empty(); continue; }
+          if (sp) x.text += ' ';
+          sp = false;
+          x.text += c;
+        }
+        if (!x.text.empty()) all.push_back(x);
+      }
     } else {  // (no word timestamps: the segment's words spread over its time)
       std::vector<std::string> ws;
       std::string cur;
@@ -158,8 +171,16 @@ inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
     }
     if (c.end <= c.start) c.end = c.start + 0.3;
   }
-  for (size_t i = 0; i + 1 < cues.size(); ++i)  // (no overlap)
-    if (cues[i].end > cues[i + 1].start) cues[i].end = cues[i + 1].start;
+  // in time order, and no overlap within a speaker's cues (two speakers' cues may overlap: people talk at once, and
+  // every format shows both). The tracks' segments come merged by their starts, so a short reply of the other track
+  // sat between a long segment's cues: clamped to it, the earlier cue ended before it started.
+  std::stable_sort(cues.begin(), cues.end(), [](const Cue& a, const Cue& b) { return a.start < b.start; });
+  for (size_t i = 0; i < cues.size(); ++i)
+    for (size_t j = i + 1; j < cues.size(); ++j)
+      if (cues[j].speaker == cues[i].speaker) {
+        if (cues[i].end > cues[j].start) cues[i].end = std::max(cues[j].start, cues[i].start + 0.01);
+        break;
+      }
   return cues;
 }
 
@@ -304,7 +325,7 @@ inline std::string to_sbv(const std::vector<Cue>& cues) {
 inline std::string to_srv3(const std::vector<Cue>& cues) {
   std::string o = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<timedtext format=\"3\">\n<body>\n";
   for (const Cue& c : cues) {
-    const long long t = std::llround(c.start * 1000), d = std::llround((c.end - c.start) * 1000);
+    const long long t = std::llround(c.start * 1000), d = std::max(1LL, std::llround((c.end - c.start) * 1000));
     o += "<p t=\"" + std::to_string(t) + "\" d=\"" + std::to_string(d) + "\">";
     for (size_t w = 0; w < c.words.size(); ++w) {
       const long long off = std::max(0LL, std::llround(c.words[w].start * 1000) - t);

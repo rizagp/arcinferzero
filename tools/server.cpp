@@ -982,7 +982,12 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         if (cid == self) continue;
         Json c;
         if (!Json::try_parse(text, c)) continue;
-        if (rq.path == "/v1/tools/list_chats" && !ql.empty() && files::lower(text).find(ql) == std::string::npos) continue;
+        if (rq.path == "/v1/tools/list_chats" && !ql.empty()) {  // (in what read_file shows of it: no reasoning, tool
+          std::string seen = c["title"].str() + "\n" + c["snippet"].str();  // output or attached data)
+          for (const Json& m : c["history"].items())
+            if (m["role"].str() == "user" || m["role"].str() == "assistant") seen += "\n" + files::message_text(m["content"]);
+          if (files::lower(seen).find(ql) == std::string::npos) continue;
+        }
         cs.push_back({cid, c["title"].str("chat"), c["model"].str(), c["snippet"].str(), (int64_t)(c["at"].as_number(0) / 1000)});
       }
       std::sort(cs.begin(), cs.end(), [](const C& x, const C& y) { return x.at > y.at; });
@@ -2060,8 +2065,10 @@ int main(int argc, char** argv) {
         const std::string speech = in["speech"].str();
         if (speech == "whisper" || (speech != "model" && !hears)) {
           std::string bad;
-          if (!wh->audio_to_text(in, bad))
-            return rs.send(400, "application/json", "{\"error\":{\"message\":" + Json(bad).dump() + ",\"type\":\"invalid_request_error\"}}");
+          int st = 400;
+          if (!wh->audio_to_text(in, bad, st, [&] { return rs.client_gone(); }))
+            return rs.send(st, "application/json", "{\"error\":{\"message\":" + Json(bad).dump() + ",\"type\":\"" +
+                                                       (st == 429 ? "rate_limit_error" : "invalid_request_error") + "\"}}");
           HttpRequest rq2 = rq;
           rq2.body = in.dump();
           return dispatch(rq2, rs);

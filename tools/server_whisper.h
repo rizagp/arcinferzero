@@ -31,8 +31,10 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <thread>
+#include <tuple>
 
 namespace srvwh {
 
@@ -333,7 +335,9 @@ class Service {
       }
     return false;
   }
-  bool audio_to_text(Json& body, std::string& bad) {
+  // (status: 400, or 429 when too many transcriptions wait; gone: the client left, the clip's transcription stops)
+  bool audio_to_text(Json& body, std::string& bad, int& status, const std::function<bool()>& gone = nullptr) {
+    status = 400;
     Json msgs = Json::array();
     for (const Json& m : body["messages"].items()) {
       if (!m["content"].is_array()) { msgs.push(m); continue; }
@@ -350,7 +354,12 @@ class Service {
             if (fid.rfind("/files/", 0) == 0) fid = fid.substr(7);
             if (fid.rfind("file-", 0) == 0) fid = fid.substr(5);
             files::Info i;
-            if (files::valid_id(fid, 16) && files::store().get(fid, i) && i.kind == "audio" && files::Store::read(i.path, data)) {
+            if (files::valid_id(fid, 16) && files::store().get(fid, i) && i.kind == "audio") {
+              // (unreadable: an error, not the part left as audio: dispatch would find it again and again)
+              if (!files::Store::read(i.path, data)) {
+                bad = "audio " + i.name + ": the file cannot be read";
+                return false;
+              }
               audio = true;
               name = i.name;
               chat = i.chat;
@@ -372,7 +381,7 @@ class Service {
         double secs = 0;
         std::string text;
         try {
-          text = clip_text(data, secs);
+          text = clip_text(data, secs, status, gone);
         } catch (const std::exception& e) {
           bad = "audio " + name + ": " + e.what();
           return false;
@@ -430,12 +439,22 @@ class Service {
     lib_ = dir;
     std::error_code ec;
     fs::create_directories(lib_, ec);
+    std::vector<std::string> sweep;
     for (const auto& e : fs::directory_iterator(lib_, ec)) {
       const std::string tid = e.path().filename().string();
+      if (!valid_id(tid) || !e.is_directory()) continue;
       Json m;
-      if (!valid_id(tid) || !e.is_directory() || !Json::try_parse(slurp(e.path() / "meta.json"), m) || !m.is_object())
+      if (!Json::try_parse(slurp(e.path() / "meta.json"), m) || !m.is_object()) {
+        // (a folder of the library with no record: one whose delete was cut, or one made just before a crash)
+        if (!fs::exists(e.path() / "meta.json")) sweep.push_back(tid);
         continue;
+      }
       const std::string st = m["status"].str();
+      if (st == "deleting") {  // (deleted, but a file of it was held open, or the server stopped first)
+        sweep.push_back(tid);
+        continue;
+      }
+      if (m["ext"].str() == "mp3" && m["recording"].as_bool()) fs::remove(e.path() / "source.wav", ec);  // (a WAV a player held)
       if (st == "uploading") {  // (the server stopped during the upload: the browser has let the file go)
         m.set("status", "failed");
         m.set("error", "the upload did not finish before the server stopped");
@@ -443,34 +462,38 @@ class Service {
       } else if (st == "running") {
         m.set("status", "queued");
         m.set("progress", 0.0);
-      } else if (st == "live" || st == "deleting") {  // (a recording the stop cut: its WAV sizes put right)
+      } else if (st == "live") {  // (a recording the stop cut: its WAV sizes put right)
         const fs::path w = e.path() / "source.wav";
-        const uint64_t n = fs::file_size(w, ec);
-        std::fstream f(w, std::ios::binary | std::ios::in | std::ios::out);
-        if (!ec && n >= 44 && f) {
-          const uint32_t data = (uint32_t)std::min<uint64_t>(n - 44, 0xFFFFFFF0u), riff = data + 36;
-          f.seekp(4);
-          f.write((const char*)&riff, 4);
-          f.seekp(40);
-          f.write((const char*)&data, 4);
-        }
-        m.set("status", st == "deleting" ? "cancelled" : "queued");
-        m.set("size", (double)n);
+        fix_wav_sizes(w);
+        m.set("status", "queued");
+        m.set("size", (double)fs::file_size(w, ec));
       }
       metas_[tid] = m;
       save_meta(tid);
     }
-    // arc-recorder's finished recordings the server did not take yet (it was not running when they ended)
+    for (const std::string& tid : sweep) remove_folder(tid);
+    // arc-recorder's finished recordings the server did not take yet (it was not running when they ended), and those
+    // whose recorder ended without finishing them (killed, a shutdown, the power cut: its note says complete false;
+    // taken once no recorder runs, the WAV's sizes put right)
     for (const auto& e : fs::directory_iterator(fs::path(app_dir()) / "recordings", ec)) {
       if (e.path().extension() != ".json") continue;
       Json side;
       std::string bad;
-      if (Json::try_parse(slurp(e.path()), side) && side["complete"].as_bool()) {
-        fs::path w = e.path();
-        w.replace_extension(".wav");
-        side.set("path", w.string());
-        if (import_recording(side, bad).empty()) fprintf(stderr, "whisper: recording %s: %s\n", w.string().c_str(), bad.c_str());
+      if (!Json::try_parse(slurp(e.path()), side) || !side.is_object()) continue;
+      fs::path w = e.path();
+      w.replace_extension(".wav");
+      if (!side["complete"].as_bool()) {
+        const DWORD pid = (DWORD)side["pid"].as_number(0);
+        HANDLE ev = OpenEventW(SYNCHRONIZE, FALSE, L"Local\\arcinferzero-recorder-stop");
+        HANDLE h = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
+        const bool running = ev && h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        if (h) CloseHandle(h);
+        if (ev) CloseHandle(ev);
+        if (running) continue;
+        fix_wav_sizes(w);
       }
+      side.set("path", w.string());
+      if (import_recording(side, bad).empty()) fprintf(stderr, "whisper: recording %s: %s\n", w.string().c_str(), bad.c_str());
     }
     worker_ = std::thread([this] { work(); });
     live_worker_ = std::thread([this] { live_work(); });
@@ -545,12 +568,7 @@ class Service {
       const fs::space_info sp = fs::space(lib_, ec);
       if (!ec && (double)sp.available < size + (512.0 * (1 << 20)))
         return fail(507, "not enough free disk space for the file (" + std::to_string((uint64_t)(size / (1 << 20))) + " MB)");
-      std::string name = in["name"].str("recording");
-      std::string clean;
-      for (unsigned char c : name)
-        if (c >= 0x20 && c != '"' && c != '\\' && c != '/' && c != 0x7F) clean += (char)c;
-      if (clean.size() > 200) clean.resize(200);
-      if (clean.empty()) clean = "recording";
+      const std::string clean = clean_name(in["name"].str("recording"), 200, "recording");
       std::string ext;
       const size_t dot = clean.rfind('.');
       if (dot != std::string::npos)
@@ -561,7 +579,8 @@ class Service {
       for (const char* k : {"language", "beam_size", "terms", "prompt", "dual_language", "condition_on_previous_text"})
         if (!field(k).empty()) o.set(k, field(k));
       Json m = Json::object();
-      const std::string nid = new_id();
+      const std::string nid = new_dir();
+      if (nid.empty()) return fail(500, "cannot create the transcript's folder");
       m.set("id", nid);
       m.set("name", clean);
       m.set("ext", ext);
@@ -571,8 +590,6 @@ class Service {
       m.set("progress", 0.0);
       m.set("options", o);
       if (in["kind"].str() == "meeting") m.set("kind", "meeting");
-      fs::create_directories(lib_ / nid, ec);
-      if (ec) return fail(500, "cannot create the transcript's folder: " + ec.message());
       std::ofstream(lib_ / nid / ("source." + ext), std::ios::binary);  // (an empty file to append to)
       {
         std::lock_guard<std::mutex> lk(lib_mu_);
@@ -606,19 +623,45 @@ class Service {
     const fs::path dir = lib_ / tid, src = dir / ("source." + m["ext"].str());
     if (what == "source" && rq.method == "PUT") {
       const double off = atof(query_param(rq.query, "offset").c_str());
-      std::lock_guard<std::mutex> lk(lib_mu_);
-      Json& cur = metas_[tid];
-      if (cur["status"].str() != "uploading") return fail(409, "the file is complete");
-      if (off != cur["received"].as_number()) return fail(409, "offset " + std::to_string((uint64_t)off) +
-                                                               ": the next piece starts at " +
-                                                               std::to_string((uint64_t)cur["received"].as_number()));
-      const double got = cur["received"].as_number() + (double)rq.body.size();
-      if (got > cur["size"].as_number()) return fail(400, "more bytes than the size given");
+      double got = 0;
       {
-        std::ofstream f(src, std::ios::binary | std::ios::app);
-        f.write(rq.body.data(), (std::streamsize)rq.body.size());
-        if (!f) return fail(500, "cannot write the file (disk full?)");
+        std::lock_guard<std::mutex> lk(lib_mu_);
+        auto it = metas_.find(tid);
+        if (it == metas_.end()) return fail(404, "no transcript " + tid);
+        const Json& cur = it->second;
+        if (cur["status"].str() != "uploading") return fail(409, "the file is complete");
+        if (off != cur["received"].as_number()) return fail(409, "offset " + std::to_string((uint64_t)off) +
+                                                                 ": the next piece starts at " +
+                                                                 std::to_string((uint64_t)cur["received"].as_number()));
+        got = cur["received"].as_number() + (double)rq.body.size();
+        if (got > cur["size"].as_number()) return fail(400, "more bytes than the size given");
+        if (!writing_.insert(tid).second) return fail(409, "a piece of this file is being written");
       }
+      // (written outside the lock: a piece of up to 256 MB, while the list, the marks and the live recordings go on;
+      //  the file cut back to the bytes received first, so a piece that failed halfway leaves nothing behind)
+      bool ok = false;
+      {
+        std::error_code ec;
+        fs::resize_file(src, (uint64_t)off, ec);
+        if (!ec) {
+          std::ofstream f(src, std::ios::binary | std::ios::app);
+          f.write(rq.body.data(), (std::streamsize)rq.body.size());
+          f.close();
+          ok = (bool)f;
+          if (!ok) fs::resize_file(src, (uint64_t)off, ec);
+        }
+      }
+      std::lock_guard<std::mutex> lk(lib_mu_);
+      writing_.erase(tid);
+      auto it = metas_.find(tid);
+      if (it == metas_.end()) return fail(404, "no transcript " + tid);
+      if (it->second["status"].str() == "deleting") {  // (deleted while the piece was written: its folder goes now)
+        metas_.erase(it);
+        remove_folder(tid);
+        return fail(404, "no transcript " + tid);
+      }
+      if (!ok) return fail(500, "cannot write the file (disk full?)");
+      Json& cur = it->second;
       cur.set("received", got);
       if (got == cur["size"].as_number()) {
         cur.set("status", "queued");
@@ -643,16 +686,13 @@ class Service {
         if (!write_atomic(dir / "summary.md", in["summary"].str())) return fail(500, "cannot write the summary");
       }
       std::lock_guard<std::mutex> lk(lib_mu_);
-      if (in["name"].is_string() && !in["name"].str().empty()) {
-        std::string clean;
-        for (unsigned char c : in["name"].str())
-          if (c >= 0x20 && c != '"' && c != '\\' && c != '/' && c != 0x7F) clean += (char)c;
-        if (clean.size() > 200) clean.resize(200);
-        metas_[tid].set("name", clean.empty() ? std::string("recording") : clean);
-      }
-      if (in["summary"].is_string()) metas_[tid].set("summarized", (double)std::time(nullptr));
+      // (found again, not metas_[tid]: a delete meanwhile left nothing to rename, and [] would have made an empty one)
+      auto it = metas_.find(tid);
+      if (it == metas_.end()) return fail(404, "no transcript " + tid);
+      if (in["name"].is_string() && !in["name"].str().empty()) it->second.set("name", clean_name(in["name"].str(), 200, "recording"));
+      if (in["summary"].is_string()) it->second.set("summarized", (double)std::time(nullptr));
       save_meta(tid);
-      return rs.send(200, "application/json", metas_[tid].dump());
+      return rs.send(200, "application/json", it->second.dump());
     }
     if (what == "transcript" && rq.method == "PUT") {
       Json in;
@@ -661,10 +701,14 @@ class Service {
       if (m["status"].str() == "running" || m["status"].str() == "queued" || m["status"].str() == "uploading")
         return fail(409, "the transcript is not finished yet");
       const whisper::Result r = result_from_json(in);
+      std::lock_guard<std::mutex> lk(lib_mu_);  // (the check and the write together: a delete or a pass in between)
+      auto it = metas_.find(tid);
+      if (it == metas_.end() || it->second["status"].str() == "deleting") return fail(404, "no transcript " + tid);
+      const std::string st = it->second["status"].str();
+      if (st == "running" || st == "queued" || st == "uploading" || st == "live") return fail(409, "the transcript is not finished yet");
       if (!write_atomic(dir / "transcript.json", whisper::to_json(r))) return fail(500, "cannot write the transcript");
-      std::lock_guard<std::mutex> lk(lib_mu_);
-      metas_[tid].set("edited", (double)std::time(nullptr));
-      metas_[tid].set("segments", (double)r.segments.size());
+      it->second.set("edited", (double)std::time(nullptr));
+      it->second.set("segments", (double)r.segments.size());
       save_meta(tid);
       return rs.send(200, "application/json", "{\"saved\":true}");
     }
@@ -692,7 +736,7 @@ class Service {
       // (the name as typed, UTF-8, for the browsers; an ASCII one for the rest)
       std::string ascii, enc;
       for (unsigned char c : stem) {
-        ascii += (c < 0x80 && c != ';') ? (char)c : '_';
+        ascii += (c >= 0x20 && c < 0x7F && c != ';' && c != '"' && c != '\\') ? (char)c : '_';
         if (isalnum(c) || c == '-' || c == '_' || c == '.') enc += (char)c;
         else { char b[4]; snprintf(b, sizeof b, "%%%02X", c); enc += b; }
       }
@@ -712,7 +756,9 @@ class Service {
     }
     if (what == "cancel" && rq.method == "POST") {
       std::lock_guard<std::mutex> lk(lib_mu_);
-      Json& cur = metas_[tid];
+      auto it = metas_.find(tid);
+      if (it == metas_.end()) return fail(404, "no transcript " + tid);
+      Json& cur = it->second;
       const std::string st = cur["status"].str();
       if (tid == running_) cancel_running_ = true;
       else if (st == "live") {  // (the recording stops; its draft is kept, no accurate pass)
@@ -727,17 +773,20 @@ class Service {
     }
     if (what.empty() && rq.method == "DELETE") {
       std::unique_lock<std::mutex> lk(lib_mu_);
+      auto it = metas_.find(tid);
+      if (it == metas_.end()) return fail(404, "no transcript " + tid);
+      const std::string st = it->second["status"].str();
+      // (marked first, on disk too: a folder that cannot go now, a file of it held open, goes at the next start)
+      it->second.set("status", "deleting");
+      save_meta(tid);
       if (tid == running_) {  // (the worker deletes it when it lets go of it)
         cancel_running_ = delete_running_ = true;
-        metas_[tid].set("status", "deleting");
-      } else if (metas_[tid]["status"].str() == "live") {  // (and so does the live recording's end)
-        metas_[tid].set("status", "deleting");
+      } else if (st == "live") {  // (and so does the live recording's end)
         if (auto s = live_of(tid)) live_stop(s);
-      } else {
-        metas_.erase(tid);
+      } else if (!writing_.count(tid)) {  // (a piece being written: its upload deletes it after)
+        metas_.erase(it);
         lk.unlock();
-        std::error_code ec;
-        fs::remove_all(dir, ec);
+        remove_folder(tid);
       }
       return rs.send(200, "application/json", "{\"deleted\":true}");
     }
@@ -753,8 +802,11 @@ class Service {
   // draft; the recording is then kept as MP3 (192 kbps unless mp3_kbps says otherwise).
   //   POST /v1/live                    {name, language, terms, beam_size, tracks: 1 | 2, rate, speakers: [..],
   //                                     mp3_kbps} -> the record (status "live")
-  //   POST /v1/live/<id>/audio?since=N the next piece -> {segments: the draft's from the N-th on, count, heard_s,
-  //                                     pending: utterances not transcribed yet}
+  //   POST /v1/live/<id>/audio?since=N&offset=F  the next piece (at most 120 s; F: the frames sent before it, so a
+  //                                     piece sent again is not written twice) -> {segments: the draft's from the
+  //                                     N-th on, count, heard_s, pending: utterances not transcribed yet, behind: the
+  //                                     draft left some out (the accurate pass has them)}. No audio for 5 minutes: the
+  //                                     recording is stopped (the page is gone) and transcribed
   //   POST /v1/live/<id>/mark          {t}: a mark at t seconds
   //   POST /v1/live/<id>/stop          the recording closed, the rest of the draft and the accurate pass to come
   void live(const HttpRequest& rq, HttpResponse& rs) {
@@ -794,8 +846,7 @@ class Service {
       for (LiveTrack& t : s->t) t.rs = std::make_unique<audio::Resampler>(rate, 16000);
       Json sp = Json::array();
       for (int k = 0; k < tracks; ++k) {
-        std::string w = in["speakers"][k].str(tracks == 1 ? "" : k == 0 ? "Me" : "Others");
-        if (w.size() > 40) w.resize(40);
+        const std::string w = clean_name(in["speakers"][k].str(), 40, tracks == 1 ? "" : k == 0 ? "Me" : "Others");
         s->speakers.push_back(w);
         sp.push(w);
       }
@@ -806,21 +857,20 @@ class Service {
       Json o = Json::object();
       for (const char* k : {"language", "beam_size", "terms", "prompt", "dual_language"})
         if (!field(k).empty()) o.set(k, field(k));
-      std::string name = in["name"].str("recording");
-      std::string clean;
-      for (unsigned char c : name)
-        if (c >= 0x20 && c != '"' && c != '\\' && c != '/' && c != 0x7F) clean += (char)c;
-      if (clean.size() > 200) clean.resize(200);
-      const std::string nid = new_id();
+      const std::string clean = clean_name(in["name"].str("recording"), 200, "recording");
+      const std::string nid = new_dir();
+      if (nid.empty()) return fail(500, "cannot create the recording's folder");
       s->id = nid;
-      std::error_code ec;
-      fs::create_directories(lib_ / nid, ec);
       s->wav.open(lib_ / nid / "source.wav", std::ios::binary | std::ios::trunc);
-      if (ec || !s->wav) return fail(500, "cannot create the recording");
+      if (!s->wav) {
+        std::error_code ec;
+        fs::remove_all(lib_ / nid, ec);
+        return fail(500, "cannot create the recording");
+      }
       write_wav_header(*s);
       Json m = Json::object();
       m.set("id", nid);
-      m.set("name", clean.empty() ? std::string("recording") : clean);
+      m.set("name", clean);
       m.set("ext", "wav");
       m.set("size", 0.0);
       m.set("status", "live");
@@ -860,21 +910,33 @@ class Service {
     if (what == "audio") {
       const size_t frame = (size_t)2 * s->tracks;
       if (rq.body.size() % frame) return fail(400, "16-bit samples, the tracks interleaved");
+      // (a page sends half a second at a time; a background tab's timers, a minute or so; more is not a recording)
+      if (rq.body.size() > (size_t)kLiveMaxPiece * s->rate * frame)
+        return fail(413, "at most " + std::to_string(kLiveMaxPiece) + " s of audio a request");
       std::vector<LiveTask> todo;
       Json out = Json::object();
       {
         std::lock_guard<std::mutex> lk(live_mu_);
         if (s->stopped) return fail(409, "the recording has stopped");
-        s->wav.write(rq.body.data(), (std::streamsize)rq.body.size());
+        s->last = std::chrono::steady_clock::now();
+        // (offset: the frames the page had sent before this piece. A piece sent again, whose answer was lost after it
+        //  was written, starts before the end of the recording: what it has already is left out)
+        size_t skip = 0;
+        const std::string offs = query_param(rq.query, "offset");
+        if (!offs.empty()) {
+          const uint64_t o = (uint64_t)std::max(0.0, atof(offs.c_str()));
+          if (o < s->frames) skip = (size_t)std::min<uint64_t>(s->frames - o, rq.body.size() / frame) * frame;
+        }
+        s->wav.write(rq.body.data() + skip, (std::streamsize)(rq.body.size() - skip));
         if (!s->wav) return fail(500, "cannot write the recording (disk full?)");
-        const size_t n = rq.body.size() / frame;
+        const size_t n = (rq.body.size() - skip) / frame;
         s->frames += n;
         write_wav_header(*s);  // (sizes kept right as it grows: a crash loses nothing written)
         std::vector<float> x(n);
         for (int k = 0; k < s->tracks; ++k) {
           for (size_t i = 0; i < n; ++i) {
             int16_t v;
-            memcpy(&v, rq.body.data() + i * frame + 2 * k, 2);
+            memcpy(&v, rq.body.data() + skip + i * frame + 2 * k, 2);
             x[i] = v / 32768.0f;
           }
           LiveTrack& t = s->t[k];
@@ -893,6 +955,15 @@ class Service {
             t.partial_n = t.n;
             todo.push_back(std::move(p));
           }
+        }
+        // (the draft behind by more than kLiveMaxPending utterances: the new ones left out of it, and no partial text;
+        //  the recording keeps every sample and the accurate pass after the stop writes them all. Without the cap a
+        //  client could queue hours of utterances, and live turns go first: every file job would wait for them)
+        if (s->pending >= kLiveMaxPending) {
+          for (const LiveTask& u : todo)
+            if (u.partial) s->t[u.track].partial_busy = false;
+          todo.clear();
+          s->skipped = true;
         }
         for (const LiveTask& u : todo) s->pending += u.partial ? 0 : 1;
         const size_t since = (size_t)std::max(0, atoi(query_param(rq.query, "since").c_str()));
@@ -914,6 +985,7 @@ class Service {
         out.set("count", (double)s->draft.size());
         out.set("heard_s", (double)s->frames / s->rate);
         out.set("pending", (double)s->pending);
+        if (s->skipped) out.set("behind", true);
       }
       if (!todo.empty()) {
         std::lock_guard<std::mutex> lk(live_mu_);
@@ -930,11 +1002,14 @@ class Service {
       Json in;
       Json::try_parse(rq.body, in);
       std::lock_guard<std::mutex> lk(lib_mu_);
-      Json marks = metas_[tid]["marks"];
+      auto it = metas_.find(tid);
+      if (it == metas_.end()) return fail(404, "no transcript " + tid);
+      Json marks = it->second["marks"];
+      if (marks.size() >= 10000) return fail(400, "at most 10,000 marks");
       marks.push(in["t"].as_number((double)s->frames / s->rate));
-      metas_[tid].set("marks", marks);
+      it->second.set("marks", marks);
       save_meta(tid);
-      return rs.send(200, "application/json", metas_[tid].dump());
+      return rs.send(200, "application/json", it->second.dump());
     }
     if (what == "stop") {
       live_stop(s);
@@ -970,8 +1045,14 @@ class Service {
     std::vector<LiveTrack> t;
     std::vector<whisper::Segment> draft;  // (in the order they came)
     int pending = 0;                      // (utterances not transcribed yet)
-    bool stopped = false;
+    bool stopped = false, skipped = false;  // (skipped: utterances left out of the draft, it fell too far behind)
+    std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();  // (the last audio)
   };
+  static constexpr int kLiveMaxPiece = 120, kLiveMaxPending = 64;
+  // the library's files: at most 6 hours (a recording runs a little past the length it was given; 6 hours of 16-kHz
+  // samples are 1.4 GB, the whole file is held while it is transcribed)
+  static constexpr double kLibraryMaxSeconds = 6 * 3600;
+  static constexpr int kLiveIdle = 300;  // (seconds without audio: the page is gone; the recording is stopped)
   struct LiveTask {
     std::shared_ptr<Live> s;
     int track = 0;
@@ -979,31 +1060,54 @@ class Service {
     std::vector<float> x;
     bool finish = false, partial = false;
   };
-  // a clip's text (beam 5, word timestamps off), from the cache when the same bytes came before (64 clips kept)
-  std::string clip_text(const std::string& data, double& secs) {
-    uint64_t h = 1469598103934665603ull;  // (FNV-1a of the bytes)
-    for (unsigned char b : data) h = (h ^ b) * 1099511628211ull;
-    {
-      std::lock_guard<std::mutex> lk(clip_mu_);
-      auto it = clips_.find(h);
-      if (it != clips_.end()) {
-        secs = it->second.second;
-        return it->second.first;
-      }
+  // a clip's text (beam 5, word timestamps off), from the cache when the same bytes came before (the 64 clips used
+  // last kept). One clip decoded and transcribed at a time, as the OpenAI endpoint's requests (its waiting cap too:
+  // status 429 past it); a client that left stops its clip
+  using ClipKey = std::tuple<uint64_t, uint64_t, uint64_t>;  // (length, two FNV-1a hashes of the bytes)
+  bool clip_cached(const ClipKey& key, std::string& text, double& secs) {
+    std::lock_guard<std::mutex> lk(clip_mu_);
+    auto it = clips_.find(key);
+    if (it == clips_.end()) return false;
+    it->second.used = ++clip_tick_;
+    text = it->second.text;
+    secs = it->second.secs;
+    return true;
+  }
+  std::string clip_text(const std::string& data, double& secs, int& status, const std::function<bool()>& gone) {
+    uint64_t h1 = 1469598103934665603ull, h2 = 0x9E3779B97F4A7C15ull;
+    for (unsigned char b : data) {
+      h1 = (h1 ^ b) * 1099511628211ull;
+      h2 = (h2 ^ (b + 0x5Bu)) * 0x100000001B3ull + 0x7F4A7C15u;
     }
+    const ClipKey key{data.size(), h1, h2};
+    std::string text;
+    if (clip_cached(key, text, secs)) return text;
+    struct Count { std::atomic<int>& n; int before; Count(std::atomic<int>& x) : n(x), before(n++) {} ~Count() { --n; } } waiting{waiting_};
+    if (waiting.before >= kMaxWaiting) {
+      status = 429;
+      throw std::runtime_error("too many transcriptions waiting; try again later");
+    }
+    std::unique_lock<std::mutex> one(req_mu_);
+    if (clip_cached(key, text, secs)) return text;  // (the same clip, transcribed for another request meanwhile)
+    if (gone && gone()) throw std::runtime_error("the client left");
     const std::vector<float> a = audio::decode_16k(std::vector<uint8_t>(data.begin(), data.end()), max_seconds);
     whisper::Options o;
     o.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
     LockedBackend be(*eng_, gpu_turn);
     whisper::Transcriber tr(*m_, be);
-    const whisper::Result r = tr.run(a, o);
-    std::string text;
+    bool left = false;
+    const whisper::Result r = tr.run(a, o, [&](double, double, const std::vector<whisper::Segment>&) {
+      left = gone && gone();
+      return !left;
+    });
+    if (left) throw std::runtime_error("the client left");
     for (const whisper::Segment& g : r.segments) text += g.text;
     text = whisper::trim_copy(text);
     secs = r.duration;
     std::lock_guard<std::mutex> lk(clip_mu_);
-    if (clips_.size() >= 64) clips_.clear();
-    clips_[h] = {text, secs};
+    if (clips_.size() >= 64)
+      clips_.erase(std::min_element(clips_.begin(), clips_.end(), [](const auto& x, const auto& y) { return x.second.used < y.second.used; }));
+    clips_[key] = {text, secs, ++clip_tick_};
     return text;
   }
   // the recording closed: the open utterances and what the resamplers hold go to the queue, then its end (the draft
@@ -1036,13 +1140,27 @@ class Service {
     auto it = lives_.find(tid);
     return it == lives_.end() ? nullptr : it->second;
   }
+  // the sizes of a WAV this project wrote (a 44-byte header, the data to its end) put right from its length, after a
+  // stop that cut it (past 4 GB they stay at their fields' end: wav_format then reads the data to the end of the file)
+  static void fix_wav_sizes(const std::filesystem::path& w) {
+    std::error_code ec;
+    const uint64_t n = std::filesystem::file_size(w, ec);
+    std::fstream f(w, std::ios::binary | std::ios::in | std::ios::out);
+    char tag[4] = {};
+    if (ec || n < 44 || !f || !f.seekg(36).read(tag, 4) || memcmp(tag, "data", 4)) return;  // (not that layout: left)
+    const uint32_t data = (uint32_t)std::min<uint64_t>(n - 44, 0xFFFFFFF0u), riff = (uint32_t)std::min<uint64_t>(36ull + data, 0xFFFFFFFFull);
+    f.seekp(4);
+    f.write((const char*)&riff, 4);
+    f.seekp(40);
+    f.write((const char*)&data, 4);
+  }
   static void write_wav_header(Live& s) {  // (live_mu_ held)
     const uint32_t data = (uint32_t)std::min<uint64_t>(s.frames * 2 * s.tracks, 0xFFFFFFF0u);
     uint8_t h[44];
     auto u32 = [&](int o, uint32_t v) { for (int i = 0; i < 4; ++i) h[o + i] = (uint8_t)(v >> (8 * i)); };
     auto u16 = [&](int o, uint32_t v) { h[o] = (uint8_t)v; h[o + 1] = (uint8_t)(v >> 8); };
     memcpy(h, "RIFF", 4);
-    u32(4, 36 + data);
+    u32(4, (uint32_t)std::min<uint64_t>(36ull + data, 0xFFFFFFFFull));  // (past 4 GB: held at its end, as data)
     memcpy(h + 8, "WAVEfmt ", 8);
     u32(16, 16);
     u16(20, 1);
@@ -1124,7 +1242,19 @@ class Service {
       LiveTask t;
       {
         std::unique_lock<std::mutex> lk(live_mu_);
-        live_cv_.wait(lk, [&] { return stop_live_ || !live_q_.empty(); });
+        // (every 15 s with nothing to do: recordings no page sends to any more (closed, crashed, offline) stopped)
+        if (!live_cv_.wait_for(lk, std::chrono::seconds(15), [&] { return stop_live_ || !live_q_.empty(); })) {
+          std::vector<std::shared_ptr<Live>> idle;
+          const auto now = std::chrono::steady_clock::now();
+          for (const auto& [k, s] : lives_)
+            if (!s->stopped && now - s->last > std::chrono::seconds(kLiveIdle)) idle.push_back(s);
+          lk.unlock();
+          for (const auto& s : idle) {
+            fprintf(stderr, "whisper: live recording %s: no audio for %d s, stopped\n", s->id.c_str(), kLiveIdle);
+            live_stop(s);
+          }
+          continue;
+        }
         if (live_q_.empty()) return;
         t = std::move(live_q_.front());
         live_q_.pop_front();
@@ -1194,7 +1324,7 @@ class Service {
     std::error_code ec;
     if (it->second["status"].str() == "deleting") {
       metas_.erase(it);
-      std::filesystem::remove_all(lib_ / s->id, ec);
+      remove_folder(s->id);
       return;
     }
     it->second.set("size", (double)std::filesystem::file_size(lib_ / s->id / "source.wav", ec));
@@ -1222,9 +1352,12 @@ class Service {
     }
     const int tracks = std::clamp((int)in["tracks"].as_number(1), 1, 2);
     Json sp = Json::array();
-    for (int k = 0; k < tracks; ++k) sp.push(in["speakers"][k].str(tracks == 1 ? "" : k == 0 ? "Me" : "Others"));
-    const std::string nid = new_id();
-    fs::create_directories(lib_ / nid, ec);
+    for (int k = 0; k < tracks; ++k) sp.push(clean_name(in["speakers"][k].str(), 40, tracks == 1 ? "" : k == 0 ? "Me" : "Others"));
+    const std::string nid = new_dir();
+    if (nid.empty()) {
+      bad = "cannot create a folder in the library";
+      return "";
+    }
     fs::rename(w, lib_ / nid / "source.wav", ec);  // (the same drive: no copy)
     if (ec) {
       ec.clear();
@@ -1239,8 +1372,7 @@ class Service {
     fs::path side = w;
     side.replace_extension(".json");
     fs::remove(side, ec);
-    std::string name = in["name"].str(w.filename().string());
-    if (name.size() > 200) name.resize(200);
+    const std::string name = clean_name(in["name"].str(w.filename().string()), 200, "recording");
     Json m = Json::object();
     m.set("id", nid);
     m.set("name", name);
@@ -1264,40 +1396,79 @@ class Service {
     lib_cv_.notify_all();
     return nid;
   }
+  // a name or speaker as typed, without control characters, quotes, back / forward slashes; at most max bytes, cut
+  // at a character's start
+  static std::string clean_name(const std::string& name, size_t max, const std::string& empty) {
+    std::string c;
+    for (unsigned char ch : name)
+      if (ch >= 0x20 && ch != '"' && ch != '\\' && ch != '/' && ch != 0x7F) c += (char)ch;
+    if (c.size() > max) {
+      c.resize(max);
+      size_t k = c.size();  // (the last character's lead byte at k - 1: dropped when its other bytes were cut off)
+      while (k > 0 && ((unsigned char)c[k - 1] & 0xC0) == 0x80) --k;
+      if (k > 0) {
+        const unsigned char lead = (unsigned char)c[k - 1];
+        const size_t need = lead < 0xC0 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+        if (c.size() - (k - 1) < need) c.resize(k - 1);
+      }
+    }
+    return c.empty() ? empty : c;
+  }
   static bool valid_id(const std::string& tid) {
     return tid.size() >= 8 && tid.size() <= 40 && tid.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz-") == std::string::npos;
   }
-  static std::string slurp(const std::filesystem::path& p) {
-    std::ifstream f(p, std::ios::binary);
-    std::stringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
+  static std::string slurp(const std::filesystem::path& p) {  // (shared: a file being read can be replaced or deleted)
+    std::string s;
+    files::read_shared(p, s);
+    return s;
   }
-  // written whole or not at all (a crash in the middle leaves the old file)
+  // written whole or not at all (a crash in the middle leaves the old file); a failure is logged
   static bool write_atomic(const std::filesystem::path& p, const std::string& s) {
-    const std::filesystem::path tmp = p.string() + ".tmp";
-    {
-      std::ofstream f(tmp, std::ios::binary);
-      f << s;
-      if (!f) return false;
-    }
-    std::error_code ec;
-    std::filesystem::rename(tmp, p, ec);
-    return !ec;
+    if (files::write_shared(p, s)) return true;
+    fprintf(stderr, "whisper: cannot write %s\n", p.string().c_str());
+    return false;
   }
-  std::string new_id() const {
-    const std::time_t t = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &t);
-    char b[40];
-    std::strftime(b, sizeof b, "%Y%m%d-%H%M%S", &tm);
+  // a new transcript's id with its folder, made here: a folder that is there already is never taken (several ids in
+  // one second, the recordings imported at a start, could meet); "" when none can be made
+  std::string new_dir() {
+    static std::mutex mu;
     static std::mt19937 rng(std::random_device{}());
-    char r[8];
-    snprintf(r, sizeof r, "-%04x", (unsigned)(rng() & 0xFFFF));
-    return std::string(b) + r;
+    std::lock_guard<std::mutex> g(mu);
+    for (int i = 0; i < 100; ++i) {
+      const std::time_t t = std::time(nullptr);
+      std::tm tm{};
+      localtime_s(&tm, &t);
+      char b[40];
+      std::strftime(b, sizeof b, "%Y%m%d-%H%M%S", &tm);
+      char r[12];
+      snprintf(r, sizeof r, "-%06x", (unsigned)(rng() & 0xFFFFFF));
+      const std::string nid = std::string(b) + r;
+      std::error_code ec;
+      if (std::filesystem::create_directory(lib_ / nid, ec)) return nid;
+      if (ec) return "";
+    }
+    return "";
   }
   void save_meta(const std::string& tid) {  // (lib_mu_ held)
-    write_atomic(lib_ / tid / "meta.json", metas_[tid].dump());
+    auto it = metas_.find(tid);
+    if (it != metas_.end()) write_atomic(lib_ / tid / "meta.json", it->second.dump());
+  }
+  // a transcript's folder deleted: its files first and meta.json last (a file held open keeps its folder known, by a
+  // meta.json that says "deleting", until the next start sweeps it), then the folder; false when something stayed
+  bool remove_folder(const std::string& tid) {
+    namespace fs = std::filesystem;
+    const fs::path dir = lib_ / tid;
+    std::error_code ec;
+    bool all = true;
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+      if (e.path().filename() == "meta.json") continue;
+      std::error_code e2;
+      fs::remove_all(e.path(), e2);
+      if (e2) all = false;
+    }
+    if (all) fs::remove_all(dir, ec);
+    if (!all || ec) fprintf(stderr, "whisper: %s not deleted whole (a file of it is open); the next start deletes it\n", tid.c_str());
+    return all && !ec;
   }
   int queue_position(const std::string& tid) const {  // (lib_mu_ held)
     const double c = metas_.at(tid)["created"].as_number();
@@ -1339,8 +1510,7 @@ class Service {
       running_.clear();
       if (delete_running_) {
         metas_.erase(tid);
-        std::error_code ec;
-        fs::remove_all(lib_ / tid, ec);
+        remove_folder(tid);
       }
     }
   }
@@ -1367,8 +1537,9 @@ class Service {
     const fs::path src = dir / ("source." + meta["ext"].str());
     std::vector<std::vector<float>> audio;
     try {
-      if (tracks > 1) audio = audio::decode_16k_wav_channels(src);
-      else audio.push_back(audio::decode_16k_file(src, max_seconds));
+      const double lim = std::max(max_seconds, kLibraryMaxSeconds);  // (--whisper-max-minutes when it is more)
+      if (tracks > 1) audio = audio::decode_16k_wav_channels(src, lim);
+      else audio.push_back(audio::decode_16k_file(src, lim));
     } catch (const std::exception& e) {
       return finish("failed", std::string(e.what()) + " (audio and video files Windows can decode)");
     }
@@ -1419,7 +1590,12 @@ class Service {
       save_meta(tid);
       return;
     }
-    write_atomic(dir / "transcript.json", whisper::to_json(r));
+    if (!write_atomic(dir / "transcript.json", whisper::to_json(r))) {
+      m.set("status", "failed");
+      m.set("error", "cannot write the transcript (disk full?)");
+      save_meta(tid);
+      return;
+    }
     Json langs = Json::array();
     std::vector<std::string> seen;
     size_t words = 0;
@@ -1445,11 +1621,23 @@ class Service {
     const int kbps = (int)m["mp3_kbps"].as_number(192);
     lk.unlock();
     std::string err;
-    const bool ok = audio::encode_mp3(src, dir / "source.mp3", kbps, err);
+    bool ok = audio::encode_mp3(src, dir / "source.mp3", kbps, err);
+    if (ok) {  // (the WAV goes only for an MP3 as long as it: a short one would lose the rest for good)
+      const double mp3_s = audio::duration_seconds(dir / "source.mp3");
+      if (std::fabs(mp3_s - r.duration) > std::max(2.0, 0.002 * r.duration)) {
+        ok = false;
+        char b[96];
+        snprintf(b, sizeof b, "the MP3 is %.1f s long, the recording %.1f s: the WAV is kept", mp3_s, r.duration);
+        err = b;
+        std::error_code ec;
+        fs::remove(dir / "source.mp3", ec);
+      }
+    }
     lk.lock();
     auto it = metas_.find(tid);
     if (it == metas_.end()) return;
     if (ok) {
+      // (deleted even while a player reads it: the media is read shared; a WAV that stays is deleted at the next start)
       std::error_code ec;
       fs::remove(src, ec);
       it->second.set("ext", "mp3");
@@ -1507,11 +1695,18 @@ class Service {
   std::condition_variable lib_cv_;
   std::map<std::string, Json> metas_;
   std::string running_;
+  std::set<std::string> writing_;  // (uploads whose piece is being written, outside lib_mu_)
   bool cancel_running_ = false, delete_running_ = false, stop_ = false;
   std::thread worker_;
   // chat audio's texts, by the clip's bytes
+  struct Clip {
+    std::string text;
+    double secs = 0;
+    uint64_t used = 0;  // (the clock of its last use: the oldest goes first)
+  };
   std::mutex clip_mu_;
-  std::map<uint64_t, std::pair<std::string, double>> clips_;
+  std::map<ClipKey, Clip> clips_;
+  uint64_t clip_tick_ = 0;
   // live recordings
   std::mutex live_mu_;
   std::condition_variable live_cv_;

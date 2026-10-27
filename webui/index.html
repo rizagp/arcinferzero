@@ -1648,7 +1648,7 @@ async function streamTurn(el, st, onOverflow, job) {
       chat_template_kwargs: { enable_thinking: think.on } };
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
-    if (caps.stt) body.speech = sttOn() ? "whisper" : "model";  // (audio attached: the server's Whisper writes it, or the model hears it)
+    if (caps.stt) body.speech = sttOn(job.model) ? "whisper" : "model";  // (audio attached: the server's Whisper writes it, or the model hears it)
     if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termUsable(job.id) ? TERM_TOOLS : [])];
     kick();
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
@@ -2165,7 +2165,11 @@ $("backbtn").addEventListener("click", () => app.classList.remove("chatting"));
 
 // ---- Files: every saved file in one list (kind, size, date, the chats using it), to attach again or delete
 let fileData = [], fileSel = new Set();
-const openFiles = (on) => { $("filespanel").classList.toggle("open", on); if (on) { openPanel(false); loadFiles(); } };
+const openFiles = (on) => {
+  if (on && app.classList.contains("trmode")) trMode(false);  // (its panel lay over the Files panel; Attach went to a hidden chat)
+  $("filespanel").classList.toggle("open", on);
+  if (on) { openPanel(false); loadFiles(); }
+};
 $("filesbtn").addEventListener("click", () => openFiles(!$("filespanel").classList.contains("open")));
 $("filesside").addEventListener("click", () => openFiles(true));
 $("filesback").addEventListener("click", () => openFiles(false));
@@ -2299,7 +2303,12 @@ const fileRefs = (h) => [...JSON.stringify(h).matchAll(/\/files\/([0-9a-f]{16})|
 const NEED_STT = "Voice needs Whisper on the server (coming: docs/whisper-native.md) or a model that hears audio (Gemma 4 E4B / 12B)";
 const canHear = () => !!caps.stt || hasAudio;
 // Whisper writes the speech (every model gets text), unless the setting says the model hears it itself and it can
-function sttOn() { return !!caps.stt && !($("speech").value === "model" && hasAudio); }
+// (the model that will answer: the chat's, which the server loads for it; the loaded one's hearing said nothing about it)
+function sttOn(model) {
+  const m = models.find((x) => x.id === (model || modelId));
+  const hears = m && m.modalities && typeof m.modalities.audio === "boolean" ? m.modalities.audio : (!m || m.id === loadedId) && hasAudio;
+  return !!caps.stt && !($("speech").value === "model" && hears);
+}
 async function transcribe(url, signal) {
   const fd = new FormData();
   fd.append("file", await (await fetch(url)).blob(), "speech.wav");
@@ -2600,7 +2609,7 @@ async function copyText(t) {
   ta.remove();
   return ok;
 }
-thread.addEventListener("click", async (e) => {
+const codeButtons = async (e) => {
   const b = e.target.closest(".cb-copy, .cb-dl");
   if (!b) return;
   const code = b.closest(".codeblock").querySelector("code");
@@ -2616,7 +2625,9 @@ thread.addEventListener("click", async (e) => {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
-});
+};
+thread.addEventListener("click", codeButtons);
+$("trbody").addEventListener("click", codeButtons);  // (a meeting's summary)
 
 // ---- one message: Edit (a message of yours: it and its answer leave the chat, its text and files come back into the
 // message box to send again), Delete (yours: it, its answer, and its files no other chat uses; an answer: only it),
@@ -2699,14 +2710,16 @@ async function editMsg(el) {
 // attaches the chosen one (the "@name" text goes away); Esc closes the list
 const mention = { on: false, items: [], sel: 0, start: 0, at: 0, transcripts: [] };
 async function mentionUpdate() {
-  const upto = input.value.slice(0, input.selectionStart);
-  const m = upto.match(/(^|\s)@([^\s@]{0,60})$/);
-  if (!m) { mentionClose(); return; }
+  const at = () => input.value.slice(0, input.selectionStart).match(/(^|\s)@([^\s@]{0,60})$/);
+  if (!at()) { mentionClose(); return; }
   if (!mention.on || Date.now() - mention.at > 30000) {  // (the lists, fetched again after 30 s)
     mention.at = Date.now();
     try { fileData = (await (await fetch("/v1/files")).json()).data || []; } catch (e) {}
     try { mention.transcripts = caps.stt ? ((await (await fetch("/v1/transcripts")).json()).data || []).filter((t) => t.status === "done" || t.status === "cancelled") : []; } catch (e) {}
   }
+  // (read again after the lists came: an @ deleted or a message sent meanwhile leaves the menu closed)
+  const upto = input.value.slice(0, input.selectionStart), m = at();
+  if (!m) { mentionClose(); return; }
   const q = m[2].toLowerCase();
   mention.start = upto.length - m[2].length - 1;
   // (files first, then recordings / meetings and the other chats: each attached as a document, chat:<id> / transcript:<id>)
@@ -2805,7 +2818,10 @@ const TR_FORMATS = [["srt", "SRT"], ["vtt", "WebVTT"], ["sbv", "YouTube SBV"], [
   ["txt", "Text"], ["md", "Markdown"], ["csv", "CSV"], ["captions", "Remotion captions"], ["fw", "Remotion pipeline (fw)"], ["json", "JSON"]];
 const TR_PIECE = 16 << 20;
 const TR_AUDIO = ["mp3", "m4a", "aac", "wav", "ogg", "oga", "opus", "flac", "wma"];
-const tr = { kind: "", list: [], sel: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0, saveT: 0, noteT: 0 };
+// (sel: the transcript shown, whose meta / data the actions use; want: the one being opened. Set apart, an open that
+//  was slow or failed left sel on the new one while the old one was shown: Delete deleted the other one)
+const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0,
+  saveT: 0, saveFn: null, saving: Promise.resolve(), noteT: 0, listIds: "" };
 $("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
 function trCaps() {
   $("trbtn").disabled = $("mtbtn").disabled = $("trside").disabled = !caps.stt;
@@ -2872,7 +2888,7 @@ function trMode(on, kind) {
   else { clearTimeout(tr.timer); app.classList.remove("trviewing"); $("trvideo").pause(); }
 }
 function trClose() {  // (nothing chosen)
-  tr.sel = "";
+  tr.sel = tr.want = "";
   tr.meta = tr.data = null;
   $("trvideo").pause();
   $("trvideo").removeAttribute("src");
@@ -2913,7 +2929,7 @@ function trState(x) {
   const langs = (x.languages || []).join(" + ");
   switch (x.status) {
     case "uploading": return { text: "The upload did not finish (the page was closed?): delete it and add the file again", err: true };
-    case "live": return { text: x.id === live.id ? "Recording · " + trClock(live.heard) : "Recording (in another window)" };
+    case "live": return { text: x.id === live.id ? "Recording · " + trClock(live.heard) : x.id === live.finishing ? "Finishing the recording…" : "Recording (in another window or a page that closed)" };
     case "queued": return { text: "Waiting" + (x.position > 1 ? " (" + x.position + " in line)" : ""), p: 0 };
     case "running": return { text: Math.floor(100 * (x.progress || 0)) + " % · " + trClock(x.done_s) + " / " + trClock(x.duration) +
       (x.x_realtime ? " · " + Math.round(x.x_realtime) + "x realtime" : ""), p: x.progress || 0 };
@@ -2924,12 +2940,41 @@ function trState(x) {
     default: return { text: x.status || "" };
   }
 }
+function trFillRow(r, x) {
+  r.className = "trrow" + (x.id === tr.sel ? " on" : "");
+  const th = r.querySelector(".thumb");
+  if (x.status === "live") { if (!th.querySelector(".dot")) th.innerHTML = '<span class="dot"></span>'; }
+  else th.textContent = String(x.ext || "").slice(0, 4);
+  r.querySelector(".fname").textContent = x.name;
+  r.querySelector(".fname").title = x.name;
+  const s = trState(x), meta = r.querySelector(".fmeta");
+  meta.textContent = s.text;
+  meta.title = s.text;
+  meta.classList.toggle("err", !!s.err);
+  let b = r.querySelector(".bar");
+  if (s.p === undefined) b?.remove();
+  else {
+    if (!b) {
+      b = document.createElement("div");
+      b.className = "bar";
+      b.innerHTML = "<i></i>";
+      r.querySelector(".ftxt").appendChild(b);
+    }
+    b.firstChild.style.width = (100 * s.p).toFixed(1) + "%";
+  }
+}
 function trRenderList() {
   const box = $("trlist"), m = tr.kind === "meeting";
-  box.replaceChildren();
   const list = tr.list.filter((x) => (x.kind === "meeting") === m);
-  const n = list.length;
+  const n = list.length, ids = (m ? "m:" : "t:") + list.map((x) => x.id).join(",");
   $("trtotal").textContent = n ? n + (m ? " meeting" : " transcript") + (n === 1 ? "" : "s") : "";
+  // (the same transcripts as last time: each row's text and bar updated where it is)
+  if (n && ids === tr.listIds && box.children.length === n) {
+    list.forEach((x, i) => trFillRow(box.children[i], x));
+    return;
+  }
+  tr.listIds = ids;
+  box.replaceChildren();
   if (!n) {
     const d = document.createElement("div");
     d.className = "none";
@@ -2938,23 +2983,8 @@ function trRenderList() {
   }
   for (const x of list) {
     const r = document.createElement("div");
-    r.className = "trrow" + (x.id === tr.sel ? " on" : "");
     r.innerHTML = '<div class="thumb"></div><div class="ftxt"><span class="fname"></span><div class="fmeta"></div></div>';
-    if (x.status === "live") r.querySelector(".thumb").innerHTML = '<span class="dot"></span>';
-    else r.querySelector(".thumb").textContent = String(x.ext || "").slice(0, 4);
-    r.querySelector(".fname").textContent = x.name;
-    r.querySelector(".fname").title = x.name;
-    const s = trState(x), meta = r.querySelector(".fmeta");
-    meta.textContent = s.text;
-    meta.title = s.text;
-    if (s.err) meta.classList.add("err");
-    if (s.p !== undefined) {
-      const b = document.createElement("div");
-      b.className = "bar";
-      b.innerHTML = "<i></i>";
-      b.firstChild.style.width = (100 * s.p).toFixed(1) + "%";
-      r.querySelector(".ftxt").appendChild(b);
-    }
+    trFillRow(r, x);
     r.addEventListener("click", () => trOpen(x.id));
     box.appendChild(r);
   }
@@ -2974,13 +3004,14 @@ for (const el of [$("tradd"), $("trview")]) {
 }
 let trUploading = Promise.resolve();
 function trUpload(files) {
+  // (the options and the tab as they are now: a file waiting its turn is not added with what was chosen later)
+  const opts = { language: $("trlang").value, beam_size: +$("trbeam").value, terms: $("trterms").value.trim(), kind: tr.kind };
   trUploading = trUploading.then(async () => {
     for (const f of files) {
       let rec;
       try {
         const r = await fetch("/v1/transcripts", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: f.name, size: f.size, language: $("trlang").value, beam_size: +$("trbeam").value,
-            terms: $("trterms").value.trim(), kind: tr.kind }) });
+          body: JSON.stringify({ name: f.name, size: f.size, ...opts }) });
         rec = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(rec.error?.message || "HTTP " + r.status);
       } catch (e) { trNote("could not add " + f.name + ": " + (e.message || e), 10000); continue; }
@@ -2990,15 +3021,26 @@ function trUpload(files) {
       trRenderList();
       if (!tr.sel) trOpen(rec.id);
       try {
-        for (let off = 0; off < f.size;) {
+        for (let off = 0, tries = 0; off < f.size;) {
           const piece = f.slice(off, Math.min(f.size, off + TR_PIECE));
-          const r = await fetch("/v1/transcripts/" + rec.id + "/source?offset=" + off, { method: "PUT", body: piece });
-          if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error?.message || "HTTP " + r.status); }
-          off += piece.size;
+          try {
+            const r = await fetch("/v1/transcripts/" + rec.id + "/source?offset=" + off, { method: "PUT", body: piece });
+            if (r.status === 404) throw Object.assign(new Error("deleted"), { fatal: true });
+            if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error?.message || "HTTP " + r.status); }
+            off += piece.size;
+            tries = 0;
+          } catch (e) {
+            // (sent again from what the server has, after 1, 2, 4 s; a deleted one stops at once)
+            if (e.fatal || ++tries > 3) throw e;
+            await new Promise((ok) => setTimeout(ok, 1000 << (tries - 1)));
+            const m = await (await fetch("/v1/transcripts/" + rec.id)).json().catch(() => null);
+            if (!m || m.status !== "uploading") throw e;
+            off = m.received || 0;
+          }
           up.sent = off;
           trRenderList();
         }
-      } catch (e) { trNote("the upload of " + f.name + " failed: " + (e.message || e), 10000); }
+      } catch (e) { if (!e.fatal) trNote("the upload of " + f.name + " failed: " + (e.message || e), 10000); }
       tr.uploads.delete(rec.id);
       trPoll();
     }
@@ -3011,32 +3053,46 @@ function trHeader(m) {
   if (!rec) $("trsub").textContent = trState(m).text;
   $("trcancel").hidden = !["queued", "running"].includes(m.status);
   $("trdel").hidden = rec;
-  $("trmark").hidden = $("trstoplive").hidden = !rec;
+  $("trmark").hidden = !rec;
+  $("trstoplive").hidden = !rec && m.status !== "live";
   const done = !rec && m.kind === "meeting" && (m.status === "done" || m.status === "cancelled");
   $("trsum").hidden = $("trdocx").hidden = $("trpdf").hidden = !done;
 }
 async function trOpen(id) {
-  tr.sel = id;
+  tr.want = id;
   app.classList.add("trviewing");
   let m;
   try { m = await (await fetch("/v1/transcripts/" + id)).json(); } catch (e) { m = null; }
+  if (tr.want !== id) return;  // (another one chosen meanwhile)
   if (!m || m.error) { trNote("could not open the transcript"); return; }
-  if (tr.sel !== id) return;  // (another one chosen meanwhile)
+  // (the one shown, opened again while its text is edited or saved: its record only, the text kept; a re-render took
+  //  the edit away, and the copy fetched before the save landed came back over it)
+  if (tr.sel === id && tr.data && (trEditing() || tr.saveFn)) {
+    tr.meta = { ...m, transcript: undefined };
+    tr.selStatus = m.status;
+    trHeader(m);
+    return;
+  }
+  tr.sel = id;
   tr.meta = m;
   tr.selStatus = m.status;
   tr.data = m.transcript || null;
   trHeader(m);
   trRenderList();
-  const v = $("trvideo");
-  if (v.dataset.id !== id) {
+  const v = $("trvideo"), playable = m.status !== "uploading" && m.status !== "live";
+  // (also a file that was not playable yet, uploading or live, and one whose file changed: a recording kept as MP3)
+  if (v.dataset.id !== id || (playable && (!v.getAttribute("src") || v.dataset.ext !== m.ext))) {
     v.pause();
     v.dataset.id = id;
-    v.src = m.status === "uploading" || m.status === "live" ? "" : "/v1/transcripts/" + id + "/media";
+    v.dataset.ext = m.ext || "";
+    if (playable) v.src = "/v1/transcripts/" + id + "/media";
+    else v.removeAttribute("src");
     $("trmedia").classList.toggle("audio", TR_AUDIO.includes(m.ext));
   }
-  $("trmedia").hidden = m.status === "uploading" || m.status === "live";
+  $("trmedia").hidden = !playable;
   trRender();
 }
+const trEditing = () => !!$("trbody").querySelector('[contenteditable="true"]');
 $("trvideo").addEventListener("error", () => {
   if ($("trvideo").getAttribute("src")) trNote("this file's format does not play in the browser; the transcript is fine", 10000);
 });
@@ -3106,7 +3162,7 @@ function trRender() {
       x.prepend(s);
     }
     x.addEventListener("click", (e) => { const i = e.target.dataset?.i; if (i !== undefined && x.contentEditable !== "true") trSeek(tr.words[+i].s); });
-    if (!rec) x.addEventListener("dblclick", () => trEdit(g, x));
+    if (!rec && m && (m.status === "done" || m.status === "cancelled")) x.addEventListener("dblclick", () => trEdit(g, x));
     row.append(t, x);
     body.appendChild(row);
   });
@@ -3189,8 +3245,11 @@ function trEdit(g, x) {
     if (left) return;
     left = true;
     x.contentEditable = "false";
-    const t = x.textContent.replace(/\s+/g, " ").trim();
-    if (keep && t && t !== g.text.trim()) { trSetText(g, t); trDirty(); }
+    const t = x.innerText.replace(/\s+/g, " ").trim();  // (innerText: a line break typed with Shift+Enter is a space)
+    if (keep && !t && g.text.trim() && confirm("Remove this line from the transcript?")) {  // (a made-up line: gone)
+      tr.data.segments = tr.data.segments.filter((y) => y !== g);
+      trDirty();
+    } else if (keep && t && t !== g.text.trim()) { trSetText(g, t); trDirty(); }
     trRender();
   };
   x.addEventListener("keydown", (e) => {
@@ -3202,13 +3261,23 @@ function trEdit(g, x) {
 function trDirty() {
   clearTimeout(tr.saveT);
   const id = tr.sel, data = tr.data;
-  tr.saveT = setTimeout(async () => {
-    try {
-      const r = await fetch("/v1/transcripts/" + id + "/transcript", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-      const j = await r.json().catch(() => ({}));
-      trNote(r.ok ? "saved" : "not saved: " + (j.error?.message || "HTTP " + r.status), r.ok ? 2000 : 10000);
-    } catch (e) { trNote("not saved: " + (e.message || e), 10000); }
-  }, 600);
+  // (one save after another, each the whole transcript as it is then: two at once could land in the wrong order)
+  tr.saveFn = () => {
+    tr.saveFn = null;
+    tr.saving = tr.saving.then(async () => {
+      try {
+        const r = await fetch("/v1/transcripts/" + id + "/transcript", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+        const j = await r.json().catch(() => ({}));
+        trNote(r.ok ? "saved" : "not saved: " + (j.error?.message || "HTTP " + r.status), r.ok ? 2000 : 10000);
+      } catch (e) { trNote("not saved: " + (e.message || e), 10000); }
+    });
+    return tr.saving;
+  };
+  tr.saveT = setTimeout(tr.saveFn, 600);
+}
+function trFlush() {  // (an edit not saved yet saved now; the saves done)
+  clearTimeout(tr.saveT);
+  return tr.saveFn ? tr.saveFn() : tr.saving;
 }
 const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function trFind() {
@@ -3238,9 +3307,10 @@ $("trreplbtn").addEventListener("click", () => {
   trDirty();
   trNote(n + " replaced");
 });
-$("trexport").addEventListener("click", () => {
+$("trexport").addEventListener("click", async () => {
   const f = [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value);
   if (!f.length) { trNote("tick a format first"); return; }
+  await trFlush();  // (the files made from the transcript with the last edit in it)
   const q = "&max_chars=" + encodeURIComponent($("trchars").value) + "&max_lines=" + encodeURIComponent($("trlines").value) +
     "&max_cue_s=" + encodeURIComponent($("trmaxs").value) + ($("trword").checked ? "&word_cues=1" : "");
   f.forEach((fmt, k) => setTimeout(() => {  // (the server names each file; one link at a time)
@@ -3276,10 +3346,16 @@ $("trdel").addEventListener("click", async () => {
 // the server writes the recording, cuts it into utterances and returns their text (~2 s behind) and the text of the
 // one still being said. Stop: the whole recording transcribed again accurately, then kept as MP3.
 const live = {
-  on: false, id: "", ctx: null, node: null, streams: [], chunks: [], sending: false, since: 0, draft: [], partial: [],
-  marks: [], heard: 0, n: 1, t0: 0, timer: 0, clock: 0,
+  on: false, starting: false, id: "", finishing: "", ctx: null, node: null, streams: [], chunks: [], sending: false, since: 0,
+  draft: [], partial: [], marks: [], heard: 0, n: 1, t0: 0, timer: 0, clock: 0, sent: 0, fails: 0, retryAt: 0, behind: false,
   async start() {
-    if (this.on) return;
+    if (this.on || this.starting) return;  // (a second click while the first one asks for the microphone)
+    this.starting = true;
+    liveButtons();
+    try { await this.begin(); } finally { this.starting = false; liveButtons(); }
+  },
+  async begin() {
+    if (voice.on) voice.stop();  // (Talk's spoken answers would go into the meeting and its recording)
     const src = $("trsrc").value, want = src === "both" ? ["mic", "tab"] : [src], streams = [];
     try {
       for (const w of want) {
@@ -3301,11 +3377,14 @@ const live = {
     }
     let rec;
     try {
-      this.ctx = new AudioContext();
+      // (48 kHz whatever the sound card's rate: the server takes 8-96 kHz)
+      this.ctx = new AudioContext({ sampleRate: 48000 });
       this.n = streams.length;
       const merger = this.ctx.createChannelMerger(this.n);
       streams.forEach((s, k) => this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks())).connect(merger, 0, k));
-      this.node = this.ctx.createScriptProcessor(4096, this.n, this.n);
+      // (16384 frames, 0.34 s a call: the page's own work (a long transcript drawn again) has that long before a
+      //  buffer of sound is lost)
+      this.node = this.ctx.createScriptProcessor(16384, this.n, this.n);
       this.node.onaudioprocess = (e) => {  // (16-bit, the tracks interleaved; the node's own output stays silent)
         if (!this.on) return;
         const ch = [], n = this.n;
@@ -3331,7 +3410,8 @@ const live = {
       trNote("cannot record: " + (e.message || e), 12000);
       return;
     }
-    Object.assign(this, { on: true, id: rec.id, streams, chunks: [], since: 0, draft: [], partial: [], marks: [], heard: 0, t0: performance.now() });
+    Object.assign(this, { on: true, id: rec.id, streams, chunks: [], since: 0, draft: [], partial: [], marks: [], heard: 0, t0: performance.now(),
+      sent: 0, fails: 0, retryAt: 0, behind: false });
     // (a share ended from the browser's own bar ends the recording)
     streams.forEach((s) => s.getAudioTracks().forEach((t) => t.addEventListener("ended", () => this.stop())));
     this.timer = setInterval(() => this.send(), 500);
@@ -3344,30 +3424,78 @@ const live = {
     trRenderList();
     trOpen(rec.id);
   },
-  async send() {
-    if (this.sending || !this.id) return;
+  async send(force) {
+    if (this.sending || !this.id || !this.chunks.length) return;
+    if (!force && performance.now() < this.retryAt) return;
     this.sending = true;
-    const parts = this.chunks;
-    this.chunks = [];
+    // (at most 60 s of sound a request: after a pause of the network the rest goes with the next ones)
+    const cap = 60 * (this.ctx?.sampleRate || 48000) * this.n;
+    const parts = [];
     let len = 0;
-    for (const p of parts) len += p.length;
+    while (this.chunks.length && (len === 0 || len + this.chunks[0].length <= cap)) { len += this.chunks[0].length; parts.push(this.chunks.shift()); }
     const body = new Int16Array(len);
     let o = 0;
     for (const p of parts) { body.set(p, o); o += p.length; }
     try {
-      const r = await fetch("/v1/live/" + this.id + "/audio?since=" + this.since, { method: "POST", body: body.buffer });
+      // (offset: the frames sent before; a request the server wrote but whose answer was lost is not written twice)
+      const r = await fetch("/v1/live/" + this.id + "/audio?since=" + this.since + "&offset=" + this.sent, { method: "POST", body: body.buffer });
       const j = await r.json().catch(() => ({}));
+      if (r.status === 404 || r.status === 409) throw Object.assign(new Error(j.error?.message || "HTTP " + r.status), { gone: true });
       if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
-      this.draft.push(...(j.segments || []));
+      this.sent += len / this.n;
+      this.fails = 0;
+      this.retryAt = 0;
+      const segs = j.segments || [], partial = j.partial || [];
+      const changed = segs.length || JSON.stringify(partial) !== JSON.stringify(this.partial);
+      this.draft.push(...segs);
       this.since = j.count || this.draft.length;
-      this.partial = j.partial || [];
+      this.partial = partial;
       this.heard = j.heard_s || 0;
-      if (tr.sel === this.id && app.classList.contains("trmode")) trRender();
+      if (j.behind && !this.behind) { this.behind = true; trNote("the live text fell behind: some of it comes only with the accurate pass after Stop", 12000); }
+      if (changed && tr.sel === this.id && app.classList.contains("trmode") && !trEditing()) trRender();
     } catch (e) {
-      this.chunks = parts.concat(this.chunks);  // (sent again with the next piece)
-      trNote("recording: " + (e.message || e));
+      this.chunks = parts.concat(this.chunks);  // (sent again later)
+      this.sending = false;
+      if (e.gone) return this.lost("the server does not take this recording any more (" + (e.message || e) + ")");
+      this.fails++;
+      this.retryAt = performance.now() + Math.min(10000, 500 << Math.min(this.fails, 5));
+      let left = 0;
+      for (const c of this.chunks) left += c.length;
+      // (ten minutes the server could not take: kept here no longer, the page's memory is not for hours of it)
+      if (left > 600 * (this.ctx?.sampleRate || 48000) * this.n) return this.lost("the server has not answered for minutes");
+      trNote("recording: " + (e.message || e) + " (sent again)");
+      return;
     }
     this.sending = false;
+  },
+  // the server lost the recording (restarted, deleted it): the capture stops, what it did not get is saved here
+  lost(why) {
+    const unsent = this.chunks, n = this.n, rate = this.ctx?.sampleRate || 48000;
+    this.chunks = [];
+    this.on = false;
+    clearInterval(this.timer);
+    clearInterval(this.clock);
+    this.streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+    this.node?.disconnect();
+    this.ctx?.close().catch(() => {});
+    this.id = "";
+    liveButtons();
+    let frames = 0;
+    for (const c of unsent) frames += c.length / n;
+    if (frames) {  // (a WAV of the part the server did not get)
+      const h = new DataView(new ArrayBuffer(44)), w = (o, t) => [...t].forEach((c, i) => h.setUint8(o + i, c.charCodeAt(0)));
+      w(0, "RIFF"); h.setUint32(4, 36 + frames * 2 * n, true); w(8, "WAVEfmt "); h.setUint32(16, 16, true); h.setUint16(20, 1, true);
+      h.setUint16(22, n, true); h.setUint32(24, rate, true); h.setUint32(28, rate * 2 * n, true); h.setUint16(32, 2 * n, true);
+      h.setUint16(34, 16, true); w(36, "data"); h.setUint32(40, frames * 2 * n, true);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([h.buffer, ...unsent], { type: "audio/wav" }));
+      a.download = "recording (not sent).wav";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    }
+    trNote("recording stopped: " + why + (frames ? "; the last " + trClock(frames / rate) + " it did not get are saved as a WAV" : ""), 20000);
+    tr.selStatus = "";
+    trPoll();
   },
   async stop() {
     if (!this.on) return;
@@ -3378,13 +3506,15 @@ const live = {
     this.node?.disconnect();
     this.ctx?.close().catch(() => {});
     while (this.sending) await new Promise((r) => setTimeout(r, 50));
-    if (this.chunks.length) await this.send();
+    for (let k = 0; k < 20 && this.chunks.length && this.id; ++k) await this.send(true);  // (what is left, 60 s a request)
     const id = this.id;
+    if (!id) return;  // (lost on the way: said so)
+    this.finishing = id;
     await fetch("/v1/live/" + id + "/stop", { method: "POST", body: "{}" }).catch(() => {});
     this.id = "";
     liveButtons();
     trNote("stopped: the recording is transcribed again accurately now", 8000);
-    tr.selStatus = "";
+    if (tr.sel === id) tr.selStatus = "";  // (its record opened again: queued now; another one shown is left as it is)
     trPoll();
   },
   mark() {
@@ -3398,13 +3528,20 @@ const live = {
 };
 function liveButtons() {
   $("trlive").classList.toggle("on", live.on);
-  $("trlivetxt").textContent = live.on ? "Stop" : tr.kind === "meeting" ? "Start a meeting" : "Live";
-  $("trsrc").disabled = live.on;
+  $("trlive").disabled = live.starting;
+  $("trlivetxt").textContent = live.on ? "Stop" : live.starting ? "Starting…" : tr.kind === "meeting" ? "Start a meeting" : "Live";
+  $("trsrc").disabled = live.on || live.starting;
 }
 $("trlive").addEventListener("click", () => live.on ? live.stop() : live.start());
-$("trstoplive").addEventListener("click", () => live.stop());
+// (Stop on a recording of another page, or of one that closed: the server ends it, its accurate pass follows)
+$("trstoplive").addEventListener("click", () => {
+  if (live.on && tr.sel === live.id) return live.stop();
+  if (tr.sel) fetch("/v1/live/" + tr.sel + "/stop", { method: "POST", body: "{}" }).catch(() => {}).then(() => { tr.selStatus = ""; trPoll(); });
+});
 $("trmark").addEventListener("click", () => live.mark());
-window.addEventListener("beforeunload", (e) => { if (live.on) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("beforeunload", (e) => { if (live.on || tr.uploads.size) { e.preventDefault(); e.returnValue = ""; } });
+// (the page closed or reloaded while recording: the server told to stop it, so the recording is kept and transcribed)
+window.addEventListener("pagehide", () => { if (live.on && live.id) navigator.sendBeacon("/v1/live/" + live.id + "/stop", "{}"); });
 
 // ---- a meeting's summary (the loaded chat model; a long one in parts, then the parts' summaries together) and its
 // minutes as a document (create_document: DOCX / PDF, in the Files panel)
@@ -3449,19 +3586,37 @@ $("trsum").addEventListener("click", async () => {
         sums.push("Part " + (k + 1) + ":\n" + await trAsk("Summarize this part of a meeting transcript in " + (lang || "its language") + ": what was said, " +
           "decided and asked, each point with its [m:ss] time. Markdown bullets only, at most 15.", parts[k], 700));
       }
+      // (the parts' summaries together in rounds while they are more than the budget: a long meeting with a small
+      //  context overflowed the last call)
+      let level = sums, round = 0;
+      while (level.join("\n\n").length > budget && level.length > 1) {
+        const next = [];
+        for (let k = 0, cur2 = []; k <= level.length; ++k) {
+          if (k < level.length && (cur2.join("\n\n") + level[k]).length <= budget) { cur2.push(level[k]); continue; }
+          if (cur2.length) {
+            trNote("putting the parts together (" + (++round) + ")…", 600000);
+            next.push("Parts:\n" + await trAsk("Merge these summaries of consecutive parts of one meeting into one, in " + (lang || "their language") +
+              ": keep every decision, action item and open question with its [m:ss] time. Markdown bullets only, at most 20.", cur2.join("\n\n"), 900));
+          }
+          cur2 = k < level.length ? [level[k]] : [];
+        }
+        if (next.length >= level.length) break;  // (no progress: one part alone is over the budget)
+        level = next;
+      }
       trNote("putting the parts together…", 600000);
-      text = await trAsk(SYS + " You get the summaries of the meeting's parts, in order, instead of the transcript.", sums.join("\n\n"));
+      text = await trAsk(SYS + " You get the summaries of the meeting's parts, in order, instead of the transcript.", level.join("\n\n"));
     }
     const r = await fetch("/v1/transcripts/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: text }) });
     if (!r.ok) throw new Error("not saved");
     trNote("summarized", 3000);
-    if (tr.sel === id) trOpen(id);
+    if (tr.sel === id && tr.meta) { tr.meta.summary = text; if (!trEditing()) trRender(); }  // (an edit in progress kept)
   } catch (e) { trNote("summary failed: " + (e.message || e), 12000); }
   $("trsum").disabled = false;
 });
 async function trMinutes(format) {
   if (!tr.data) return;
-  const m = tr.meta, title = "Minutes: " + m.name.replace(/\.[a-z0-9]{1,5}$/i, "");
+  const m = tr.meta, ext = "." + String(m.ext || "").toLowerCase(), plain = m.name.toLowerCase().endsWith(ext) && ext.length > 1 && !m.recording;
+  const title = "Minutes: " + (plain ? m.name.slice(0, -ext.length) : m.name);  // (a recording's "Meeting 28 Okt 14.30" has no extension)
   const content = (m.summary ? m.summary + "\n\n" : "") + "## Transcript\n\n" + trLines(tr.data).join("\n\n");
   try {
     const r = await fetch("/v1/tools/create_document", { method: "POST", headers: { "Content-Type": "application/json" },

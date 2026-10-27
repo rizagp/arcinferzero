@@ -609,7 +609,8 @@ class Transcriber {
       float temperature = 0;
       // (the window's work in one turn of the engine: opt.window_turn lets other transcriptions in between windows)
       auto window = [&] {
-        encode(seek, kWindowFrames);
+        // (a part of the audio, --to: silence past its end, not the speech after it)
+        encode(seek, opt.to_s > 0 ? seg_size : kWindowFrames);
         if (!fixed && (!opt.detect_once || lang.empty())) {
           lp = language_probs(allowed);
           wlang = lp[0].first;
@@ -637,7 +638,14 @@ class Transcriber {
             if (silence(ru, opt)) continue;
             std::vector<Segment> s;
             bool whole = false;
-            split(ru, u.lang, off, u.b - u.a, s, whole);
+            // (the run's last words kept without their closing timestamp: the next run starts after them, not at them
+            //  as the next window would; the segments' times kept inside the run)
+            split(ru, u.lang, off, u.b - u.a, s, whole, true);
+            const double run_end = off + (double)(u.b - u.a) * kHop / kSampleRate;
+            for (Segment& g : s) {
+              g.end = std::min(g.end, run_end);
+              g.start = std::min(g.start, g.end);
+            }
             if (opt.word_timestamps && !s.empty()) {
               const auto tt = clk::now();
               add_word_timestamps(s, off, std::min((double)(u.b - u.a) * kHop / kSampleRate, 30.0));
@@ -750,8 +758,10 @@ class Transcriber {
 
   // a decoded window's segments, split at its timestamp pairs; returns the frames it covers: to its last complete
   // segment's end, or all of them when it ends with a lone timestamp (whole) or has no pair
+  // keep_tail: the words after the last complete segment kept too, as a segment to the end (a language run, decoded
+  // alone: nothing decodes them again)
   int split(const Decoded& r, const std::string& lang, double time_offset, int seg_size, std::vector<Segment>& segs,
-            bool& whole) const {
+            bool& whole, bool keep_tail = false) const {
     const std::vector<int>& tokens = r.tokens;
     const int tb = m_.sp.timestamp_begin;
     auto add = [&](double s, double e, const std::vector<int>& toks) {
@@ -779,6 +789,12 @@ class Transcriber {
         std::vector<int> sl(tokens.begin() + last, tokens.begin() + cur);
         if (!sl.empty()) add(time_offset + (sl.front() - tb) * 0.02, time_offset + (sl.back() - tb) * 0.02, sl);
         last = cur;
+      }
+      if (!whole && keep_tail && last < tokens.size()) {
+        const std::vector<int> sl(tokens.begin() + last, tokens.end());
+        const double s = time_offset + (sl.front() >= tb ? (sl.front() - tb) * 0.02 : (tokens[last - 1] - tb) * 0.02);
+        add(s, std::max(s, time_offset + (double)seg_size * kHop / kSampleRate), sl);
+        return seg_size;
       }
       return whole ? seg_size : (tokens[last - 1] - tb) * 2;  // (2 frames per 0.02 s)
     }
@@ -833,7 +849,12 @@ class Transcriber {
   std::vector<Run> language_runs(const std::vector<float>& x, int seek, int n, bool last,
                                  const std::vector<std::string>& two, Encode& encode) {
     std::vector<int> cuts = pauses(x, seek, n);
-    if (last && (cuts.empty() || cuts.back() < n - 30)) cuts.push_back(n);
+    // (the file's last window: to its end; a last pause that reaches the end is cut there too, not 0.15 s into it,
+    //  which left a window of 0.15-0.3 s of silence after it, where a "Terima kasih." could come from nothing)
+    if (last) {
+      if (cuts.empty() || cuts.back() < n - 30) cuts.push_back(n);
+      else cuts.back() = n;
+    }
     std::vector<Run> u;
     int a = 0;
     for (int c : cuts)  // (at least 2.5 or 3.5 s: 1.6x or 2x faster, the mixed file's English 15 / 37 % words wrong)

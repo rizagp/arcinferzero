@@ -153,6 +153,7 @@ class To16k {
     return limit_ <= 0 || seconds <= limit_;
   }
   bool silence(double s, int rate) {  // (in pieces: a long gap does not take its whole length in memory at once)
+    if (rate < 1000 || rate > 384000) throw std::runtime_error("audio: unsupported sample rate " + std::to_string(rate));
     const std::vector<float> z((size_t)rate, 0.0f);
     for (int64_t left = std::llround(s * rate); left > 0; left -= rate)
       if (!add(z.data(), (size_t)std::min<int64_t>(left, rate), rate)) return false;
@@ -199,10 +200,13 @@ inline bool wav_format(const std::function<size_t(uint64_t, void*, size_t)>& at,
       if (w.fmt == 0xFFFE && avail >= 26) w.fmt = (int)u16(f + 24);  // WAVE_FORMAT_EXTENSIBLE: sub-format GUID
     } else if (!memcmp(c, "data", 4)) {
       if (w.ch <= 0 || w.rate <= 0) throw std::runtime_error("wav: data before fmt");
+      if (w.ch > 64) throw std::runtime_error("wav: more than 64 channels");
       if (!((w.fmt == 1 && (w.bits == 8 || w.bits == 16 || w.bits == 24 || w.bits == 32)) || (w.fmt == 3 && w.bits == 32)))
         throw std::runtime_error("wav: unsupported encoding (PCM 8/16/24/32-bit or float32 expected)");
       w.data = body;
-      w.len = avail;
+      // (a size at the 32-bit field's end: a recording past 4 GB, whose header cannot hold its size; its data runs to
+      //  the end of the file)
+      w.len = len >= 0xFFFFFF00u ? size - body : avail;
       return true;
     }
     p = body + len + (len & 1);
@@ -230,7 +234,7 @@ inline void wav_mono(const WavFormat& w, const uint8_t* d, size_t frames, std::v
 }
 // the data chunk through `at`, a block at a time
 inline void wav_decode(const std::function<size_t(uint64_t, void*, size_t)>& at, const WavFormat& w, To16k& sink) {
-  const size_t frame = (size_t)(w.bits / 8) * w.ch, block = (1 << 16);
+  const size_t frame = (size_t)(w.bits / 8) * w.ch, block = std::max<size_t>(1, (1 << 20) / frame);  // (~1 MB a read)
   std::vector<uint8_t> raw(frame * block);
   std::vector<float> mono;
   for (uint64_t off = 0; off + frame <= w.len;) {
@@ -249,8 +253,10 @@ inline void wav_decode(const std::function<size_t(uint64_t, void*, size_t)>& at,
 inline double mp4_audio_delay(const std::function<size_t(uint64_t, void*, size_t)>& at, uint64_t size) {
   auto be = [](const uint8_t* b, int n) { uint64_t v = 0; for (int i = 0; i < n; ++i) v = v << 8 | b[i]; return v; };
   // the boxes in [a, b): (type, body offset, body size)
+  // (a box's size checked against the room left, not a + len: a 64-bit size could wrap the sum and loop forever; at
+  //  most 100,000 boxes a level)
   auto boxes = [&](uint64_t a, uint64_t b, const std::function<bool(const char*, uint64_t, uint64_t)>& f) {
-    while (a + 8 <= b) {
+    for (int count = 0; a + 8 <= b && count < 100000; ++count) {
       uint8_t h[16];
       if (at(a, h, 8) < 8) return;
       uint64_t len = be(h, 4), hdr = 8;
@@ -261,7 +267,7 @@ inline double mp4_audio_delay(const std::function<size_t(uint64_t, void*, size_t
       } else if (len == 0) {
         len = b - a;
       }
-      if (len < hdr || a + len > b) return;
+      if (len < hdr || len > b - a) return;
       char t[5] = {(char)h[4], (char)h[5], (char)h[6], (char)h[7], 0};
       if (!f(t, a + hdr, len - hdr)) return;
       a += len;
@@ -323,13 +329,27 @@ inline double mp4_audio_delay(const std::function<size_t(uint64_t, void*, size_t
 // ---------------------------------------------------------------- Ogg Opus -> Matroska
 // Ogg Opus (WhatsApp / Telegram voice notes, .opus / .ogg): Media Foundation has no Ogg reader but decodes Opus in
 // Matroska, so the first Opus stream's packets are repacked into a WebM file in memory. Empty: not Ogg.
-inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b) {
+// max_seconds > 0: the packets past it (and a second) left out, the caller's limit then refuses the clip, so a long or
+// hostile file is not repacked whole first. Empty packets are left out (a page of zero lacing values made one each).
+inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b, double max_seconds = 0) {
   if (b.size() < 32 || memcmp(b.data(), "OggS", 4)) return {};
+  // each packet's length in 48-kHz samples, from its TOC byte (RFC 6716 3.1)
+  auto samples = [](const std::vector<uint8_t>& p) -> int64_t {
+    if (p.empty()) return 0;
+    static const int silk[4] = {480, 960, 1920, 2880}, celt[4] = {120, 240, 480, 960};
+    const int cfg = p[0] >> 3, fs = cfg < 12 ? silk[cfg & 3] : cfg < 16 ? ((cfg & 1) ? 960 : 480) : celt[cfg & 3];
+    const int c = p[0] & 3, frames = c == 0 ? 1 : c < 3 ? 2 : (p.size() >= 2 ? (p[1] & 0x3F) : 0);
+    return (int64_t)fs * frames;
+  };
+  // (at most 400 packets a second, 2.5-ms frames, past the limit: packets that claim no length count too)
+  const int64_t max48 = max_seconds > 0 ? (int64_t)((max_seconds + 1) * 48000) : INT64_MAX,
+                max_pk = max_seconds > 0 ? (int64_t)((max_seconds + 1) * 400) + 2 : INT64_MAX;
+  int64_t seen48 = 0;
   std::vector<std::vector<uint8_t>> pk;
   std::vector<uint8_t> cur;
   bool have = false, started = false;
   uint32_t serial = 0;
-  for (size_t off = 0; off + 27 <= b.size();) {
+  for (size_t off = 0; off + 27 <= b.size() && seen48 <= max48 && (int64_t)pk.size() <= max_pk;) {
     if (memcmp(b.data() + off, "OggS", 4)) throw std::runtime_error("ogg: broken page");
     const uint32_t sn = b[off + 14] | b[off + 15] << 8 | b[off + 16] << 16 | (uint32_t)b[off + 17] << 24;
     const size_t nseg = b[off + 26], head = off + 27 + nseg;
@@ -344,13 +364,21 @@ inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b) {
     }
     if (have && sn == serial) {
       const bool continued = b[off + 5] & 1;
-      if (!continued && !cur.empty()) { pk.push_back(cur); cur.clear(); }  // (a packet the stream left unfinished)
+      auto packet = [&] {
+        if (pk.size() >= 2) seen48 += samples(cur);
+        pk.push_back(std::move(cur));
+        cur.clear();
+      };
+      if (!continued && !cur.empty()) packet();  // (a packet the stream left unfinished)
       size_t p = head;
       for (size_t i = 0; i < nseg; ++i) {
         const size_t l = b[off + 27 + i];
         if (started || !continued) cur.insert(cur.end(), b.begin() + p, b.begin() + p + l);
         p += l;
-        if (l < 255) { pk.push_back(cur); cur.clear(); started = true; }
+        if (l < 255) {
+          if (!cur.empty()) packet();
+          started = true;
+        }
       }
     }
     off = head + body;
@@ -383,15 +411,7 @@ inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b) {
     for (int i = 7; i >= 0; --i) p += (char)(u >> (8 * i) & 0xFF);
     el(o, v, p);
   };
-  // each packet's length in 48-kHz samples, from its TOC byte (RFC 6716 3.1)
-  auto samples = [](const std::vector<uint8_t>& p) -> int64_t {
-    if (p.empty()) return 0;
-    static const int silk[4] = {480, 960, 1920, 2880}, celt[4] = {120, 240, 480, 960};
-    const int cfg = p[0] >> 3, fs = cfg < 12 ? silk[cfg & 3] : cfg < 16 ? ((cfg & 1) ? 960 : 480) : celt[cfg & 3];
-    const int c = p[0] & 3, frames = c == 0 ? 1 : c < 3 ? 2 : (p.size() >= 2 ? (p[1] & 0x3F) : 0);
-    return (int64_t)fs * frames;
-  };
-  std::string ebml, info, track, audio, tracks, clusters, cluster, seg, out;
+  std::string ebml, info, track, audio, tracks, clusters, cluster, out;
   un(ebml, 0x4286, 1);
   un(ebml, 0x42F7, 1);
   un(ebml, 0x42F2, 4);
@@ -439,12 +459,23 @@ inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b) {
     pos += samples(pk[i]);
   }
   flush();
-  el(seg, 0x1549A966, info);
-  el(seg, 0x1654AE6B, tracks);
-  seg += clusters;
+  pk.clear();
+  pk.shrink_to_fit();
+  // (the segment written around the clusters, not as a copy of them: one copy of the repacked stream at a time)
+  std::string head;
+  el(head, 0x1549A966, info);
+  el(head, 0x1654AE6B, tracks);
   el(out, 0x1A45DFA3, ebml);
-  el(out, 0x18538067, seg);
-  return std::vector<uint8_t>(out.begin(), out.end());
+  id(out, 0x18538067);
+  out += (char)0x01;
+  const uint64_t seg_len = head.size() + clusters.size();
+  for (int i = 6; i >= 0; --i) out += (char)(seg_len >> (8 * i) & 0xFF);
+  out += head;
+  std::vector<uint8_t> v;
+  v.reserve(out.size() + clusters.size());
+  v.insert(v.end(), out.begin(), out.end());
+  v.insert(v.end(), clusters.begin(), clusters.end());
+  return v;
 }
 
 // ---------------------------------------------------------------- Media Foundation
@@ -476,6 +507,10 @@ inline void mf_check(HRESULT hr, const char* what) {
 // one's time; MP3 in AVI starts one 36-ms frame in). The format is read again when the decoder changes it (an AAC
 // stream's real rate and channels come with its first sample).
 inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay) {
+  // (the audio stream alone: a selected video stream that is never read keeps its samples queued, gigabytes over an
+  //  hours-long video)
+  rd->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
+  mf_check(rd->SetStreamSelection((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, TRUE), "no audio stream");
   ComPtr<IMFMediaType> mt;
   mf_check(MFCreateMediaType(&mt), "media type");
   mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
@@ -489,6 +524,8 @@ inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay) {
     cur->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &sr);
     cur->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &ch);
     if (!sr || !ch) throw std::runtime_error("audio: unknown sample rate or channel count");
+    if (sr < 1000 || sr > 384000 || ch > 64) throw std::runtime_error("audio: unsupported format (" + std::to_string(sr) +
+                                                                     " Hz, " + std::to_string(ch) + " channels)");
   };
   format();
   double pos = 0;  // (seconds placed so far)
@@ -564,7 +601,7 @@ inline std::vector<float> decode_16k(const std::vector<uint8_t>& bytes, double m
   if (wav_format(at, bytes.size(), w)) {
     wav_decode(at, w, sink);
   } else {
-    const std::vector<uint8_t> webm = ogg_opus_to_webm(bytes);
+    const std::vector<uint8_t> webm = ogg_opus_to_webm(bytes, max_seconds);
     if (!webm.empty()) mf_decode_bytes(webm, sink, 0);
     else mf_decode_bytes(bytes, sink, mp4_audio_delay(at, bytes.size()));
   }
@@ -592,7 +629,7 @@ inline std::vector<float> decode_16k_file(const std::filesystem::path& path, dou
     if (size > (1u << 30)) throw std::runtime_error("ogg: larger than 1 GB");
     std::vector<uint8_t> b((size_t)size);
     at(0, b.data(), b.size());
-    mf_decode_bytes(ogg_opus_to_webm(b), sink, 0);
+    mf_decode_bytes(ogg_opus_to_webm(b, max_seconds), sink, 0);
   } else {
     const double delay = mp4_audio_delay(at, size);
     MfSession ses;
@@ -622,8 +659,9 @@ inline double duration_seconds(const std::filesystem::path& path) {
   }
 }
 
-// a WAV file's channels apart, each at 16 kHz (a recording's tracks: the microphone, the other side)
-inline std::vector<std::vector<float>> decode_16k_wav_channels(const std::filesystem::path& path) {
+// a WAV file's channels apart, each at 16 kHz (a recording's tracks: the microphone, the other side); max_seconds > 0:
+// longer refused, as decode_16k_file
+inline std::vector<std::vector<float>> decode_16k_wav_channels(const std::filesystem::path& path, double max_seconds = 0) {
   std::ifstream f(path, std::ios::binary);
   if (!f) throw std::runtime_error("cannot read " + path.string());
   const uint64_t size = std::filesystem::file_size(path);
@@ -637,23 +675,26 @@ inline std::vector<std::vector<float>> decode_16k_wav_channels(const std::filesy
   if (!wav_format(at, size, w)) throw std::runtime_error("not a WAV file");
   WavFormat one = w;  // (each channel read as a mono file of its own)
   one.ch = 1;
-  std::vector<To16k> sinks(w.ch);
-  const size_t bps = (size_t)w.bits / 8, frame = bps * w.ch, block = 1 << 16;
+  std::vector<To16k> sinks;
+  for (int c = 0; c < w.ch; ++c) sinks.emplace_back(max_seconds);
+  const size_t bps = (size_t)w.bits / 8, frame = bps * w.ch, block = std::max<size_t>(1, (1 << 20) / frame);
   std::vector<uint8_t> raw(frame * block), ch(bps * block);
   std::vector<float> mono;
   for (uint64_t off = 0; off + frame <= w.len;) {
     const size_t want = (size_t)std::min<uint64_t>(raw.size(), (w.len - off) / frame * frame);
     const size_t got = at(w.data + off, raw.data(), want) / frame * frame, n = got / frame;
     if (!n) break;
+    bool more = true;
     for (int c = 0; c < w.ch; ++c) {
       for (size_t i = 0; i < n; ++i) memcpy(&ch[i * bps], &raw[i * frame + c * bps], bps);
       wav_mono(one, ch.data(), n, mono);
-      sinks[c].add(mono.data(), n, w.rate);
+      more = sinks[c].add(mono.data(), n, w.rate) && more;
     }
+    if (!more) break;
     off += got;
   }
   std::vector<std::vector<float>> out;
-  for (To16k& s : sinks) out.push_back(s.finish());
+  for (To16k& s : sinks) out.push_back(finish_16k(s, max_seconds));
   return out;
 }
 

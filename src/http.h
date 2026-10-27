@@ -68,11 +68,19 @@ class HttpResponse {
   }
   // A file, or the one byte range a Range header asks for ("bytes=a-b", "bytes=a-", "bytes=-n": 206 with
   // Content-Range; past the end: 416), read and sent 1 MB at a time (media of gigabytes for a <video> that seeks).
+  // The file is opened shared for writing and deleting: one being played can still be replaced or deleted (a <video>
+  // that pauses keeps its request, and so the file, open for a minute).
   void send_file(const std::filesystem::path& p, const std::string& content_type, const std::string& range) {
-    std::error_code ec;
-    const uint64_t size = std::filesystem::file_size(p, ec);
-    std::ifstream f(p, std::ios::binary);
-    if (ec || !f) return send(404, "text/plain", "not found");
+    HANDLE fh = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (fh == INVALID_HANDLE_VALUE) return send(404, "text/plain", "not found");
+    struct Close {
+      HANDLE h;
+      ~Close() { CloseHandle(h); }
+    } close_file{fh};
+    LARGE_INTEGER fsz{};
+    if (!GetFileSizeEx(fh, &fsz)) return send(404, "text/plain", "not found");
+    const uint64_t size = (uint64_t)fsz.QuadPart;
     uint64_t a = 0, b = size;  // [a, b)
     bool part = false;
     if (range.rfind("bytes=", 0) == 0 && range.find(',') == std::string::npos) {
@@ -97,7 +105,7 @@ class HttpResponse {
       } else if (dash != std::string::npos && num(l, x) && (rr.empty() || (num(rr, y) && y >= x))) {
         if (x >= size) return unsatisfiable();
         a = x;
-        b = rr.empty() ? size : std::min(size, y + 1);
+        b = rr.empty() || y >= size ? size : y + 1;  // (y + 1 not taken past the end: it wraps at 2^64 - 1)
         part = true;
       }
     }
@@ -109,12 +117,14 @@ class HttpResponse {
     h += extra;
     h += "Connection: keep-alive\r\n\r\n";
     raw(h);
-    f.seekg((std::streamoff)a);
+    LARGE_INTEGER pos{};
+    pos.QuadPart = (LONGLONG)a;
+    SetFilePointerEx(fh, pos, nullptr, FILE_BEGIN);
     std::string buf(1 << 20, '\0');
     for (uint64_t left = b - a; left > 0 && ok_;) {
       const size_t n = (size_t)std::min<uint64_t>(left, buf.size());
-      f.read(buf.data(), (std::streamsize)n);
-      const size_t got = (size_t)f.gcount();
+      DWORD rd = 0;
+      const size_t got = ReadFile(fh, buf.data(), (DWORD)n, &rd, nullptr) ? (size_t)rd : 0;
       if (got == 0) { ok_ = false; break; }  // (the file shrank: the length promised cannot be kept)
       raw(got == buf.size() ? buf : buf.substr(0, got));
       left -= got;

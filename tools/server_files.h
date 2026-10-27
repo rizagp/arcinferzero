@@ -24,6 +24,7 @@
 #include <list>
 #include <memory>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -38,6 +39,51 @@
 
 namespace files {
 namespace fs = std::filesystem;
+
+// a whole file, opened shared for writing and deleting: a file being read can still be replaced (write_shared) or
+// deleted meanwhile (std::ifstream's handle refused both, and a transcript's save or delete failed while it was read)
+inline bool read_shared(const fs::path& p, std::string& out) {
+  HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  LARGE_INTEGER n{};
+  bool ok = GetFileSizeEx(h, &n) && n.QuadPart >= 0 && n.QuadPart < (1LL << 31);
+  if (ok) {
+    out.resize((size_t)n.QuadPart);
+    size_t at = 0;
+    DWORD got = 0;
+    while (at < out.size() && ReadFile(h, out.data() + at, (DWORD)std::min<size_t>(out.size() - at, 1u << 30), &got, nullptr) && got)
+      at += got;
+    out.resize(at);
+  }
+  CloseHandle(h);
+  return ok;
+}
+// written whole or not at all: a temporary file of its own (two writers never share one), closed and checked, then
+// moved over the old one (retried for a few seconds while another program holds the old one without sharing it)
+inline bool write_shared(const fs::path& p, const std::string& s) {
+  static std::atomic<uint64_t> seq{0};
+  const fs::path tmp = p.wstring() + L"." + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(++seq) + L".tmp";
+  {
+    std::ofstream f(tmp, std::ios::binary);
+    f.write(s.data(), (std::streamsize)s.size());
+    f.close();
+    if (!f) {
+      std::error_code ec;
+      fs::remove(tmp, ec);
+      return false;
+    }
+  }
+  for (int i = 0; i < 40; ++i) {
+    if (MoveFileExW(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+    const DWORD e = GetLastError();
+    if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION) break;
+    Sleep(50);
+  }
+  std::error_code ec;
+  fs::remove(tmp, ec);
+  return false;
+}
 
 struct Info {
   std::string id, name, kind, path;
@@ -91,6 +137,11 @@ inline bool valid_id(const std::string& id, size_t max = 64) {
   if (id.empty() || id.size() > max) return false;
   for (unsigned char c : id)
     if (!isalnum(c) && c != '-' && c != '_') return false;
+  // (Windows' device names are no file names: "chats\CON.json" is the console)
+  std::string u;
+  for (unsigned char c : id) u += (char)toupper(c);
+  if (u == "CON" || u == "PRN" || u == "AUX" || u == "NUL" || u == "CONIN$" || u == "CONOUT$") return false;
+  if (u.size() == 4 && (u.rfind("COM", 0) == 0 || u.rfind("LPT", 0) == 0) && u[3] >= '0' && u[3] <= '9') return false;
   return true;
 }
 inline std::string hex64(uint64_t h) {
@@ -181,14 +232,7 @@ class Store {
     }
     return false;
   }
-  static bool read(const std::string& path, std::string& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    std::stringstream ss;
-    ss << f.rdbuf();
-    out = ss.str();
-    return true;
-  }
+  static bool read(const std::string& path, std::string& out) { return read_shared(fs::path(path), out); }
   // every file once (its first copy), newest first; the folders read again, so changes made by hand show
   std::vector<Info> list() {
     std::lock_guard<std::recursive_mutex> g(mu_);
@@ -628,6 +672,10 @@ inline DocCache& doc_cache() {
   static DocCache c;
   return c;
 }
+inline DocCache& virtual_doc_cache() {  // (chats and transcripts: list_chats / search_chats index them all)
+  static DocCache c;
+  return c;
+}
 inline void doc_index_forget(const std::string& id) {
   DocCache& c = doc_cache();
   std::lock_guard<std::mutex> g(c.mu);
@@ -745,6 +793,17 @@ inline std::string when_text(int64_t t) {
   if (localtime_s(&tm, &ct) == 0) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
   return b;
 }
+// a message's or a summary's lines as body text of a section: a line that starts with # gets a space before it (a
+// heading in an answer, or a # comment in its code, would have cut the exchange's section there)
+inline std::string body_text(const std::string& t) {
+  std::string o;
+  o.reserve(t.size() + 16);
+  for (size_t i = 0; i < t.size(); ++i) {
+    if (t[i] == '#' && (i == 0 || t[i - 1] == '\n')) o += ' ';
+    o += t[i];
+  }
+  return o;
+}
 // a message's text: its text parts, a line per file / image / audio part
 inline std::string message_text(const Json& content) {
   if (content.is_string()) return content.str();
@@ -769,7 +828,8 @@ inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
     v.kind = "chat";
     v.title = c["title"].str("chat");
     v.at = (int64_t)(c["at"].as_number(0) / 1000);
-    md = "# " + v.title + "\n\n";
+    // (no title in it, read_file gives it apart: text before the first heading would be a section of its own, and
+    //  section N is exchange N)
     for (const Json& m : c["history"].items()) {
       const std::string role = m["role"].str();
       if (role == "user") {
@@ -785,11 +845,11 @@ inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
           head += "...";
         }
         const int64_t at = (int64_t)(m["at"].as_number(0) / 1000);
-        md += "## " + std::to_string(v.parts) + ". " + (at ? when_text(at) + " - " : "") + head + "\n\n**User:** " + t + "\n\n";
+        md += "## " + std::to_string(v.parts) + ". " + (at ? when_text(at) + " - " : "") + head + "\n\n**User:** " + body_text(t) + "\n\n";
       } else if (role == "assistant") {
         for (const Json& tc : m["tool_calls"].items()) md += "[tool: " + tc["function"]["name"].str() + "]\n\n";
         const std::string t = message_text(m["content"]);
-        if (!t.empty()) md += "**Assistant:** " + t + "\n\n";
+        if (!t.empty()) md += "**Assistant:** " + body_text(t) + "\n\n";
       }
     }
   } else {
@@ -810,8 +870,8 @@ inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
     if (Store::read((dir / "summary.md").string(), summary) && !summary.empty()) {
       text += summary;
       md += "## Summary\n\n";
-      std::istringstream in(summary);  // (its own headings a level down: subsections of the summary)
-      for (std::string line; std::getline(in, line);) md += (line.rfind('#', 0) == 0 ? "#" : "") + line + "\n";
+      std::istringstream in(summary);  // (its own headings two levels down: subsections of the summary)
+      for (std::string line; std::getline(in, line);) md += (line.rfind('#', 0) == 0 ? "##" : "") + line + "\n";
       md += "\n";
     }
     int block = -1;
@@ -828,7 +888,7 @@ inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
       char ts[24];
       snprintf(ts, sizeof ts, "[%d:%02d] ", (int)s / 60, (int)s % 60);
       const std::string sp = g["speaker"].str();
-      md += ts + (sp.empty() || sp == who ? std::string() : sp + ": ") + g["text"].str() + "\n\n";
+      md += ts + (sp.empty() || sp == who ? std::string() : sp + ": ") + body_text(g["text"].str()) + "\n\n";
       who = sp;
     }
   }
@@ -836,7 +896,7 @@ inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
   for (unsigned char ch : text) h = (h ^ ch) * 1099511628211ull;
   char key[96];
   snprintf(key, sizeof key, "%s#%016llx", fid.c_str(), (unsigned long long)h);
-  DocCache& c = doc_cache();
+  DocCache& c = virtual_doc_cache();
   {
     std::lock_guard<std::mutex> g(c.mu);
     for (auto it = c.lru.begin(); it != c.lru.end(); ++it)
@@ -849,7 +909,7 @@ inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
   v.ix = std::make_shared<const rdoc::Index>(rdoc::read_text(md, true));
   std::lock_guard<std::mutex> g(c.mu);
   c.lru.push_front({key, v.ix});
-  if (c.lru.size() > 32) c.lru.pop_back();
+  while (c.lru.size() > 64) c.lru.pop_back();
   return true;
 }
 

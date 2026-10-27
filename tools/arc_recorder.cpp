@@ -53,16 +53,38 @@ double now_seconds() {
   return qpc_seconds(x.QuadPart);
 }
 
+DWORD pid_of(const std::string& app) {
+  if (!app.empty() && app.find_first_not_of("0123456789") == std::string::npos) return (DWORD)std::stoul(app);
+  HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  PROCESSENTRY32W e = {sizeof e};
+  DWORD pid = 0;
+  std::wstring want(app.begin(), app.end());
+  for (wchar_t& c : want) c = (wchar_t)towlower(c);
+  if (want.size() < 4 || want.substr(want.size() - 4) != L".exe") want += L".exe";
+  for (BOOL ok = Process32FirstW(s, &e); ok; ok = Process32NextW(s, &e)) {
+    std::wstring n = e.szExeFile;
+    for (wchar_t& c : n) c = (wchar_t)towlower(c);
+    if (n == want) { pid = e.th32ProcessID; break; }  // (the first; its children are included)
+  }
+  CloseHandle(s);
+  return pid;
+}
+
 // IActivateAudioInterfaceCompletionHandler for ActivateAudioInterfaceAsync (process loopback)
 class Activated : public IActivateAudioInterfaceCompletionHandler, public IAgileObject {
  public:
   HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   HRESULT hr = E_FAIL;
   IAudioClient* client = nullptr;
-  ~Activated() { CloseHandle(done); }
+  std::atomic<bool> abandoned{false};  // (the waiter gave up: a client that comes after is released here)
+  ~Activated() {
+    if (client) client->Release();
+    CloseHandle(done);
+  }
   STDMETHODIMP ActivateCompleted(IActivateAudioInterfaceAsyncOperation* op) override {
     IUnknown* u = nullptr;
     HRESULT r = E_FAIL;
+    if (abandoned) return S_OK;
     if (SUCCEEDED(op->GetActivateResult(&r, &u)) && SUCCEEDED(r) && u) {
       hr = u->QueryInterface(__uuidof(IAudioClient), (void**)&client);
       u->Release();
@@ -98,6 +120,10 @@ struct Track {
   std::string what;           // ("the microphone", "Zoom.exe's sound", ...)
   enum Kind { Mic, Speakers, Process } kind = Mic;
   DWORD pid = 0;
+  std::string app;            // (a process track: its name, looked up again when it ends)
+  HANDLE proc = nullptr;      // (the process recorded: its end seen)
+  std::wstring dev_id;        // (an endpoint track: the default device it opened; another one becomes the default:
+                              //  a headset plugged in mid-meeting, it is opened instead)
   IAudioClient* ac = nullptr;
   IAudioCaptureClient* cc = nullptr;
   HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -114,6 +140,7 @@ struct Track {
     if (ac) ac->Stop();
     if (cc) { cc->Release(); cc = nullptr; }
     if (ac) { ac->Release(); ac = nullptr; }
+    if (proc) { CloseHandle(proc); proc = nullptr; }
   }
   // the client opened, with this format (endpoint devices: the device's own; process loopback: 16-bit stereo 48 kHz)
   bool start(IAudioClient* c, const WAVEFORMATEX* wf, DWORD flags) {
@@ -123,7 +150,8 @@ struct Track {
     bits = wf->wBitsPerSample;
     fl = wf->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
          (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE && ((const WAVEFORMATEXTENSIBLE*)wf)->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
-    if (FAILED(ac->Initialize(AUDCLNT_SHAREMODE_SHARED, flags | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 2000000, 0, wf, nullptr)) ||
+    // (a 2-s buffer: the other track's reopening, which can take seconds, does not overrun this one)
+    if (FAILED(ac->Initialize(AUDCLNT_SHAREMODE_SHARED, flags | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 20000000, 0, wf, nullptr)) ||
         FAILED(ac->SetEventHandle(ev)) || FAILED(ac->GetService(__uuidof(IAudioCaptureClient), (void**)&cc)) ||
         FAILED(ac->Start())) {
       close();
@@ -137,6 +165,9 @@ struct Track {
   bool open() {
     close();
     if (kind == Process) {
+      if (!pid) pid = pid_of(app);  // (ended before: started again?)
+      if (!pid) return false;
+      proc = OpenProcess(SYNCHRONIZE, FALSE, pid);
       AUDIOCLIENT_ACTIVATION_PARAMS ap = {};
       ap.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
       ap.ProcessLoopbackParams.TargetProcessId = pid;
@@ -148,10 +179,11 @@ struct Track {
       Activated* h = new Activated();
       IActivateAudioInterfaceAsyncOperation* op = nullptr;
       HRESULT hr = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &pv, h, &op);
-      if (SUCCEEDED(hr)) WaitForSingleObject(h->done, 5000);
-      IAudioClient* c = SUCCEEDED(hr) && SUCCEEDED(h->hr) ? h->client : nullptr;
+      const bool came = SUCCEEDED(hr) && WaitForSingleObject(h->done, 5000) == WAIT_OBJECT_0;
+      if (!came) h->abandoned = true;  // (the operation keeps its own reference: a late result is released by it)
+      IAudioClient* c = came && SUCCEEDED(h->hr) ? h->client : nullptr;
+      if (c) h->client = nullptr;
       if (op) op->Release();
-      h->client = nullptr;
       h->Release();
       if (!c) return false;
       WAVEFORMATEX wf = {};
@@ -170,7 +202,12 @@ struct Track {
     bool ok = SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&en)) &&
               SUCCEEDED(en->GetDefaultAudioEndpoint(kind == Mic ? eCapture : eRender, kind == Mic ? eCommunications : eConsole, &dev)) &&
               SUCCEEDED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&c)) && SUCCEEDED(c->GetMixFormat(&wf));
-    if (ok) ok = start(c, wf, kind == Speakers ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0);
+    if (ok) {
+      LPWSTR id = nullptr;
+      dev_id.clear();
+      if (SUCCEEDED(dev->GetId(&id)) && id) { dev_id = id; CoTaskMemFree(id); }
+      ok = start(c, wf, kind == Speakers ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0);
+    }
     else if (c) c->Release();
     if (wf) CoTaskMemFree(wf);
     if (dev) dev->Release();
@@ -209,10 +246,19 @@ struct Track {
       ++packets;
       // (the packet's place: its first frame's time; QPC positions are in 100-ns units)
       const double ts = qpc ? (double)qpc / 1e7 : now_seconds() - (double)n / rate;  // (no time stamp: now, less its length)
-      const int64_t at = (int64_t)std::llround((ts - t0) * kRate);
-      if (next < 0 || std::llabs(at - next) > kRate / 10) {  // (the first, or after a gap of more than 0.1 s: a new start)
+      int64_t at = (int64_t)std::llround((ts - t0) * kRate);
+      if (at < 0) {  // (sound from before the recording's start: left out, not piled up at its first sample)
+        const size_t drop = (size_t)std::min<int64_t>((int64_t)mono.size(), (-at * rate + kRate - 1) / kRate);
+        mono.erase(mono.begin(), mono.begin() + (std::ptrdiff_t)drop);
+        at += (int64_t)drop * kRate / rate;
+        if (mono.empty()) continue;
+        at = std::max<int64_t>(0, at);
+      }
+      // (the first, or after a gap: a new start. 40 ms: a device clock a little off from QPC's, 100 ppm, is followed
+      //  in 40-ms steps, ~7 min apart, where 0.1 s every 17 min lost or doubled a word)
+      if (next < 0 || std::llabs(at - next) > kRate / 25) {
         rs = std::make_unique<audio::Resampler>(rate, kRate);
-        next = std::max<int64_t>(0, at);
+        next = at;
       }
       std::vector<float> out;
       rs->push(mono.data(), mono.size(), out);
@@ -230,32 +276,48 @@ struct Track {
     if (open()) fprintf(stderr, "arc-recorder: %s: back\n", what.c_str());
     else retry_at = now_seconds() + 1;
   }
+  // (every 2 s) the recorded app ended (an app started again has a new process), or another default device
+  void follow() {
+    if (down) return;
+    if (kind == Process) {
+      if (proc && WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) {
+        fprintf(stderr, "arc-recorder: %s: the app ended, recording silence until it runs again\n", what.c_str());
+        close();
+        pid = 0;
+        down = true;
+        retry_at = now_seconds() + 1;
+      }
+      return;
+    }
+    IMMDeviceEnumerator* en = nullptr;
+    IMMDevice* dev = nullptr;
+    LPWSTR id = nullptr;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&en)) &&
+        SUCCEEDED(en->GetDefaultAudioEndpoint(kind == Mic ? eCapture : eRender, kind == Mic ? eCommunications : eConsole, &dev)) &&
+        SUCCEEDED(dev->GetId(&id)) && id) {
+      if (!dev_id.empty() && dev_id != id) {
+        fprintf(stderr, "arc-recorder: %s: another default device, opened instead\n", what.c_str());
+        close();
+        down = true;
+        retry_at = 0;
+      }
+      CoTaskMemFree(id);
+    }
+    if (dev) dev->Release();
+    if (en) en->Release();
+  }
 };
 
-DWORD pid_of(const std::string& app) {
-  if (!app.empty() && app.find_first_not_of("0123456789") == std::string::npos) return (DWORD)std::stoul(app);
-  HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  PROCESSENTRY32W e = {sizeof e};
-  DWORD pid = 0;
-  std::wstring want(app.begin(), app.end());
-  for (wchar_t& c : want) c = (wchar_t)towlower(c);
-  if (want.size() < 4 || want.substr(want.size() - 4) != L".exe") want += L".exe";
-  for (BOOL ok = Process32FirstW(s, &e); ok; ok = Process32NextW(s, &e)) {
-    std::wstring n = e.szExeFile;
-    for (wchar_t& c : n) c = (wchar_t)towlower(c);
-    if (n == want) { pid = e.th32ProcessID; break; }  // (the first; its children are included)
-  }
-  CloseHandle(s);
-  return pid;
-}
 
 void wav_header(std::fstream& f, int ch, uint64_t frames) {
+  // (past 4 GB both sizes stay at their end: readers of this project take the data to the end of the file)
   const uint32_t data = (uint32_t)std::min<uint64_t>(frames * 2 * ch, 0xFFFFFFF0u);
+  const uint32_t riff = (uint32_t)std::min<uint64_t>(36ull + data, 0xFFFFFFFFull);
   uint8_t h[44];
   auto u32 = [&](int o, uint32_t v) { for (int i = 0; i < 4; ++i) h[o + i] = (uint8_t)(v >> (8 * i)); };
   auto u16 = [&](int o, uint32_t v) { h[o] = (uint8_t)v; h[o + 1] = (uint8_t)(v >> 8); };
   memcpy(h, "RIFF", 4);
-  u32(4, 36 + data);
+  u32(4, riff);
   memcpy(h + 8, "WAVEfmt ", 8);
   u32(16, 16);
   u16(20, 1);
@@ -322,8 +384,12 @@ int post_local(const std::string& path, const std::string& body, std::string& re
 }
 
 std::atomic<bool> g_stop{false};
-BOOL WINAPI on_ctrl(DWORD) {
+HANDLE g_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);  // (the recording closed and handed over)
+BOOL WINAPI on_ctrl(DWORD type) {
   g_stop = true;
+  // (Ctrl+C / Ctrl+Break: the loop ends it. A closed console, a logoff, a shutdown: the process ends when this returns,
+  //  so it waits for the file and its note first, a few seconds at most)
+  if (type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) WaitForSingleObject(g_done, 4000);
   return TRUE;
 }
 
@@ -394,6 +460,7 @@ int main(int argc, char** argv) {
       t->what = "the speakers' sound";
     } else {
       t->kind = Track::Process;
+      t->app = app;
       t->pid = pid_of(app);
       t->what = app + "'s sound";
       if (!t->pid) { fprintf(stderr, "arc-recorder: %s is not running\n", app.c_str()); return 1; }
@@ -412,7 +479,16 @@ int main(int argc, char** argv) {
   for (unsigned char c : title)
     if (c >= 0x20 && !strchr("<>:\"/\\|?*", c)) clean += (char)c;
   if (clean.empty()) clean = "meeting";
-  if (clean.size() > 80) clean.resize(80);
+  if (clean.size() > 80) {  // (at a character's start: half a character is no file name)
+    clean.resize(80);
+    size_t k = clean.size();
+    while (k > 0 && ((unsigned char)clean[k - 1] & 0xC0) == 0x80) --k;
+    if (k > 0) {
+      const unsigned char lead = (unsigned char)clean[k - 1];
+      const size_t need = lead < 0xC0 ? 1 : lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+      if (clean.size() - (k - 1) < need) clean.resize(k - 1);
+    }
+  }
   const std::time_t tt = std::time(nullptr);
   std::tm tm{};
   localtime_s(&tm, &tt);
@@ -421,11 +497,27 @@ int main(int argc, char** argv) {
   const fs::path dir = fs::path(app_dir()) / "recordings";
   std::error_code ec;
   fs::create_directories(dir, ec);
-  const fs::path wav = dir / fs::path(std::string(when) + " " + clean + ".wav");
+  // (a recording of the same minute and title, not taken by the server yet, is not written over: " (2)", " (3)", ...)
+  fs::path wav = dir / fs::path(std::string(when) + " " + clean + ".wav");
+  for (int k = 2; fs::exists(wav) || fs::exists(fs::path(wav).replace_extension(".json")); ++k)
+    wav = dir / fs::path(std::string(when) + " " + clean + " (" + std::to_string(k) + ").wav");
   std::fstream f(wav, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
   if (!f) { fprintf(stderr, "arc-recorder: cannot write %s\n", wav.string().c_str()); return 1; }
   const int ch = (int)tracks.size();
   wav_header(f, ch, 0);
+  Json m = Json::object(), sp = Json::array();
+  if (mic) sp.push("Me");
+  sp.push("Others");
+  m.set("path", wav.string());
+  m.set("name", fs::path(wav).filename().string());
+  m.set("kind", "meeting");
+  m.set("tracks", (double)ch);
+  m.set("speakers", sp);
+  m.set("pid", (double)GetCurrentProcessId());
+  m.set("complete", false);
+  fs::path side = wav;
+  side.replace_extension(".json");
+  std::ofstream(side, std::ios::binary) << m.dump();
   {
     Json s = Json::object();
     s.set("pid", (double)GetCurrentProcessId());
@@ -447,6 +539,7 @@ int main(int argc, char** argv) {
   for (auto& t : tracks) evs.push_back(t->ev);
   std::vector<int16_t> buf;
   bool finishing = false;
+  double last_follow = t0;
   for (;;) {
     WaitForMultipleObjects((DWORD)evs.size(), evs.data(), FALSE, 100);
     for (auto& t : tracks) {
@@ -454,6 +547,10 @@ int main(int argc, char** argv) {
       t->retry();
     }
     const double now = now_seconds();
+    if (now - last_follow >= 2) {
+      for (auto& t : tracks) t->follow();
+      last_follow = now;
+    }
     if (g_stop || WaitForSingleObject(stop, 0) == WAIT_OBJECT_0 || (limit > 0 && now - t0 >= limit)) finishing = true;
     const int64_t upto = (int64_t)((now - t0 - (finishing ? 0 : 0.3)) * kRate);
     if (upto > (int64_t)written) {
@@ -485,21 +582,10 @@ int main(int argc, char** argv) {
   fprintf(stderr, "arc-recorder: %.0f s recorded (%llu packets)\n", secs, (unsigned long long)(tracks[0]->packets + tracks.back()->packets));
 
   // to the server: the transcript library (the Meetings tab), or a note for its next start
-  Json m = Json::object(), sp = Json::array();
-  if (mic) sp.push("Me");
-  sp.push("Others");
-  m.set("path", wav.string());
-  m.set("name", fs::path(wav).filename().string());
-  m.set("kind", "meeting");
-  m.set("tracks", (double)ch);
-  m.set("speakers", sp);
   m.set("seconds", secs);
   m.set("complete", true);
-  {
-    fs::path side = wav;
-    side.replace_extension(".json");
-    std::ofstream(side, std::ios::binary) << m.dump();
-  }
+  std::ofstream(side, std::ios::binary) << m.dump();
+  SetEvent(g_done);
   std::string reply;
   const int st = post_local("/v1/transcripts/import", m.dump(), reply);
   if (st == 200) fprintf(stderr, "arc-recorder: handed to the server: the Meetings tab transcribes it now\n");

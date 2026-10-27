@@ -260,6 +260,11 @@ While the server is running:
   - There is no answer length limit to set: an answer may use the rest of the context (the reasoning is bounded by
     the server's thinking budget), and **Compact** in the chat header (or automatically when the context is nearly
     full) summarizes the earlier messages.
+- **Recordings that end badly.** A meeting recorder (`arc-server record`) that is killed, a shutdown or a power
+  cut leaves its WAV in `%USERPROFILE%\arcinferzero\recordings`: the server picks it up at its next start
+  and transcribes it. A live recording whose browser tab closed or lost its connection is stopped after 5
+  minutes without sound and transcribed as well; a recording of another tab can be stopped with its Stop
+  button. Files and recordings of up to 6 hours are transcribed.
 - **Web UI: other chats and recordings.** With **Files** on, the model can look into your other chats with it
   ("what did we decide in the chat about the budget?": it searches them and reads the exchange it needs) and
   into the recordings and meetings of the Transcripts / Meetings tabs. `@` in the message box lists them next to

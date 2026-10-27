@@ -230,7 +230,8 @@ transcript. A Pi skill / tool can call the same command.
 ## Server API
 
 Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` (default off),
-`--whisper-device gpu|npu`, `--whisper-max-minutes N` (default 180); `arc-server -Whisper auto [-WhisperDevice npu]`.
+`--whisper-device gpu|npu`, `--whisper-max-minutes N` (default 180: a request's or a chat clip's length; the transcript
+library's files take up to 6 hours, or this when it is more); `arc-server -Whisper auto [-WhisperDevice npu]`.
 
 - `POST /v1/audio/transcriptions` and `POST /v1/audio/translations`, multipart as OpenAI's API: `file`, `model`,
   `language`, `prompt`, `temperature` (0 = the fallback through higher temperatures), `response_format` = `json`

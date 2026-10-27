@@ -301,7 +301,7 @@ switch ($Action) {
     $rec = Join-Path $root "bin\arc_recorder.exe"
     if (-not (Test-Path $rec)) { throw "$rec not found: build it with .\build.ps1 tools\arc_recorder.cpp (or run setup)" }
     $a = @("start")
-    if ($App) { $a += "--app", $App }
+    if ($App) { $a += "--app", ('"' + $App.Replace('"', '') + '"') }  # (quoted: Start-Process splits a name with a space)
     if ($NoMic) { $a += "--no-mic" }
     if ($Title) { $a += "--title", ('"' + $Title.Replace('"', "'") + '"') }
     $log = Join-Path $stateDir "recorder.log"

@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
       if (!dump_lg.empty()) {
         Transcriber tr(m, *be);
         const std::string lang = opt.language == "auto" ? tr.detect_language() : opt.language;
+        if (m.sp.lang_token(lang) < 0) throw std::runtime_error("--dump-logits: one language code or auto, not '" + lang + "'");
         std::vector<int> toks = {m.sp.sot, m.sp.lang_token(lang), m.sp.transcribe};
         const int V = m.hp.n_vocab;
         std::vector<float> lg(V);
@@ -238,9 +239,15 @@ int main(int argc, char** argv) {
         fs::path dir = out.empty() ? fs::path(app_dir()) / "transcripts" : fs::path(out);
         const bool to_file = !out.empty() && dir.has_extension() && files.size() == 1 && fmts.size() == 1;
         if (!to_file) fs::create_directories(dir);
+        // (two inputs of one name, talk.mp4 and talk.wav: named with their extension, talk.mp4.srt, not one over the other)
+        auto low = [](std::string s) { for (char& c : s) c = (char)tolower((unsigned char)c); return s; };
+        const bool twin = std::count_if(files.begin(), files.end(), [&](const fs::path& g) {
+                            return low(g.stem().string()) == low(f.stem().string());
+                          }) > 1;
+        const std::string base = twin ? f.filename().string() : f.stem().string();
         for (const std::string& fm : fmts) {
           const auto it = std::find_if(formats().begin(), formats().end(), [&](const Format& x) { return fm == x.name; });
-          const fs::path dst = to_file ? dir : dir / (f.stem().string() + it->ext);
+          const fs::path dst = to_file ? dir : dir / (base + it->ext);
           std::ofstream o(dst, std::ios::binary);
           o << render(fm, r, co, f.stem().string(), opt.task);
           if (!o) throw std::runtime_error("cannot write " + dst.string());

@@ -1,7 +1,11 @@
 // Checks of src/audio.h without Media Foundation: the streamed resampler against the one-piece resample() (bit for
 // bit, any piece sizes and rates), WAV from memory and from a file against the one-piece path, the MP4 audio start
-// delay from an edit list, and Ogg Opus repacked as WebM (the packets kept, in order, one SimpleBlock each).
+// delay from an edit list, and Ogg Opus repacked as WebM (the packets kept, in order, one SimpleBlock each); since the
+// audit of 2026-10-28 also hostile headers (channels, sizes, a wrapping MP4 box), exact sample values and subtitle
+// cues of two speakers.
 #include "../src/audio.h"
+#include "../src/whisper_formats.h"
+#include <chrono>
 #include <cstdio>
 #include <random>
 
@@ -238,6 +242,157 @@ int main() {
     bool said = false;
     try { audio::ogg_opus_to_webm(vorbis); } catch (const std::exception& e) { said = strstr(e.what(), "Vorbis") != nullptr; }
     check("Ogg Vorbis: refused with its name", said);
+  }
+  // ---- the audit of 2026-10-28: long inputs, exact sample values, hostile headers
+  {
+    // the resampler past its buffer trim (~1M input samples: every real file over ~22 s at 48 kHz)
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<float> u(-1, 1);
+    bool all = true;
+    for (int from : {48000, 44100}) {
+      std::vector<float> x(3000001);
+      for (float& v : x) v = u(rng);
+      const std::vector<float> ref = audio::resample(x, from, 16000);
+      audio::Resampler r(from, 16000);
+      std::vector<float> y;
+      for (size_t a = 0; a < x.size();) {
+        const size_t n = std::min<size_t>(x.size() - a, 1 + rng() % 200000);
+        r.push(x.data() + a, n, y);
+        a += n;
+      }
+      r.finish(y);
+      all = all && y.size() == ref.size() && !memcmp(y.data(), ref.data(), y.size() * 4);
+    }
+    check("streamed resampling past the buffer trim (3M samples, 48 / 44.1 kHz) = one piece, bit for bit", all);
+  }
+  {
+    // each encoding's sample values, known exactly (not through wav_mono itself)
+    struct S { int fmt, bits; std::vector<uint8_t> bytes; float want; };
+    const std::vector<S> ss = {
+        {1, 8, {192}, 0.5f}, {1, 8, {0}, -1.0f}, {1, 16, {0x00, 0x40}, 0.5f}, {1, 16, {0x00, 0x80}, -1.0f},
+        {1, 24, {0x00, 0x00, 0x40}, 0.5f}, {1, 24, {0x00, 0x00, 0xC0}, -0.5f}, {1, 32, {0x00, 0x00, 0x00, 0x40}, 0.5f},
+        {3, 32, {0x00, 0x00, 0x80, 0x3E}, 0.25f}};
+    bool all = true;
+    std::string bad;
+    for (const S& s : ss) {
+      audio::WavFormat w;
+      w.fmt = s.fmt; w.bits = s.bits; w.ch = 1; w.rate = 16000;
+      std::vector<float> m;
+      audio::wav_mono(w, s.bytes.data(), 1, m);
+      if (m.size() != 1 || m[0] != s.want) { all = false; bad = std::to_string(s.bits) + "-bit: " + std::to_string(m.empty() ? 0 : m[0]); }
+    }
+    audio::WavFormat w2;
+    w2.fmt = 1; w2.bits = 16; w2.ch = 2; w2.rate = 16000;
+    const uint8_t two[4] = {0x00, 0x40, 0x00, 0xC0};  // (0.5 and -0.5: their mean 0)
+    std::vector<float> m2;
+    audio::wav_mono(w2, two, 1, m2);
+    check("WAV sample values: 8 / 16 / 24 / 32-bit PCM and float, channels averaged", all && m2.size() == 1 && m2[0] == 0.0f, bad);
+  }
+  {
+    // a header of 65,535 channels (gigabytes of buffers): refused; a data size at the field's end (past 4 GB): to the end
+    std::vector<float> mono;
+    std::vector<uint8_t> b = wav(1, 16, 1, 16000, 1000, mono);
+    std::vector<uint8_t> many = b;
+    many[22] = 0xFF;
+    many[23] = 0xFF;
+    bool refused = false;
+    try { audio::decode_16k(many, 0); } catch (const std::exception& e) { refused = strstr(e.what(), "channels") != nullptr; }
+    check("WAV of 65,535 channels: refused", refused);
+    std::vector<uint8_t> big = b;
+    big[40] = 0xF0; big[41] = 0xFF; big[42] = 0xFF; big[43] = 0xFF;
+    big[4] = 0xFF; big[5] = 0xFF; big[6] = 0xFF; big[7] = 0xFF;
+    auto at = [&](uint64_t o, void* d, size_t n) -> size_t {
+      if (o >= big.size()) return 0;
+      n = (size_t)std::min<uint64_t>(n, big.size() - o);
+      memcpy(d, big.data() + o, n);
+      return n;
+    };
+    audio::WavFormat w;
+    const bool ok = audio::wav_format(at, big.size(), w);
+    check("WAV past 4 GB (sizes at their fields' end): the data to the end of the file", ok && w.len == big.size() - 44,
+          std::to_string(w.len));
+  }
+  {
+    // MP4: a 64-bit box size that wraps the sum (an endless loop before); a last box of size 0 (to the end)
+    std::vector<uint8_t> f;
+    be32(f, 16);
+    f.insert(f.end(), {'f', 't', 'y', 'p'});
+    for (int i = 0; i < 8; ++i) f.push_back(0);
+    be32(f, 1);
+    f.insert(f.end(), {'m', 'd', 'a', 't'});
+    be32(f, 0xFFFFFFFFu);
+    be32(f, 0xFFFFFFF0u);
+    for (int i = 0; i < 16; ++i) f.push_back(0);
+    auto at = [&](uint64_t o, void* d, size_t n) -> size_t {
+      if (o >= f.size()) return 0;
+      n = (size_t)std::min<uint64_t>(n, f.size() - o);
+      memcpy(d, f.data() + o, n);
+      return n;
+    };
+    const auto t0 = std::chrono::steady_clock::now();
+    const double d = audio::mp4_audio_delay(at, f.size());
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    check("MP4: a 64-bit box size that wraps: no delay, at once (it looped forever)", d == 0 && s < 1.0, std::to_string(s) + " s");
+  }
+  {
+    // Ogg: zero lacing values (empty packets) left out; a stream past max_seconds cut there
+    std::vector<uint8_t> head = {'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 1, 0x38, 0x01};
+    put32(head, 48000);
+    put16(head, 0);
+    head.push_back(0);
+    const std::vector<uint8_t> tags = {'O', 'p', 'u', 's', 'T', 'a', 'g', 's', 0, 0, 0, 0, 0, 0, 0, 0};
+    std::vector<uint8_t> ogg;
+    page(ogg, 2, 5, 0, lace(head.size()), head);
+    page(ogg, 0, 5, 1, lace(tags.size()), tags);
+    const std::vector<uint8_t> p20 = {0xF8, 1, 2, 3};  // (CELT 20 ms)
+    std::vector<uint8_t> l(200, 0), body;
+    l.push_back(4);
+    body = p20;
+    page(ogg, 0, 5, 2, l, body);  // (200 empty packets, then one)
+    for (int k = 0; k < 1000; ++k) page(ogg, 0, 5, 3 + k, lace(4), p20);  // (20 s)
+    int opus = 0;
+    const std::vector<uint8_t> m = audio::ogg_opus_to_webm(ogg);
+    const size_t n_all = blocks(m, 0, m.size(), opus).size();
+    const std::vector<uint8_t> m5 = audio::ogg_opus_to_webm(ogg, 5);
+    const size_t n5 = blocks(m5, 0, m5.size(), opus).size();
+    check("Ogg: empty packets left out (1001 blocks of 1001 real packets)", n_all == 1001, std::to_string(n_all));
+    check("Ogg: max_seconds 5 of 20 s: the packets cut at ~6 s", n5 >= 250 && n5 <= 310, std::to_string(n5));
+  }
+  {
+    // cues of two speakers that overlap: in time order, none ending before it starts, a speaker's own never overlapping
+    whisper::Result r;
+    auto seg = [&](const char* who, double s, double e, std::vector<std::pair<double, const char*>> ws) {
+      whisper::Segment g;
+      g.start = s;
+      g.end = e;
+      g.speaker = who;
+      for (size_t i = 0; i < ws.size(); ++i) {
+        whisper::Word w;
+        w.start = ws[i].first;
+        w.end = i + 1 < ws.size() ? ws[i + 1].first : e;
+        w.text = ws[i].second;
+        w.p = 1;
+        g.words.push_back(w);
+        g.text += std::string(" ") + ws[i].second;
+      }
+      r.segments.push_back(g);
+    };
+    seg("Me", 10.0, 19.0, {{10.0, "one"}, {11.0, "two"}, {12.0, "three"}, {13.0, "four."}, {14.4, "five"}, {16.0, "six"},
+                           {17.5, "seven"}, {18.5, "eight\n\nnine"}});
+    seg("Others", 12.0, 12.5, {{12.0, "Yeah."}});
+    whisper::CueOptions co;
+    co.max_s = 4.0;
+    const auto cues = whisper::make_cues(r, co);
+    bool ok = cues.size() >= 3;
+    for (size_t i = 0; i < cues.size(); ++i) {
+      ok = ok && cues[i].end > cues[i].start && (i == 0 || cues[i].start >= cues[i - 1].start);
+      for (size_t j = i + 1; j < cues.size(); ++j)
+        if (cues[j].speaker == cues[i].speaker) { ok = ok && cues[i].end <= cues[j].start; break; }
+      for (const std::string& line : cues[i].lines) ok = ok && line.find('\n') == std::string::npos;
+    }
+    const std::string srt = whisper::render("srt", r, co, "t");
+    check("cues of two speakers: in order, no negative length, no line break inside a word", ok && srt.find("\n\n\n") == std::string::npos,
+          srt.substr(0, 300));
   }
   if (fails) {
     printf("test_audio: %d failed\n", fails);
