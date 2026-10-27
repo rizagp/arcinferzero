@@ -550,6 +550,9 @@ struct ClRt {
       char hex[17];
       snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)fnv1a(src + "\x01" + opts + "\x01" + device_id));
       path = cache_dir + "\\" + hex + ".bin";
+      // (ARC_KLIST=1: which cached binary holds which options, for reading its assembly: ocloc disasm)
+      static const bool klist = getenv("ARC_KLIST") && atoi(getenv("ARC_KLIST")) != 0;
+      if (klist) fprintf(stderr, "kernel binary %s.bin: %s\n", hex, opts.c_str());
       std::ifstream f(path, std::ios::binary);
       if (f) bin.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }

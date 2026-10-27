@@ -323,9 +323,9 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 - Folders: `%USERPROFILE%\arcinferzero\sound-recordings\` and `%USERPROFILE%\arcinferzero\transcripts\`.
 - The five functions: realtime, accurate after recording, audio upload, video upload, a choice of output formats
   (Remotion, subtitles incl. YouTube's, the common standard ones); a progress bar for every transcription.
-
-## Still open
-
-- Beam 5 as the default for Transcript and the accurate pass (proposed above), greedy for live.
-- Whether recordings are kept after the transcript is done (disk: ~115 MB per hour per track as 16-kHz mono 16-bit
-  WAV; they could be kept as FLAC at about half that).
+- Beam 5 as the default for Transcript and the accurate pass, greedy for live (2026-10-27).
+- Recordings are kept after their transcript, as MP3 (2026-10-27): WAV while recording (nothing lost in a crash),
+  converted to MP3 with Windows' Media Foundation encoder after the accurate pass, at 192 kbps by default (~86 MB per
+  hour per track), configurable: Settings in the web UI, `recorder.json`, `arc-transcribe --mp3-kbps` (96-320 kbps,
+  or keep the WAV). 192 kbps needs MPEG-1 Layer III (32 / 44.1 / 48 kHz; 16 kHz stops at 160 kbps): the recording keeps the
+  device's own rate (48 kHz), Whisper resamples it to 16 kHz.
