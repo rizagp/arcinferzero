@@ -1213,6 +1213,7 @@ function askRun(d, signal) {
     box.innerHTML = '<button class="run">Run</button><button class="no">Don\'t run</button>';
     const end = (ok) => { box.remove(); signal?.removeEventListener("abort", stop); done(ok); };
     const stop = () => { box.remove(); fail(new DOMException("stopped", "AbortError")); };
+    if (signal?.aborted) return stop();  // (stopped before it was asked: no Run button left waiting)
     box.querySelector(".run").onclick = () => end(true);
     box.querySelector(".no").onclick = () => end(false);
     signal?.addEventListener("abort", stop);
@@ -1247,30 +1248,35 @@ async function runTermTool(args, card, signal, job) {
     card.status.textContent = "· terminal is closed";
     return "error: this chat's terminal is closed" + ($("term").value === "off" ? " to the model (Settings > Terminal: off)" : " (the user opens it with the Terminal button)");
   }
-  if ($("term").value !== "auto") {
-    card.status.textContent = "· waiting for you";
-    if (job) { job.asking = true; renderConvs(); }
-    let ok;
-    try { ok = await askRun(card.el, signal); } finally { if (job) { job.asking = false; renderConvs(); } }
-    if (!ok) {
-      card.status.textContent = "· not run";
-      return "error: the user did not allow this command";
-    }
-  }
-  card.status.textContent = "· running…";
-  const e = termAdd(chat, { by: "ai", cmd });
-  // (its own controller: ended by the answer's Stop or by closing the terminal, see termClose)
+  // (its own controller, from before the Run question on: ended by the answer's Stop, also one that came first, or by
+  //  closing the terminal, while it waits for Run or while it runs; see termClose)
   const t = terms.get(chat), ac = new AbortController(), stop = () => ac.abort();
-  signal?.addEventListener("abort", stop);
+  if (signal?.aborted) ac.abort();
+  else signal?.addEventListener("abort", stop);
   (t.running ||= new Set()).add(ac);
-  let j;
-  try { j = await termRun(chat, cmd, args.timeout_s, ac.signal); }
-  catch (x) {
-    termDone(chat, e, { out: x.name === "AbortError" ? "stopped" : String(x.message || x), exit: null });
-    if (x.name === "AbortError" && !signal?.aborted) {  // (the terminal closed, the answer goes on: told so)
-      card.status.textContent = "· stopped: the terminal was closed";
-      return "error: the user closed the terminal while the command ran; it was stopped";
+  const closed = () => {  // (the terminal closed, the answer goes on: told so)
+    card.status.textContent = "· stopped: the terminal was closed";
+    return "error: the user closed the terminal before the command finished; it was not run or was stopped";
+  };
+  let j, e = null;
+  try {
+    if ($("term").value !== "auto") {
+      card.status.textContent = "· waiting for you";
+      if (job) { job.asking = true; renderConvs(); }
+      let ok;
+      try { ok = await askRun(card.el, ac.signal); } finally { if (job) { job.asking = false; renderConvs(); } }
+      if (!ok) {
+        card.status.textContent = "· not run";
+        return "error: the user did not allow this command";
+      }
+      if (!termUsable(chat)) return closed();
     }
+    card.status.textContent = "· running…";
+    e = termAdd(chat, { by: "ai", cmd });
+    j = await termRun(chat, cmd, args.timeout_s, ac.signal);
+  } catch (x) {
+    if (e) termDone(chat, e, { out: x.name === "AbortError" ? "stopped" : String(x.message || x), exit: null });
+    if (x.name === "AbortError" && !signal?.aborted) return closed();
     throw x;
   } finally {
     t.running.delete(ac);

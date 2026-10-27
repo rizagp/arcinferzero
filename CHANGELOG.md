@@ -56,6 +56,11 @@
     released when a server thread that decoded an image ends.
   - Not changed: background web results are not capped (they pile up only while you never pause; capping them
     would drop results the model was promised).
+- **Fourth round** (each finding checked): a model's terminal command that is waiting for Run is cancelled when
+  the terminal is closed (Run no longer starts it in a reset session), and one whose answer was stopped just
+  before it began does not run or ask; a half-written `chat.json.tmp` is removed when saving fails; a model folder
+  check that cannot get a thread skips the folder instead of failing the model list. Not changed: re-checking a
+  folder once its hanging check has answered (its state may have changed: a drive plugged back in).
 
 ## 2026-10-27: web UI audit: every function tried, security and robustness fixes
 

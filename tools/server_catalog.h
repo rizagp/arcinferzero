@@ -84,12 +84,16 @@ static int folder_reachable(const std::filesystem::path& d) {
     }
   }
   auto st = std::make_shared<std::atomic<int>>(0);
-  std::thread([d, st] {
-    std::error_code e;
-    const bool ok = std::filesystem::is_directory(d, e);
-    if (ok) std::filesystem::directory_iterator it(d, e);
-    st->store(ok && !e ? 1 : 2);
-  }).detach();
+  try {  // (no thread to be had: the folder is skipped this time, the model list still answers)
+    std::thread([d, st] {
+      std::error_code e;
+      const bool ok = std::filesystem::is_directory(d, e);
+      if (ok) std::filesystem::directory_iterator it(d, e);
+      st->store(ok && !e ? 1 : 2);
+    }).detach();
+  } catch (const std::system_error&) {
+    return 0;
+  }
   for (int i = 0; i < 100 && st->load() == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
   const int r = st->load();
   if (r == 0) {  // (still hanging: remembered until its thread answers)

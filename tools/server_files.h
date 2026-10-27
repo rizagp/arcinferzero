@@ -342,9 +342,18 @@ class Store {
       }
     }
     const fs::path p = dir / "chat.json", tmp = dir / "chat.json.tmp";  // (written whole, then renamed: never half a chat)
-    write(tmp, body);
+    try {
+      write(tmp, body);
+    } catch (...) {  // (a full disk: no half-written file left behind)
+      fs::remove(tmp, ec);
+      throw;
+    }
     fs::rename(tmp, p, ec);
-    if (ec) throw std::runtime_error("cannot write " + p.string() + ": " + ec.message());
+    if (ec) {
+      const std::string why = ec.message();
+      fs::remove(tmp, ec);
+      throw std::runtime_error("cannot write " + p.string() + ": " + why);
+    }
     fs::remove(chats_ / (id + ".json"), ec);  // (an old-layout copy of this chat: replaced by the folder)
     for (const std::string& fid : refs(body)) link(fid, id);
   }
