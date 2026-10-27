@@ -19,7 +19,8 @@ jobs:
           .\build.ps1 tools\clinfo.cpp zero\serverz.cpp zero\runz.cpp tools\ref_forward.cpp `
             tests\test_http.cpp tests\test_api_compat.cpp tests\test_web_tools.cpp tests\test_xcache_pools.cpp `
             tests\test_json.cpp tests\test_sampler.cpp tests\test_gguf_pack.cpp tests\test_quant_rows.cpp `
-            tests\test_hc.cpp tests\test_fa.cpp tests\test_route.cpp tests\test_chat_store.cpp tests\test_doc_read.cpp
+            tests\test_hc.cpp tests\test_fa.cpp tests\test_route.cpp tests\test_chat_store.cpp tests\test_doc_read.cpp `
+            tests\test_pdf_scan.cpp
       - name: Unit tests
         shell: powershell
         run: |
@@ -33,6 +34,7 @@ jobs:
             'test_sampler'      = 'ALL OK'
             'test_chat_store'   = 'test_chat_store: all passed'
             'test_doc_read'     = 'test_doc_read: all passed'
+            'test_pdf_scan'     = 'test_pdf_scan: all passed'
           }
           $failed = 0
           foreach ($t in $tests.Keys) {

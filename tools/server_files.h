@@ -8,6 +8,7 @@
 //                                   next listing)
 //     .src\<id>.json                a document the model wrote: its Markdown and options (read_file gives them back,
 //                                   so a correction makes a new version from the same source)
+//     .pages\<id>.json              a scanned PDF: the pages a vision model transcribed (read_file, search_file)
 //   uploads\<yyyy-mm>\<id>-<name>   files of the first web UI version (still read; new files go into a chat folder)
 // A file id is 16 hex digits of the FNV-1a hash of its bytes (the media cache's key too). Deleting a chat deletes its
 // folder: its files go with it, unless another chat holds them too. Model-independent: served while a model loads or
@@ -16,6 +17,9 @@
 #include "../src/app_dir.h"
 #include "../src/json.h"
 #include "doc_reader.h"
+#include "pdf_images.h"
+#include <cmath>
+#include <functional>
 #include <list>
 #include <memory>
 #include <algorithm>
@@ -154,8 +158,9 @@ class Store {
     i.path = (dir / name).string();
     i.chat = chat;
     by_id_[id].push_back(i);
-    std::string src;  // (a document the model wrote: its source goes along)
+    std::string src;  // (a document the model wrote: its source goes along; a scan: its transcribed pages)
     if (source(id, src)) put_source(id, chat, src);
+    if (pages(id, src)) put_pages(id, src);
     save_index(dir, chat);
     return true;
   }
@@ -242,6 +247,27 @@ class Store {
     for (const Info& i : copies(id))
       if (read((fs::path(i.path).parent_path() / ".src" / (id + ".json")).string(), out)) return true;
     return read((up_ / ".src" / (id + ".json")).string(), out);
+  }
+  // a scanned PDF's page transcriptions (JSON: {"pages": {"<n>": {"text", "model", "seconds"}}}), in the .pages folder
+  // of every folder that holds the file: a chat deleted takes its copy, the other chats keep theirs
+  void put_pages(const std::string& id, const std::string& json) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    if (!valid_id(id, 16)) return;
+    scan();
+    for (const Info& i : copies(id)) {
+      const fs::path dir = fs::path(i.path).parent_path() / ".pages";
+      std::error_code ec;
+      fs::create_directories(dir, ec);
+      try { write(dir / (id + ".json"), json); } catch (const std::exception&) {}
+    }
+  }
+  bool pages(const std::string& id, std::string& out) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    if (!valid_id(id, 16)) return false;
+    scan();
+    for (const Info& i : copies(id))
+      if (read((fs::path(i.path).parent_path() / ".pages" / (id + ".json")).string(), out)) return true;
+    return false;
   }
   // the bytes of a message's file reference "/files/<id>" (false: not such a reference)
   bool resolve(const std::string& ref, std::string& out) {
@@ -449,6 +475,7 @@ class Store {
     const bool ok = fs::remove(i.path, ec) || !fs::exists(i.path, ec);
     std::error_code ec2;
     fs::remove(dir / ".src" / (i.id + ".json"), ec2);
+    fs::remove(dir / ".pages" / (i.id + ".json"), ec2);
     if (i.chat.empty()) fs::remove(up_ / ".src" / (i.id + ".json"), ec2);
     else {
       save_index(dir, i.chat);
@@ -539,26 +566,107 @@ inline Store& store() {
   return s;
 }
 
+// a scanned PDF's transcribed pages (page -> text), from its .pages JSON
+inline std::map<int, std::string> page_texts(const std::string& json) {
+  std::map<int, std::string> m;
+  Json j;
+  if (Json::try_parse(json, j))
+    for (const auto& [k, v] : j["pages"].entries())
+      if (atoi(k.c_str()) > 0) m[atoi(k.c_str())] = v["text"].str();
+  return m;
+}
+
 // A document's text, outline and search index (tools/doc_reader.h), kept for the last 8 files read (a 227-page PDF
-// reads in 0.25 s; a question about it often comes in several tool calls)
+// reads in 0.25 s; a question about it often comes in several tool calls). A PDF's scanned pages: the text a vision
+// model transcribed from them so far (tools/pdf_images.h)
+struct DocCache {
+  std::mutex mu;
+  std::list<std::pair<std::string, std::shared_ptr<const rdoc::Index>>> lru;
+};
+inline DocCache& doc_cache() {
+  static DocCache c;
+  return c;
+}
+inline void doc_index_forget(const std::string& id) {
+  DocCache& c = doc_cache();
+  std::lock_guard<std::mutex> g(c.mu);
+  c.lru.remove_if([&](const auto& e) { return e.first == id; });
+}
 inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
-  static std::mutex mu;
-  static std::list<std::pair<std::string, std::shared_ptr<const rdoc::Index>>> lru;
+  DocCache& c = doc_cache();
   {
-    std::lock_guard<std::mutex> g(mu);
-    for (auto it = lru.begin(); it != lru.end(); ++it)
+    std::lock_guard<std::mutex> g(c.mu);
+    for (auto it = c.lru.begin(); it != c.lru.end(); ++it)
       if (it->first == i.id) {
-        lru.splice(lru.begin(), lru, it);
+        c.lru.splice(c.lru.begin(), c.lru, it);
         return it->second;
       }
   }
   std::string data;
   if (!Store::read(i.path, data)) return nullptr;
-  auto ix = std::make_shared<const rdoc::Index>(rdoc::read(i.name, data));
-  std::lock_guard<std::mutex> g(mu);
-  lru.push_front({i.id, ix});
-  if (lru.size() > 8) lru.pop_back();
+  rdoc::Doc d = rdoc::read(i.name, data);
+  if (d.pages > 0 && (ext_of(i.name) == "pdf" || data.compare(0, 5, "%PDF-") == 0)) {
+    rdoc::pdfimg::scan_pages(data, d);
+    std::string t;
+    if (!d.scans.empty()) rdoc::pdfimg::add_pages(d, store().pages(i.id, t) ? page_texts(t) : std::map<int, std::string>());
+  }
+  auto ix = std::make_shared<const rdoc::Index>(std::move(d));
+  std::lock_guard<std::mutex> g(c.mu);
+  c.lru.push_front({i.id, ix});
+  if (c.lru.size() > 8) c.lru.pop_back();
   return ix;
+}
+
+// Scanned pages read by the loaded vision model (tools/server.cpp gives `see`: an image's bytes and MIME type ->
+// the text the model transcribed; it throws when it cannot). Each page's image comes out of the PDF
+// (tools/pdf_images.h); its text goes into the file's .pages JSON, so the next read and search_file have it. Per page:
+// {page, seconds, chars} or {page, note} (no image to read, or the model failed).
+inline constexpr int kScanPagesPerCall = 4;  // (a page: ~1,000 image tokens and the text, 10-60 s)
+inline Json transcribe_pages(const Info& i, const std::vector<int>& pages, const std::string& model,
+                             const std::function<std::string(const std::string&, const std::string&)>& see) {
+  static std::mutex mu;  // (one file's JSON is read, changed and written whole)
+  Json out = Json::array();
+  std::string data;
+  if (!Store::read(i.path, data)) return out;
+  for (int p : pages) {
+    Json r = Json::object();
+    r.set("page", (double)p);
+    const rdoc::pdfimg::Image im = rdoc::pdfimg::page_image(data, p);
+    if (im.bytes.empty()) {
+      r.set("note", "not read: " + im.note);
+      out.push(r);
+      continue;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string text;
+    try {
+      text = see(im.bytes, im.mime);
+    } catch (const std::exception& e) {
+      r.set("note", std::string("the vision model failed: ") + e.what());
+      out.push(r);
+      continue;
+    }
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    {
+      std::lock_guard<std::mutex> g(mu);
+      std::string t;
+      Json j;
+      if (!store().pages(i.id, t) || !Json::try_parse(t, j) || !j.is_object()) j = Json::object();
+      Json pg = j["pages"].is_object() ? j["pages"] : Json::object(), e = Json::object();
+      e.set("text", text);
+      e.set("model", model);
+      e.set("seconds", std::round(s * 10) / 10);
+      e.set("image", im.filter + " " + std::to_string(im.w) + "x" + std::to_string(im.h));
+      pg.set(std::to_string(p), e);
+      j.set("pages", pg);
+      store().put_pages(i.id, j.dump());
+    }
+    r.set("seconds", std::round(s * 10) / 10);
+    r.set("chars", (double)text.size());
+    out.push(r);
+  }
+  doc_index_forget(i.id);
+  return out;
 }
 // a document longer than this goes to the model as its outline and beginning (~6K tokens; 100 pages are ~60K)
 inline constexpr size_t kInlineChars = 24000;

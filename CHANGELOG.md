@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-27: scanned PDFs read by the vision model
+
+- **Scanned PDF pages (images without a text layer) are read in the web UI**: `read_file` with `pages` on such a page
+  has the loaded vision model (Qwen 3.5 4B / 9B, Gemma 4 E4B / 12B / 26B) transcribe it from its image, up to 4
+  pages a call; the text is kept per file and page (the chat folder's `.pages\<id>.json`), so later reads and
+  `search_file` find it without the vision model. A model without an image encoder names the scanned pages and says
+  a vision model is needed. The server transcribes (a chat request of its own) instead of the web UI attaching the
+  page images to the model's next turn: the text can be kept and searched, a page costs its text in the
+  conversation rather than ~1,000 image tokens on every later turn, and no chat template has to take images in
+  tool results. The cost: with one slot the chat's prompt is processed again at its next turn.
+- `tools/pdf_images.h`: the image a page draws (its content stream and form XObjects), out of the PDF on the CPU
+  without a library: DCTDecode as the JPEG it is, FlateDecode or unfiltered samples (gray, RGB, CMYK, ICCBased,
+  Indexed, image masks, 1-16 bits, PNG predictors) as a BMP, CCITTFaxDecode (Group 4, Group 3) behind a minimal
+  TIFF header, all decoded by WIC; JBIG2 and JPEG 2000 a note. Sizes capped as uploads (16384 pixels a side, 64
+  megapixels), raw samples only as far as they decoded. `tools/doc_reader.h`: PNG predictors for more than one byte
+  a pixel, decode parameters per filter.
+- Checks: `tests/test_pdf_scan.cpp` (model-free; in `tests/run_tests.ps1`, CI and setup): PDFs built from known
+  images give the same pixels back (raw, CCITT G4 made by WIC) or the same JPEG bytes; scanned pages found, a page
+  with text is not one; transcriptions merged and searched; huge sizes, broken streams, a form that draws itself and
+  300 randomly damaged PDFs. `test_pdf_scan FILE.pdf` lists any PDF's scanned pages and their images.
+
 ## 2026-10-27: batched decoding for Flash Next
 
 - **Flash Next generates for several conversations in one pass** (`--slots 2` or more, without a drafter): the
