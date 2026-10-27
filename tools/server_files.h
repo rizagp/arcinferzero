@@ -655,13 +655,13 @@ inline Json transcribe_pages(const Info& i, const std::vector<int>& pages, const
       Json pg = j["pages"].is_object() ? j["pages"] : Json::object(), e = Json::object();
       e.set("text", text);
       e.set("model", model);
-      e.set("seconds", std::round(s * 10) / 10);
+      e.set("seconds", std::round(s));
       e.set("image", im.filter + " " + std::to_string(im.w) + "x" + std::to_string(im.h));
       pg.set(std::to_string(p), e);
       j.set("pages", pg);
       store().put_pages(i.id, j.dump());
     }
-    r.set("seconds", std::round(s * 10) / 10);
+    r.set("seconds", std::round(s));
     r.set("chars", (double)text.size());
     out.push(r);
   }
