@@ -86,7 +86,9 @@ int main() {
     const std::string cwd = root.string();
     term::Result r = term::run("Get-Location | Select-Object -ExpandProperty Path; 'h\xc3\xa9llo'; Write-Error 'oops'; exit 3", cwd, "C:\\nowhere", 60);
     check("exit code", r.exit_code == 3, std::to_string(r.exit_code));
-    check("runs in its folder", r.output.find(cwd) != std::string::npos, r.output);
+    // (PowerShell prints the long path; TEMP can be an 8.3 short one, C:\Users\RUNNER~1\... on GitHub's runner)
+    const std::string long_cwd = fs::canonical(root).string();
+    check("runs in its folder", r.output.find(long_cwd) != std::string::npos, r.output);
     check("UTF-8 output", r.output.find("h\xc3\xa9llo") != std::string::npos, r.output);
     check("stderr too", r.output.find("oops") != std::string::npos, r.output);
     r = term::run("$env:PATH.Split(';')[0]", cwd, "C:\\nowhere", 60);
