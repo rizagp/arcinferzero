@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-10-27: the chat's terminal in a right panel, a venv that stays
+
+- **Terminal panel** (webui/index.html, the Terminal button above the chat): the chat's PowerShell on the right of the
+  chat, as an editor's terminal pane. You type commands there; the model's `run_command` calls show in the same log
+  (marked AI). It belongs to the chat (chat.json `terminal`: open or not, the log, folder, venv) and is there again
+  when the chat is opened. **The model gets `run_command` only while the chat's terminal is open**; Close ends it
+  (the model loses it, the next one starts fresh in the chat's folder), × only hides the panel. Settings > Terminal is
+  now the model's access to an open terminal: Ask each time (the default), Run without asking, Model never.
+- **Folder and environment kept between commands** (tools/server_terminal.h, `run_command` with `session: true`):
+  each command still runs in its own PowerShell, and the variables that differ from a fresh one plus the folder are
+  written to the chat folder's `.terminal.json` after it and set again before the next. `cd`, `$env:X`, an activated
+  `.venv` (and its `deactivate`) stay; exit codes are as before. `reset: true` ends the session. Checked:
+  test_chat_store (folder, variable set and removed, exit codes, PATH not doubled, a venv and deactivate) and a real
+  `python -m venv`: the next command's `python` and `pip` were the venv's, after `deactivate` the system Python.
+- **Thinking card follows the newest text** while it streams (unless scrolled up to read), and opens at its end.
+
 ## 2026-10-27: web UI sends earlier tool results shortened
 
 - **Long tool results of earlier exchanges go to the server as a short stub** (webui/index.html `trimTools`): a

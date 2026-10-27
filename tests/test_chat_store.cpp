@@ -1,8 +1,10 @@
 // CPU-only checks of the web UI's chat folders (tools/server_files.h) and its terminal tool (tools/server_terminal.h),
 // in a scratch data folder under %TEMP% (deleted at the end): files into a chat's folder, the folder named at the first
 // save, hard links between chats, a file put in or deleted by hand, deleting a chat; a command's output, exit code,
-// timeout (with the processes it started) and long output.
+// timeout (with the processes it started) and long output; the chat's terminal session (folder, environment, a venv
+// carried from one command to the next).
 #include <cstdlib>
+#include <fstream>
 #include <string>
 #include "../tools/server_files.h"
 #include "../tools/server_terminal.h"
@@ -104,6 +106,30 @@ int main() {
     r = term::run("1..100000", cwd, "", 60);
     check("long output cut", r.truncated && r.output.size() < term::kMaxOut + 200 && r.output.find("100000") != std::string::npos,
           std::to_string(r.output.size()));
+    // the chat's terminal session: the folder and the environment carry over to the next command
+    const std::string state = (root / ".terminal.json").string();
+    r = term::run("New-Item -ItemType Directory sub | Out-Null; Set-Location sub; $env:AZ_X = 'satu'", cwd, "C:\\nowhere", 60, state);
+    r = term::run("(Get-Location).Path; $env:AZ_X", cwd, "C:\\nowhere", 60, state);
+    check("session: folder and variable kept", r.output.find(long_cwd + "\\sub") != std::string::npos && r.output.find("satu") != std::string::npos, r.output);
+    r = term::run("Set-Location ..; exit 3", cwd, "C:\\nowhere", 60, state);
+    check("session: exit code", r.exit_code == 3, std::to_string(r.exit_code));
+    r = term::run("Remove-Item Env:AZ_X; Set-Location sub; Write-Error 'oops'", cwd, "C:\\nowhere", 60, state);
+    const int plain = term::run("Write-Error 'oops'", cwd, "", 60).exit_code;
+    check("session: a failed command's exit code as without it", r.exit_code == plain, std::to_string(r.exit_code) + " vs " + std::to_string(plain));
+    r = term::run("(Get-Location).Path; \"x=$env:AZ_X.\"; ($env:PATH.Split(';') | Where-Object { $_ -eq 'C:\\nowhere' }).Count", cwd, "C:\\nowhere", 60, state);
+    check("session: kept after exit, variable removed, PATH not doubled", r.output.find(long_cwd + "\\sub") != std::string::npos &&
+          r.output.find("x=.") != std::string::npos && r.output.find("\n1") != std::string::npos, r.output);
+    // a venv: Activate.ps1 as Python's (VIRTUAL_ENV, PATH, _OLD_VIRTUAL_PATH), then deactivate in a later command
+    fs::create_directories(root / "sub" / ".venv" / "Scripts");
+    std::ofstream(root / "sub" / ".venv" / "Scripts" / "Activate.ps1", std::ios::binary) <<
+                        ("$env:_OLD_VIRTUAL_PATH = $env:PATH; $env:VIRTUAL_ENV = (Resolve-Path \"$PSScriptRoot\\..\").Path; "
+                        "$env:PATH = \"$env:VIRTUAL_ENV\\Scripts;$env:PATH\"; function global:deactivate { 'old' }");
+    r = term::run(".\\.venv\\Scripts\\Activate.ps1", cwd, "C:\\nowhere", 60, state);
+    r = term::run("$env:VIRTUAL_ENV; $env:PATH.Split(';')[0]", cwd, "C:\\nowhere", 60, state);
+    check("session: venv active in the next command", r.output.find(".venv\r\n") != std::string::npos && r.output.find(".venv\\Scripts") != std::string::npos, r.output);
+    r = term::run("deactivate", cwd, "C:\\nowhere", 60, state);
+    r = term::run("\"v=$env:VIRTUAL_ENV.\"; $env:PATH.Split(';')[0]", cwd, "C:\\nowhere", 60, state);
+    check("session: deactivate in a later command", r.output.find("v=.") != std::string::npos && r.output.find("C:\\nowhere") != std::string::npos, r.output);
   }
   fs::remove_all(root, ec);
   printf(fails ? "test_chat_store: %d FAILED\n" : "test_chat_store: all passed\n", fails);

@@ -216,6 +216,25 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 #stop svg { color: var(--danger); }
 [hidden] { display: none !important; }
 
+/* the chat's terminal: a panel right of the chat (as an editor's terminal pane), dark in both themes */
+.termpane { width: 38%; min-width: 320px; max-width: 640px; flex: none; display: flex; flex-direction: column; background: #0c1116; color: #d7dde2; border-left: 1px solid var(--line); }
+.termhead { display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 14px; min-height: 60px; background: var(--head); color: var(--text); }
+.termhead b { font-weight: 600; }
+#termwhere { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.termlog { flex: 1; overflow-y: auto; padding: 8px 12px; font: 12.5px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace; }
+.termlog .te { margin-bottom: 10px; }
+.termlog .tc { color: #7ee2b8; white-space: pre-wrap; word-break: break-word; }
+.termlog .tc i { font-style: normal; font-size: 10.5px; padding: 0 5px; margin-right: 6px; border-radius: 3px; background: #2b3a46; color: #9fb3c2; }
+.termlog .tc i.ai { background: #00a884; color: #0c1116; }
+.termlog pre { margin: 2px 0 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
+.termlog .ts { color: #7d8b96; font-size: 11px; }
+.termlog .ts.bad { color: #f18d8d; }
+.termlog .tsep { color: #7d8b96; text-align: center; font-size: 11px; margin: 4px 0 10px; }
+.termin { display: flex; gap: 8px; align-items: flex-start; padding: 8px 12px; border-top: 1px solid #22303a; font: 12.5px/1.45 ui-monospace, Consolas, monospace; }
+.termin span { color: #7ee2b8; padding-top: 2px; }
+#termin { flex: 1; border: 0; outline: none; resize: none; background: transparent; color: inherit; font: inherit; max-height: 30vh; padding: 2px 0; }
+#termbtn.on { color: var(--accent); }
+
 @media (max-width: 760px) {
   .rail { display: none; }
   .side { width: 100%; max-width: none; min-width: 0; }
@@ -226,6 +245,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
   main { padding: 10px 8px; }
   .msg { max-width: 88%; }
   .menu { left: 10px; }
+  .termpane { position: fixed; inset: 0; width: auto; max-width: none; min-width: 0; z-index: 20; }
 }
 </style>
 </head>
@@ -281,8 +301,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
             <select id="slots" aria-label="Conversations at once"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
           <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown) that appear in its answer</small></div>
             <label class="switch"><input type="checkbox" id="ftools"><span></span></label></div>
-          <div class="opt"><div class="lab">Terminal<small>The model may run PowerShell commands on this computer, in the chat's folder (its files are there): ask each time, or run without asking</small></div>
-            <select id="term" aria-label="Terminal"><option value="off">Off</option><option value="ask">Ask each time</option><option value="auto">Run without asking</option></select></div>
+          <div class="opt"><div class="lab">Terminal<small>While a chat's terminal is open (the Terminal button above the chat), the model may run PowerShell commands in it: ask each time, run without asking, or never</small></div>
+            <select id="term" aria-label="Terminal"><option value="ask">Ask each time</option><option value="auto">Run without asking</option><option value="off">Model never</option></select></div>
           <div class="opt"><div class="lab">Web search<small>The model may search the web and read pages (web_search / web_fetch on this server)</small></div>
             <label class="switch"><input type="checkbox" id="web"><span></span></label></div>
         </div>
@@ -323,6 +343,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       </div>
       <button class="iconbtn" id="gearchat" title="Settings" aria-label="Settings" style="display:none"><svg viewBox="0 0 24 24"><use href="#g-gear"/></svg></button>
       <button class="iconbtn" id="talk" title="Talk" aria-label="Talk"><svg viewBox="0 0 24 24"><path d="M12 2a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h2v-8H5v-2a7 7 0 0 1 14 0v2h-3v8h2a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z"/></svg></button>
+      <button class="iconbtn" id="termbtn" title="Terminal: this chat's PowerShell, kept with the chat; while it is open the model may use it too" aria-label="Terminal"><svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zM6.4 10.4 7.8 9l4 4-4 4-1.4-1.4L9 13l-2.6-2.6zM12 15h6v2h-6z"/></svg></button>
       <button class="iconbtn" id="compact" title="Compact: summarize the earlier messages so the conversation takes less context (done automatically when the context is nearly full)" aria-label="Compact" disabled><svg viewBox="0 0 24 24"><path d="M8 19h3v3h2v-3h3l-4-4-4 4zm8-15h-3V1h-2v3H8l4 4 4-4zM4 9v2h16V9H4zm0 3h16v2H4v-2z"/></svg></button>
       <div class="menu" id="modelmenu" hidden></div>
       <div class="menu bubble" id="msgmenu" hidden></div>
@@ -344,6 +365,16 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       </div>
     </footer>
   </section>
+
+  <aside class="termpane" id="termpane" hidden aria-label="Terminal">
+    <div class="termhead">
+      <div class="who"><b>Terminal</b><div id="termwhere"></div></div>
+      <button class="iconbtn" id="termclose" title="Close the terminal: the model can no longer use it; the next one starts again in the chat's folder" aria-label="Close the terminal"><svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.8 2.2-1.4 1.4A6.9 6.9 0 0 1 19 12a7 7 0 1 1-11.4-5.4L6.2 5.2A8.9 8.9 0 0 0 3 12a9 9 0 0 0 18 0c0-2.7-1.2-5.2-3.2-6.8z"/></svg></button>
+      <button class="iconbtn" id="termhide" title="Hide (the terminal stays open)" aria-label="Hide the terminal"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6z"/></svg></button>
+    </div>
+    <div class="termlog" id="termlog"></div>
+    <div class="termin"><span>PS&gt;</span><textarea id="termin" rows="1" placeholder="PowerShell command" title="Enter runs; Shift+Enter: a new line; Up: the last command" aria-label="Command"></textarea></div>
+  </aside>
 </div>
 <svg width="0" height="0" style="position:absolute"><defs><g id="g-gear"><path d="M19.4 13c.1-.3.1-.7.1-1s0-.7-.1-1l2.1-1.6c.2-.2.2-.4.1-.6l-2-3.5c-.1-.2-.4-.3-.6-.2l-2.5 1c-.5-.4-1.1-.7-1.7-1L14.5 2.4c0-.2-.2-.4-.5-.4h-4c-.3 0-.5.2-.5.4l-.4 2.7c-.6.3-1.2.6-1.7 1l-2.5-1c-.2-.1-.5 0-.6.2l-2 3.5c-.1.2-.1.5.1.6L4.6 11c0 .3-.1.7-.1 1s0 .7.1 1l-2.1 1.6c-.2.2-.2.4-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.7c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5c.1-.2.1-.5-.1-.6L19.4 13zM12 15.5c-1.9 0-3.5-1.6-3.5-3.5s1.6-3.5 3.5-3.5 3.5 1.6 3.5 3.5-1.6 3.5-3.5 3.5z"/></g></defs></svg>
 <script>
@@ -367,7 +398,8 @@ if (prefs.think === undefined) prefs.think = prefs.thinking === false ? "off" : 
 function loadPrefs() {
   $("web").checked = !!prefs.web;
   $("ftools").checked = prefs.ftools !== false;  // (on unless turned off)
-  $("term").value = ["ask", "auto"].includes(prefs.term) ? prefs.term : "off";
+  // (term2: the model's access to an open chat terminal, "ask" unless set; the old term setting was off by default)
+  $("term").value = ["ask", "auto", "off"].includes(prefs.term2) ? prefs.term2 : prefs.term === "auto" ? "auto" : "ask";
   if (prefs.ttsrate) $("ttsrate").value = prefs.ttsrate;
   $("tempon").checked = !!prefs.tempon;
   if (prefs.temp !== undefined && prefs.tempon) $("temp").value = prefs.temp;
@@ -377,7 +409,7 @@ function loadPrefs() {
   applyTheme();
 }
 function savePrefs() {
-  prefs = { ...prefs, web: $("web").checked, ftools: $("ftools").checked, term: $("term").value, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
+  prefs = { ...prefs, web: $("web").checked, ftools: $("ftools").checked, term2: $("term").value, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
     temp: $("temp").value, sys: $("sys").value, tts: $("tts").value, theme: $("theme").value };
   if ($("thinkmode").value) prefs.think = $("thinkmode").value;
   store.set("arcinferzero-prefs", prefs);
@@ -718,8 +750,8 @@ function compactable() {
   const lead = history.length && history[0].role === "user" && textOf(history[0].content).startsWith(SUMMARY_HEAD) ? 2 : 0;
   return history.length - 2 - lead;
 }
-function sysMessages() {
-  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", $("term").value !== "off" ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
+function sysMessages(id = convId) {
+  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termUsable(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -813,10 +845,10 @@ async function chatOnce(messages, signal, model = modelId) {
 }
 // the messages as they are (the server reuses its cache of that prefix) and the request; when even that does not fit,
 // the first half is summarized on its own and then the rest with that summary in front
-async function summarize(msgs, signal, model) {
+async function summarize(msgs, signal, model, id) {
   if (signal?.aborted) throw new DOMException("stopped", "AbortError");
   try {
-    return await chatOnce([...sysMessages(), ...msgs, { role: "user", content: SUMMARIZE }], signal, model);
+    return await chatOnce([...sysMessages(id), ...msgs, { role: "user", content: SUMMARIZE }], signal, model);
   } catch (e) {
     if (!e.overflow) throw e;
     // the first part holds at least one exchange beyond a leading summary, so every round gets shorter
@@ -827,11 +859,11 @@ async function summarize(msgs, signal, model) {
       const flat = msgs.map((m) => m.role + ": " + textOf(m.content)).join("\n\n");
       if (flat.length < 2000) throw e;
       const half = Math.floor(flat.length / 2), noted = { role: "assistant", content: "(noted)" };
-      const first = await summarize([{ role: "user", content: "Conversation text, part 1:\n" + flat.slice(0, half) }, noted], signal, model);
-      return summarize([...summaryPair(first), { role: "user", content: "Conversation text, continued:\n" + flat.slice(half) }, noted], signal, model);
+      const first = await summarize([{ role: "user", content: "Conversation text, part 1:\n" + flat.slice(0, half) }, noted], signal, model, id);
+      return summarize([...summaryPair(first), { role: "user", content: "Conversation text, continued:\n" + flat.slice(half) }, noted], signal, model, id);
     }
-    const first = await summarize(msgs.slice(0, mid), signal, model);
-    return summarize([...summaryPair(first), ...msgs.slice(mid)], signal, model);
+    const first = await summarize(msgs.slice(0, mid), signal, model, id);
+    return summarize([...summaryPair(first), ...msgs.slice(mid)], signal, model, id);
   }
 }
 // keep: the last messages kept word for word (the latest exchange); the kept part starts with a user message.
@@ -846,7 +878,7 @@ async function compact(keep, signal, statsEl, job, cutAt) {
   if (statsEl) statsEl.textContent = "compacting the earlier conversation…";
   // (with the earlier tool results shortened as in the last request: less to read, and the server's cache of that
   //  prompt still fits, since trimTools keeps each message at its place)
-  const summary = await summarize(trimTools(h).slice(0, cut), signal, job?.model);
+  const summary = await summarize(trimTools(h).slice(0, cut), signal, job?.model, job?.id);
   const nh = [...summaryPair(summary), ...kept];
   const here = job ? onScreen(job) : true;
   if (job) job.history = nh;
@@ -944,22 +976,27 @@ const FILE_SYSTEM = "You can work with the user's saved files: list_files (what 
   "answer comes from. To read several or all files the user means, call list_files, then read_file for each. To change a " +
   "document you wrote, read_file it (you get its source) and call create_document again with the corrections. Never say " +
   "a file was written or changed without calling the tool, and never make up what a document says.";
-// ---- terminal (Settings > Terminal): one PowerShell command in the chat's folder, on this computer only
-// (/v1/tools/run_command, tools/server_terminal.h); "ask": the command waits in its card for Run / Don't run
+// ---- terminal: the chat's terminal (the right panel), on this computer only (/v1/tools/run_command,
+// tools/server_terminal.h); while the user has it open the model may run commands in it too (Settings > Terminal:
+// "ask": the command waits in its card for Run / Don't run; "off": the model never does)
 const TERM_TOOLS = [
   { type: "function", function: { name: "run_command",
-    description: "Run one PowerShell command on the user's Windows computer, in this chat's folder (the chat's uploaded " +
-      "files and the documents you wrote are there under their names). For what the other tools cannot do: inspect or " +
-      "convert files, count, compute, run programs such as python or the arcinferzero tools (runz, serverz). The user may " +
-      "have to allow each command. Output (stdout and stderr) up to 64 KB; timeout 120 s unless timeout_s (up to 600).",
+    description: "Run one PowerShell command on the user's Windows computer, in this chat's terminal. It starts in the " +
+      "chat's folder (the chat's uploaded files and the documents you wrote are there under their names); the folder " +
+      "(cd) and environment variables (an activated .venv, $env:X) carry over to the next command, PowerShell variables " +
+      "and functions do not, and no program keeps running after its command. For what the other tools cannot do: " +
+      "inspect or convert files, count, compute, run programs such as python or the arcinferzero tools (runz, serverz). " +
+      "The user may have to allow each command. Output (stdout and stderr) up to 64 KB; timeout 120 s unless timeout_s " +
+      "(up to 600). The result says the folder (cwd) and the active venv after the command.",
     parameters: { type: "object", properties: {
       command: { type: "string", description: "PowerShell; several lines are fine" },
       timeout_s: { type: "integer" } }, required: ["command"] } } }];
-const TERM_SYSTEM = "You can run PowerShell commands on the user's Windows computer with run_command; they run in this " +
-  "chat's folder, next to its files. Use the file tools to read and write documents, the terminal for the rest. Before a " +
-  "command that changes or deletes anything, say what it will do. Never touch anything outside this folder unless the " +
-  "user asked for it. If the user does not allow a command, do not try it again in another form: ask what they want.";
-const toolsOn = () => $("web").checked || $("ftools").checked || $("term").value !== "off";
+const TERM_SYSTEM = "The user has opened this chat's terminal: you can run PowerShell commands on their Windows computer " +
+  "with run_command, as in one terminal session (cd and an activated .venv stay; the user may run commands in it too). " +
+  "Use the file tools to read and write documents, the terminal for the rest. Before a command that changes or deletes " +
+  "anything, say what it will do. Never touch anything outside the chat's folder unless the user asked for it. If the " +
+  "user does not allow a command, do not try it again in another form: ask what they want.";
+const toolsOn = (id) => $("web").checked || $("ftools").checked || termUsable(id);
 const MAX_ROUNDS = 8;
 // While talking (F24.5), the tools run in the background: a call gets an immediate answer ("search #n started"), the
 // AI says it is looking, and the conversation goes on; when results arrive they come as a message of their own and
@@ -1090,7 +1127,11 @@ async function runTermTool(args, card, signal, job) {
   const cmd = String(args.command ?? "").trim();
   if (!cmd) { card.status.textContent = "· no command"; return "error: command is empty"; }
   termCmd(card.el, cmd);
-  if ($("term").value === "off") { card.status.textContent = "· terminal is off"; return "error: the terminal is turned off in the settings"; }
+  const chat = job?.id || convId;
+  if (!termUsable(chat)) {
+    card.status.textContent = "· terminal is closed";
+    return "error: this chat's terminal is closed" + ($("term").value === "off" ? " to the model (Settings > Terminal: off)" : " (the user opens it with the Terminal button)");
+  }
   if ($("term").value !== "auto") {
     card.status.textContent = "· waiting for you";
     if (!(await askRun(card.el, signal))) {
@@ -1099,18 +1140,136 @@ async function runTermTool(args, card, signal, job) {
     }
   }
   card.status.textContent = "· running…";
-  const res = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ command: cmd, chat_id: job?.id || ensureConv(), timeout_s: args.timeout_s }), signal });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const m = j.error?.message || "HTTP " + res.status;
-    card.status.textContent = "· failed: " + m;
-    return "error: " + m;
-  }
+  const e = termAdd(chat, { by: "ai", cmd });
+  let j;
+  try { j = await termRun(chat, cmd, args.timeout_s, signal); }
+  catch (x) { termDone(chat, e, { out: x.name === "AbortError" ? "stopped" : String(x.message || x), exit: null }); throw x; }
+  termDone(chat, e, { out: j.ok ? j.output : "failed: " + j.error, exit: j.ok ? j.exit_code : null, s: j.seconds, timed: j.timed_out });
+  if (!j.ok) { card.status.textContent = "· failed: " + j.error; return "error: " + j.error; }
   termResult(card.el, j);
   if ($("filespanel").classList.contains("open")) loadFiles();
-  return JSON.stringify({ exit_code: j.exit_code, timed_out: j.timed_out, truncated: j.truncated, seconds: Math.round(j.seconds * 10) / 10, output: j.output });
+  return JSON.stringify({ exit_code: j.exit_code, timed_out: j.timed_out, truncated: j.truncated, seconds: Math.round(j.seconds * 10) / 10,
+    cwd: j.cwd, venv: j.venv, output: j.output });
 }
+
+// ---- the chat's terminal (the right panel): opened by the user and kept with the chat (chat.json: terminal { open,
+// log, cwd, venv }; its folder and environment in the chat's folder, .terminal.json, tools/server_terminal.h). The
+// user's commands and the model's show in its log; closing it ends the session: the model can no longer use it, and
+// the next one starts fresh in the chat's folder. Hiding the panel leaves it open.
+const terms = new Map();  // chat id -> { open, hidden, log: [{ by: "you" | "ai" | "sep", cmd, out, exit, s, timed, at }], cwd, venv }
+const TERM_LOG = 200, TERM_OUT = 16000;
+const termOf = (id) => { if (!terms.has(id)) terms.set(id, { open: false, log: [] }); return terms.get(id); };
+function termUsable(id) { return $("term").value !== "off" && !!id && !!terms.get(id)?.open; }
+async function termRun(id, command, timeout_s, signal) {
+  const res = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" }, signal,
+    body: JSON.stringify({ command, chat_id: id, session: true, timeout_s }) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: j.error?.message || "HTTP " + res.status };
+  const t = termOf(id);
+  if (j.cwd) { t.cwd = j.cwd; t.venv = j.venv || ""; }
+  return { ...j, ok: true };
+}
+function termAdd(id, e) {
+  const t = termOf(id), x = { ...e, at: Date.now(), running: true };
+  t.log.push(x);
+  if (t.log.length > TERM_LOG) t.log.splice(0, t.log.length - TERM_LOG);
+  if (id === convId) renderTerm();
+  return x;
+}
+function termDone(id, x, r) {
+  Object.assign(x, r, { running: false });
+  if (x.out && x.out.length > TERM_OUT) x.out = x.out.slice(0, TERM_OUT / 2) + "\n[...]\n" + x.out.slice(-TERM_OUT / 2);
+  if (id === convId) renderTerm();
+  saveTerm(id);
+}
+// (with the chat: its running answer's history, or the chat on screen)
+function saveTerm(id) { const job = jobs.get(id); if (job) saveConv(false, job); else if (id === convId) saveConv(true); }
+function renderTerm() {
+  const t = convId ? terms.get(convId) : null, on = !!t?.open;
+  $("termbtn").classList.toggle("on", on);
+  $("termpane").hidden = !on || !!t.hidden;
+  if ($("termpane").hidden) return;
+  const where = (t.venv ? "(" + t.venv.split(/[\\/]/).pop() + ") " : "") + (t.cwd || "the chat's folder");
+  $("termwhere").textContent = where.length > 70 ? "…" + where.slice(-69) : where;
+  $("termwhere").title = where;
+  const box = $("termlog"), atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  box.replaceChildren(...t.log.map((x) => {
+    const d = document.createElement("div");
+    if (x.by === "sep") { d.className = "tsep"; d.textContent = x.out; return d; }
+    d.className = "te";
+    d.innerHTML = '<div class="tc"><i></i><span></span></div><pre></pre><div class="ts"></div>';
+    const who = d.querySelector("i"), pre = d.querySelector("pre"), st = d.querySelector(".ts");
+    who.className = x.by === "ai" ? "ai" : "";
+    who.textContent = x.by === "ai" ? "AI" : "you";
+    d.querySelector("span").textContent = x.cmd;
+    pre.textContent = x.out || "";
+    pre.hidden = !x.out;
+    st.textContent = x.running ? "running…" : x.exit == null ? "" : "exit " + x.exit + (x.timed ? ", timed out" : "") + (x.s != null ? " · " + Number(x.s).toFixed(1) + " s" : "");
+    st.classList.toggle("bad", !x.running && x.exit != null && x.exit !== 0);
+    return d;
+  }));
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+async function termOpen() {
+  const id = ensureConv(), t = termOf(id);
+  t.hidden = false;
+  if (!t.open) {
+    t.open = true;
+    t.cwd = t.venv = "";
+    if (t.log.length) t.log.push({ by: "sep", out: "new terminal · " + hhmm(Date.now()) });
+    renderTerm();
+    try {  // (a fresh session: the state of a terminal closed earlier is gone)
+      const r = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: id, session: true, reset: true }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+      t.cwd = j.cwd || "";
+    } catch (e) {
+      t.open = false;
+      t.log.pop();
+      renderTerm();
+      note("the terminal cannot open: " + (e.message || e));
+      return;
+    }
+    saveTerm(id);
+  }
+  renderTerm();
+  $("termin").focus();
+}
+function termClose() {
+  const id = convId, t = id && terms.get(id);
+  if (!t?.open) return;
+  t.open = false;
+  t.log.push({ by: "sep", out: "terminal closed · " + hhmm(Date.now()) });
+  fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: id, reset: true }) }).catch(() => {});
+  renderTerm();
+  saveTerm(id);
+}
+$("termbtn").addEventListener("click", () => {
+  const t = convId && terms.get(convId);
+  if (t?.open && !t.hidden) { t.hidden = true; renderTerm(); } else termOpen();
+});
+$("termhide").addEventListener("click", () => { const t = terms.get(convId); if (t) { t.hidden = true; renderTerm(); } });
+$("termclose").addEventListener("click", termClose);
+$("termin").addEventListener("input", () => { const a = $("termin"); a.style.height = "auto"; a.style.height = a.scrollHeight + "px"; });
+$("termin").addEventListener("keydown", async (e) => {
+  const a = $("termin"), id = convId, t = id && terms.get(id);
+  if (e.key === "ArrowUp" && !a.value && t) {  // (the last command typed here again)
+    const last = [...t.log].reverse().find((x) => x.by === "you");
+    if (last) { e.preventDefault(); a.value = last.cmd; }
+    return;
+  }
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  const cmd = a.value.trim();
+  if (!cmd || !t?.open) return;
+  a.value = "";
+  a.style.height = "auto";
+  const x = termAdd(id, { by: "you", cmd });
+  const j = await termRun(id, cmd, 600).catch((err) => ({ ok: false, error: String(err.message || err) }));
+  termDone(id, x, { out: j.ok ? j.output : "failed: " + j.error, exit: j.ok ? j.exit_code : null, s: j.seconds, timed: j.timed_out });
+  if ($("filespanel").classList.contains("open")) loadFiles();
+});
 
 // a call's line in its card: the tool and what it works on
 function toolLabel(name, args) {
@@ -1170,11 +1329,11 @@ async function streamTurn(el, st, onOverflow, job) {
   const think = thinkingNow();
   let res;
   for (let attempt = 0; ; attempt++) {
-    const body = { model: job.model, messages: wire([...sysMessages(), ...trimTools(job.history)]), stream: true, stream_options: { include_usage: true },
+    const body = { model: job.model, messages: wire([...sysMessages(job.id), ...trimTools(job.history)]), stream: true, stream_options: { include_usage: true },
       chat_template_kwargs: { enable_thinking: think.on } };
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
-    if (toolsOn()) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...($("term").value !== "off" ? TERM_TOOLS : [])];
+    if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termUsable(job.id) ? TERM_TOOLS : [])];
     kick();
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
     if (res.ok) break;
@@ -1197,12 +1356,16 @@ async function streamTurn(el, st, onOverflow, job) {
     painted = performance.now();
     if (st.reasoning) {
       thinkBox.hidden = false;
-      if (thinkBox.open || all) thinkText.textContent = st.reasoning;
+      if (thinkBox.open || all) {  // (its box follows the newest line, unless scrolled up to read)
+        const atEnd = thinkText.scrollHeight - thinkText.scrollTop - thinkText.clientHeight < 24;
+        thinkText.textContent = st.reasoning;
+        if (atEnd) thinkText.scrollTop = thinkText.scrollHeight;
+      }
     }
     content.innerHTML = markdown(st.answer);
     scroll();
   };
-  thinkBox.ontoggle = () => { if (thinkBox.open) thinkText.textContent = st.reasoning; };
+  thinkBox.ontoggle = () => { if (thinkBox.open) { thinkText.textContent = st.reasoning; thinkText.scrollTop = thinkText.scrollHeight; } };
   const later = () => {
     // (a plain timer: an animation frame waits while the tab is hidden, and a frame that never came stopped all later ones)
     if (!frame) frame = setTimeout(paint, Math.max(0, 120 - (performance.now() - painted)));
@@ -1367,7 +1530,7 @@ async function send() {
       await streamTurn(el, st, refit, job);
       turnStats(el, st, job);
       if (switching && round === 0) refreshModel();  // (the server switched: its context and controls)
-      if (!st.toolCalls.length || !toolsOn() || round + 1 >= MAX_ROUNDS) break;
+      if (!st.toolCalls.length || !toolsOn(job.id) || round + 1 >= MAX_ROUNDS) break;
       const calls = st.toolCalls.map((c, i) => ({ ...c, id: c.id || "call_" + round + "_" + i }));
       const msg = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, tool_calls: calls, at: Date.now() };
       job.history.push(msg);
@@ -1485,6 +1648,8 @@ function saveConv(force, job) {
   if (!h.length && !(force && (job || convId))) return saving;
   const id = job ? job.id : ensureConv();
   const c = { id, title: titleOf(h), at: Date.now(), model: job ? job.model : modelId, snippet: snippetOf(h), history: h };
+  const t = terms.get(id);  // (its terminal: open or not, and its log)
+  if (t && (t.open || t.log.length)) c.terminal = { open: t.open, cwd: t.cwd, venv: t.venv, log: t.log.filter((x) => !x.running) };
   const body = JSON.stringify(c);
   convs = [{ id: c.id, title: c.title, at: c.at, model: c.model, snippet: c.snippet }, ...convs.filter((x) => x.id !== c.id)];
   renderConvs();
@@ -1536,6 +1701,7 @@ async function deleteConv(c) {
     if (!r.ok && r.status !== 404) { note("deleting the chat failed: HTTP " + r.status); return; }
   } catch (e) { note("deleting the chat failed: " + (e.message || e)); return; }
   convs = convs.filter((x) => x.id !== c.id);
+  terms.delete(c.id);
   if (c.id === convId) newChat();
   renderConvs();
   if ($("filespanel").classList.contains("open")) loadFiles();
@@ -1553,6 +1719,7 @@ function resetChat() {
 function newChat() {
   resetChat();
   convId = null;
+  renderTerm();
   showEmpty("New conversation");
   showUse();
   renderConvs();
@@ -1585,6 +1752,9 @@ async function openConv(id) {
     } catch (e) { note("opening the chat failed: " + (e.message || e)); return; }
   resetChat();
   convId = id;
+  if (!terms.has(id) && c.terminal) terms.set(id, { open: !!c.terminal.open, cwd: c.terminal.cwd || "", venv: c.terminal.venv || "",
+    log: Array.isArray(c.terminal.log) ? c.terminal.log : [] });
+  renderTerm();
   history = job ? job.history : Array.isArray(c.history) ? c.history : [];
   thread.replaceChildren();
   // (a running answer: the messages before its question from the history, then its own bubbles as they are)
@@ -1745,6 +1915,7 @@ async function clearData(files) {
   try {
     const r = await (await fetch("/v1/chats" + (files ? "?files=1" : ""), { method: "DELETE" })).json();
     const n = (k, w) => k + " " + w + (k === 1 ? "" : "s");
+    terms.clear();
     note("deleted " + n(r.chats_deleted, "chat") + (files ? " and " + n(r.files_deleted, "file") + " (" + kb(r.freed_bytes || 0) + ")" : ""));
   } catch (e) { note("clearing failed: " + (e.message || e)); }
   convs = [];
