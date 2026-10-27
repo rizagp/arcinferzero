@@ -13,7 +13,10 @@
 - **`create_document` format "xlsx"**: from the same Markdown, each table becomes a sheet named by the heading before
   it (31 characters, no `[ ] : * ? / \`, a repeated name gets "(2)"); the text around the tables goes to a first
   "Notes" sheet (with a line where each table was), and the workbook opens on the first table. Numbers become real
-  numbers with a number format ("1.234,5", "1,234.5", "12.500", "Rp 1.234.000", "$12.50", "15 %", "12,5%"), dates
+  numbers with a number format ("1.234,5", "1,234.5", "12.500", "Rp 1.234.000", "$12.50", "15 %", "12,5%"; Indonesian
+  or US style per table: "1.500" / "1,500" alone cannot tell, so each table goes by its numbers that do, "1.234,5" or
+  "2,5" against "1,234.5" or "3.14", else the whole document's, else Indonesian; `number_format: "id" | "us"` fixes
+  it), dates
   real dates ("2026-10-27", "27/10/2026", with a time); a leading zero ("0812...") or a text starting with "=" stays
   text. The header row is bold on a fill, frozen, with an autofilter; column widths from the content. Checked with
   Excel itself (COM): the file opens without repair (a copy with one element out of order does not open), values,

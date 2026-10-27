@@ -130,6 +130,25 @@ int main(int argc, char** argv) {
     check("write: styles element order", before(st, {"<numFmts", "<fonts", "<fills", "<borders", "<cellStyleXfs", "<cellXfs", "<cellStyles"}));
     check("write: workbook element order and the filter's name", before(wb, {"<workbookPr", "<bookViews", "<sheets", "<definedNames"}) &&
           wb.find("_xlnm._FilterDatabase") != std::string::npos);
+    // Indonesian or US numbers: each table by its numbers that show the style, else the document's, else Indonesian
+    {
+      const std::string mixed = "## US\n\n| Item | Qty | Price |\n|---|---|---|\n| A | 1,500 | 3.75 |\n| B | 2,000 | 1,234.50 |\n\n"
+                                "## ID\n\n| Item | Qty | Harga |\n|---|---|---|\n| A | 1.500 | 2,5 |\n\n"
+                                "## Ambigu\n\n| Item | Qty |\n|---|---|\n| A | 1,500 |\n| B | 1.500 |\n";
+      const rdoc::Doc a = rdoc::read("m.xlsx", xlsx::write(mixed, doc::Options{}));
+      check("numbers auto: a US table", has(a, "Item: A | Qty: 1500 | Price: 3.75") && has(a, "Item: B | Qty: 2000 | Price: 1234.5"), all(a));
+      check("numbers auto: an Indonesian table in the same file", has(a, "Item: A | Qty: 1500 | Harga: 2.5"), all(a));
+      // (the document: 3.75 and 1,234.50 US against 2,5 Indonesian)
+      check("numbers auto: a table that cannot tell goes by the document", has(a, "Item: A | Qty: 1500") && has(a, "Item: B | Qty: 1.5"), all(a));
+      const rdoc::Doc n = rdoc::read("n.xlsx", xlsx::write("| Item | Qty |\n|---|---|\n| A | 1,500 |\n| B | 1.500 |\n", doc::Options{}));
+      check("numbers auto: nothing tells, Indonesian", has(n, "Item: A | Qty: 1.5") && has(n, "Item: B | Qty: 1500"), all(n));
+      const std::string amb = "| Item | Qty |\n|---|---|\n| A | 1,500 |\n| B | 1.500 |\n";
+      const rdoc::Doc us = rdoc::read("u.xlsx", xlsx::write(amb, doc::Options{}, "us")), id = rdoc::read("i.xlsx", xlsx::write(amb, doc::Options{}, "id"));
+      check("numbers forced us", has(us, "Item: A | Qty: 1500") && has(us, "Item: B | Qty: 1.5"), all(us));
+      check("numbers forced id", has(id, "Item: A | Qty: 1.5") && has(id, "Item: B | Qty: 1500"), all(id));
+      check("group_of", xlsx::group_of("1.234,5") == '.' && xlsx::group_of("1,234.5") == ',' && xlsx::group_of("1.234.567") == '.' &&
+            xlsx::group_of("2,5") == '.' && xlsx::group_of("3.14") == ',' && xlsx::group_of("1.500") == 0 && xlsx::group_of("12") == 0);
+    }
     // only tables: no Notes sheet; only text: the Notes sheet alone
     const rdoc::Doc t = rdoc::read("b.xlsx", xlsx::write("## Stok\n\n| Barang | Jumlah |\n|---|---|\n| Pena | 1.500 |\n", doc::Options{}));
     check("write: only a table, no Notes", t.paras.size() == 3 && t.paras[0].text == "Sheet: Stok" && t.paras[2].text == "Barang: Pena | Jumlah: 1500", all(t));

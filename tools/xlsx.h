@@ -16,9 +16,11 @@
 // most 31 characters, without [ ] : * ? / \), else "Sheet1", "Sheet2" ... Text outside the tables (paragraphs,
 // lists, code, headings) goes to a first sheet "Notes", one block per row, with a line where each table was ("table:
 // sheet 'X'"); the workbook still opens on the first table. With no text outside the tables there is no Notes sheet.
-// Cells: numbers as numbers with a number format ("1.234,5", "1,234.5", "Rp 1.234.000", "$12.50", "15 %"; a single
-// "." followed by exactly three digits is a thousands separator, "1.500" is 1500 as Indonesian writes it, a single
-// "," only with a currency, else a decimal comma), dates ("2026-10-27", "27/10/2026", "27-10-2026", with an optional
+// Cells: numbers as numbers with a number format ("1.234,5", "1,234.5", "Rp 1.234.000", "$12.50", "15 %"). Indonesian
+// or US style: "1.500" and "1,500" alone cannot tell (1500, or 1.5?), so each table goes by its numbers that do
+// ("1.234,5", "1.234.567", "2,5" Indonesian; "1,234.5", "1,234,567", "3.14" US), else the whole document's, else
+// Indonesian; write(..., "id" / "us") fixes it. With a currency a separator before three digits is always thousands
+// (Excel then shows the numbers in the computer's own style either way). Dates ("2026-10-27", "27/10/2026", "27-10-2026", with an optional
 // hh:mm) as real dates; numbers with a leading zero ("0812...") or over 15 digits stay text, the rest are shared
 // strings (a text starting with "=" stays text, never a formula). The header row is bold on a fill, frozen under
 // it, with an autofilter; column widths come from the content. The parts are the minimal set Excel opens without
@@ -352,8 +354,10 @@ inline void grid_paras(const Grid& g, rdoc::Doc& d) {
 constexpr size_t kMaxCells = 200000;
 
 // ---------------------------------------------------------------- writing
-// a cell's text as a number: v and its number format code ("": General); false: it stays text
-inline bool number(const std::string& in, double& v, std::string& fmt) {
+// a cell's text as a number: v and its number format code ("": General); false: it stays text. group: the thousands
+// separator when a text cannot tell ('.': Indonesian "1.500" = 1500, ',': US "1,500" = 1500); "1.234,5", "1,234.5",
+// "1.234.567", "2,5" and "3.14" tell by themselves
+inline bool number(const std::string& in, double& v, std::string& fmt, char group = '.') {
   std::string t;
   for (size_t i = 0; i < in.size(); ++i) {  // (no-break and narrow no-break spaces as spaces)
     if (in.compare(i, 2, "\xC2\xA0") == 0) { t += ' '; i += 1; }
@@ -397,7 +401,7 @@ inline bool number(const std::string& in, double& v, std::string& fmt) {
     const char s = dots ? '.' : ',';
     const size_t p = t.find(s);
     const bool three = t.size() - p - 1 == 3 && p <= 3 && t[0] != '0';
-    if (three && (s == '.' || !cur.empty())) grp = s;
+    if (three && (s == group || !cur.empty())) grp = s;  // (with a currency always thousands: no cents in Rp)
     else dec = s;
   }
   std::string ip = dec ? t.substr(0, t.find(dec)) : t, fp = dec ? t.substr(t.find(dec) + 1) : "";
@@ -425,6 +429,22 @@ inline bool number(const std::string& in, double& v, std::string& fmt) {
   } else fmt.clear();
   return true;
 }
+// the thousands separator a number's text shows: '.' (Indonesian: "1.234,5", "1.234.567", "2,5"), ',' (US:
+// "1,234.5", "1,234,567", "3.14"), 0 when it cannot tell ("1.500", "12")
+inline char group_of(const std::string& t) {
+  size_t dots = 0, commas = 0;
+  for (char c : t) dots += c == '.', commas += c == ',';
+  if (dots && commas) return t.rfind('.') > t.rfind(',') ? ',' : '.';
+  if (dots > 1 || commas > 1) return dots ? '.' : ',';
+  if (dots + commas == 1) {
+    const size_t p = t.find(dots ? '.' : ',');
+    size_t n = 0;
+    while (p + 1 + n < t.size() && isdigit((unsigned char)t[p + 1 + n])) ++n;
+    if (n != 3) return dots ? ',' : '.';  // (a decimal point: US; a decimal comma: Indonesian)
+  }
+  return 0;
+}
+
 // "2026-10-27", "27/10/2026", "27-10-2026" (an optional " hh:mm[:ss]", "T" after an ISO date) as an Excel serial date
 inline bool date(const std::string& in, double& v, std::string& fmt) {
   const std::string t = doc::trim(in);
@@ -527,14 +547,32 @@ struct WSheet {
   bool table = true;
 };
 
-// the workbook: Markdown tables as sheets, the text around them on a first "Notes" sheet
-inline std::string write(const std::string& md, const doc::Options& o) {
+// the workbook: Markdown tables as sheets, the text around them on a first "Notes" sheet. numbers: "id" (1.234,5),
+// "us" (1,234.5) or "auto": each table by the numbers in it that show their style ("1.234,5", "2,5", "3.14" ...),
+// the whole document's when the table's tie or show none, Indonesian when nothing shows
+inline std::string write(const std::string& md, const doc::Options& o, const std::string& numbers = "auto") {
   const std::vector<doc::Block> blocks = doc::parse(md);
   bool tables = false, text = false;
+  auto votes = [](const doc::Block& b, int& id, int& us) {
+    for (size_t r = 1; r < b.rows.size(); ++r)
+      for (const auto& runs : b.rows[r]) {
+        const std::string t = plain(runs);
+        double x;
+        std::string f;
+        if (t.empty() || date(t, x, f) || !number(t, x, f)) continue;
+        const char g = group_of(t);
+        id += g == '.';
+        us += g == ',';
+      }
+  };
+  int doc_id = 0, doc_us = 0;
   for (const doc::Block& b : blocks) {
     tables = tables || b.kind == doc::Block::Table;
     text = text || b.kind == doc::Block::Para || b.kind == doc::Block::Bullet || b.kind == doc::Block::Number || b.kind == doc::Block::Code;
+    if (b.kind == doc::Block::Table) votes(b, doc_id, doc_us);
   }
+  const std::string nf = doc::lower(numbers);
+  const char forced = nf == "id" ? '.' : nf == "us" || nf == "en" ? ',' : 0, doc_group = doc_us > doc_id ? ',' : '.';
   const bool has_notes = text || !tables;
   std::vector<std::string> taken;
   std::vector<WSheet> sheets;
@@ -559,13 +597,19 @@ inline std::string write(const std::string& md, const doc::Options& o) {
       WSheet s;
       s.name = sheet_name(heading, taken, "Sheet" + std::to_string(sheets.size() + !has_notes));
       heading.clear();
+      char group = forced;
+      if (!group) {
+        int id = 0, us = 0;
+        votes(b, id, us);
+        group = us > id ? ',' : id > us ? '.' : doc_group;
+      }
       for (size_t r = 0; r < b.rows.size(); ++r) {
         std::vector<WCell> row;
         for (const auto& runs : b.rows[r]) {
           WCell c;
           c.text = plain(runs);
           c.bold = r == 0 || (!runs.empty() && std::all_of(runs.begin(), runs.end(), [](const doc::Run& x) { return x.st.b || doc::trim(x.text).empty(); }));
-          if (r > 0 && !c.text.empty()) c.num = date(c.text, c.v, c.fmt) || number(c.text, c.v, c.fmt);
+          if (r > 0 && !c.text.empty()) c.num = date(c.text, c.v, c.fmt) || number(c.text, c.v, c.fmt, group);
           row.push_back(c);
         }
         s.rows.push_back(row);

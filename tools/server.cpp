@@ -743,7 +743,7 @@ class Server {
 
 // The web UI's file tools for the model (it calls them as functions, the page runs them here):
 //   create_document {filename, format: docx | pdf | doc | rtf | md | xlsx, content (Markdown, tools/doc_writer.h;
-//                    xlsx: each table a sheet, tools/xlsx.h), title,
+//                    xlsx: each table a sheet, tools/xlsx.h; number_format auto | id | us), title,
 //                    subtitle, author, date, page, orientation, margins_mm, font, font_size, line_spacing,
 //                    heading_color, accent_color, text_color, header, footer, page_numbers, chat_id}: writes the file
 //                    into the chat's folder (and its source next to it), returns it as a file
@@ -803,7 +803,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
       if (fmt == "docx") data = doc::docx(content, o);
       else if (fmt == "pdf") data = doc::pdf(content, o);
       else if (fmt == "doc" || fmt == "rtf") data = doc::rtf(content, o);
-      else if (fmt == "xlsx") data = xlsx::write(content, o);
+      else if (fmt == "xlsx") data = xlsx::write(content, o, a["number_format"].str("auto"));
       else data = (o.title.empty() ? "" : "# " + o.title + "\n\n") + content;
       const std::string chat = files::valid_id(a["chat_id"].str()) ? a["chat_id"].str() : "";
       const files::Info i = st.put(name, data, chat);

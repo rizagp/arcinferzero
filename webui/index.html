@@ -878,7 +878,9 @@ const FILE_TOOLS = [
       margins_mm: { type: "number" }, font: { type: "string", description: "e.g. Calibri, Arial, Times New Roman, Georgia" },
       font_size: { type: "number" }, line_spacing: { type: "number", description: "1.0 - 2.0" },
       heading_color: { type: "string", description: "#RRGGBB" }, accent_color: { type: "string", description: "table header fill, #RRGGBB" },
-      text_color: { type: "string" }, header: { type: "string" }, footer: { type: "string" }, page_numbers: { type: "boolean" } },
+      text_color: { type: "string" }, header: { type: "string" }, footer: { type: "string" }, page_numbers: { type: "boolean" },
+      number_format: { type: "string", enum: ["auto", "id", "us"], description: "xlsx: how the tables write numbers: " +
+        "id 1.234,5 (1.500 = 1500), us 1,234.5 (1,500 = 1500); auto (default) tells from the tables. Write one style in a table." } },
       required: ["format", "content"] } } }];
 const FILE_SYSTEM = "You can work with the user's saved files: list_files (what is saved, with upload times), read_file (one " +
   "file; a long document gives its outline, then read the sections or pages you need), search_file (the passages of a " +

@@ -278,7 +278,8 @@ While the server is running:
   (column alignment, a header row repeated on each page), code, rules, centered or justified blocks and page breaks;
   page size and orientation, margins, font, line spacing, heading and table colors, header, footer and page numbers.
   **XLSX** (Excel, opens without repair): each Markdown table becomes a sheet named by the heading before it, with
-  numbers, Rp amounts, percentages and dates as real values (so sums and filters work), a bold frozen header row with
+  numbers, Rp amounts, percentages and dates as real values (so sums and filters work; Indonesian 1.234,5 or US
+  1,234.5 told apart per table, or set with `number_format` id / us), a bold frozen header row with
   an autofilter; the text around the tables goes to a first "Notes" sheet. The document shows as a file card in the answer (open or download) and is saved in the chat's folder. Ask for a
   change ("the spacing is too tight", "make the title dark red") and the model reads the document's source and writes
   a new version next to it (`name (2).docx`).
