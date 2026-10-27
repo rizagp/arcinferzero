@@ -8,6 +8,14 @@ the GPU yet: every gain below is an estimate until measured, and every fix has t
 unless it says otherwise. Ranked by plausible real gain; ALU-only savings in memory-bound loops come last (on this GPU
 they made decode loops slower three times: [lessons](lessons-intel-arc-igpu.md)).
 
+## Outcome (2026-10-27)
+
+Measured on the GPU: #6, #7 (HS <= 3) and #9 kept, all bit-identical: 35B prompt +2 %, 27B prompt attention
+-9 %, ~1 ms less per 35B token in the quantization kernels; #1 not a regression (the small MoE tiles gave the 35B's
+MTP +3.5 %); #2, #3, #5, #8, #10 no faster or slower, not kept; #4 not worth doing. What the assembly showed as
+waits or wasted reads mostly hit the caches: only the changes that removed real memory traffic (#9) or gave a
+compute-bound loop more independent chains (#6, #7) paid.
+
 ## To fix or measure first
 
 | # | Kernel | What is not needed | Fix (bit-identical) | Estimate |
@@ -21,7 +29,7 @@ they made decode loops slower three times: [lessons](lessons-intel-arc-igpu.md))
 | 7 | `attn_q8` QK (prompt attention) | HS dependent DP4a chains, 64 long each (35B: 320 of 512 DP4a wait) | **done for HS <= 3**: two integer sums per head (even / odd words), added before the conversion (exact). 27B (HS 3), 11,598-token prompt: attention 5.09-5.14 -> 4.52-4.72 s (-9 %); 35B (HS 4) 1.88 -> 1.90 s and 9B 1.52 -> 1.52 s: no gain, HS >= 4 keeps one chain; logits bit-identical on all three | 27B long prompts |
 | 8 | GEMV scales at T = 1 | `asc[b * M + m]` with M = 16: each lane's scale gather touches 16 cache lines for 64 useful bytes | **measured, not kept**: one token with Mp = 1 (every producer and consumer then uses M = 1; bit-identical on 9B / 27B / 35B): wall time within noise, GPU time 27B 14.7-15.0 -> 15.1-15.7 s per 64 tokens, 9B mixed | the gathers hit L1 |
 | 9 | quantization kernels (`swiglu_quant`, `gated_norm_quant`, `attn_gate_quant`, `rmsnorm_quant`) | per-element branches on flags uniform for the work-group and 16 scalar loads per lane | **done**: the flags tested once, `vload16` per lane. Per 64 decode tokens: swiglu_quant 35B 71.4-71.9 -> 22.9-23.0 ms, 9B 90.5 -> 40.9-47.8; rmsnorm_quant -8 %; gated_norm_quant -8 %. 27B 11,598-token prompt: rmsnorm_quant 968 -> 636 ms, gated_norm 654 -> 572, attn_gate 298 -> 260. Logits bit-identical on 9B, 27B, 35B, Flash Next, Gemma 4 E4B | ~1 ms per decode token (35B ~2 %) |
-| 10 | `moe_down_q` scales (T = 1 and TM), `moe_gateup_q` T = 1 | scale stride S = slots_ (max_chunk x NU): 16 lines in 16 pages per load | S = n for T <= 8 outside two-pass mode (host only); ASCT for the T = 1 gate / up | uncertain (cache hits) |
+| 10 | `moe_down_q` scales (T = 1 and TM) | scale stride S = slots_ (max_chunk x NU): 16 lines in 16 pages per load | **measured, not kept**: S = n for the per-tile down projection of 1-8 tokens (bit-identical): 35B moe_down 1-6 slots the same or slower (6 slots 17.7-18.4 -> 18.4-18.5 ms per step) | the reads hit the cache |
 
 ## Smaller
 
