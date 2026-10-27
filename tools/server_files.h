@@ -606,9 +606,13 @@ inline std::string outline_text(const rdoc::Index& ix) {
 // form) as what the model reads: an image or audio file as an image_url / input_audio part referring to it, any other
 // file as a text part with its text (DOCX and PDF too, tools/doc_reader.h). With the file tools (tools: true) a long
 // document goes in as its outline and beginning: the model reads the sections it needs (read_file) or searches it
-// (search_file) instead of a prompt of the whole document.
+// (search_file) instead of a prompt of the whole document; "long": over kInlineChars, or over a quarter of the
+// conversation's context (ctx tokens, 0: not known) at 3 characters a token (tables and Indonesian text run short).
 inline constexpr size_t kMaxDocChars = 400000;
-inline Json expand_files(const Json& messages, bool tools = false) {
+// the characters one file read may give the model: a fifth of the context (3 characters a token), 1,500 at least
+inline size_t read_budget(int ctx) { return ctx > 0 ? std::max<size_t>(1500, (size_t)ctx * 3 / 5) : (size_t)-1; }
+inline Json expand_files(const Json& messages, bool tools = false, int ctx = 0) {
+  const size_t inline_max = std::min(kInlineChars, ctx > 0 ? (size_t)ctx * 3 / 4 : kInlineChars);
   Json out = Json::array();
   for (const Json& m : messages.items()) {
     if (!m["content"].is_array()) { out.push(m); continue; }
@@ -672,7 +676,7 @@ inline Json expand_files(const Json& messages, bool tools = false) {
           meta.insert(meta.size() - 1, (ix->doc.pages > 0 ? ", " + std::to_string(ix->doc.pages) + " pages" : std::string()) + ", ~" +
                                            std::to_string(tokens_of(full.size())) + " tokens");
           if (!ix->doc.note.empty()) meta += "\n[" + ix->doc.note + "]";
-          if (!tools || full.size() <= kInlineChars) {
+          if (!tools || full.size() <= inline_max) {
             text = full;
             if (text.size() > kMaxDocChars) text = text.substr(0, kMaxDocChars) + "\n[... cut: the file goes on]";
           } else {

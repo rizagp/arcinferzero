@@ -1329,6 +1329,38 @@ class Index {
       }
     } else if (outline[0].first > 0)  // (text before the first heading)
       outline.insert(outline.begin(), {"(before the first heading)", 1, doc.paras[0].page, 0, outline[0].first, 0});
+    // a long section without headings over several pages (a table of five pages, a chapter without subheadings):
+    // its pages as parts one level below it, so the model can read it a piece at a time (a part: pages together up to
+    // about chunk_chars * 1.5, cut at a page's start)
+    if (by_headings && doc.pages > 1)
+      for (size_t si = 0; si < outline.size(); ++si) {
+        const Section s = outline[si];
+        size_t own = 0;
+        for (size_t k = s.first; k < s.last; ++k) own += doc.paras[k].text.size() + 2;
+        if (own <= chunk_chars * 3 || doc.paras[s.last - 1].page == s.page) continue;
+        std::vector<size_t> cuts;  // (where each part after the first starts)
+        size_t acc = 0;
+        for (size_t k = s.first; k < s.last; ++k) {
+          if (k > s.first && doc.paras[k].page != doc.paras[k - 1].page && acc >= chunk_chars * 3 / 2) {
+            cuts.push_back(k);
+            acc = 0;
+          }
+          acc += doc.paras[k].text.size() + 2;
+        }
+        if (cuts.empty()) continue;
+        outline[si].last = cuts[0];
+        for (size_t c = 0; c < cuts.size(); ++c) {
+          const size_t first = cuts[c], last = c + 1 < cuts.size() ? cuts[c + 1] : s.last;
+          Section p;
+          p.first = first;
+          p.last = last;
+          p.page = doc.paras[first].page;
+          p.level = std::min(6, s.level + 1);
+          p.title = "page " + std::to_string(p.page) + ": " + cut_words(doc.paras[first].text, 60);
+          outline.insert(outline.begin() + (ptrdiff_t)(si + 1 + c), p);
+        }
+        si += cuts.size();
+      }
     for (size_t si = 0; si < outline.size(); ++si) {
       Section& s = outline[si];
       for (size_t k = s.first; k < s.last; ++k) s.chars += doc.paras[k].text.size() + 2;

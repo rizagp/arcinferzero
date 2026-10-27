@@ -36,9 +36,18 @@
   on the most pages in short lines, the others take the level of the nearest of them below. A 142-page requirements
   document with a cover and slides attached: its chapters, sections and subsections (I, II.1, II.3.1, IV.1.1.1) at
   four levels instead of all at one (the cover's and the slides' sizes had taken the five levels).
+- **Long documents within a small context**: a long section without headings over several pages (a five-page risk
+  table, a chapter without subheadings) shows in the outline with its pages as parts one level below it (about 3,600+
+  characters each), so the model reads it a piece at a time: a 215-page memo's largest section 34,900 -> 7,300
+  characters. One `read_file` gives at most a fifth of the loaded model's context (3 characters a token; 4,900
+  characters at 8K, the old 12,000 from 20K up) whatever `max_chars` asks, cut at a paragraph's end, the rest by
+  `next_offset` with a note; `search_file`'s passages together stay within it too (the best one always). A document
+  in a message goes in whole only when it takes at most a quarter of the context (else its outline, as above
+  24,000 characters before). The context is read without waiting during a model switch (then the old limits).
 - Checks: `tests/test_doc_read.cpp` with a Word-made bookmarked fixture (`tests/data/doc_bookmarks.pdf`: headings
   1-3, bold list items; also read with its bookmarks taken out), a hand-made PDF (a named destination, a GoTo action,
-  a UTF-16 title, a title not in the text) and PDF text strings.
+  a UTF-16 title, a title not in the text), PDF text strings and a long section's page parts;
+  `tests/test_chat_store.cpp`: a document in a message whole or as its outline by the context, the read budget.
 
 ## 2026-10-27: web UI answers in the background, conversations at once from Settings
 
