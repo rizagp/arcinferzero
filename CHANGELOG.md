@@ -11,9 +11,11 @@
   results before them; `list_files` and `create_document` results always. Only in the request: the saved chat and
   the screen keep every result. The cut moves only when the user sends a message, so the server's prompt cache holds
   through the rounds of an answer. A few reads of a long document no longer fill the context, and compaction comes
-  later (the context estimate counts the shortened form). Checked in the browser with a scripted fake server: three
+  later (the context estimate counts the shortened form). Compaction's summary request gets the same shortened
+  messages, so it reads less and starts as the last request did (the server's cache still fits). Checked in the browser with a scripted fake server: three
   12,000-character reads, a search and a page over four questions; the fourth request had the two oldest reads as
-  stubs, the requests within one answer kept the same start, and the saved history stayed whole.
+  stubs, the requests within one answer kept the same start, the summary request matched the last request's start,
+  and the saved history stayed whole.
 
 ## 2026-10-26: Whisper native (speech to text on the iGPU or the NPU)
 

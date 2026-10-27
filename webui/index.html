@@ -844,7 +844,9 @@ async function compact(keep, signal, statsEl, job, cutAt) {
   if (cut < 2 || (h[0].role === "user" && textOf(h[0].content).startsWith(SUMMARY_HEAD) && cut <= 2)) return false;  // (nothing new to fold)
   const old = h.slice(0, cut), kept = h.slice(cut);
   if (statsEl) statsEl.textContent = "compacting the earlier conversation…";
-  const summary = await summarize(old, signal, job?.model);
+  // (with the earlier tool results shortened as in the last request: less to read, and the server's cache of that
+  //  prompt still fits, since trimTools keeps each message at its place)
+  const summary = await summarize(trimTools(h).slice(0, cut), signal, job?.model);
   const nh = [...summaryPair(summary), ...kept];
   const here = job ? onScreen(job) : true;
   if (job) job.history = nh;
