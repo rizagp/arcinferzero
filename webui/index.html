@@ -162,14 +162,15 @@ details.think summary { cursor: pointer; }
 details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; overflow-y: auto; }
 .tool { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--think); border-radius: 5px; padding: 6px 8px; margin-top: 6px; white-space: pre-wrap; }
 .tool .st { color: var(--muted); }
+.answerfiles { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--think); border-radius: 5px; padding: 0 8px 6px; margin-top: 6px; }  /* (the answer's documents: as in the tool card) */
 .tool pre.cmd { margin: 6px 0 0; padding: 6px 8px; background: var(--code); border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
 .tool pre.out { margin: 4px 0 0; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 .tool .ask { margin-top: 6px; display: flex; gap: 8px; align-items: center; font-family: inherit; }
 .tool .ask button { font: inherit; font-family: system-ui, sans-serif; padding: 4px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--input); color: inherit; cursor: pointer; }
 .tool .ask button.run { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .tool summary { cursor: pointer; color: var(--muted); }
-.tool a { color: var(--accent); text-decoration: none; }
-.tool a:hover { text-decoration: underline; }
+.tool a, .answerfiles a { color: var(--accent); text-decoration: none; }
+.tool a:hover, .answerfiles a:hover { text-decoration: underline; }
 .stats { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 .progress { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; margin: 6px 0 2px; }
 .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
@@ -891,6 +892,14 @@ function toolCardFile(d, f) {
   box.appendChild(dl);
   d.appendChild(box);
 }
+function answerFiles(el, files) {
+  if (!el || !files.length) return;
+  const box = document.createElement("div");
+  box.className = "answerfiles";
+  for (const f of files) toolCardFile(box, f);
+  el.insertBefore(box, el.querySelector(".stats"));
+}
+let made = [];  // (the documents written during the answer that runs)
 function toolCard(el) {
   const d = document.createElement("div");
   d.className = "tool";
@@ -1001,7 +1010,10 @@ async function runTermTool(args, card, signal) {
 
 // a call's line in its card: the tool and what it works on
 function toolLabel(name, args) {
-  if (name === "create_document") return name + " " + (args.filename || args.title || "") + "." + (args.format || "docx");
+  if (name === "create_document") {
+    const fn = String(args.filename || args.title || ""), ext = "." + (args.format || "docx");
+    return name + " " + (fn.toLowerCase().endsWith(ext) ? fn : fn + ext);
+  }
   if (name === "read_file") return name + " " + args.file_id + (args.section ? " § " + args.section : args.pages ? " p. " + args.pages : args.offset ? " @" + args.offset : "");
   if (name === "search_file") return name + " \u201c" + (args.query || "") + "\u201d" + (args.file_id ? " in " + args.file_id : "");
   if (name === "list_files") return name + " " + [args.kind, args.name_contains, args.within_hours ? args.within_hours + " h" : "", args.scope].filter(Boolean).join(" ");
@@ -1025,6 +1037,7 @@ async function runFileTool(name, args, card, signal) {
   if (name === "create_document") {
     card.status.textContent = "· " + kb(j.bytes || 0);
     card.file(j);
+    made.push(j);
     if ($("filespanel").classList.contains("open")) loadFiles();
   } else if (name === "list_files") card.status.textContent = "· " + (j.count || 0) + " files";
   else if (name === "search_file") card.status.textContent = "· " + (j.results || []).length + " passages" +
@@ -1152,6 +1165,7 @@ async function send() {
   userEl._h = userMsg;
   let el = addAssistant();
   scroll(true);
+  made = [];
   controller = new AbortController();
   showUse();
   const switching = modelId !== loadedId;
@@ -1240,7 +1254,9 @@ async function send() {
     const reply = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, at: Date.now() };
     history.push(reply);
     el._h = reply;
+    answerFiles(el, made);
   }
+  made = [];
   controller = null;
   showUse();
   scroll();
@@ -1372,7 +1388,7 @@ async function openConv(id) {
   convId = id;
   history = Array.isArray(c.history) ? c.history : [];
   thread.replaceChildren();
-  let el = null;
+  let el = null, files = [];  // (files: the documents written since the last user message)
   for (const m of history) {
     if (m.role === "user") {
       const t = typeof m.content === "string" ? m.content : m.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
@@ -1392,6 +1408,7 @@ async function openConv(id) {
         u.insertBefore(n, u.querySelector(".time"));
       }
       el = null;
+      files = [];
     } else if (m.role === "assistant") {
       if (String(m.content).startsWith("Understood. I have the summary")) continue;
       el = addAssistant(m.at);
@@ -1406,6 +1423,7 @@ async function openConv(id) {
         c.head.textContent = a ? toolLabel(tc.function.name, a) : tc.function.name + " " + tc.function.arguments;
         if (tc.function.name === "run_command" && a) termCmd(c.el, String(a.command ?? ""));
       }
+      if (!(m.tool_calls || []).length) { answerFiles(el, files); files = []; }
     } else if (m.role === "tool" && el) {
       // (each result marks its own call's card: the first one still without a status)
       const card = [...el.querySelectorAll(".tools .tool")].find((d) => !d.querySelector(".st").textContent);
@@ -1413,7 +1431,7 @@ async function openConv(id) {
         card.querySelector(".st").textContent = "· done";
         let j = null;
         try { j = JSON.parse(m.content); } catch (e) {}
-        if (j && j.object === "file" && j.file_id) toolCardFile(card, j);  // (create_document's result: its file card)
+        if (j && j.object === "file" && j.file_id) { toolCardFile(card, j); files.push(j); }  // (create_document's result: its file card)
         else if (j && j.exit_code !== undefined) termResult(card, j);    // (run_command's: its exit code and output)
         else if (/^error: the user did not allow/.test(m.content)) card.querySelector(".st").textContent = "· not run";
       }
