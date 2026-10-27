@@ -20,7 +20,7 @@ jobs:
             tests\test_http.cpp tests\test_api_compat.cpp tests\test_web_tools.cpp tests\test_xcache_pools.cpp `
             tests\test_json.cpp tests\test_sampler.cpp tests\test_gguf_pack.cpp tests\test_quant_rows.cpp `
             tests\test_hc.cpp tests\test_fa.cpp tests\test_route.cpp tests\test_chat_store.cpp tests\test_doc_read.cpp `
-            tests\test_office.cpp tests\test_pdf_scan.cpp
+            tests\test_office.cpp tests\test_pdf_scan.cpp tests\test_audio.cpp
       - name: Unit tests
         shell: powershell
         run: |
@@ -36,11 +36,13 @@ jobs:
             'test_doc_read'     = 'test_doc_read: all passed'
             'test_office'       = 'test_office: all passed'
             'test_pdf_scan'     = 'test_pdf_scan: all passed'
+            'test_audio'        = 'test_audio: all passed'
           }
           $failed = 0
           foreach ($t in $tests.Keys) {
             $o = & ".\bin\$t.exe" 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0 -and $o.Contains($tests[$t])) { Write-Host "PASS $t" }
+            elseif ($LASTEXITCODE -eq -1073741515) { Write-Host "SKIP $t (a system DLL missing on this image: Media Foundation)" }
             else { Write-Host "FAIL $t (exit $LASTEXITCODE)"; Write-Host $o; $failed++ }
           }
           if ($failed) { throw "$failed unit test(s) failed" }

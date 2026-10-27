@@ -57,12 +57,6 @@ std::vector<fs::path> expand(const std::string& a) {
   return out;
 }
 
-std::vector<uint8_t> read_bytes(const fs::path& p) {
-  std::ifstream f(p, std::ios::binary);
-  if (!f) throw std::runtime_error("cannot read " + p.string());
-  return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-}
-
 std::string mmss(double s) {
   char b[32];
   const int t = (int)std::lround(std::max(0.0, s));
@@ -180,7 +174,7 @@ int main(int argc, char** argv) {
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), device.c_str(),
             gpu ? gpu->gpu_bytes / 1073741824.0 : 0.0);
     if (!dump_enc.empty() || !dump_lg.empty()) {  // checks: the first window, as tools/ref_whisper dumps it
-      const std::vector<float> audio = audio::decode_16k(read_bytes(files[0]), 0);
+      const std::vector<float> audio = audio::decode_16k_file(files[0], 0);
       int nf = 0, content = 0;
       const std::vector<float> mel = log_mel(audio, m.hp.n_mels, nf, content);
       std::vector<float> win((size_t)m.hp.n_mels * kWindowFrames);
@@ -213,7 +207,7 @@ int main(int argc, char** argv) {
     for (const fs::path& f : files) {
       try {
         const auto tf = std::chrono::steady_clock::now();
-        const std::vector<float> audio = audio::decode_16k(read_bytes(f), 0);
+        const std::vector<float> audio = audio::decode_16k_file(f, 0);
         Transcriber tr(m, *be);
         size_t shown = 0;
         const std::string name = f.filename().string();

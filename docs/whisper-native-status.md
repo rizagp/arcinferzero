@@ -13,6 +13,8 @@ The plan is [whisper-native.md](whisper-native.md). This page records where the 
 | `zero/transcribez.cpp` | the CLI: files / folders / wildcards, every format, `--out`, a progress bar or `--progress` JSON lines |
 | `zero/npu/whisper_npu.h`, `zero/npu/npu_ir.h` | the NPU path (`--device npu`): the encoder as three graphs (front, one layer for all 32 layers with its weights as int8 + per-32 f16 scale inputs, the final LayerNorm), compiled once (blob cache); the decoder on the iGPU |
 | `tools/server_whisper.h`, `tools/server.cpp` | the server: `--whisper auto\|DIR`, `--whisper-device gpu\|npu`, `--whisper-max-minutes`; `/v1/audio/transcriptions` and `/translations` as OpenAI's API; Whisper loads before the model and `--ctx auto` keeps its GPU memory free; each Whisper step takes the model engine's lock (one GPU command list) |
+| `src/audio.h` (W4) | decoding to 16 kHz mono, streamed: WAV read in blocks, Media Foundation from the file itself (no copy of the upload's bytes for a file on disk), the resampling in pieces (bit-identical to the one-piece resampler: `tests/test_audio.cpp`); times on the file's timeline (a late audio track or a gap of more than 0.1 s becomes silence; an MP4 track's start delay from its edit list); the format read again when the decoder changes it; Ogg Opus repacked as WebM for Media Foundation |
+| `tools/server_whisper.h` library (W4) | the saved transcripts and their queue: `/v1/transcripts` (below) |
 | `src/tokenizer.h`, `src/audio.h`, `build.ps1` | GPT-2 pre-tokenizer constructor; `decode_16k(bytes, max_seconds)` (0 = no limit); `ref_whisper` with `/fp:precise` |
 
 ## Measured
@@ -107,6 +109,40 @@ turn it on): with it, the 14-minute file came out in one-phrase segments, 23.4 %
 Unchanged: `--lang id` greedy and beam 5 give W1's transcripts; `auto` on the 14-minute file too (no window below
 0.8).
 
+**W3 (2026-10-28): the formats in their readers.** Checked here: `@remotion/captions` 4.0.538 (the channel's own copy)
+reads the `captions` file (`createTikTokStyleCaptions`: pages) and parses the SRT (`parseSrt`: every cue,
+`serializeSrt` round trip); Chrome's WebVTT parser reads the VTT (138 cues, 1,242 word timestamps, none refused);
+SRT / VTT / SBV / SRV3 / ASS / TTML pass a structure check (`fmt_check.py`: timings, XML, ASS fields, karaoke `\k`
+summing to each line, no overlap). Two faults found and fixed: a cue's second line could pass 42 characters (the
+words were packed greedily into the first line: 14 cues of the 14-minute file); now a cue takes a word only while
+its lines still fit, and two lines are evened out. And a VTT word timestamp could equal the cue's start (WebVTT asks
+for later): each is now later than the cue's start and the previous one, earlier than its end. Left for the user:
+uploading SRT / VTT to YouTube, importing SRT / ASS / TTML in Premiere and Resolve.
+
+**W4 (2026-10-28): video files and the transcript library.** Every container of the test set (the 60-s clip with a
+still image as video) transcribed, the words at the WAV's times:
+
+| File | Before | Now |
+|---|---|---|
+| MP4 / MOV (H.264 + AAC), WebM (VP9 + Opus), MKV (H.264 + Opus), AVI (MP3, PCM), M4A, MP3 | read | the same samples (bit-identical transcripts) |
+| MKV with 16-kHz AAC | 15 s of garbage (the decoder changes the format at the first sample: 32 kHz stereo was read) | read (the format read again) |
+| MP4 / MKV whose audio starts 2 s into the video | the words 2 s early | on the video's timeline (+2.00 s) |
+| Ogg Opus (.opus, .ogg: WhatsApp / Telegram voice notes) | "unrecognized audio format" | read |
+| Ogg Vorbis | unrecognized | refused by name (no encoder here to test it) |
+
+WMV / WMA: Media Foundation's own format, not in the test set (the ffmpeg at hand has no ASF muxer). A file on disk
+is decoded as it is read: the CLI no longer reads a video of gigabytes into memory first, and 48-kHz samples of
+hours never sit in memory at once.
+
+The transcript library (`/v1/transcripts`, for the Transcript tab): each transcript in its own folder under
+`%USERPROFILE%\arcinferzero\transcripts\<id>\` (`meta.json`, the uploaded file, `transcript.json`); files uploaded
+in pieces (any size the disk holds), a queue transcribed one file at a time with progress, cancel (what was done is
+kept), delete (also while running), exports in every format with the cue options, the media with byte ranges, edits
+saved over the transcript, and a restart that transcribes again what was queued or running. Checked end to end
+against a server (`w4/api.py`, 31 checks): 3 files queued in order, progress while running (33x realtime), a cancel
+at 25 %, 14 export formats, ranges (206 / 416), an edit and a rename, wrong offsets / sizes / languages / ids, a file
+that is not audio, a restart in the middle of a transcription and of an upload, a delete while running.
+
 **NPU mode** (14-minute file): NPU + iGPU greedy 81 s (10.5x realtime; OpenVINO NPU 144 s + 253 s compiling), beam 5
 91 s; logits KL 0.00052 against the f32 reference (64 / 64 top tokens). It keeps the iGPU free for the LLM: 0.73 GiB
 of GPU memory instead of 1.39 GiB.
@@ -120,8 +156,8 @@ normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-a
 
 1. Speed: done (W1, above).
 2. Mixed languages and jargon: done (W2, above).
-3. The formats opened in their targets (YouTube, Premiere / Resolve, Remotion), the bench row, docs (README,
-   CHANGELOG, before-after).
+3. Formats: checked in Remotion and Chrome and by structure (W3, above); YouTube, Premiere and Resolve by the user.
+   Video files and the transcript library: done (W4, above).
 4. Then the web UI tabs (Transcript, Meeting), `arc-recorder.exe` (separate process, WASAPI process loopback +
    microphone, `recorder.json` + named pipe, reconnect after a server crash), Talk mode with the choice of Gemma
    hearing directly or Whisper -> any model.

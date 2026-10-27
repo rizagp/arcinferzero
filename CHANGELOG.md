@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-28: Whisper takes video files and keeps transcripts
+
+- **Video and voice notes**: the audio of MP4, MOV, MKV, WebM, AVI and WMV files, and Ogg Opus voice notes
+  (WhatsApp, Telegram), is transcribed; the times follow the video even when its audio starts late. An MKV with
+  16-kHz AAC used to come out as garbage. Long files are read as they go instead of into memory first.
+- **Saved transcripts** on the server (`/v1/transcripts`, for the Transcript tab): upload files of any size, a queue
+  with progress, cancel, delete, export in every format, edits saved; a server restart continues the queue.
+- **Subtitles**: no line longer than 42 characters any more (the second line could be), and two lines evened out;
+  WebVTT word timing as the standard asks. Checked in Remotion's caption library and Chrome's subtitle parser.
+
 ## 2026-10-28: Whisper for mixed languages and jargon
 
 - **Indonesian and English in one recording**: `--lang id,en` (server `language=id,en`) checks each utterance's

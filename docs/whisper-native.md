@@ -248,6 +248,16 @@ Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` 
   0.73 GiB plus 0.63 GiB of RAM for the NPU's weights). Each Whisper step (a window's encoder, a decoder token) takes
   the model engine's lock, as a request's step does: both engines share one GPU command list. A model switch can come
   between two steps. `/props` has a `whisper` entry (model, device, max_minutes).
+- **Saved transcripts** (`tools/server_whisper.h`, the Transcript tab's server side; files of any size):
+  `GET /v1/transcripts` (newest first: status `uploading` / `queued` / `running` / `done` / `failed` / `cancelled`,
+  `progress`, `position` in the queue, `x_realtime`, `languages`, `words`); `POST /v1/transcripts` `{name, size,
+  language, beam_size, terms, prompt, dual_language, condition_on_previous_text}` -> the record with its `id`;
+  `PUT /v1/transcripts/<id>/source?offset=N` the file's next piece (at most 256 MB each; queued once complete);
+  `GET /v1/transcripts/<id>` the record and its `transcript` (full JSON); `PUT /v1/transcripts/<id>` `{name}`;
+  `PUT /v1/transcripts/<id>/transcript` an edited transcript; `GET /v1/transcripts/<id>/export?format=srt` (any
+  format; `max_chars`, `max_lines`, `max_cue_s`, `word_cues=1`) with the file name; `GET /v1/transcripts/<id>/media`
+  (byte ranges); `POST /v1/transcripts/<id>/cancel`; `DELETE /v1/transcripts/<id>`. One file at a time, after the
+  OpenAI endpoint's requests in its lock; 507 when the disk lacks the file's size + 512 MB.
 - **Safety**: the upload is held in memory within the HTTP body limit (256 MB) and decoded from memory by Media
   Foundation (WAV directly); no path or file name from the client is used; decoding stops past the length limit; one
   transcription runs at a time, at most 4 requests are running or waiting (429 past that); a client that closes its

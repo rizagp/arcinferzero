@@ -1796,6 +1796,12 @@ int main(int argc, char** argv) {
       r.set("input_tokens", cur->srv->count_tokens(chat_body));
       return rs.send(200, "application/json", r.dump());
     }
+    // the saved transcripts and their queue (the Transcript tab; tools/server_whisper.h)
+    if (rq.path == "/v1/transcripts" || rq.path.rfind("/v1/transcripts/", 0) == 0) {
+      if (!wh)
+        return rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
+      return wh->transcripts(rq, rs);
+    }
     // OpenAI audio transcription / translation (multipart upload): the clip goes to a model with an audio encoder
     if (rq.method == "POST" && (rq.path == "/v1/audio/transcriptions" || rq.path == "/v1/audio/translations")) {
       const auto form = apic::parse_multipart(rq.header("content-type"), rq.body);
@@ -2117,6 +2123,9 @@ int main(int argc, char** argv) {
   if (host != "127.0.0.1" && host != "localhost" && host != "::1")  // (review 6.2: there is no authentication)
     fprintf(stderr, "warning: listening on %s: anyone who can reach this address can use the model (no API key)\n",
             host.c_str());
+  // (the saved transcripts' queue: started once the server answers; stopped before the locals its GPU turns use go)
+  if (wh) wh->start_library(std::filesystem::path(app_dir()) / "transcripts");
   http.run();
+  if (wh) wh->stop_library();
   return 0;
 }

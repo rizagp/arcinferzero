@@ -10,6 +10,8 @@
 #include <cctype>
 #include <charconv>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <string>
@@ -64,6 +66,61 @@ class HttpResponse {
     raw(body);
     done_ = true;
   }
+  // A file, or the one byte range a Range header asks for ("bytes=a-b", "bytes=a-", "bytes=-n": 206 with
+  // Content-Range; past the end: 416), read and sent 1 MB at a time (media of gigabytes for a <video> that seeks).
+  void send_file(const std::filesystem::path& p, const std::string& content_type, const std::string& range) {
+    std::error_code ec;
+    const uint64_t size = std::filesystem::file_size(p, ec);
+    std::ifstream f(p, std::ios::binary);
+    if (ec || !f) return send(404, "text/plain", "not found");
+    uint64_t a = 0, b = size;  // [a, b)
+    bool part = false;
+    if (range.rfind("bytes=", 0) == 0 && range.find(',') == std::string::npos) {
+      const std::string r = range.substr(6);
+      const size_t dash = r.find('-');
+      auto num = [](const std::string& s, uint64_t& v) {
+        if (s.empty()) return false;
+        const auto res = std::from_chars(s.data(), s.data() + s.size(), v);
+        return res.ec == std::errc() && res.ptr == s.data() + s.size();
+      };
+      auto unsatisfiable = [&]() {
+        extra += "Content-Range: bytes */" + std::to_string(size) + "\r\n";
+        send(416, "text/plain", "range not satisfiable");
+      };
+      uint64_t x = 0, y = 0;
+      const std::string l = dash == std::string::npos ? r : r.substr(0, dash);
+      const std::string rr = dash == std::string::npos ? "" : r.substr(dash + 1);
+      if (dash != std::string::npos && l.empty() && num(rr, y)) {  // the last y bytes
+        if (y == 0 || size == 0) return unsatisfiable();
+        a = size - std::min(y, size);
+        part = true;
+      } else if (dash != std::string::npos && num(l, x) && (rr.empty() || (num(rr, y) && y >= x))) {
+        if (x >= size) return unsatisfiable();
+        a = x;
+        b = rr.empty() ? size : std::min(size, y + 1);
+        part = true;
+      }
+    }
+    std::string h = std::string("HTTP/1.1 ") + (part ? "206 Partial Content" : "200 OK") + "\r\n";
+    h += "Content-Type: " + content_type + "\r\n";
+    h += "Content-Length: " + std::to_string(b - a) + "\r\nAccept-Ranges: bytes\r\n";
+    if (part) h += "Content-Range: bytes " + std::to_string(a) + "-" + std::to_string(b - 1) + "/" + std::to_string(size) + "\r\n";
+    h += cors();
+    h += extra;
+    h += "Connection: keep-alive\r\n\r\n";
+    raw(h);
+    f.seekg((std::streamoff)a);
+    std::string buf(1 << 20, '\0');
+    for (uint64_t left = b - a; left > 0 && ok_;) {
+      const size_t n = (size_t)std::min<uint64_t>(left, buf.size());
+      f.read(buf.data(), (std::streamsize)n);
+      const size_t got = (size_t)f.gcount();
+      if (got == 0) { ok_ = false; break; }  // (the file shrank: the length promised cannot be kept)
+      raw(got == buf.size() ? buf : buf.substr(0, got));
+      left -= got;
+    }
+    done_ = true;
+  }
   // Server-sent events: begin, then write events, then end (the connection is closed afterwards).
   void sse_begin() {
     if (on_event) return;
@@ -104,7 +161,9 @@ class HttpResponse {
   static const char* reason(int s) {
     switch (s) {
       case 200: return "OK"; case 204: return "No Content"; case 400: return "Bad Request"; case 403: return "Forbidden";
-      case 404: return "Not Found"; case 413: return "Payload Too Large"; case 500: return "Internal Server Error";
+      case 404: return "Not Found"; case 409: return "Conflict"; case 413: return "Payload Too Large";
+      case 416: return "Range Not Satisfiable"; case 429: return "Too Many Requests"; case 500: return "Internal Server Error";
+      case 507: return "Insufficient Storage";
       case 503: return "Service Unavailable"; default: return "OK";
     }
   }

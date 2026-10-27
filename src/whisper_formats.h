@@ -66,7 +66,38 @@ struct Cue {
   double start = 0, end = 0;
   std::vector<Word> words;
   std::vector<std::string> lines;
+  std::vector<size_t> first;  // (each line's first word)
 };
+// words [a, b) as lines of at most max_chars (a longer word alone on its line): the lines' first words, or empty
+// when they take more than max_lines. Two lines: the split that evens them out (the top one not longer than needed)
+inline std::vector<size_t> line_breaks(const std::vector<Word>& w, size_t a, size_t b, int max_chars, int max_lines) {
+  auto len = [&](size_t i, size_t j) {  // (words i..j-1 joined by spaces)
+    size_t n = 0;
+    for (size_t k = i; k < j; ++k) n += w[k].text.size() + (k > i ? 1 : 0);
+    return n;
+  };
+  if (a >= b) return {a};
+  if (len(a, b) <= (size_t)max_chars) return {a};
+  if (max_lines == 2) {
+    size_t best = 0, score = SIZE_MAX;
+    for (size_t k = a + 1; k < b; ++k) {
+      const size_t l1 = len(a, k), l2 = len(k, b);
+      if ((l1 > (size_t)max_chars && k > a + 1) || (l2 > (size_t)max_chars && b > k + 1)) continue;
+      const size_t s = std::max(l1, l2) * 2 + (l1 > l2 ? 1 : 0);  // (even; a tie: the longer line below)
+      if (s < score) { score = s; best = k; }
+    }
+    if (best) return {a, best};
+    return {};
+  }
+  std::vector<size_t> f = {a};
+  size_t n = 0;
+  for (size_t k = a; k < b; ++k) {
+    const size_t add = w[k].text.size() + (k > f.back() ? 1 : 0);
+    if (k > f.back() && n + add > (size_t)max_chars) { f.push_back(k); n = w[k].text.size(); }
+    else n += add;
+  }
+  return (int)f.size() <= max_lines ? f : std::vector<size_t>{};
+}
 inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
   std::vector<Word> all;
   for (const Segment& g : r.segments) {
@@ -90,17 +121,14 @@ inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
     }
   }
   std::vector<Cue> cues;
-  const size_t limit = (size_t)o.max_chars * o.max_lines;
-  auto text_len = [](const Cue& c) {
-    size_t n = 0;
-    for (const Word& w : c.words) n += w.text.size() + (n ? 1 : 0);
-    return n;
-  };
   Cue cur;
   for (size_t i = 0; i < all.size(); ++i) {
     const Word& w = all[i];
     if (!cur.words.empty()) {
-      const bool long_text = text_len(cur) + 1 + w.text.size() > limit;
+      // (the cue's words with this one must still fit its lines as they will be laid out)
+      std::vector<Word> with = cur.words;
+      with.push_back(w);
+      const bool long_text = line_breaks(with, 0, with.size(), o.max_chars, o.max_lines).empty();
       const bool long_time = w.end - cur.start > o.max_s;
       const bool pause = w.start - cur.words.back().end > o.pause_s;
       const char last = cur.words.back().text.empty() ? 0 : cur.words.back().text.back();
@@ -112,16 +140,15 @@ inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
     cur.end = w.end;
   }
   if (!cur.words.empty()) cues.push_back(cur);
-  for (Cue& c : cues) {  // lines of at most max_chars, balanced
-    std::string line;
-    for (const Word& w : c.words) {
-      if (!line.empty() && line.size() + 1 + w.text.size() > (size_t)o.max_chars && (int)c.lines.size() + 1 < o.max_lines) {
-        c.lines.push_back(line);
-        line.clear();
-      }
-      line += (line.empty() ? "" : " ") + w.text;
+  for (Cue& c : cues) {  // lines of at most max_chars, two evened out
+    c.first = line_breaks(c.words, 0, c.words.size(), o.max_chars, o.max_lines);
+    if (c.first.empty()) c.first = {0};  // (one word longer than max_lines lines: alone)
+    for (size_t l = 0; l < c.first.size(); ++l) {
+      std::string line;
+      for (size_t k = c.first[l]; k < (l + 1 < c.first.size() ? c.first[l + 1] : c.words.size()); ++k)
+        line += (line.empty() ? "" : " ") + c.words[k].text;
+      c.lines.push_back(line);
     }
-    if (!line.empty()) c.lines.push_back(line);
     if (c.end <= c.start) c.end = c.start + 0.3;
   }
   for (size_t i = 0; i + 1 < cues.size(); ++i)  // (no overlap)
@@ -223,24 +250,27 @@ inline std::string to_srt(const std::vector<Cue>& cues) {
   }
   return o;
 }
-// WebVTT; word_timing: <hh:mm:ss.mmm> before each word after the first (karaoke-style highlighting)
+// WebVTT; word_timing: <hh:mm:ss.mmm> before each word after the first (karaoke-style highlighting), each later
+// than the cue's start and the one before and earlier than its end, as WebVTT asks (a word that starts with the one
+// before it, or past the end, gets none)
 inline std::string to_vtt(const std::vector<Cue>& cues, bool word_timing) {
   std::string o = "WEBVTT\n\n";
   for (const Cue& c : cues) {
     o += clock(c.start, '.', 3) + " --> " + clock(c.end, '.', 3) + "\n";
     if (word_timing && c.words.size() > 1) {
-      std::string line;
-      size_t chars = 0;
-      int lines = 1;
+      std::string text;
+      // (the times as they are written: milliseconds)
+      long long last = std::llround(c.start * 1000), end = std::llround(c.end * 1000);
       for (size_t w = 0; w < c.words.size(); ++w) {
-        const std::string& t = c.words[w].text;
-        if (w && chars + 1 + t.size() > 42 && lines < 2) { line += "\n"; chars = 0; ++lines; }
-        else if (w) { line += " "; ++chars; }
-        if (w) line += "<" + clock(c.words[w].start, '.', 3) + ">";
-        line += xml(t);
-        chars += t.size();
+        if (w) text += std::find(c.first.begin(), c.first.end(), w) != c.first.end() ? "\n" : " ";
+        const long long t = std::llround(c.words[w].start * 1000);
+        if (w && t > last && t < end) {
+          text += "<" + clock(t / 1000.0, '.', 3) + ">";
+          last = t;
+        }
+        text += xml(c.words[w].text);
       }
-      o += line + "\n\n";
+      o += text + "\n\n";
     } else {
       for (const std::string& l : c.lines) o += xml(l) + "\n";
       o += "\n";
