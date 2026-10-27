@@ -734,9 +734,9 @@ function readDataURL(f) {
   return new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = fail; r.readAsDataURL(f); });
 }
 // a file into this chat's folder (the same file is kept once): { id, filename, kind, bytes, url }
-async function upload(blob, name) {
+async function upload(blob, name, chatId = ensureConv()) {
   const fd = new FormData();
-  fd.append("chat_id", ensureConv());
+  fd.append("chat_id", chatId);
   fd.append("file", blob, name);
   const res = await fetch("/v1/files", { method: "POST", body: fd });
   const j = await res.json().catch(() => ({}));
@@ -745,10 +745,10 @@ async function upload(blob, name) {
 }
 const fileItem = (j) => ({ kind: j.kind, url: j.url, id: j.id, name: j.filename, bytes: j.bytes });
 async function addFiles(files) {
-  const ep = epoch;
+  const ep = epoch, chat = ensureConv();  // (every file into the chat they were dropped on, also after a switch)
   for (const f of files) {
     try {
-      const it = fileItem(await upload(f, f.name));
+      const it = fileItem(await upload(f, f.name, chat));
       if (ep !== epoch) { note(f.name + " was saved in the chat it was attached to"); continue; }
       pending.push(it);
       renderAtts();
@@ -1113,14 +1113,18 @@ const WEB_VOICE_SYSTEM = "In this spoken conversation the web tools run in the b
   "number, and its results arrive later in a message that starts with [Results of #number]. When you call a tool, also " +
   "say one short sentence that you are looking it up; never guess the results. When results arrive, answer from them.";
 const bg = { n: 0, ready: [], ctl: new AbortController() };
+// the last user bubble on screen (send() adds one before its first await: compare before and after to know it sent)
+const lastUser = () => [...thread.querySelectorAll(".msg.user")].pop();
 function bgDeliver() {
-  if (!bg.ready.length || controller || voice.speaking || rec.on || input.value.trim() || pending.length) return;
+  // (every slot busy: send() would not post, so the results wait for the next call, after an answer or a pause)
+  if (!bg.ready.length || controller || voice.speaking || rec.on || input.value.trim() || pending.length || slotsFull()) return;
   const items = bg.ready.splice(0);
   voice.last = null;  // (a pause-joined utterance must not take the results message with it)
   input.value = items.map((r) => "[Results of #" + r.id + ": " + r.label + "]\n" + r.text).join("\n\n");
+  const before = lastUser();
   send();
-  const u = [...thread.querySelectorAll(".msg.user")].pop();
-  if (u) {  // (shown folded: the model reads the whole text)
+  const u = lastUser();
+  if (u && u !== before) {  // (shown folded: the model reads the whole text; never an older bubble)
     const d = document.createElement("details");
     d.innerHTML = "<summary></summary><div></div>";
     d.querySelector("summary").textContent = "results arrived: " + items.map((r) => "#" + r.id + " " + r.label).join(", ");
@@ -1362,6 +1366,7 @@ async function termOpen() {
 function termClose() {
   const id = convId, t = id && terms.get(id);
   if (!t?.open) return;
+  t.ctl?.abort();  // (a command still running ends with the terminal: the server stops a request that went away)
   t.open = false;
   t.log.push({ by: "sep", out: "terminal closed · " + hhmm(Date.now()) });
   fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: id, reset: true }) }).catch(() => {});
@@ -1549,9 +1554,10 @@ function turnStats(el, st, job) {
   el.querySelector(".progress")?.remove();
   const stats = el.querySelector(".stats"), t = st.timings;
   if (!t) { stats.textContent = st.note ? "" : "stopped"; return; }
-  stats.textContent = "prompt " + (t.prompt_n + t.cache_n) + " tok (" + t.cache_n + " cached) in " + (t.prompt_ms / 1000).toFixed(1) +
-    " s · " + t.prompt_per_second.toFixed(1) + " t/s · generated " + t.predicted_n + " tok at " + t.predicted_per_second.toFixed(2) + " t/s";
-  job.used = t.prompt_n + t.cache_n + t.predicted_n;
+  const n = (k) => Number(t[k]) || 0;  // (a field missing: 0, not an exception that loses the answer's last steps)
+  stats.textContent = "prompt " + (n("prompt_n") + n("cache_n")) + " tok (" + n("cache_n") + " cached) in " + (n("prompt_ms") / 1000).toFixed(1) +
+    " s · " + n("prompt_per_second").toFixed(1) + " t/s · generated " + n("predicted_n") + " tok at " + n("predicted_per_second").toFixed(2) + " t/s";
+  job.used = n("prompt_n") + n("cache_n") + n("predicted_n");
   if (onScreen(job)) { used = job.used; showUse(); }
 }
 
@@ -1687,7 +1693,7 @@ async function send() {
         st = { reasoning: "", answer: "", toolCalls: [], timings: null };
         inHistory = false;
         if (!msg.content.trim()) {  // (it said nothing with the call: a short spoken note instead of another turn)
-          const lang = (speechSynthesis.getVoices().find((v) => v.voiceURI === $("tts").value)?.lang || navigator.language || "en").toLowerCase();
+          const lang = ((hasTts() && speechSynthesis.getVoices().find((v) => v.voiceURI === $("tts").value)?.lang) || navigator.language || "en").toLowerCase();
           st.answer = lang.startsWith("id") ? "Sebentar, saya carikan dulu." : "One moment, let me look that up.";
           el.querySelector(".progress")?.remove();
           el.querySelector(".content").textContent = st.answer;
@@ -1858,8 +1864,10 @@ async function deleteConv(c) {
 }
 $("search").addEventListener("input", renderConvs);
 $("stopall").addEventListener("click", () => { for (const j of jobs.values()) j.controller.abort(); });
+let openSeq = 0;  // (the latest chat opened or started: an older openConv's fetch that ends later is dropped)
 function resetChat() {
   epoch++;
+  openSeq++;
   controller = null;  // (an answer still running goes on as its chat's job: opening the chat again shows it)
   if (voice.on) voice.stop();
   if (rec.on) rec.stop(false);
@@ -1892,7 +1900,7 @@ function partsMedia(m) {
 }
 // an earlier conversation on screen again, from its saved messages
 async function openConv(id) {
-  const job = jobs.get(id);
+  const job = jobs.get(id), seq = ++openSeq;
   let c = {};
   if (!job)
     try {
@@ -1900,7 +1908,8 @@ async function openConv(id) {
       const r = await fetch("/v1/chats/" + id);
       if (!r.ok) throw new Error("HTTP " + r.status);
       c = await r.json();
-    } catch (e) { note("opening the chat failed: " + (e.message || e)); return; }
+    } catch (e) { if (seq === openSeq) note("opening the chat failed: " + (e.message || e)); return; }
+  if (seq !== openSeq) return;  // (another chat was opened or started while this one loaded: that one stays)
   resetChat();
   convId = id;
   if (!terms.has(id) && c.terminal) terms.set(id, { open: !!c.terminal.open, cwd: c.terminal.cwd || "", venv: c.terminal.venv || "", shell: c.terminal.shell,
@@ -2118,13 +2127,19 @@ const rec = {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (e) { note("no microphone: " + (e.message || e)); return; }
-    this.ctx = new AudioContext();
-    this.rate = this.ctx.sampleRate;
-    this.src = this.ctx.createMediaStreamSource(this.stream);
-    this.node = this.ctx.createScriptProcessor(4096, 1, 1);
-    this.node.onaudioprocess = (e) => this.frames.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-    this.src.connect(this.node);
-    this.node.connect(this.ctx.destination);
+    try {  // (the audio graph failed: the microphone let go, not left on until the tab closes)
+      this.ctx = new AudioContext();
+      this.rate = this.ctx.sampleRate;
+      this.src = this.ctx.createMediaStreamSource(this.stream);
+      this.node = this.ctx.createScriptProcessor(4096, 1, 1);
+      this.node.onaudioprocess = (e) => this.frames.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      this.src.connect(this.node);
+      this.node.connect(this.ctx.destination);
+    } catch (e) {
+      this.stop(false);
+      note("cannot record: " + (e.message || e));
+      return;
+    }
     this.frames = []; this.t0 = performance.now(); this.on = true;
     const tick = () => { const s = Math.floor((performance.now() - this.t0) / 1000); $("rectime").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
     tick(); this.timer = setInterval(tick, 250);
@@ -2150,7 +2165,9 @@ const joinPcm = (frames) => {
 async function sendVoice() {
   const r = rec.stop(true);
   if (!r || !r.frames.length) return;
-  const url = await pcmToWav16k(joinPcm(r.frames), r.rate);
+  let url;
+  try { url = await pcmToWav16k(joinPcm(r.frames), r.rate); }
+  catch (e) { note("the recording could not be converted: " + (e.message || e)); return; }
   if (caps.stt) {
     voice.status("writing the voice message as text…");
     try {
@@ -2181,6 +2198,7 @@ const VOICE_SYSTEM = "This is a spoken conversation: the user talks to you throu
   "no Markdown, no lists, tables or code unless asked, numbers and abbreviations written as they are spoken. If you did " +
   "not catch what the user said, ask again.";
 const VOICE_END_MS = 1000, VOICE_MIN_MS = 300, VOICE_MAX_MS = 30000, VOICE_PRE_MS = 300;
+const hasTts = () => !!(window.speechSynthesis && window.SpeechSynthesisUtterance);  // (the browser can speak)
 let hasAudio = false;
 const voice = {
   on: false, stream: null, ctx: null, node: null, src: null,
@@ -2193,13 +2211,19 @@ const voice = {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (e) { this.status("no microphone: " + (e.message || e)); return; }
-    this.ctx = new AudioContext();
-    this.rate = this.ctx.sampleRate;
-    this.src = this.ctx.createMediaStreamSource(this.stream);
-    this.node = this.ctx.createScriptProcessor(2048, 1, 1);
-    this.node.onaudioprocess = (e) => this.frame(new Float32Array(e.inputBuffer.getChannelData(0)));
-    this.src.connect(this.node);
-    this.node.connect(this.ctx.destination);  // (the processor runs only while connected; it outputs silence)
+    try {  // (the audio graph failed: the microphone let go, not left on until the tab closes)
+      this.ctx = new AudioContext();
+      this.rate = this.ctx.sampleRate;
+      this.src = this.ctx.createMediaStreamSource(this.stream);
+      this.node = this.ctx.createScriptProcessor(2048, 1, 1);
+      this.node.onaudioprocess = (e) => this.frame(new Float32Array(e.inputBuffer.getChannelData(0)));
+      this.src.connect(this.node);
+      this.node.connect(this.ctx.destination);  // (the processor runs only while connected; it outputs silence)
+    } catch (e) {
+      this.stop();
+      this.status("cannot listen: " + (e.message || e));
+      return;
+    }
     this.on = true;
     updateButtons();
     this.status("listening…");
@@ -2211,6 +2235,8 @@ const voice = {
     this.node = this.src = this.ctx = this.stream = null;
     this.hush();
     this.speaking = false; this.chunks = []; this.pre = [];
+    this.last = this.merge = null;  // (Talk started again soon after: no joining to the old session's utterance)
+    this.spoke = false; this.heard = 0; this.quiet = 0;
     updateButtons();
     this.status("");
   },
@@ -2265,24 +2291,35 @@ const voice = {
     let o = 0;
     for (const f of frames) { pcm.set(f, o); o += f.length; }
     this.status("thinking…");
-    const url = await pcmToWav16k(pcm, rate);
+    let url;
+    try { url = await pcmToWav16k(pcm, rate); }  // (not awaited by its caller: no rejection left unhandled)
+    catch (e) { this.status(String(e.message || e)); return; }
     let said = "";
     if (caps.stt) {  // (Whisper writes it down: the model gets text)
       try { said = await transcribe(url); } catch (e) { this.status(String(e.message || e)); return; }
       if (!said) { this.status("listening…"); return; }
     } else pending.push({ kind: "audio", url });
     for (let i = 0; i < 50 && controller; i++) await new Promise((r) => setTimeout(r, 20));  // (the stopped answer winding up)
-    if (this.merge) {  // the previous utterance and its answer leave the conversation
-      const i = history.indexOf(this.merge.msg);
-      if (i >= 0) history.splice(i);
-      for (let e = this.merge.el; e;) { const nx = e.nextElementSibling; e.remove(); e = nx; }
+    if (!this.on) {  // (Talk was stopped meanwhile: what was said waits in the box instead of being sent)
+      if (said) input.value = said;
       this.merge = null;
+      return;
+    }
+    // the previous utterance and its answer leave the conversation: only while that message is still this chat's
+    // (another chat opened, or a deleted message, and nothing is removed)
+    const m = this.merge;
+    this.merge = null;
+    if (m && m.el?.isConnected && history.includes(m.msg)) {
+      history.splice(history.indexOf(m.msg));
+      for (let e = m.el; e;) { const nx = e.nextElementSibling; e.remove(); e = nx; }
     }
     input.value = said;
     this.spoke = false;
+    const before = lastUser();
     send();
-    const el = [...thread.querySelectorAll(".msg.user")].pop();
-    this.last = { frames, at, el, msg: el?._h };
+    const el = lastUser();
+    // (send() did not post, every slot busy: no message of this utterance to join the next one to; the text stays)
+    this.last = el && el !== before ? { frames, at, el, msg: el._h } : null;
   },
   // streamed answer text: complete sentences go to the speech queue
   feed(t) {
@@ -2296,7 +2333,7 @@ const voice = {
   say(text) {
     const t = text.replace(/```[\s\S]*?```/g, " ").replace(/[*_`#>|~]+/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
       .replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim();
-    if (!t || !/[\p{L}\p{N}]/u.test(t)) return;
+    if (!t || !/[\p{L}\p{N}]/u.test(t) || !hasTts()) return;  // (a browser without speech output: the text only)
     const u = new SpeechSynthesisUtterance(t);
     const v = speechSynthesis.getVoices().find((x) => x.voiceURI === $("tts").value);
     if (v) { u.voice = v; u.lang = v.lang; }
@@ -2310,7 +2347,7 @@ const voice = {
     };
     speechSynthesis.speak(u);
   },
-  hush() { this.pend = ""; speechSynthesis.cancel(); this.talking = false; },
+  hush() { this.pend = ""; if (hasTts()) speechSynthesis.cancel(); this.talking = false; },
 };
 // microphone samples (any rate) -> 16 kHz mono 16-bit WAV data URL
 function pcmToWav16k(pcm, rate) { return toWav16k(new Blob([encodeWav(pcm, rate)], { type: "audio/wav" })); }
@@ -2420,12 +2457,14 @@ async function deleteMsg(el) {
     : "Delete this answer?")) return;
   if (mine) removeTurn(el);
   else {  // (only the answer: the user's message stays)
-    const range = turnRange(el), i = history.indexOf(el._h);
-    const from = history[range[0]]?.role === "user" ? range[0] + 1 : range[0];
-    const gone = new Set(history.splice(from, range[1] - from));
-    for (const m of [...thread.querySelectorAll(".msg")]) if (gone.has(m._h)) m.remove();
-    used = 0; showUse();
-    if (i < 0) el.remove();
+    const range = turnRange(el);
+    if (range) {
+      const from = history[range[0]]?.role === "user" ? range[0] + 1 : range[0];
+      const gone = new Set(history.splice(from, range[1] - from));
+      for (const m of [...thread.querySelectorAll(".msg")]) if (gone.has(m._h)) m.remove();
+      used = 0; showUse();
+    }
+    el.remove();  // (an answer not in the history, e.g. one that was stopped: only its bubble)
   }
   await saveConv(true);
   if (files.length) {

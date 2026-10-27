@@ -17,6 +17,17 @@
   or not at all, never from a throwing destructor; NPU memory import and `OpenCL.dll` cleaned up on failure.
 - Checked and not changed: the encoders' GPU buffers when a projector is refused (they load lazily: nothing is
   allocated yet); tokenizing before the context check (memory now bounded by the body budget).
+- **Web UI** (DeepSeek's second audit, each finding tried in the browser):
+  - Talk while every slot was busy could delete an older message and everything after it (the next utterance
+    "joined" a message that was not its own); background web results could overwrite an older message's bubble.
+    Both now act only on a message they really posted, and the results wait until a slot is free.
+  - Stopping Talk clears its utterance state; something said just before stopping lands in the message box instead
+    of being sent.
+  - Opening chat A and then chat B quickly could show A (its slower load won); a file upload going on while you
+    switch chats stays in the chat it was dropped on.
+  - The microphone is released when the browser cannot build its audio graph; closing the terminal ends the command
+    still running; deleting an answer not in the history no longer throws; voice conversion errors are shown; pages
+    in browsers without speech output keep working.
 
 ## 2026-10-27: web UI audit: every function tried, security and robustness fixes
 
