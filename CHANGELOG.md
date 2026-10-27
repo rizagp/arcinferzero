@@ -2,6 +2,10 @@
 
 ## 2026-10-28: Transcripts and Meetings in the web UI
 
+- **A chat reads your other chats and recordings**: type `@` to attach an earlier chat or a recording / meeting
+  next to the files, or just ask ("what budget did we settle on for Bali?"): the model searches your other chats
+  (list_chats / search_chats) and reads the part it needs. Files now tell the model an image's size and a
+  recording's length.
 - **Meetings recorded apart from the browser**: `arc-server record -App Zoom.exe` records your microphone and
   the Zoom (or Teams, or any app's) sound as two tracks until `arc-server record-stop`; it goes on if the server
   stops, and the Meetings tab transcribes it as Me / Others when it ends.

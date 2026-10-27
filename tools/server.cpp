@@ -756,6 +756,10 @@ class Server {
 //                    them from their images first, up to 4 a call, when it has an image encoder (FileVision)
 //   search_file {query, file_id, chat_id, top_k}: the passages of a document (or of every document of the chat)
 //                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
+//   read_file / search_file also take "chat:<id>" (another chat: a section per exchange) and "transcript:<id>"
+//                    (a recording or meeting of the Whisper library: its summary, then 5-minute sections) as file_id
+//   list_chats {query, limit, chat_id}: the other chats, newest first (query: in their text)
+//   search_chats {query, top_k, chat_id}: their exchanges that fit the query best (BM25)
 //   run_command {command, chat_id, timeout_s}: one PowerShell command in the chat's folder (tools/server_terminal.h),
 //                    sent by the page only after the user allowed it; refused (403) to any computer but this one.
 //                    session: true: in the chat's terminal (folder and environment kept for the next command; the
@@ -857,6 +861,14 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         j.set("kind", i.kind);
         j.set("bytes", (double)i.bytes);
         j.set("uploaded", when(i.created));
+        if (i.kind == "image" || i.kind == "audio" || i.kind == "video") {  // (its size or length: an image's header)
+          std::string head(i.kind == "image" ? 65536 : 0, '\0');
+          std::ifstream hf(std::filesystem::path(i.path), std::ios::binary);
+          hf.read(head.data(), (std::streamsize)head.size());
+          head.resize((size_t)hf.gcount());
+          const std::string x = files::extent_of(i, head);
+          if (!x.empty()) j.set(i.kind == "image" ? "size" : "length", x.substr(2));
+        }
         std::string src;
         j.set("written_by_model", st.source(i.id, src));
         j.set("chats", (double)std::max(held.size(), u == uses.end() ? size_t(0) : u->second.size()));
@@ -891,7 +903,16 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       if (query.empty()) return fail(400, "query required");
       const size_t top = (size_t)std::clamp(a["top_k"].as_number(5), 1.0, 10.0);
       std::vector<files::Info> targets;
-      if (!a["file_id"].str().empty()) {
+      std::vector<std::shared_ptr<const rdoc::Index>> ixs;
+      if (files::is_virtual(a["file_id"].str())) {  // (another chat, or a transcript)
+        files::VirtualDoc v;
+        if (!files::virtual_doc(a["file_id"].str(), v)) return fail(404, "no " + a["file_id"].str() + " (list_chats shows the chats)");
+        files::Info i;
+        i.id = a["file_id"].str();
+        i.name = v.title;
+        targets.push_back(i);
+        ixs.push_back(v.ix);
+      } else if (!a["file_id"].str().empty()) {
         files::Info i;
         if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
         targets.push_back(i);
@@ -909,11 +930,10 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       } else return fail(400, "file_id (or chat_id: every document of the chat) required");
       struct Found { double score; size_t file, chunk; };
       std::vector<Found> all;
-      std::vector<std::shared_ptr<const rdoc::Index>> ixs;
       for (size_t f = 0; f < targets.size(); ++f) {
-        ixs.push_back(files::doc_index(targets[f]));
-        if (!ixs.back()) continue;
-        for (const auto& h : ixs.back()->search(query, top)) all.push_back({h.score, f, h.chunk});
+        if (ixs.size() <= f) ixs.push_back(files::doc_index(targets[f]));
+        if (!ixs[f]) continue;
+        for (const auto& h : ixs[f]->search(query, top)) all.push_back({h.score, f, h.chunk});
       }
       std::sort(all.begin(), all.end(), [](const Found& x, const Found& y) { return x.score > y.score; });
       if (all.size() > top) all.resize(top);
@@ -952,31 +972,118 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
                       "precise words, or read a result's section (read_file)");
       return reply(200, r);
     }
+    // the other chats (the web UI's, one reads another): listed newest first (a query: in their text), or searched
+    // by their exchanges (BM25); each is read with read_file {"file_id": "chat:<id>"} (an outline per exchange)
+    if (rq.path == "/v1/tools/list_chats" || rq.path == "/v1/tools/search_chats") {
+      const std::string q = a["query"].str(), ql = files::lower(q), self = a["chat_id"].str();
+      struct C { std::string id, title, model, snippet; int64_t at; };
+      std::vector<C> cs;
+      for (const auto& [cid, text] : st.chats_all()) {
+        if (cid == self) continue;
+        Json c;
+        if (!Json::try_parse(text, c)) continue;
+        if (rq.path == "/v1/tools/list_chats" && !ql.empty() && files::lower(text).find(ql) == std::string::npos) continue;
+        cs.push_back({cid, c["title"].str("chat"), c["model"].str(), c["snippet"].str(), (int64_t)(c["at"].as_number(0) / 1000)});
+      }
+      std::sort(cs.begin(), cs.end(), [](const C& x, const C& y) { return x.at > y.at; });
+      if (rq.path == "/v1/tools/list_chats") {
+        const size_t limit = (size_t)std::clamp(a["limit"].as_number(20), 1.0, 100.0);
+        Json d = Json::array();
+        for (const C& c : cs) {
+          if (d.size() >= limit) break;
+          files::VirtualDoc v;
+          Json j = Json::object();
+          j.set("file_id", "chat:" + c.id);
+          j.set("title", c.title);
+          j.set("updated", when(c.at));
+          if (files::virtual_doc("chat:" + c.id, v)) j.set("exchanges", (double)v.parts);
+          if (!c.model.empty()) j.set("model", c.model);
+          if (!c.snippet.empty()) j.set("snippet", c.snippet);
+          d.push(j);
+        }
+        Json r = Json::object();
+        r.set("chats", d);
+        r.set("count", (double)d.size());
+        r.set("note", "read one with read_file {\"file_id\": \"chat:<id>\"} (long ones: their outline, one section per exchange), "
+                      "or find passages in all of them with search_chats");
+        return reply(200, r);
+      }
+      if (q.empty()) return fail(400, "query required");
+      const size_t top = (size_t)std::clamp(a["top_k"].as_number(5), 1.0, 10.0);
+      struct Hit { double score; size_t chat, chunk; };
+      std::vector<Hit> hits;
+      std::vector<std::shared_ptr<const rdoc::Index>> ixs(cs.size());
+      for (size_t k = 0; k < cs.size(); ++k) {
+        files::VirtualDoc v;
+        if (!files::virtual_doc("chat:" + cs[k].id, v)) continue;
+        ixs[k] = v.ix;
+        for (const auto& h : v.ix->search(q, top)) hits.push_back({h.score, k, h.chunk});
+      }
+      std::sort(hits.begin(), hits.end(), [](const Hit& x, const Hit& y) { return x.score > y.score; });
+      if (hits.size() > top) hits.resize(top);
+      Json res = Json::array();
+      size_t given = 0;
+      for (const Hit& h : hits) {
+        const rdoc::Chunk& c = ixs[h.chat]->chunks[h.chunk];
+        if (res.size() && given + c.text.size() > files::read_budget(ctx)) continue;
+        given += c.text.size();
+        Json j = Json::object();
+        j.set("file_id", "chat:" + cs[h.chat].id);
+        j.set("title", cs[h.chat].title);
+        j.set("section", (double)(c.section + 1));
+        j.set("exchange", ixs[h.chat]->outline[(size_t)c.section].title);
+        char sc[16];
+        snprintf(sc, sizeof sc, "%.1f", h.score);
+        j.set("score", std::string(sc));
+        j.set("text", c.text);
+        res.push(j);
+      }
+      Json r = Json::object();
+      r.set("results", res);
+      r.set("chats_searched", (double)cs.size());
+      if (res.size() == 0) r.set("note", "no exchange has these words: try other words, or list_chats");
+      return reply(200, r);
+    }
     if (rq.path == "/v1/tools/read_file") {
       files::Info i;
-      if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
       Json r = Json::object();
-      r.set("file_id", i.id);
-      r.set("filename", i.name);
-      r.set("kind", i.kind);
-      r.set("bytes", (double)i.bytes);
-      r.set("uploaded", when(i.created));
-      std::string src;
-      if (st.source(i.id, src)) {  // (the model's own document: its source)
-        Json sj;
-        if (Json::try_parse(src, sj)) r.set("source", sj);
-        r.set("note", "a document written with create_document: 'source' holds its arguments; to correct it, change them and call create_document again");
-        return reply(200, r);
+      std::shared_ptr<const rdoc::Index> ix;
+      if (files::is_virtual(a["file_id"].str())) {  // (another chat, or a transcript: read as a document)
+        files::VirtualDoc v;
+        if (!files::virtual_doc(a["file_id"].str(), v)) return fail(404, "no " + a["file_id"].str() + " (list_chats shows the chats)");
+        i.id = a["file_id"].str();
+        i.name = v.title;
+        i.kind = "document";
+        r.set("file_id", i.id);
+        r.set("title", v.title);
+        r.set("kind", v.kind);
+        r.set(v.kind == "chat" ? "exchanges" : "minutes", (double)v.parts);
+        r.set("updated", when(v.at));
+        ix = v.ix;
+      } else {
+        if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+        r.set("file_id", i.id);
+        r.set("filename", i.name);
+        r.set("kind", i.kind);
+        r.set("bytes", (double)i.bytes);
+        r.set("uploaded", when(i.created));
+        std::string src;
+        if (st.source(i.id, src)) {  // (the model's own document: its source)
+          Json sj;
+          if (Json::try_parse(src, sj)) r.set("source", sj);
+          r.set("note", "a document written with create_document: 'source' holds its arguments; to correct it, change them and call create_document again");
+          return reply(200, r);
+        }
+        if (i.kind != "document") {
+          r.set("note", i.kind == "image" || i.kind == "audio"
+                            ? "an " + i.kind + ": its content is not text; the user can attach it to a message (@) for a model that " +
+                                  (i.kind == "image" ? "sees images" : "hears audio")
+                            : "a " + i.kind + " file: its content is not text");
+          return reply(200, r);
+        }
+        ix = files::doc_index(i);
+        if (!ix) return fail(500, "cannot read the file");
       }
-      if (i.kind != "document") {
-        r.set("note", i.kind == "image" || i.kind == "audio"
-                          ? "an " + i.kind + ": its content is not text; the user can attach it to a message (@) for a model that " +
-                                (i.kind == "image" ? "sees images" : "hears audio")
-                          : "a " + i.kind + " file: its content is not text");
-        return reply(200, r);
-      }
-      auto ix = files::doc_index(i);
-      if (!ix) return fail(500, "cannot read the file");
       // the pages this call asks for ("12" or "12-15"; none: from 1, to 0)
       const bool by_pages = !a["pages"].str().empty() || a["pages"].is_number();
       const std::string pg = a["pages"].is_number() ? std::to_string((int)a["pages"].as_number()) : a["pages"].str();
@@ -1596,6 +1703,7 @@ int main(int argc, char** argv) {
       return files_api(rq, rs);
     if (rq.method == "POST" && (rq.path == "/v1/tools/create_document" || rq.path == "/v1/tools/list_files" ||
                                 rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/search_file" ||
+                                rq.path == "/v1/tools/list_chats" || rq.path == "/v1/tools/search_chats" ||
                                 rq.path == "/v1/tools/run_command")) {
       int ctx = 0;  // (the loaded model's context; not waited for during a model switch: then the usual limits)
       {

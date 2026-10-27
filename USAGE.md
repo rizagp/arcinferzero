@@ -260,6 +260,10 @@ While the server is running:
   - There is no answer length limit to set: an answer may use the rest of the context (the reasoning is bounded by
     the server's thinking budget), and **Compact** in the chat header (or automatically when the context is nearly
     full) summarizes the earlier messages.
+- **Web UI: other chats and recordings.** With **Files** on, the model can look into your other chats with it
+  ("what did we decide in the chat about the budget?": it searches them and reads the exchange it needs) and
+  into the recordings and meetings of the Transcripts / Meetings tabs. `@` in the message box lists them next to
+  the saved files: picking one attaches it like a document (a long one as its outline, read in parts).
 - **Web UI: Transcripts and Meetings** (the left rail's second and third buttons; the server started with
   `--whisper auto`, or `arc-server start -Whisper auto`; [docs/whisper-native.md](docs/whisper-native.md)).
   - **Transcripts**: drop audio or video files (MP3, M4A, WAV, Ogg / Opus voice notes, MP4, MOV, MKV, WebM, AVI,

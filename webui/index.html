@@ -808,7 +808,9 @@ function mediaEl(m, alt) {
   if (m.url) c.href = m.url;
   c.innerHTML = "<b></b><small></small>";
   c.querySelector("b").textContent = m.name || "file";
-  c.querySelector("small").textContent = (m.kind === "video" ? "video" : (String(m.name).split(".").pop() || "file").toUpperCase()) + (m.bytes ? " · " + kb(m.bytes) : "");
+  const virt = String(m.id || "").match(/^(chat|transcript):/);
+  c.querySelector("small").textContent = virt ? (virt[1] === "chat" ? "CHAT" : "RECORDING")
+    : (m.kind === "video" ? "video" : (String(m.name).split(".").pop() || "file").toUpperCase()) + (m.bytes ? " · " + kb(m.bytes) : "");
   return c;
 }
 function showEmpty(t) {
@@ -1161,9 +1163,11 @@ const FILE_TOOLS = [
       "(numbered sections with pages and sizes): then read only the sections or pages the question needs. Text comes in " +
       "parts of up to 12,000 characters (next_offset reads on). A document you wrote returns its source (the " +
       "create_document arguments). Images and audio: metadata only. Scanned PDF pages (images without text) read by " +
-      "pages are transcribed by the loaded vision model first (up to 4 pages a call, 10-60 s a page).",
+      "pages are transcribed by the loaded vision model first (up to 4 pages a call, 10-60 s a page). It also reads the user's " +
+      "other chats (file_id \"chat:<id>\" from list_chats / search_chats: a section per exchange) and their recordings / meetings " +
+      "(\"transcript:<id>\", attached with @: a summary, then 5-minute sections with times and speakers).",
     parameters: { type: "object", properties: {
-      file_id: { type: "string", description: "the id from list_files, or the file's name" },
+      file_id: { type: "string", description: "the id from list_files, or the file's name; chat:<id>, transcript:<id>" },
       section: { type: "integer", description: "a section number from the outline" },
       pages: { type: "string", description: "e.g. \"12\" or \"12-15\"" },
       offset: { type: "integer", description: "0 reads the whole text from the start, in parts" } }, required: ["file_id"] } } },
@@ -1174,6 +1178,17 @@ const FILE_TOOLS = [
     parameters: { type: "object", properties: {
       query: { type: "string", description: "keywords, e.g. \"anggaran pemasaran 2026\"" },
       file_id: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
+  { type: "function", function: { name: "list_chats",
+    description: "List the user's other chats with you, newest first: their file_id (chat:<id>), title, last change, number " +
+      "of exchanges. With query: only those whose text has it. Use it when the user refers to an earlier conversation " +
+      "(\"what did we decide yesterday\", \"the chat about X\"); then read_file one, or search_chats.",
+    parameters: { type: "object", properties: {
+      query: { type: "string", description: "words the chat contains" }, limit: { type: "integer" } } } } },
+  { type: "function", function: { name: "search_chats",
+    description: "Find the exchanges of the user's other chats that fit a question (word search, BM25): each with its chat, " +
+      "its exchange (number, time, question) and its text. Use the chats' own words.",
+    parameters: { type: "object", properties: {
+      query: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
   { type: "function", function: { name: "create_document",
     description: "Write a document file for the user: docx (Word), pdf, doc (Word 97-2003 compatible), rtf, md or xlsx (Excel). It appears " +
       "as a file card in your answer. content is Markdown: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, " +
@@ -1202,7 +1217,8 @@ const FILE_SYSTEM = "You can work with the user's saved files: list_files (what 
   "unless the user asks for the whole of it (a summary of everything: section by section). Say which section or page an " +
   "answer comes from. To read several or all files the user means, call list_files, then read_file for each. To change a " +
   "document you wrote, read_file it (you get its source) and call create_document again with the corrections. Never say " +
-  "a file was written or changed without calling the tool, and never make up what a document says.";
+  "a file was written or changed without calling the tool, and never make up what a document says. The user's other " +
+  "chats with you: list_chats / search_chats, then read_file with their chat:<id> (only the questions and answers).";
 // ---- terminal: the chat's terminal (the right panel), on this computer only (/v1/tools/run_command,
 // tools/server_terminal.h); while the user has it open the model may run commands in it too (Settings > Terminal:
 // "ask": the command waits in its card for Run / Don't run; "off": the model never does)
@@ -1312,7 +1328,7 @@ async function runTool(call, card, signal, job) {
   try { args = JSON.parse(call.function.arguments || "{}"); } catch (e) { args = null; }
   card.head.textContent = args ? toolLabel(name, args) : name + " " + call.function.arguments;
   if (!args) { card.status.textContent = "invalid arguments"; return "error: the arguments are not valid JSON"; }
-  if (name === "list_files" || name === "read_file" || name === "search_file" || name === "create_document") return runFileTool(name, args, card, signal, job);
+  if (["list_files", "read_file", "search_file", "create_document", "list_chats", "search_chats"].includes(name)) return runFileTool(name, args, card, signal, job);
   if (name === "run_command") return runTermTool(args, card, signal, job);
   if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
@@ -1570,6 +1586,8 @@ function toolLabel(name, args) {
   if (name === "read_file") return name + " " + args.file_id + (args.section ? " § " + args.section : args.pages ? " p. " + args.pages : args.offset ? " @" + args.offset : "");
   if (name === "search_file") return name + " \u201c" + (args.query || "") + "\u201d" + (args.file_id ? " in " + args.file_id : "");
   if (name === "list_files") return name + " " + [args.kind, args.name_contains, args.within_hours ? args.within_hours + " h" : "", args.scope].filter(Boolean).join(" ");
+  if (name === "list_chats") return name + (args.query ? " \u201c" + args.query + "\u201d" : "");
+  if (name === "search_chats") return name + " \u201c" + (args.query || "") + "\u201d";
   if (name === "run_command") return name;
   return name + " " + (args.query ?? args.url ?? "") + (args.offset ? " @" + args.offset : "");
 }
@@ -1578,8 +1596,9 @@ async function runFileTool(name, args, card, signal, job) {
   if (name === "list_files") { if (args.scope === "chat") body.chat_id = chat || "-"; delete body.scope; }
   if (name === "create_document") body.chat_id = chat || ensureConv();  // (into this chat's folder)
   if ((name === "read_file" || name === "search_file") && chat) body.chat_id = chat;  // (a name: this chat's file first; no file: this chat's documents)
+  if ((name === "list_chats" || name === "search_chats") && chat) body.chat_id = chat;  // (this chat left out: it is in the prompt)
   card.head.textContent = toolLabel(name, args);
-  card.status.textContent = name === "create_document" ? "· writing…" : name === "read_file" ? "· reading…" : "· listing…";
+  card.status.textContent = name === "create_document" ? "· writing…" : name === "read_file" ? "· reading…" : name === "search_chats" ? "· searching…" : "· listing…";
   const res = await fetch("/v1/tools/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -1593,6 +1612,9 @@ async function runFileTool(name, args, card, signal, job) {
     job?.made?.push(j);  // (a Talk background call has none: it may end in a later answer)
     if ($("filespanel").classList.contains("open")) loadFiles();
   } else if (name === "list_files") card.status.textContent = "· " + (j.count || 0) + " files";
+  else if (name === "list_chats") card.status.textContent = "· " + (j.count || 0) + " chats";
+  else if (name === "search_chats") card.status.textContent = "· " + (j.results || []).length + " exchanges" +
+    ((j.results || []).length ? " (" + [...new Set(j.results.map((x) => x.title))].slice(0, 3).join(", ") + ")" : "");
   else if (name === "search_file") card.status.textContent = "· " + (j.results || []).length + " passages" +
     ((j.results || []).length ? " (" + [...new Set(j.results.map((x) => x.pages ? "p. " + x.pages : "§ " + x.section))].slice(0, 4).join(", ") + ")" : "");
   else card.status.textContent = "· " + (j.filename || "") + (j.outline ? " (outline: " + j.outline.length + " sections, ~" + k1(j.total_tokens) + " tokens)"
@@ -2047,7 +2069,8 @@ function partsMedia(m) {
     for (const p of m.content) {
       if (p.type === "file") {
         const name = p.file?.filename || "file", id = String(p.file?.file_id || "").replace(/^file-/, "");
-        out.push({ kind: kindOf(name), url: "/files/" + id, id, name });
+        const virt = /^(chat|transcript):/.test(id);  // (another chat or a recording: no file to open)
+        out.push({ kind: virt ? "document" : kindOf(name), url: virt ? "" : "/files/" + id, id, name });
       } else if (p.type === "image_url") out.push({ kind: "image", url: p.image_url?.url || "" });
       else if (p.type === "input_audio") out.push({ kind: "audio", url: "data:audio/wav;base64," + (p.input_audio?.data || "") });
     }
@@ -2674,31 +2697,38 @@ async function editMsg(el) {
 
 // ---- @ in the message: the files saved earlier (uploads), filtered by what follows the @; Enter / Tab / a click
 // attaches the chosen one (the "@name" text goes away); Esc closes the list
-const mention = { on: false, items: [], sel: 0, start: 0, at: 0 };
+const mention = { on: false, items: [], sel: 0, start: 0, at: 0, transcripts: [] };
 async function mentionUpdate() {
   const upto = input.value.slice(0, input.selectionStart);
   const m = upto.match(/(^|\s)@([^\s@]{0,60})$/);
   if (!m) { mentionClose(); return; }
-  if (!mention.on || Date.now() - mention.at > 30000) {  // (the list, fetched again after 30 s)
+  if (!mention.on || Date.now() - mention.at > 30000) {  // (the lists, fetched again after 30 s)
     mention.at = Date.now();
     try { fileData = (await (await fetch("/v1/files")).json()).data || []; } catch (e) {}
+    try { mention.transcripts = caps.stt ? ((await (await fetch("/v1/transcripts")).json()).data || []).filter((t) => t.status === "done" || t.status === "cancelled") : []; } catch (e) {}
   }
   const q = m[2].toLowerCase();
   mention.start = upto.length - m[2].length - 1;
-  mention.items = fileData.filter((f) => String(f.filename).toLowerCase().includes(q)).slice(0, 8);
+  // (files first, then recordings / meetings and the other chats: each attached as a document, chat:<id> / transcript:<id>)
+  const items = [
+    ...fileData.map((f) => ({ id: f.id, kind: f.kind, url: f.url, filename: f.filename, bytes: f.bytes, used_by: f.used_by })),
+    ...mention.transcripts.map((t) => ({ id: "transcript:" + t.id, kind: "document", filename: t.name, what: (t.kind === "meeting" ? "meeting" : "transcript") + " · " + trClock(t.duration) })),
+    ...convs.filter((c) => c.id !== convId).map((c) => ({ id: "chat:" + c.id, kind: "document", filename: c.title || "chat", what: "chat · " + new Date(c.at).toLocaleDateString([], { day: "numeric", month: "short" }) })),
+  ];
+  mention.items = items.filter((f) => String(f.filename).toLowerCase().includes(q)).slice(0, 10);
   mention.sel = Math.min(mention.sel, Math.max(0, mention.items.length - 1));
   const box = $("mention");
   box.replaceChildren();
   const hd = document.createElement("div");
   hd.className = "hd";
-  hd.textContent = mention.items.length ? "Attach a saved file" : fileData.length ? "No saved file matches \"" + m[2] + "\"" : "No saved files yet: attach one with the paperclip";
+  hd.textContent = mention.items.length ? "Attach a saved file, a recording or another chat" : items.length ? "Nothing matches \"" + m[2] + "\"" : "No saved files or other chats yet: attach a file with the paperclip";
   box.appendChild(hd);
   mention.items.forEach((f, i) => {
     const b = document.createElement("button");
     b.className = i === mention.sel ? "sel" : "";
     b.textContent = f.filename;
     const sm = document.createElement("small");
-    sm.textContent = f.kind + " · " + kb(f.bytes) + (f.used_by?.length ? " · in " + f.used_by.map((c) => c.title).join(", ").slice(0, 60) : "");
+    sm.textContent = f.what || f.kind + " · " + kb(f.bytes) + (f.used_by?.length ? " · in " + f.used_by.map((c) => c.title).join(", ").slice(0, 60) : "");
     b.appendChild(sm);
     b.addEventListener("mousedown", (e) => { e.preventDefault(); mentionPick(i); });
     box.appendChild(b);
@@ -2713,7 +2743,7 @@ function mentionPick(i) {
   const end = input.selectionStart;
   input.value = input.value.slice(0, mention.start) + input.value.slice(end);
   input.selectionStart = input.selectionEnd = mention.start;
-  if (!pending.some((p) => p.id === f.id)) pending.push({ kind: f.kind, url: f.url, id: f.id, name: f.filename, bytes: f.bytes });
+  if (!pending.some((p) => p.id === f.id)) pending.push({ kind: f.kind, url: f.url || "", id: f.id, name: f.filename, bytes: f.bytes });
   mentionClose();
   renderAtts();
   grow();

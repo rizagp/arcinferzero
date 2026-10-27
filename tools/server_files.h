@@ -15,6 +15,7 @@
 // generates. Names are cut to safe ASCII and ids checked, so nothing is read or written outside these two folders.
 #pragma once
 #include "../src/app_dir.h"
+#include "../src/audio.h"
 #include "../src/json.h"
 #include "doc_reader.h"
 #include "pdf_images.h"
@@ -664,6 +665,194 @@ inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
   return ix;
 }
 
+// an image's size from its header (PNG, JPEG, GIF, WebP, BMP; false: not one of them)
+inline bool image_size(const std::string& d, int& w, int& h) {
+  auto u8 = [&](size_t o) { return o < d.size() ? (unsigned)(unsigned char)d[o] : 0u; };
+  auto be16 = [&](size_t o) { return u8(o) << 8 | u8(o + 1); };
+  auto le16 = [&](size_t o) { return u8(o) | u8(o + 1) << 8; };
+  auto le24 = [&](size_t o) { return le16(o) | u8(o + 2) << 16; };
+  if (d.size() >= 24 && !d.compare(0, 8, "\x89PNG\r\n\x1a\n", 8)) {
+    w = (int)(be16(16) << 16 | be16(18));
+    h = (int)(be16(20) << 16 | be16(22));
+    return true;
+  }
+  if (d.size() >= 10 && (!d.compare(0, 6, "GIF87a") || !d.compare(0, 6, "GIF89a"))) {
+    w = (int)le16(6);
+    h = (int)le16(8);
+    return true;
+  }
+  if (d.size() >= 26 && !d.compare(0, 2, "BM")) {
+    w = (int)(le16(18) | le16(20) << 16);
+    h = std::abs((int)(le16(22) | le16(24) << 16));
+    return true;
+  }
+  if (d.size() >= 30 && !d.compare(0, 4, "RIFF") && !d.compare(8, 4, "WEBP")) {
+    if (!d.compare(12, 4, "VP8X")) { w = (int)le24(24) + 1; h = (int)le24(27) + 1; return true; }
+    if (!d.compare(12, 4, "VP8 ")) { w = (int)(le16(26) & 0x3FFF); h = (int)(le16(28) & 0x3FFF); return true; }
+    if (!d.compare(12, 4, "VP8L")) {
+      const unsigned b = u8(21) | u8(22) << 8 | u8(23) << 16 | u8(24) << 24;
+      w = (int)(b & 0x3FFF) + 1;
+      h = (int)((b >> 14) & 0x3FFF) + 1;
+      return true;
+    }
+  }
+  if (d.size() >= 4 && u8(0) == 0xFF && u8(1) == 0xD8) {  // (JPEG: the first start-of-frame marker)
+    for (size_t p = 2; p + 9 < d.size();) {
+      if (u8(p) != 0xFF) { ++p; continue; }
+      const unsigned m = u8(p + 1);
+      if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7) || m == 0xFF) { ++p; continue; }
+      if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
+        h = (int)be16(p + 5);
+        w = (int)be16(p + 7);
+        return true;
+      }
+      p += 2 + be16(p + 2);
+    }
+  }
+  return false;
+}
+
+// an image's size or an audio / video file's length, as ", 1920x1080" / ", 2:31" ("" when not known)
+inline std::string extent_of(const Info& i, const std::string& data) {
+  char b[48] = "";
+  int w = 0, h = 0;
+  if (i.kind == "image" && image_size(data, w, h) && w > 0 && h > 0) snprintf(b, sizeof b, ", %dx%d", w, h);
+  if (i.kind == "audio" || i.kind == "video") {
+    const int s = (int)std::lround(audio::duration_seconds(fs::path(i.path)));
+    if (s >= 3600) snprintf(b, sizeof b, ", %d:%02d:%02d", s / 3600, s / 60 % 60, s % 60);
+    else if (s > 0) snprintf(b, sizeof b, ", %d:%02d", s / 60, s % 60);
+  }
+  return b;
+}
+
+// ---- documents that are not files: a chat ("chat:<id>": the web UI's chats, one reads another) and a transcript of
+// the Whisper library ("transcript:<id>": a recording or meeting). Read, searched and attached (@) like a document
+// file by that id, as Markdown: a chat with a ## heading per exchange (its number, time and the question's
+// beginning), the user's text and the answer, no reasoning and no raw tool output (a line per tool call); a transcript
+// with its summary, then its lines ([m:ss] speaker: text) under a ## heading every 5 minutes. Their indexes are kept
+// by their text's hash (a chat changes as it goes on).
+struct VirtualDoc {
+  std::string title, kind;  // (kind: "chat" or "transcript")
+  int64_t at = 0;           // (its last change, unix seconds)
+  int parts = 0;            // (exchanges, or minutes)
+  std::shared_ptr<const rdoc::Index> ix;
+};
+inline bool is_virtual(const std::string& fid) { return fid.rfind("chat:", 0) == 0 || fid.rfind("transcript:", 0) == 0; }
+inline std::string when_text(int64_t t) {
+  char b[40] = "";
+  const std::time_t ct = (std::time_t)t;
+  std::tm tm{};
+  if (localtime_s(&tm, &ct) == 0) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+  return b;
+}
+// a message's text: its text parts, a line per file / image / audio part
+inline std::string message_text(const Json& content) {
+  if (content.is_string()) return content.str();
+  std::string t;
+  for (const Json& p : content.items()) {
+    const std::string ty = p["type"].str();
+    if (ty == "text") t += (t.empty() ? "" : "\n") + p["text"].str();
+    else if (ty == "file" || ty == "input_file") t += (t.empty() ? "" : "\n") + std::string("[file: ") + p[ty]["filename"].str(p[ty]["file_id"].str()) + "]";
+    else if (ty == "image_url") t += (t.empty() ? "" : "\n") + std::string("[an image]");
+    else if (ty == "input_audio") t += (t.empty() ? "" : "\n") + std::string("[an audio clip]");
+  }
+  return t;
+}
+inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
+  std::string text, md;
+  const bool chat = fid.rfind("chat:", 0) == 0;
+  const std::string id = fid.substr(chat ? 5 : 11);
+  if (!valid_id(id)) return false;  // (letters, digits, - and _: no path)
+  if (chat) {
+    Json c;
+    if (!store().chat_get(id, text) || !Json::try_parse(text, c)) return false;
+    v.kind = "chat";
+    v.title = c["title"].str("chat");
+    v.at = (int64_t)(c["at"].as_number(0) / 1000);
+    md = "# " + v.title + "\n\n";
+    for (const Json& m : c["history"].items()) {
+      const std::string role = m["role"].str();
+      if (role == "user") {
+        std::string t = message_text(m["content"]);
+        while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
+        if (t.empty()) continue;
+        ++v.parts;
+        std::string head = t.substr(0, t.find('\n'));
+        if (head.size() > 70) {
+          head.resize(70);
+          while (!head.empty() && ((unsigned char)head.back() & 0xC0) == 0x80) head.pop_back();
+          if (!head.empty()) head.pop_back();
+          head += "...";
+        }
+        const int64_t at = (int64_t)(m["at"].as_number(0) / 1000);
+        md += "## " + std::to_string(v.parts) + ". " + (at ? when_text(at) + " - " : "") + head + "\n\n**User:** " + t + "\n\n";
+      } else if (role == "assistant") {
+        for (const Json& tc : m["tool_calls"].items()) md += "[tool: " + tc["function"]["name"].str() + "]\n\n";
+        const std::string t = message_text(m["content"]);
+        if (!t.empty()) md += "**Assistant:** " + t + "\n\n";
+      }
+    }
+  } else {
+    const fs::path dir = fs::path(app_dir()) / "transcripts" / id;
+    Json meta, t;
+    std::string a, b;
+    if (!Store::read((dir / "meta.json").string(), a) || !Json::try_parse(a, meta) ||
+        !Store::read((dir / "transcript.json").string(), b) || !Json::try_parse(b, t))
+      return false;
+    text = a + b;
+    v.kind = "transcript";
+    v.title = meta["name"].str("recording");
+    v.at = (int64_t)meta["created"].as_number(0);
+    const double dur = t["duration"].as_number(0);
+    v.parts = (int)std::ceil(dur / 60);
+    md = "# " + v.title + "\n\n";
+    std::string summary;
+    if (Store::read((dir / "summary.md").string(), summary) && !summary.empty()) {
+      text += summary;
+      md += "## Summary\n\n";
+      std::istringstream in(summary);  // (its own headings a level down: subsections of the summary)
+      for (std::string line; std::getline(in, line);) md += (line.rfind('#', 0) == 0 ? "#" : "") + line + "\n";
+      md += "\n";
+    }
+    int block = -1;
+    std::string who;
+    for (const Json& g : t["segments"].items()) {
+      const double s = g["start"].as_number(0);
+      if ((int)(s / 300) != block) {
+        block = (int)(s / 300);
+        char h[48];
+        snprintf(h, sizeof h, "## %d:%02d - %d:%02d\n\n", block * 5 / 60, block * 5 % 60, (block + 1) * 5 / 60, (block + 1) * 5 % 60);
+        md += h;
+        who.clear();
+      }
+      char ts[24];
+      snprintf(ts, sizeof ts, "[%d:%02d] ", (int)s / 60, (int)s % 60);
+      const std::string sp = g["speaker"].str();
+      md += ts + (sp.empty() || sp == who ? std::string() : sp + ": ") + g["text"].str() + "\n\n";
+      who = sp;
+    }
+  }
+  uint64_t h = 1469598103934665603ull;  // (the index of this text: FNV-1a)
+  for (unsigned char ch : text) h = (h ^ ch) * 1099511628211ull;
+  char key[96];
+  snprintf(key, sizeof key, "%s#%016llx", fid.c_str(), (unsigned long long)h);
+  DocCache& c = doc_cache();
+  {
+    std::lock_guard<std::mutex> g(c.mu);
+    for (auto it = c.lru.begin(); it != c.lru.end(); ++it)
+      if (it->first == key) {
+        c.lru.splice(c.lru.begin(), c.lru, it);
+        v.ix = it->second;
+        return true;
+      }
+  }
+  v.ix = std::make_shared<const rdoc::Index>(rdoc::read_text(md, true));
+  std::lock_guard<std::mutex> g(c.mu);
+  c.lru.push_front({key, v.ix});
+  if (c.lru.size() > 32) c.lru.pop_back();
+  return true;
+}
+
 // Scanned pages read by the loaded vision model (tools/server.cpp gives `see`: an image's bytes and MIME type ->
 // the text the model transcribed; it throws when it cannot). Each page's image comes out of the PDF
 // (tools/pdf_images.h); its text goes into the file's .pages JSON, so the next read and search_file have it. Per page:
@@ -785,6 +974,33 @@ inline Json expand_files(const Json& messages, bool tools = false, int ctx = 0) 
       Info i;
       std::string data;
       Json t = Json::object();
+      if (is_virtual(id)) {  // (a chat or a transcript, attached with @: as a document)
+        VirtualDoc v;
+        t.set("type", "text");
+        if (!virtual_doc(id, v)) {
+          t.set("text", "[" + id + ": no such " + (id.rfind("chat:", 0) == 0 ? "chat" : "transcript") + "]");
+          parts.push(t);
+          continue;
+        }
+        const std::string full = v.ix->text(0, v.ix->doc.paras.size());
+        const std::string meta = "[" + v.kind + ": " + v.title + " | " + std::to_string(v.parts) +
+                                 (v.kind == "chat" ? " exchanges" : " minutes") + ", " + when_text(v.at) + ", ~" +
+                                 std::to_string(tokens_of(full.size())) + " tokens; file_id \"" + id + "\"]";
+        std::string text;
+        if (!tools || full.size() <= inline_max) {
+          text = full.size() > kMaxDocChars ? full.substr(0, kMaxDocChars) + "\n[... cut: it goes on]" : full;
+        } else {
+          size_t cut = std::min(full.size(), (size_t)3000);
+          while (cut < full.size() && cut > 0 && ((unsigned char)full[cut] & 0xC0) == 0x80) --cut;
+          text = "[A long " + v.kind + ": only its outline and beginning are here. Read the parts the question needs with "
+                 "read_file {\"file_id\": \"" + id + "\", \"section\": N}, or find passages with search_file {\"file_id\": \"" +
+                 id + "\", \"query\": \"...\"}. Do not guess its content.]\nOutline:\n" + outline_text(*v.ix) +
+                 "--- beginning ---\n" + full.substr(0, cut) + "\n[...]";
+        }
+        t.set("text", "=== " + std::string(v.kind == "chat" ? "CHAT" : "TRANSCRIPT") + ": " + v.title + " ===\n" + meta + "\n" + text + "\n");
+        parts.push(t);
+        continue;
+      }
       if (!valid_id(id, 16) || !store().get(id, i) || !Store::read(i.path, data)) {
         t.set("type", "text");
         t.set("text", "[a file that is no longer there: " + id + "]");
@@ -802,8 +1018,8 @@ inline Json expand_files(const Json& messages, bool tools = false, int ctx = 0) 
         char sz[32];
         if (i.bytes < 1024) snprintf(sz, sizeof sz, "%llu bytes", (unsigned long long)i.bytes);
         else snprintf(sz, sizeof sz, kb >= 1024 ? "%.1f MB" : "%.0f KB", kb >= 1024 ? kb / 1024 : kb);
-        meta = "[file: " + i.name + " | " + i.kind + ", " + (ext_of(i.name).empty() ? "no extension" : ext_of(i.name)) + ", " + sz +
-               ", uploaded " + when + "]";
+        meta = "[file: " + i.name + " | " + i.kind + ", " + (ext_of(i.name).empty() ? "no extension" : ext_of(i.name)) +
+               extent_of(i, data) + ", " + sz + ", uploaded " + when + "]";
       }
       if (i.kind == "image" || i.kind == "audio") {  // (the metadata as a text part next to the image / audio)
         Json mt = Json::object();

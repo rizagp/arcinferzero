@@ -604,6 +604,24 @@ inline std::vector<float> decode_16k_file(const std::filesystem::path& path, dou
   return finish_16k(sink, max_seconds);
 }
 
+// an audio or video file's length in seconds from its container (no decoding; 0: not known)
+inline double duration_seconds(const std::filesystem::path& path) {
+  try {
+    MfSession ses;
+    ComPtr<IMFSourceReader> rd;
+    if (FAILED(MFCreateSourceReaderFromURL(std::filesystem::absolute(path).wstring().c_str(), nullptr, &rd))) return 0;
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    double s = 0;
+    if (SUCCEEDED(rd->GetPresentationAttribute((DWORD)MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION, &v)) && v.vt == VT_UI8)
+      s = (double)v.uhVal.QuadPart / 1e7;
+    PropVariantClear(&v);
+    return s;
+  } catch (const std::exception&) {
+    return 0;
+  }
+}
+
 // a WAV file's channels apart, each at 16 kHz (a recording's tracks: the microphone, the other side)
 inline std::vector<std::vector<float>> decode_16k_wav_channels(const std::filesystem::path& path) {
   std::ifstream f(path, std::ios::binary);
