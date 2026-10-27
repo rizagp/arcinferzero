@@ -266,8 +266,9 @@ While the server is running:
   network). Other clients can use the same endpoints: `POST /v1/tools/web_search` with `{"query": "..."}` and
   `POST /v1/tools/web_fetch` with `{"url": "...", "offset": 0}`. `--no-web-tools` turns them off.
 - **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
-  (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, text, Markdown, CSV;
-  "read all the files I uploaded today" works) and write documents (`create_document`). A **long document** (more
+  (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, Excel XLSX / XLSM, PowerPoint
+  PPTX (one heading per slide, with its speaker notes), text, Markdown, CSV; "read all the files I uploaded today" works; a spreadsheet reads as one heading per sheet and one
+  line per row, "Nama: Budi | Nilai: 80" when it has a header row, dates as yyyy-mm-dd, formulas as their values) and write documents (`create_document`). A **long document** (more
   than ~6K tokens, e.g. a report of 100+ pages) is not put into the prompt whole, which would take minutes: the model
   gets its outline (chapters with pages) and reads the chapters or pages the question needs, or searches it
   (`search_file`: the passages with the question's words, with their pages), and says where its answer comes from.
@@ -276,7 +277,10 @@ While the server is running:
   from Markdown with headings, bold / italic / underline / strike / highlight, colors and font sizes, lists, tables
   (column alignment, a header row repeated on each page), code, rules, centered or justified blocks and page breaks;
   page size and orientation, margins, font, line spacing, heading and table colors, header, footer and page numbers.
-  The document shows as a file card in the answer (open or download) and is saved in the chat's folder. Ask for a
+  **XLSX** (Excel, opens without repair): each Markdown table becomes a sheet named by the heading before it, with
+  numbers, Rp amounts, percentages and dates as real values (so sums and filters work; Indonesian 1.234,5 or US
+  1,234.5 told apart per table, or set with `number_format` id / us), a bold frozen header row with
+  an autofilter; the text around the tables goes to a first "Notes" sheet. The document shows as a file card in the answer (open or download) and is saved in the chat's folder. Ask for a
   change ("the spacing is too tight", "make the title dark red") and the model reads the document's source and writes
   a new version next to it (`name (2).docx`).
   Long results of earlier questions (document parts, web pages, search passages, command output) go back to the

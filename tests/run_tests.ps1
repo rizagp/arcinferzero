@@ -181,6 +181,7 @@ Unit "API compatibility" .\bin\test_api_compat.exe @() "all passed"
 Unit "web tools (HTML to text, result parsing, address filter)" .\bin\test_web_tools.exe @() "test_web_tools: all passed"
 if (Test-Path .\bin\test_chat_store.exe) { Unit "chat folders and the terminal tool" .\bin\test_chat_store.exe @() "test_chat_store: all passed" }
 if (Test-Path .\bin\test_doc_read.exe) { Unit "reading DOCX / PDF, outline, search" .\bin\test_doc_read.exe @() "test_doc_read: all passed" }
+if (Test-Path .\bin\test_office.exe) { Unit "Excel XLSX read and written, PowerPoint, CSV" .\bin\test_office.exe @() "test_office: all passed" }
 Unit "expert cache pools" .\bin\test_xcache_pools.exe @() "ALL OK"
 if (Test-Path .\bin\test_json.exe) { Unit "JSON parser (numbers, escapes, repeated keys)" .\bin\test_json.exe @() "test_json: all passed" }
 if (Test-Path .\bin\test_sampler.exe) { Unit "sampler" .\bin\test_sampler.exe @() "ALL OK" }

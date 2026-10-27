@@ -65,7 +65,9 @@ inline std::string mime_of(const std::string& name) {
       {"wmv", "video/x-ms-wmv"}, {"avi", "video/x-msvideo"}, {"txt", "text/plain; charset=utf-8"},
       {"md", "text/markdown; charset=utf-8"}, {"json", "application/json"}, {"csv", "text/csv; charset=utf-8"},
       {"pdf", "application/pdf"}, {"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
-      {"doc", "application/msword"}, {"rtf", "application/rtf"}, {"html", "text/plain; charset=utf-8"}, {"svg", "text/plain; charset=utf-8"}};
+      {"doc", "application/msword"}, {"rtf", "application/rtf"}, {"tsv", "text/tab-separated-values; charset=utf-8"},
+      {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}, {"xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"},
+      {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"}, {"html", "text/plain; charset=utf-8"}, {"svg", "text/plain; charset=utf-8"}};
   auto it = m.find(ext_of(name));
   return it == m.end() ? "application/octet-stream" : it->second;  // (html / svg as text: never run as a page)
 }
