@@ -455,7 +455,7 @@ class Store {
       // (a folder left with nothing in it but its index, and no chat: gone too)
       bool empty = true;
       for (const auto& e : fs::directory_iterator(dir, ec2))
-        if (e.path().filename() != ".files.json" && !(e.is_directory() && fs::is_empty(e.path(), ec2))) empty = false;
+        if (e.path().filename() != ".files.json" && e.path().filename() != ".terminal.json" && !(e.is_directory() && fs::is_empty(e.path(), ec2))) empty = false;
       if (empty) {
         fs::remove_all(dir, ec2);
         folders_.erase(i.chat);

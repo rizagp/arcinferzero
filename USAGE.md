@@ -282,11 +282,18 @@ While the server is running:
   Long results of earlier questions (document parts, web pages, search passages, command output) go back to the
   model as a one-line note of what was read, so a few reads do not fill the context; the model reads a part again
   when it needs it. The last exchange and the answer running now get them whole, and the chat keeps them all.
-- **Web UI: terminal.** **Terminal** in the settings (off by default) lets the model run PowerShell commands on this
-  computer (`run_command`), in the chat's folder, so it can use the chat's files and the programs installed here
-  (arcinferzero's own tools are on its PATH). **Ask each time**: every command waits in its card with **Run** /
-  **Don't run**; **Run without asking**: commands run at once. A command stops after 2 minutes (the model may ask for up
-  to 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
+- **Web UI: terminal.** The **Terminal** button above the chat opens the chat's terminal in a panel on the right: a
+  PowerShell that starts in the chat's folder, so it can use the chat's files and the programs installed here
+  (arcinferzero's own tools are on its PATH). Type commands there yourself (Enter runs, Up brings back the last one).
+  The folder and the environment carry over from one command to the next: `cd`, `$env:X = ...` and an activated
+  `.venv` (`.\.venv\Scripts\Activate.ps1`, later `deactivate`) stay; PowerShell variables and functions do not, and no
+  program keeps running after its command. The terminal belongs to the chat: it is still there when the chat is opened
+  again. **While it is open the model may use it too** (`run_command`, shown in the panel as AI); **Settings >
+  Terminal**: **Ask each time** (every command waits in its card with **Run** / **Don't run**), **Run without asking**,
+  or **Model never**. The model is told the shell and Windows version (asked when the terminal opens), so it writes
+  commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: the model can no longer use it, and the next one starts
+  again in the chat's folder; **×** only hides the panel. A command stops after 2 minutes (the model may ask for up to
+  10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
   on this computer can use it: the server refuses it to other computers (also with `--host`), to pages of other sites,
   and entirely with `--no-terminal`.
 - **Web UI: voice messages and talking.** The microphone in the message box records a voice message (the bin

@@ -54,15 +54,43 @@ inline std::string exe_dir() {
   return s;
 }
 
-// command (PowerShell) in cwd; extra_path goes first in PATH
-inline Result run(const std::string& command, const std::string& cwd, const std::string& extra_path, int timeout_s) {
+// The chat's terminal session: each command is its own PowerShell, so what it changes is carried to the next one
+// through the state file (JSON: cwd, and env, the environment variables that differ from a fresh PowerShell's, null
+// for one removed). An activated .venv (VIRTUAL_ENV, PATH), a cd, $env:X = ... stay; PowerShell variables, functions
+// and programs left running do not. The venv's deactivate is defined again while one is active.
+inline std::string session_script(const std::string& state, const std::string& command) {
+  auto q = [](std::string s) {
+    for (size_t i = 0; (i = s.find('\'', i)) != std::string::npos; i += 2) s.insert(i, "'");
+    return "'" + s + "'";
+  };
+  return "$__azS = " + q(state) + "; $__azB = @{}; Get-ChildItem Env: | ForEach-Object { $__azB[$_.Name] = $_.Value }\n"
+         "if (Test-Path -LiteralPath $__azS) { try {\n"
+         "  $__azJ = [IO.File]::ReadAllText($__azS) | ConvertFrom-Json\n"
+         "  foreach ($p in $__azJ.env.PSObject.Properties) { if ($null -eq $p.Value) { Remove-Item -LiteralPath ('Env:' + $p.Name) -ErrorAction SilentlyContinue } else { Set-Item -LiteralPath ('Env:' + $p.Name) -Value $p.Value } }\n"
+         "  if ($__azJ.cwd -and (Test-Path -LiteralPath $__azJ.cwd)) { Set-Location -LiteralPath $__azJ.cwd }\n"
+         "} catch {} }\n"
+         "if ($env:VIRTUAL_ENV -and $env:_OLD_VIRTUAL_PATH) { function global:deactivate { $env:PATH = $env:_OLD_VIRTUAL_PATH; "
+         "Remove-Item Env:VIRTUAL_ENV, Env:_OLD_VIRTUAL_PATH, Env:VIRTUAL_ENV_PROMPT -ErrorAction SilentlyContinue } }\n"
+         "$__azOk = $true\n"
+         "try {\n" + command + "\n$__azOk = $?\n} finally {\n"
+         "  $__azE = @{}; Get-ChildItem Env: | ForEach-Object { if ($__azB[$_.Name] -cne $_.Value) { $__azE[$_.Name] = $_.Value } }\n"
+         "  foreach ($k in $__azB.Keys) { if (-not (Test-Path -LiteralPath ('Env:' + $k))) { $__azE[$k] = $null } }\n"
+         "  try { [IO.File]::WriteAllText($__azS, (@{ cwd = (Get-Location).ProviderPath; env = $__azE } | ConvertTo-Json -Compress)) } catch {}\n"
+         "}\n"
+         "if (-not $__azOk) { exit 1 }\n";
+}
+
+// command (PowerShell) in cwd; extra_path goes first in PATH; state: the session's file ("" : none, a fresh shell)
+inline Result run(const std::string& command, const std::string& cwd, const std::string& extra_path, int timeout_s,
+                  const std::string& state = "") {
   Result r;
   auto q = [](std::string s) {  // (a PowerShell single-quoted string)
     for (size_t i = 0; (i = s.find('\'', i)) != std::string::npos; i += 2) s.insert(i, "'");
     return "'" + s + "'";
   };
   const std::string script = "$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [Text.Encoding]::UTF8; "
-                             "$OutputEncoding = [Text.Encoding]::UTF8; $env:PATH = " + q(extra_path) + " + ';' + $env:PATH\n" + command;
+                             "$OutputEncoding = [Text.Encoding]::UTF8; $env:PATH = " + q(extra_path) + " + ';' + $env:PATH\n" +
+                             (state.empty() ? command : session_script(state, command));
   const std::wstring ws = wide(script);
   const std::wstring cl = L"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " +
                           wide(base64((const unsigned char*)ws.data(), ws.size() * sizeof(wchar_t)));

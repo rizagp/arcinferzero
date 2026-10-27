@@ -753,7 +753,9 @@ class Server {
 //   search_file {query, file_id, chat_id, top_k}: the passages of a document (or of every document of the chat)
 //                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
 //   run_command {command, chat_id, timeout_s}: one PowerShell command in the chat's folder (tools/server_terminal.h),
-//                    sent by the page only after the user allowed it; refused (403) to any computer but this one
+//                    sent by the page only after the user allowed it; refused (403) to any computer but this one.
+//                    session: true: in the chat's terminal (folder and environment kept for the next command; the
+//                    reply says cwd and venv); reset: true: that terminal closed (with no command: only that)
 // ctx: the loaded model's context in tokens per conversation (0: not known): a read or a search gives at most what
 // files::read_budget allows, the rest by offset
 static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, int ctx) {
@@ -1024,23 +1026,43 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       if (!terminal) return fail(404, "the terminal tool is off (--no-terminal)");
       if (!rq.local_peer) return fail(403, "run_command is only for this computer (the web UI on 127.0.0.1)");
       const std::string cmd = a["command"].str();
-      if (cmd.empty()) return fail(400, "command required");
+      const bool session = a["session"].is_bool() && a["session"].as_bool(), reset = a["reset"].is_bool() && a["reset"].as_bool();
+      if (cmd.empty() && !reset && !session) return fail(400, "command required");
       // (a command line holds 32767 characters: the script goes in as base64 of UTF-16, 2.7 characters a byte)
       if (cmd.size() > 8000) return fail(400, "command too long (8000 characters at most): split it, e.g. write a script with Set-Content in parts, then run it");
       const std::string chat = a["chat_id"].str();
       const std::string cwd = files::valid_id(chat) ? st.chat_dir_make(chat) : app_dir();
+      // session: the chat's terminal (its folder and environment carried from one command to the next, kept in the
+      // chat's folder); reset: that terminal closed, the next one starts fresh in the chat's folder
+      const std::filesystem::path state = std::filesystem::path(cwd) / ".terminal.json";
+      std::error_code ec;
+      if (reset) std::filesystem::remove(state, ec);
+      auto where = [&](Json& r) {  // (the session's folder and venv now)
+        std::string s, dir = cwd, venv;
+        Json j;
+        if (session && files::Store::read(state.string(), s) && Json::try_parse(s.rfind("\xEF\xBB\xBF", 0) == 0 ? s.substr(3) : s, j)) {
+          if (!j["cwd"].str().empty()) dir = j["cwd"].str();
+          venv = j["env"]["VIRTUAL_ENV"].str();
+        }
+        r.set("cwd", dir);
+        if (!venv.empty()) r.set("venv", venv);
+      };
+      if (cmd.empty()) {  // (only the reset, or where the session is)
+        Json r = Json::object();
+        where(r);
+        return reply(200, r);
+      }
       const int tmo = (int)std::clamp(a["timeout_s"].as_number(120), 1.0, 600.0);
       std::string path = term::exe_dir();
-      std::error_code ec;
       if (std::filesystem::is_directory(std::filesystem::path(app_dir()) / "bin", ec)) path = (std::filesystem::path(app_dir()) / "bin").string() + ";" + path;
-      const term::Result t = term::run(cmd, cwd, path, tmo);
+      const term::Result t = term::run(cmd, cwd, path, tmo, session ? state.string() : "");
       Json r = Json::object();
       r.set("exit_code", (double)t.exit_code);
       r.set("output", t.output);
       r.set("timed_out", t.timed_out);
       r.set("truncated", t.truncated);
       r.set("seconds", std::round(t.seconds * 10) / 10);
-      r.set("cwd", cwd);
+      where(r);
       return reply(200, r);
     }
     return fail(404, "no such tool");
