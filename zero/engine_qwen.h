@@ -74,31 +74,38 @@
   // completes, the tail state, the queries; when some row sees more blocks than it may select, its scores and mask.
   // Returns whether the attention must use the masks (else it is dense, as while every block is selected).
   bool qsa_prepare(Layer& L, int T, int Mp, int a_in) {
-    const int QR = L.qr, D = hp.qsa_dim, H = hp.qsa_heads, ldx = (1 + H) * D, ntop = hp.qsa_topk / QR;
-    const std::string defs = "-DQR=" + std::to_string(QR) + " -DQH=" + std::to_string(H);
+    const int ldx = (1 + hp.qsa_heads) * hp.qsa_dim;
     matmul("qsa_ix", L.ix, Mp, qsa_ixo_, ldx, 0, 0, a_in);
     if (spec_) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, qsa_ixo_, L.ixsv, 0, 0, (size_t)T * ldx * 4, 0, nullptr, nullptr));
+    return qsa_seq(L, 0, T, pos);
+  }
+  // the QSA work of one sequence: indexer rows r0 .. r0 + T - 1 of qsa_ixo_ at positions pos0 .. (its pooled keys and
+  // tail in the bound / pointed-to slot's state; queries, scores and masks from row 0 of their buffers)
+  bool qsa_seq(Layer& L, int r0x, int T, int pos0) {
+    const int QR = L.qr, D = hp.qsa_dim, H = hp.qsa_heads, ldx = (1 + H) * D, ntop = hp.qsa_topk / QR;
+    const std::string defs = "-DQR=" + std::to_string(QR) + " -DQH=" + std::to_string(H);
+    const cl_mem ixo = from(qsa_ixo_, (size_t)r0x * ldx * 4);
     float eps = hp.eps, ts = std::pow(hp.rope_base, -2.0f / hp.n_rot);
-    int p0 = pos, ld = ldx, nr = hp.n_rot;
-    const int b0 = pos / QR, b1 = (pos + T) / QR;
+    int p0 = pos0, ld = ldx, nr = hp.n_rot;
+    const int b0 = pos0 / QR, b1 = (pos0 + T) / QR;
     if (b1 > b0) {
       cl_kernel k = kernel("ops", defs, "qsa_pool");
       int bb = b0;
-      set_args(k, 0, qsa_ixo_, ld, p0, L.qtail, L.ix_kn, bb, eps, ts, nr, L.pk);
+      set_args(k, 0, ixo, ld, p0, L.qtail, L.ix_kn, bb, eps, ts, nr, L.pk);
       size_t g1 = (size_t)16 * (b1 - b0), l1 = 16;
       run("qsa", k, 1, &g1, &l1);
     }
     {
       cl_kernel k = kernel("ops", defs, "qsa_tail");
       int tt = T;
-      set_args(k, 0, qsa_ixo_, ld, p0, tt, L.qtail);
+      set_args(k, 0, ixo, ld, p0, tt, L.qtail);
       size_t g1 = D, l1 = D;
       run("qsa", k, 1, &g1, &l1);
     }
     if (b1 <= ntop && !getenv("ARC_QSA_ALWAYS")) return false;  // every row sees at most ntop blocks: dense
     {
       cl_kernel k = kernel("ops", defs, "qsa_q");
-      set_args(k, 0, qsa_ixo_, ld, p0, L.ix_qn, eps, ts, nr, qsa_qx_);
+      set_args(k, 0, ixo, ld, p0, L.ix_qn, eps, ts, nr, qsa_qx_);
       size_t gws[2] = {(size_t)16 * H, (size_t)T}, lws[2] = {16, 1};
       run("qsa", k, 2, gws, lws);
     }
@@ -143,7 +150,7 @@
     return true;
   }
   // attention with the QSA masks: attn_q8 for prompt chunks, attn_decode row by row (key splits as attn_decode_rows)
-  void qsa_attention(Layer& L, int T) {
+  void qsa_attention(Layer& L, int T, int pos0) {
     const int nh = hp.n_head, nkv = hp.n_head_kv, hd = hp.head_dim, hpg = nh / nkv, QR = L.qr;
     const std::string q = " -DQSA -DQR=" + std::to_string(QR);
     int qmw = qsa_mask_words(ctx);
@@ -151,7 +158,7 @@
       const std::string att = "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hpg) + " -DHS=" + std::to_string(attn_hs()) +
                               " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256) + q;
       cl_kernel k = kernel("ops", att, "attn_q8");
-      int p0 = pos, cx = ctx, nn = nh, TT = T, win = 0, nlo = -1, nhi = -1;
+      int p0 = pos0, cx = ctx, nn = nh, TT = T, win = 0, nlo = -1, nhi = -1;
       set_args(k, 0, qi_, qsc_, L.kq, L.ksc, L.vq, L.vsc, cx, nn, p0, TT, o_, win, nlo, nhi, qsa_mask_, qmw);
       const int tpw = attn_tpw();
       size_t gws[2] = {(size_t)(T + tpw - 1) / tpw * 512, (size_t)nkv}, lws[2] = {512, 1};
@@ -163,7 +170,7 @@
                                      " -DHS=" + std::to_string(hs) + " -DTPW=1" + sb_opt(hd) + q, "attn_decode");
     int nn = nh, hdd = hd, cp = ctx, w = 0;
     for (int t = 0; t < T; ++t) {
-      const int p = pos + t;
+      const int p = pos0 + t;
       int S = 256;
       while (S > 32 && (p / S + 1) * nkv * nsp < 512) S /= 2;
       int kstart = 0, ns = p / S + 1, pp = p, row = t, prow = 0;
@@ -186,6 +193,7 @@
     matmul("gemm_v", L.wv, Mp, big_, ldq, nh * hd * 2 + nkv * hd, false, a_in);
     if (!batch_.empty()) {  // a batched pass: each sequence's rows with its slot's caches and position (T <= 8)
       const cl_mem qi0 = qi_, qsc0 = qsc_, o0 = o_;
+      if (L.qr > 0) matmul("qsa_ix", L.ix, Mp, qsa_ixo_, (1 + hp.qsa_heads) * hp.qsa_dim, 0, 0, a_in);
       for (const BatchSeq& q : batch_) {
         point_to(q.slot);
         float eps = hp.eps, theta_scale = std::pow(hp.rope_base, -2.0f / hp.n_rot), kq_scale = 1.0f / std::sqrt((float)hd);
@@ -198,7 +206,8 @@
                  theta_scale, nr, kq_scale, qrope_, L.kc, L.vc, cx, qi_, qsc_, L.kq, L.ksc, L.vq, L.vsc, f32a, rs, qsc_, ur, sect);
         size_t gws[2] = {(size_t)(nh + nkv) * 16, (size_t)Tq}, lws[2] = {16, 1};
         run("attn_prep", k_attn_prep_, 2, gws, lws);
-        attn_decode_rows("attention", L, ctx, nkv, nh / nkv, hd, q.pos, Tq, 0);
+        if (L.qr > 0 && qsa_seq(L, q.row, Tq, q.pos)) qsa_attention(L, Tq, q.pos);  // (Flash Next: its blocks)
+        else attn_decode_rows("attention", L, ctx, nkv, nh / nkv, hd, q.pos, Tq, 0);
       }
       qi_ = qi0;
       qsc_ = qsc0;
@@ -216,7 +225,7 @@
     if (!batch_.empty()) {
       // (done above, per sequence)
     } else if (qsa) {
-      qsa_attention(L, T);
+      qsa_attention(L, T, pos);
     } else if (opt.attn_int8 && T <= 8) {
       // flash-decoding, token by token (single tokens and speculative verification): split the keys over many
       // sub-groups, then merge

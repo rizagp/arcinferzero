@@ -114,10 +114,38 @@
   void ple_embed(const int* tokens, int T) {
     const auto h0 = hclk::now();
     struct Acc { double& t; hclk::time_point a; ~Acc() { t += hms(a); } } acc{hst_ple_ms_, h0};
+    if (!batch_.empty()) {  // a batched pass: each sequence's rows after its slot's token ids, into its slot's state
+      for (const BatchSeq& q : batch_) {
+        SlotHost& h = slot_host_[q.slot];
+        ple_rows(tokens + q.row, q.n, h.ple_prev[0], h.ple_prev[1], q.row);
+      }
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ple_emb_, CL_TRUE, 0, (size_t)T * hp.n_embd * 4, ple_host_.data(), 0,
+                                    nullptr, nullptr));
+      for (const BatchSeq& q : batch_) {
+        SlotHost& h = slot_host_[q.slot];
+        const int* tk = tokens + q.row;
+        h.ple_prev[1] = q.n >= 2 ? tk[q.n - 2] : h.ple_prev[0];
+        h.ple_prev[0] = tk[q.n - 1];
+        const int32_t v[2] = {h.ple_prev[0] + 1, h.ple_prev[1] + 1};
+        point_to(q.slot);
+        CL_CHECK(clEnqueueWriteBuffer(cl_.queue, layers_[hp.ple_layer].conv_state, CL_TRUE, ple_tok_off(), 8, v, 0,
+                                      nullptr, nullptr));
+      }
+      return;
+    }
+    ple_rows(tokens, T, ple_prev_[0], ple_prev_[1], 0);
+    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ple_emb_, CL_TRUE, 0, (size_t)T * hp.n_embd * 4, ple_host_.data(), 0, nullptr, nullptr));
+    ple_prev_[1] = T >= 2 ? tokens[T - 2] : ple_prev_[0];
+    ple_prev_[0] = tokens[T - 1];
+    const int32_t v[2] = {ple_prev_[0] + 1, ple_prev_[1] + 1};
+    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, layers_[hp.ple_layer].conv_state, CL_TRUE, ple_tok_off(), 8, v, 0, nullptr,
+                                  nullptr));
+  }
+  // the n-gram rows of tokens[0 .. T) after the token ids p0 (just before) and p1 into ple_host_ rows r0 ..
+  void ple_rows(const int* tokens, int T, int p0, int p1, int r0) {
     const int ng = hp.ple_ng, per = hp.ple_per, dim = hp.ple_dim, E = hp.n_embd;
     const int64_t eos = hp.ple_eos;
     const size_t prb = ple_table_->nbytes / ple_table_->dims[1];
-    const int p0 = ple_prev_[0], p1 = ple_prev_[1];
 #pragma omp parallel for if (T > 16)
     for (int t = 0; t < T; ++t) {
       int64_t ctxv[8];
@@ -135,16 +163,11 @@
         for (int g = 0; g < per; ++g) {
           const int h = (n - 2) * per + g;
           const uint64_t row = mixed % (uint64_t)hp.ple_voc[h] + (uint64_t)hp.ple_off[h];
-          dequant_row(ple_table_->type, ple_table_->data + row * prb, dim, &ple_host_[(size_t)t * E + (size_t)h * dim]);
+          dequant_row(ple_table_->type, ple_table_->data + row * prb, dim,
+                      &ple_host_[(size_t)(r0 + t) * E + (size_t)h * dim]);
         }
       }
     }
-    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, ple_emb_, CL_TRUE, 0, (size_t)T * E * 4, ple_host_.data(), 0, nullptr, nullptr));
-    ple_prev_[1] = T >= 2 ? tokens[T - 2] : ple_prev_[0];
-    ple_prev_[0] = tokens[T - 1];
-    const int32_t v[2] = {ple_prev_[0] + 1, ple_prev_[1] + 1};
-    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, layers_[hp.ple_layer].conv_state, CL_TRUE, ple_tok_off(), 8, v, 0, nullptr,
-                                  nullptr));
   }
   // the PLE block on the residual streams (before the layer's first mixer): gates from the key / query match, then
   // the dilated causal conv over the normed gated values (history in the layer's state)
@@ -161,20 +184,30 @@
       size_t gws[2] = {256, (size_t)T}, lws[2] = {256, 1};
       run("ple", k, 2, gws, lws);
     }
-    {
-      cl_kernel k = kernel("ops", "", "ple_conv_add");
-      int w = W, nt = hp.ple_taps, dil = hp.ple_ng, hist = ple_hist();
-      set_args(k, 0, x_, hc_xn_, big_, ple_hist_, L.ple_cw, w, nt, dil, hist);
-      size_t gws[2] = {(size_t)W, (size_t)T};
-      run("ple", k, 2, gws, nullptr);
-    }
-    {
-      cl_kernel k = kernel("ops", "", "ple_hist_update");
-      int w = W, tt = T, hist = ple_hist();
-      set_args(k, 0, ple_hist_, big_, w, tt, hist);
-      size_t g1 = W;
-      run("ple", k, 1, &g1, nullptr);
-    }
+    // (the conv over each sequence's rows and its history; a batched pass: per sequence, in its slot's state)
+    auto seq = [&](int r0, int Tq) {
+      const size_t off = (size_t)r0 * W * 4;
+      {
+        cl_kernel k = kernel("ops", "", "ple_conv_add");
+        int w = W, nt = hp.ple_taps, dil = hp.ple_ng, hist = ple_hist();
+        set_args(k, 0, from(x_, off), from(hc_xn_, off), from(big_, off), ple_hist_, L.ple_cw, w, nt, dil, hist);
+        size_t gws[2] = {(size_t)W, (size_t)Tq};
+        run("ple", k, 2, gws, nullptr);
+      }
+      {
+        cl_kernel k = kernel("ops", "", "ple_hist_update");
+        int w = W, tt = Tq, hist = ple_hist();
+        set_args(k, 0, ple_hist_, from(big_, off), w, tt, hist);
+        size_t g1 = W;
+        run("ple", k, 1, &g1, nullptr);
+      }
+    };
+    if (batch_.empty()) seq(0, T);
+    else
+      for (const BatchSeq& q : batch_) {
+        point_to(q.slot);
+        seq(q.row, q.n);
+      }
     if (spec_) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, big_, ple_sv_, 0, 0, (size_t)T * W * 4, 0, nullptr, nullptr));
   }
   // before a verification pass: the PLE / QSA state and the token ids before it (see hc_rollback)

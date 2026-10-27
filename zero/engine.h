@@ -709,10 +709,11 @@ class Engine {
   // so the weights are read once per step instead of once per slot; the parts that follow a sequence (DeltaNet conv
   // and recurrence, RoPE and the K/V write, attention) run per slot on its rows with its state (point_to). Then each
   // slot's MTP block KV / hidden state and DFlash2 context take their row. Returns the logits rows (row b: slot b).
-  // Dense and MoE Qwen models (not Flash Next or Gemma); every slot's drafts settled; up to 1 + max(drafts, slots - 1)
-  // rows. The bound slot stays bound.
-  bool batch_ok() const { return !hp.hc && opt.attn_int8 && slot_ptrs_.size() > 1; }
-  bool batch_verify_ok() const { return batch_ok() && has_mtp && !gemma_mtp_; }
+  // Dense and MoE Qwen models and Flash Next (not Gemma; Flash Next without a drafter: its PLE token ids, conv and
+  // history and its QSA blocks per sequence too); every slot's drafts settled; up to 1 + max(drafts, slots - 1) rows.
+  // The bound slot stays bound.
+  bool batch_ok() const { return (!hp.hc || !has_mtp) && opt.attn_int8 && slot_ptrs_.size() > 1; }
+  bool batch_verify_ok() const { return batch_ok() && has_mtp && !gemma_mtp_ && !hp.hc; }
   const std::vector<float>& forward_batch(const std::vector<int>& slots, const std::vector<int>& toks) {
     const int B = (int)slots.size();
     if (!batch_ok() || B < 1 || B != (int)toks.size() || B > batch_rows_)

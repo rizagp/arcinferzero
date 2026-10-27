@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-27: batched decoding for Flash Next
+
+- **Flash Next generates for several conversations in one pass** (`--slots 2` or more, without a drafter): the
+  PLE n-gram state and history and the QSA blocks run per conversation, everything else once. Bit-identical to each
+  conversation alone. With the experts cached 2 slots give 1.43x the tokens per second together; in real chats on
+  this laptop only ~1.05x, as each conversation brings its own expert reads from the SSD.
+- Batched steps and verification passes of MoE models run their experts on smaller tiles: the 35B 2 / 4 slots
+  1.33x -> 1.44x / 1.99x -> 2.19x together, bit-identical.
+- `runz --bench-batch N --prof-gen`: the GPU time per kernel of a step alone and batched.
+
 ## 2026-10-27: Qwen vision encoder faster on the dense models
 
 - **Images 22-30 % faster to encode on Qwen3.5 4B / 9B and Qwen3.8 27B**: the vision encoder's matrix products run on

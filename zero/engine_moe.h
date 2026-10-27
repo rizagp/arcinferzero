@@ -81,7 +81,11 @@
                                  : std::string();
     // (fused two-pass tiles hold twice the sums: as many slots as the tokens (an expert gets at most T, here <= 8);
     //  TM 16 spilled 4 KB per thread in verification. Each slot's terms are the same at any TM: bit-identical)
-    const int tm = T == 1 && !q2g ? 1 : q2f ? (T <= 4 ? 4 : 8) : hp.moe_std ? tm_std : 16, n = T * NU;
+    // (2..8 rows, a batched step or a verification pass: tiles of 2 / 4 / 8 slots, as many as an expert can get; TM 16
+    //  ran mostly empty rows: Flash Next 2 slots gate / up 34.8 -> 29.1 ms per step. ARC_MOE_TM_SMALL=n: TM n, 0: TM 16)
+    static const int tm_small = getenv("ARC_MOE_TM_SMALL") ? atoi(getenv("ARC_MOE_TM_SMALL")) : -1;
+    const int tm_dec = tm_small < 0 ? (T <= 2 ? 2 : T <= 4 ? 4 : 8) : tm_small > 0 ? tm_small : tm_std;
+    const int tm = T == 1 && !q2g ? 1 : q2f ? (T <= 4 ? 4 : 8) : hp.moe_std ? (T <= 8 ? tm_dec : tm_std) : 16, n = T * NU;
     const std::string defs = "-cl-intel-256-GRF-per-thread -DNE=" + std::to_string(hp.n_expert) +
                              " -DNU=" + std::to_string(NU) + " -DTM=" + std::to_string(tm) +
                              (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "");
@@ -202,7 +206,9 @@
       run("moe_quant", k, 2, gws, lws);
     };
     auto down_q = [&](cl_mem tiles) {
-      const int grows = T == 1 ? gr_dn : 1;
+      // (2..8 rows: 4 rows per sub-group too, Flash Next 2 slots down 27.5 -> 20.7 ms per step; ARC_MOE_GR_DN_S=n)
+      static const int gr_dn_s = getenv("ARC_MOE_GR_DN_S") ? atoi(getenv("ARC_MOE_GR_DN_S")) : 4;
+      const int grows = T == 1 ? gr_dn : T <= 8 ? gr_dn_s : 1;
       // (two passes fused: the 256-register file, as gate / up; with 128 the sums spilled, ocloc: 28-61 scratch messages)
       cl_kernel k = kernel("decode", (q2f ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DMOE_Q -DQT=" +
                                          std::to_string(L.ex_type[2]) + " -DGROWS=" + std::to_string(grows) +
@@ -223,6 +229,7 @@
     static const bool xsplit = !getenv("ARC_XSPLIT") || atoi(getenv("ARC_XSPLIT")) != 0;
     cl_mem tiles = mtiles_;
     std::vector<int> tl1;
+    // (a batched step of 2 Flash Next slots split the same way: the same tok/s, 2026-10-27: not kept)
     if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g) {
       tl1.resize(1 + 3 * (size_t)NU);
       CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl1.size() * 4, tl1.data(), 0, nullptr, nullptr));

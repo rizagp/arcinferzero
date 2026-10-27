@@ -230,6 +230,34 @@ static int run_main(int argc, char** argv) {
       }
       printf("B %d: %.1f ms per batched step (%.1f tok/s together) | one slot alone %.1f ms (%.1f tok/s): %.2fx\n", B, best,
              1000.0 * B / best, one, 1000.0 / one, one * B / best);
+      if (prof_gen) {  // (--prof-gen: GPU time per kernel of a step, alone and batched, over `reps` steps each)
+        std::map<std::string, double> a, b;
+        auto run_prof = [&](std::map<std::string, double>& out, bool batched) {
+          eng.prof_ms.clear();
+          eng.prof_n.clear();
+          eng.profile = true;
+          for (int r = 0; r < reps; ++r) {
+            if (batched) eng.forward_batch(sl, tk);
+            else eng.forward(&tk[0], 1);
+          }
+          eng.profile = false;
+          for (auto& [n, ms] : eng.prof_ms) out[n] = ms / reps;
+        };
+        run_prof(a, false);
+        run_prof(b, true);
+        std::vector<std::pair<double, std::string>> rows;
+        double ta = 0, tb = 0;
+        for (auto& [n, ms] : b) rows.push_back({ms, n});
+        for (auto& [n, ms] : a) {
+          ta += ms;
+          if (!b.count(n)) rows.push_back({0, n});
+        }
+        for (auto& [n, ms] : b) tb += ms;
+        std::sort(rows.rbegin(), rows.rend());
+        printf("  GPU ms per step by kernel: alone %.1f, batched %.1f (B x alone %.1f)\n", ta, tb, B * ta);
+        for (auto& [ms, n] : rows)
+          if (ms > 0.2 || a[n] > 0.2) printf("    %-20s alone %7.2f  batched %7.2f  (%.2fx)\n", n.c_str(), a[n], ms, a[n] > 0 ? ms / a[n] : 0.0);
+      }
     }
     if (eng.has_mtp)  // with drafts (as many as B slots' rows fit one pass; none accepted, the same work every step)
       for (int B = 2; B <= NS && 2 * B <= eng.batch_rows(); ++B) {
