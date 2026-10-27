@@ -656,27 +656,36 @@ inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::
     if (!wav_format(at, size, w) || w.fmt != 1 || w.bits != 16 || w.ch < 1 || w.ch > 2)
       throw std::runtime_error("only 16-bit PCM WAV, mono or stereo");
     MfSession ses;
+    // (the encoder takes only some bitrates for a channel count: mono at 192 kbps is refused; the next lower one tried)
     ComPtr<IMFSinkWriter> sw;
-    mf_check(MFCreateSinkWriterFromURL(std::filesystem::absolute(mp3).wstring().c_str(), nullptr, nullptr, &sw), "MP3 file");
-    ComPtr<IMFMediaType> out, in;
-    mf_check(MFCreateMediaType(&out), "media type");
-    out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-    out->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_MP3);
-    out->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)w.rate);
-    out->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)w.ch);
-    out->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)std::clamp(kbps, 96, 320) * 1000 / 8);
     DWORD stream = 0;
-    mf_check(sw->AddStream(out.p, &stream), "an MP3 stream at this rate (32 / 44.1 / 48 kHz)");
-    mf_check(MFCreateMediaType(&in), "media type");
-    in->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-    in->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-    in->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)w.rate);
-    in->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)w.ch);
-    in->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
-    in->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, (UINT32)(2 * w.ch));
-    in->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)(2 * w.ch * w.rate));
-    in->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
-    mf_check(sw->SetInputMediaType(stream, in.p, nullptr), "PCM input");
+    const int top = std::clamp(kbps, 96, 320);
+    bool set = false;
+    for (int b : {top, 160, 128, 112, 96}) {
+      if (b > top) continue;
+      if (sw.p) { sw.p->Release(); sw.p = nullptr; }
+      ComPtr<IMFMediaType> out, in;
+      mf_check(MFCreateSinkWriterFromURL(std::filesystem::absolute(mp3).wstring().c_str(), nullptr, nullptr, &sw), "MP3 file");
+      mf_check(MFCreateMediaType(&out), "media type");
+      out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+      out->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_MP3);
+      out->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)w.rate);
+      out->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)w.ch);
+      out->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)b * 1000 / 8);
+      if (FAILED(sw->AddStream(out.p, &stream))) continue;
+      mf_check(MFCreateMediaType(&in), "media type");
+      in->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+      in->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+      in->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)w.rate);
+      in->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)w.ch);
+      in->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+      in->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, (UINT32)(2 * w.ch));
+      in->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)(2 * w.ch * w.rate));
+      in->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+      if (SUCCEEDED(sw->SetInputMediaType(stream, in.p, nullptr))) { set = true; break; }
+    }
+    if (!set) throw std::runtime_error("the MP3 encoder takes no bitrate for " + std::to_string(w.ch) + " channel(s) at " +
+                                       std::to_string(w.rate) + " Hz (32 / 44.1 / 48 kHz)");
     mf_check(sw->BeginWriting(), "begin");
     const size_t frame = (size_t)2 * w.ch, block = (size_t)w.rate / 2;  // (half a second a sample)
     std::vector<uint8_t> raw(frame * block);

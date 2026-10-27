@@ -298,7 +298,7 @@ Formats: [✓] SRT  [ ] VTT  [ ] YouTube SBV  [ ] YouTube SRV3  [ ] ASS  [ ] TTM
 
 ## The Meeting function ("Rapat")
 
-Built 2026-10-28 in the browser (W6 / W7: live, Me / Others from the microphone and a shared tab or screen, the accurate pass, summaries and minutes); `arc-recorder.exe` below is still to come. The plan:
+Built 2026-10-28 in the browser (W6 / W7: live, Me / Others from the microphone and a shared tab or screen, the accurate pass, summaries and minutes) and `arc-recorder.exe` (W8: recordings apart from the browser and the server, transcribed when they end; no live text from them). The plan:
 
 ```
 [ Chat ]  [ Transkrip ]  [ Rapat ]

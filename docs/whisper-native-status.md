@@ -202,6 +202,19 @@ Talk mode, Gemma 4 E4B, a 5-s spoken question to the answer's first token (media
 (0.55 s Whisper greedy + 0.17 s), the model hearing the clip 0.50 s (its first call 21.9 s: the audio encoder's
 kernels built once). Whisper costs ~0.2 s and works with every model.
 
+**W8 (2026-10-28): `arc-recorder.exe`** (`tools/arc_recorder.cpp`; `arc-server record [-App Zoom.exe] [-NoMic]
+[-Title ...]`, `record-stop`, `record-status`): the microphone ("Me") and the meeting's sound ("Others": one app's
+sound through WASAPI process loopback, its child processes included, or everything the speakers play) as a stereo
+16-bit WAV at 48 kHz in `<data>\recordings\`, its sizes put right every second. Each packet goes to its place by its
+time stamp (QPC), so a silent app, a headset change or a device back after a second leave silence, not a shift
+between the tracks. The server is not involved while it records; at the end the recording goes to
+`POST /v1/transcripts/import` (this computer only, a WAV in the recordings folder: moved into the library, the
+accurate pass per track with Me / Others, then MP3), or, the server down, a sidecar `.json` makes the server take it
+at its next start. Checked with a process playing the test clip: a 15-s recording handed over and transcribed
+(26 words, the same as the clip's), MP3 kept (the encoder refuses mono at 192 kbps: the next lower bitrate it takes,
+128); the server killed at 5 s and started again at 15 s of a 30-s recording: nothing lost (49 words); the server
+down at the end: taken at its next start.
+
 **NPU mode** (14-minute file): NPU + iGPU greedy 81 s (10.5x realtime; OpenVINO NPU 144 s + 253 s compiling), beam 5
 91 s; logits KL 0.00052 against the f32 reference (64 / 64 top tokens). It keeps the iGPU free for the LLM: 0.73 GiB
 of GPU memory instead of 1.39 GiB.
@@ -218,8 +231,8 @@ normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-a
 3. Formats: checked in Remotion and Chrome and by structure (W3, above); YouTube, Premiere and Resolve by the user.
    Video files and the transcript library: done (W4, above).
 4. The Transcripts tab, live recording, the Meetings tab with summaries and minutes: done (W5-W7, above). Left:
-   `arc-recorder.exe` (W8: a desktop app's own sound without sharing a tab, recordings that outlive the browser),
-   `@` on a recording in a chat (QUEUE 8).
+   `@` on a recording in a chat (QUEUE 8). `arc-recorder.exe`: done (W8, above); the browser's live text does not
+   come from its recordings (they are transcribed when they end).
 5. Speech in a chat and the Talk mode choice: done (W9, above).
 4. Then the web UI tabs (Transcript, Meeting), `arc-recorder.exe` (separate process, WASAPI process loopback +
    microphone, `recorder.json` + named pipe, reconnect after a server crash), Talk mode with the choice of Gemma

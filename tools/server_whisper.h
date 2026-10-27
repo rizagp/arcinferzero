@@ -18,6 +18,7 @@
 #include "../zero/whisper_engine.h"
 #include "api_compat.h"
 #include "server_files.h"
+#include "../src/app_dir.h"
 #include "../src/image.h"
 #include <atomic>
 #include <chrono>
@@ -422,6 +423,8 @@ class Service {
   //   GET    /v1/transcripts/<id>/media            the uploaded file (byte ranges: a <video> / <audio> seeks)
   //   POST   /v1/transcripts/<id>/cancel           stops it, queued or running (what was done is kept)
   //   DELETE /v1/transcripts/<id>                  stops it and deletes its folder
+  //   POST   /v1/transcripts/import                {path, name, kind, tracks, speakers}: a finished recording of
+  //                                                 arc-recorder (<data>\recordings\), from this computer only
   void start_library(const std::filesystem::path& dir) {
     namespace fs = std::filesystem;
     lib_ = dir;
@@ -456,6 +459,18 @@ class Service {
       }
       metas_[tid] = m;
       save_meta(tid);
+    }
+    // arc-recorder's finished recordings the server did not take yet (it was not running when they ended)
+    for (const auto& e : fs::directory_iterator(fs::path(app_dir()) / "recordings", ec)) {
+      if (e.path().extension() != ".json") continue;
+      Json side;
+      std::string bad;
+      if (Json::try_parse(slurp(e.path()), side) && side["complete"].as_bool()) {
+        fs::path w = e.path();
+        w.replace_extension(".wav");
+        side.set("path", w.string());
+        if (import_recording(side, bad).empty()) fprintf(stderr, "whisper: recording %s: %s\n", w.string().c_str(), bad.c_str());
+      }
     }
     worker_ = std::thread([this] { work(); });
     live_worker_ = std::thread([this] { live_work(); });
@@ -569,6 +584,16 @@ class Service {
         save_meta(nid);
       }
       return rs.send(200, "application/json", m.dump());
+    }
+    if (rq.path == "/v1/transcripts/import" && rq.method == "POST") {  // (arc-recorder's recordings)
+      if (!rq.local_peer) return fail(403, "only from this computer");
+      Json in;
+      if (!Json::try_parse(rq.body, in) || !in.is_object()) return fail(400, "a JSON object expected");
+      std::string bad;
+      const std::string nid = import_recording(in, bad);
+      if (nid.empty()) return fail(400, bad);
+      std::lock_guard<std::mutex> lk(lib_mu_);
+      return rs.send(200, "application/json", metas_[nid].dump());
     }
     if (!valid_id(tid)) return fail(404, "no transcript " + tid);
     Json m;
@@ -1179,6 +1204,66 @@ class Service {
     lib_cv_.notify_all();
   }
 
+  // a finished recording of arc-recorder (a WAV in <data>\recordings\, its sidecar <name>.json next to it) moved
+  // into the library and queued for the accurate pass (its tracks with their speakers); the new id, or "" and why
+  std::string import_recording(const Json& in, std::string& bad) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path rec = fs::weakly_canonical(fs::path(app_dir()) / "recordings", ec);
+    const fs::path w = fs::weakly_canonical(fs::path(in["path"].str()), ec);
+    if (ec || w.parent_path() != rec || w.extension() != ".wav") {
+      bad = "path: a recording in " + rec.string();
+      return "";
+    }
+    const uint64_t size = fs::file_size(w, ec);
+    if (ec || size < 44) {
+      bad = "no recording at " + w.string();
+      return "";
+    }
+    const int tracks = std::clamp((int)in["tracks"].as_number(1), 1, 2);
+    Json sp = Json::array();
+    for (int k = 0; k < tracks; ++k) sp.push(in["speakers"][k].str(tracks == 1 ? "" : k == 0 ? "Me" : "Others"));
+    const std::string nid = new_id();
+    fs::create_directories(lib_ / nid, ec);
+    fs::rename(w, lib_ / nid / "source.wav", ec);  // (the same drive: no copy)
+    if (ec) {
+      ec.clear();
+      fs::copy_file(w, lib_ / nid / "source.wav", ec);
+      if (!ec) fs::remove(w, ec);
+    }
+    if (!fs::exists(lib_ / nid / "source.wav")) {
+      bad = "cannot move the recording into the library";
+      fs::remove_all(lib_ / nid, ec);
+      return "";
+    }
+    fs::path side = w;
+    side.replace_extension(".json");
+    fs::remove(side, ec);
+    std::string name = in["name"].str(w.filename().string());
+    if (name.size() > 200) name.resize(200);
+    Json m = Json::object();
+    m.set("id", nid);
+    m.set("name", name);
+    m.set("ext", "wav");
+    m.set("size", (double)size);
+    m.set("received", (double)size);
+    m.set("status", "queued");
+    m.set("progress", 0.0);
+    m.set("options", Json::object());
+    m.set("tracks", (double)tracks);
+    m.set("speakers", sp);
+    m.set("recording", true);
+    m.set("mp3_kbps", 192.0);
+    if (in["kind"].str() == "meeting") m.set("kind", "meeting");
+    std::lock_guard<std::mutex> lk(lib_mu_);
+    double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    for (const auto& [k, x] : metas_) now = std::max(now, x["created"].as_number() + 0.001);
+    m.set("created", (double)std::llround(now * 1000) / 1000);
+    metas_[nid] = m;
+    save_meta(nid);
+    lib_cv_.notify_all();
+    return nid;
+  }
   static bool valid_id(const std::string& tid) {
     return tid.size() >= 8 && tid.size() <= 40 && tid.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz-") == std::string::npos;
   }

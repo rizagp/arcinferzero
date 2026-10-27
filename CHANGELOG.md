@@ -2,6 +2,9 @@
 
 ## 2026-10-28: Transcripts and Meetings in the web UI
 
+- **Meetings recorded apart from the browser**: `arc-server record -App Zoom.exe` records your microphone and
+  the Zoom (or Teams, or any app's) sound as two tracks until `arc-server record-stop`; it goes on if the server
+  stops, and the Meetings tab transcribes it as Me / Others when it ends.
 - **Every model hears**: an audio file or voice note attached in a chat is written by Whisper, so Qwen and the
   others answer about it (a 10-minute voice note: 39 s the first time, 4 s for each next question). Settings >
   Voice > **Speech** chooses, for Gemma 4 E4B / 12B, whether Whisper writes it or the model hears it itself.

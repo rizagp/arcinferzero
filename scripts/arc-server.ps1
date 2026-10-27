@@ -15,11 +15,15 @@
 #   arc-server stop                   stop the server
 #   arc-server status                 show what is running and the saved conversations
 #   arc-server clear-cache            delete the saved conversations (session cache) of all models
+#   arc-server record [-App Zoom.exe] [-NoMic] [-Title "..."]   record a meeting (bin\arc_recorder.exe, in the
+#                                     background): the microphone as "Me", the app's sound (or the speakers') as
+#                                     "Others"; record-stop ends it and the server transcribes it (the Meetings tab);
+#                                     record-status
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
 # Log: %USERPROFILE%\arcinferzero\server.log
 param(
-  [ValidateSet("start", "stop", "status", "restart", "clear-cache", "help", "--help", "-h")] [string]$Action = "start",
+  [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "help", "--help", "-h")] [string]$Action = "start",
   [string]$Model = "",
   [string]$Ctx = "",
   [int]$Chunk = 0,
@@ -45,6 +49,10 @@ param(
   [switch]$NoSwap,
   [string]$ListenHost = "",
   [string]$SessionDir = "",
+  # record: the meeting app (its sound is "Others"; none: everything the speakers play), no microphone, a title
+  [string]$App = "",
+  [switch]$NoMic,
+  [string]$Title = "",
   [switch]$Quiet
 )
 $ErrorActionPreference = "Stop"
@@ -186,6 +194,14 @@ arc-server: the arcinferzero server in the background (port $Port), for Pi and o
   arc-server clear-cache         delete saved conversations (session cache). Saved system prompts (per project
                                  folder, 8 GB in all, reused across restarts) are in %USERPROFILE%\arcinferzero\zero\prefix;
                                  deleting that folder is safe while the server is stopped.
+  arc-server record [-App Zoom.exe] [-NoMic] [-Title "weekly"]
+                                 record a meeting in the background (bin\arc_recorder.exe): your microphone as
+                                 "Me", the app's sound (Zoom.exe, Teams.exe, chrome.exe...; without -App: all the
+                                 speakers play) as "Others", into %USERPROFILE%\arcinferzero\recordings\. It goes on
+                                 if the server stops or restarts.
+  arc-server record-stop         end it: the server transcribes it (Me / Others) in the Meetings tab, now or
+                                 at its next start
+  arc-server record-status       whether a recording runs, and where
   arc-server help                this text (also --help, -h)
 
 Options for start / restart:
@@ -281,6 +297,23 @@ switch ($Action) {
     return
   }
   "stop" { if (-not (Stop-Arc)) { Say "arcinferzero server is not running." }; return }
+  "record" {
+    $rec = Join-Path $root "bin\arc_recorder.exe"
+    if (-not (Test-Path $rec)) { throw "$rec not found: build it with .\build.ps1 tools\arc_recorder.cpp (or run setup)" }
+    $a = @("start")
+    if ($App) { $a += "--app", $App }
+    if ($NoMic) { $a += "--no-mic" }
+    if ($Title) { $a += "--title", ('"' + $Title.Replace('"', "'") + '"') }
+    $log = Join-Path $stateDir "recorder.log"
+    $p = Start-Process $rec -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardError $log
+    Start-Sleep -Milliseconds 1500
+    if ($p.HasExited) { Get-Content $log | ForEach-Object { Say $_ }; throw "the recorder did not start" }
+    Get-Content $log | ForEach-Object { Say $_ }
+    Say "arc-server record-stop ends it."
+    return
+  }
+  "record-stop" { & (Join-Path $root "bin\arc_recorder.exe") stop; return }
+  "record-status" { & (Join-Path $root "bin\arc_recorder.exe") status; return }
 }
 
 # ---- start / restart

@@ -8,7 +8,7 @@
 #   setup -Help                  all options
 #
 # Steps: 1 requirements (Windows, Intel Arc GPU, Visual Studio C++ compiler, Python, Pi)  2 build bin\serverz.exe,
-# runz.exe, clinfo.exe when missing or older than the sources  3 GPU check (OpenCL 3.0, DP4a, sub-groups, memory)
+# runz.exe, clinfo.exe, transcribez.exe, arc_recorder.exe when missing or older than the sources  3 GPU check (OpenCL 3.0, DP4a, sub-groups, memory)
 # 4 models (Hugging Face cache; the 35B is converted)  5 Pi (pi-arc / arc-server commands, Pi's model list)
 # 6 regression tests (-Tests).
 param([string[]]$Models = @(), [switch]$Tests, [switch]$NoPi, [switch]$Yes, [switch]$Help)
@@ -33,7 +33,8 @@ STEPS
   1 requirements   64-bit Windows, an Intel Arc GPU and its driver, the Visual Studio C++ compiler (vswhere,
                    $env:ARC_VCVARS = a vcvars64.bat overrides), Python 3.10+ (downloads), Pi (optional).
                    Missing ones: where to get them.
-  2 build          bin\serverz.exe, runz.exe, clinfo.exe when missing or older than their sources; the compiler
+  2 build          bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe (Whisper), arc_recorder.exe (meetings)
+                   when missing or older than their sources; the compiler
                    output goes to %USERPROFILE%\arcinferzero\build.log (shown when a build fails). A running server
                    is stopped first if serverz.exe has to be rebuilt.
   3 GPU check      bin\clinfo.exe: OpenCL device, DP4a (cl_khr_integer_dot_product), Intel sub-groups, GPU memory
@@ -133,7 +134,7 @@ $newestHeader = (Get-ChildItem (Join-Path $root "src") -Filter *.h | Measure-Obj
 # (arcinferzero: zero\serverz.cpp is tools\server.cpp on zero\engine.h, so it depends on both and on zero\*.h)
 $newestZero = (Get-ChildItem (Join-Path $root "zero") -Filter *.h | Measure-Object LastWriteTime -Maximum).Maximum
 $need = @()
-foreach ($t in "tools\clinfo", "zero\serverz", "zero\runz") {
+foreach ($t in "tools\clinfo", "zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder") {
   $name = Split-Path $t -Leaf
   $exe = Join-Path $bin "$name.exe"
   $src = Get-Item (Join-Path $root "$t.cpp")

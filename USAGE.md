@@ -277,7 +277,11 @@ While the server is running:
     Zoom web / Teams web, or the screen) as "Others"; use headphones, so the microphone does not hear the others
     too. Afterwards **Summarize** (the loaded chat model writes the summary, decisions, action items and open
     questions with their minute, in the meeting's language) and **Minutes DOCX / PDF** (also in the Files panel).
-    A recording made elsewhere can be dropped in the Meetings list too.
+    A recording made elsewhere can be dropped in the Meetings list too. For a meeting in a desktop app (Zoom,
+    Teams) or a long one: `arc-server record -App Zoom.exe -Title "weekly"` records your microphone and that app's
+    sound in the background (without `-App`: everything the speakers play; `-NoMic`: the meeting's sound only),
+    whatever the browser or the server do meanwhile; `arc-server record-stop` ends it, and it appears in the
+    Meetings tab, transcribed as Me / Others.
   - **Audio in a chat**: an attached audio file or a voice message reaches every model as text written by
     Whisper (long recordings as a document the model reads by parts). Settings > Voice > **Speech**: "Whisper
     writes it" (every model), or "The model hears it" (Gemma 4 E4B / 12B get the sound itself; ~0.2 s quicker in
