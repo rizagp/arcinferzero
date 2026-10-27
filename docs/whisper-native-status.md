@@ -215,6 +215,20 @@ at its next start. Checked with a process playing the test clip: a 15-s recordin
 128); the server killed at 5 s and started again at 15 s of a 30-s recording: nothing lost (49 words); the server
 down at the end: taken at its next start.
 
+**3 hours unattended (2026-10-28, 01:19-04:19)**: `--seconds 10800`, the speakers' sound only (nothing played, so
+WASAPI sent no packets: the length, the clock and the file were tested, not 3 hours of sound), alongside the GPU
+tests of that night. The WAV came out 10,800.05 s long (1,036,804,786 bytes: the QPC placement lost or added
+nothing), its note complete; no server ran, so it was taken at the next start and transcribed (6 min 10 s with
+the start, beam 5 over silence), kept as MP3 (172.8 MB, its length checked against the recording's before the WAV
+was deleted). It also showed a bug of both WAV writers (arc-recorder's and the live recordings'): the first
+header was written at the file's start and the writing went back there, so the audio wrote over it and every
+later header went over the first 44 bytes of audio (the data size 44 bytes more than the file held). Fixed: the
+samples start after the header (checked: a 3-s recording's data size = its length - 44; a live WAV's bytes = the
+bytes sent). After the self audit (2026-10-28) the recorder also follows a new default device (a headset plugged
+in), finds an app started again, writes its note at the start (a recorder killed, a shutdown or a power cut: the
+server takes the recording at its next start), never writes over a recording of the same minute; the three
+checks above passed again with it (26, 50, 21 words).
+
 **NPU mode** (14-minute file): NPU + iGPU greedy 81 s (10.5x realtime; OpenVINO NPU 144 s + 253 s compiling), beam 5
 91 s; logits KL 0.00052 against the f32 reference (64 / 64 top tokens). It keeps the iGPU free for the LLM: 0.73 GiB
 of GPU memory instead of 1.39 GiB.
@@ -230,8 +244,8 @@ normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-a
 2. Mixed languages and jargon: done (W2, above).
 3. Formats: checked in Remotion and Chrome and by structure (W3, above); YouTube, Premiere and Resolve by the user.
    Video files and the transcript library: done (W4, above).
-4. The Transcripts tab, live recording, the Meetings tab with summaries and minutes: done (W5-W7, above). Left:
-   `@` on a recording in a chat (QUEUE 8). `arc-recorder.exe`: done (W8, above); the browser's live text does not
+4. The Transcripts tab, live recording, the Meetings tab with summaries and minutes: done (W5-W7, above); `@` on a
+   recording in a chat: done (QUEUE 8). `arc-recorder.exe`: done (W8, above); the browser's live text does not
    come from its recordings (they are transcribed when they end).
 5. Speech in a chat and the Talk mode choice: done (W9, above).
 4. Then the web UI tabs (Transcript, Meeting), `arc-recorder.exe` (separate process, WASAPI process loopback +

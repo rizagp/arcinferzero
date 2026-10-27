@@ -111,7 +111,10 @@ A fresh review of the fix commit (c22f6dc) found these in the fixes, fixed after
   abrupt; what that leaves is repaired at the next start (the queue, live recordings, deletes).
 - arc-recorder's device clock is followed in 40-ms steps (no fine resampling); a device change is checked every 2 s.
 
-## The 3-hour recording
+## Found by the tests after it
 
-See [whisper-native-status.md](whisper-native-status.md) (W8): arc-recorder ran 3 hours unattended alongside these
-tests.
+The 3-hour arc-recorder run (10,800.05 s, its WAV taken at the server's next start, transcribed, kept as MP3)
+showed one more, older than the audit: both WAV writers (arc-recorder, live recordings) wrote their first header at
+the file's start and went back there, so the audio wrote over it and every later header went over the first 44
+bytes of audio: the data size claimed 44 bytes the file did not have. Fixed (the samples start after the header),
+checked on a 3-s recording and a live WAV byte for byte. Details: [whisper-native-status.md](whisper-native-status.md) (W8).

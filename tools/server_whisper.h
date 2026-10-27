@@ -1174,7 +1174,9 @@ class Service {
     u16(34, 16);
     memcpy(h + 36, "data", 4);
     u32(40, data);
-    const auto end = s.wav.tellp();
+    // (the samples go after the header: the first call, at the file's start, went back to 0, so the audio wrote over
+    //  the header and each later call wrote it back over the first 44 bytes of audio)
+    const std::streamoff end = std::max<std::streamoff>(44, (std::streamoff)s.wav.tellp());
     s.wav.seekp(0);
     s.wav.write((const char*)h, 44);
     s.wav.seekp(end);

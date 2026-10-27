@@ -334,7 +334,9 @@ void wav_header(std::fstream& f, int ch, uint64_t frames) {
   u16(34, 16);
   memcpy(h + 36, "data", 4);
   u32(40, data);
-  const auto end = f.tellp();
+  // (the samples go after the header: the first call, at the file's start, went back to 0 and the audio wrote over
+  //  the header, which every later call wrote back over the first 44 bytes of audio: 44 bytes short of its size)
+  const std::streamoff end = std::max<std::streamoff>(44, (std::streamoff)f.tellp());
   f.seekp(0);
   f.write((const char*)h, 44);
   f.seekp(end);

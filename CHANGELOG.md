@@ -7,7 +7,8 @@
   then deleted another transcript), recordings past 4 GB that lost their end, a recorder killed or a power cut
   (the recording is now picked up at the server's next start), a headset plugged in mid-meeting (now followed),
   a live recording whose page closed (stopped and transcribed when the page has sent nothing for 5 minutes), subtitle cues of
-  two speakers that ended before they started. Recordings up to 6 hours are transcribed (180 minutes before).
+  two speakers that ended before they started. Recordings up to 6 hours are transcribed (180 minutes before). A
+  3-hour unattended recording passed, and showed that recordings' WAV header overwrote their first samples (fixed).
 - **A chat reads your other chats and recordings**: type `@` to attach an earlier chat or a recording / meeting
   next to the files, or just ask ("what budget did we settle on for Bali?"): the model searches your other chats
   (list_chats / search_chats) and reads the part it needs. Files now tell the model an image's size and a
