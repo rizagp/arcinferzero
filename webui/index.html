@@ -940,7 +940,8 @@ const FILE_TOOLS = [
       "slide (its pages are the slides) with its speaker notes. A long document first gives its outline " +
       "(numbered sections with pages and sizes): then read only the sections or pages the question needs. Text comes in " +
       "parts of up to 12,000 characters (next_offset reads on). A document you wrote returns its source (the " +
-      "create_document arguments). Images and audio: metadata only.",
+      "create_document arguments). Images and audio: metadata only. Scanned PDF pages (images without text) read by " +
+      "pages are transcribed by the loaded vision model first (up to 4 pages a call, 10-60 s a page).",
     parameters: { type: "object", properties: {
       file_id: { type: "string", description: "the id from list_files, or the file's name" },
       section: { type: "integer", description: "a section number from the outline" },
@@ -1338,7 +1339,10 @@ async function runFileTool(name, args, card, signal, job) {
   else if (name === "search_file") card.status.textContent = "· " + (j.results || []).length + " passages" +
     ((j.results || []).length ? " (" + [...new Set(j.results.map((x) => x.pages ? "p. " + x.pages : "§ " + x.section))].slice(0, 4).join(", ") + ")" : "");
   else card.status.textContent = "· " + (j.filename || "") + (j.outline ? " (outline: " + j.outline.length + " sections, ~" + k1(j.total_tokens) + " tokens)"
-    : j.title ? " (" + j.title + ")" : j.total_chars ? " (" + k1(Math.min(j.total_chars, (j.offset || 0) + (j.content || "").length)) + " of " + k1(j.total_chars) + " characters)" : j.source ? " (source)" : "");
+    : j.title ? " (" + j.title + ")" : j.total_chars ? " (" + k1(Math.min(j.total_chars, (j.offset || 0) + (j.content || "").length)) + " of " + k1(j.total_chars) + " characters)" : j.source ? " (source)" : "") +
+    // (scanned pages the vision model read for this call: tools/server.cpp read_file)
+    ((j.transcribed || []).some((x) => x.seconds != null) ? ", scanned p. " + j.transcribed.filter((x) => x.seconds != null).map((x) => x.page).join(", ") +
+      " transcribed in " + Math.round(j.transcribed.reduce((s, x) => s + (x.seconds || 0), 0)) + " s" : "");
   return JSON.stringify(j);
 }
 

@@ -272,7 +272,14 @@ While the server is running:
   than ~6K tokens, e.g. a report of 100+ pages) is not put into the prompt whole, which would take minutes: the model
   gets its outline (chapters with pages) and reads the chapters or pages the question needs, or searches it
   (`search_file`: the passages with the question's words, with their pages), and says where its answer comes from.
-  Scanned PDFs (images without text) need OCR, which is not there yet. Documents it writes: **DOCX** (opens in Word without
+  **Scanned PDFs** (pages that are images, without text) are read by the loaded model when it sees images (Qwen 3.5
+  4B / 9B, Gemma 4 E4B / 12B / 26B with their mmproj): `read_file` with `pages` has it transcribe those pages from
+  their images first, up to 4 a call (10-60 s a page: ~1,000 image tokens, then the text), and the text is kept with
+  the file (the chat folder's `.pages\<id>.json`), so later reads, other chats and `search_file` use it without the
+  vision model. JPEG, Flate and CCITT fax images are read; JBIG2 and JPEG 2000 scans are not. A model without an
+  image encoder says which pages are scans and that a vision model is needed. With one slot the transcription is a
+  conversation of its own, so the chat's prompt is processed again at its next turn (`--slots 2` or the session
+  cache avoid that). Documents it writes: **DOCX** (opens in Word without
   repair), **PDF**, **DOC** (Word 97-2003 compatible, written as RTF, which Word opens as a document), RTF or Markdown,
   from Markdown with headings, bold / italic / underline / strike / highlight, colors and font sizes, lists, tables
   (column alignment, a header row repeated on each page), code, rules, centered or justified blocks and page breaks;

@@ -8,7 +8,7 @@
 // from Word's rendered page breaks). PDF: the content streams' text (fonts with ToUnicode maps or simple encodings,
 // form XObjects), lines grouped into paragraphs by their spacing, headings from the bookmarks or else by font size and
 // bold lines that stand apart (list items, table cells and lines ending in ':' are not headings). Not read: scans
-// without a text layer (that needs OCR), encrypted PDFs, legacy binary .doc.
+// without a text layer (their images: tools/pdf_images.h, for a vision model), encrypted PDFs, legacy binary .doc.
 #pragma once
 #include <algorithm>
 #include <array>
@@ -35,6 +35,8 @@ struct Doc {
   std::vector<Para> paras;
   int pages = 0;  // (0: the format has no pages, e.g. a text file)
   std::string note;  // (why little or nothing was read)
+  // a PDF's scanned pages (an image without a text layer: tools/pdf_images.h), and those of them not transcribed yet
+  std::vector<int> scans, unread;
   size_t chars() const {
     size_t n = 0;
     for (const Para& p : paras) n += p.text.size() + 2;
@@ -377,26 +379,48 @@ class File {
     return o;
   }
   P get(const P& dict, const std::string& k) const { return dict ? resolve(dict->get(k)) : nullptr; }
-  // a stream's decoded bytes (FlateDecode; no filter); "" for others
-  std::string decode(const P& o) const {
-    if (!o || !o->has_stream) return "";
+  // a stream's filters by their full names, and the decode parameters of filter k
+  std::vector<std::string> filters(const P& o) const {
     P f = get(o, "Filter");
     std::vector<std::string> fs;
     if (f && f->t == Obj::Name) fs.push_back(f->s);
     else if (f && f->t == Obj::Arr)
       for (auto& x : f->a)
         if (P r = resolve(x); r && r->t == Obj::Name) fs.push_back(r->s);
+    static const std::map<std::string, std::string> abbr = {{"Fl", "FlateDecode"}, {"DCT", "DCTDecode"}, {"CCF", "CCITTFaxDecode"},
+                                                            {"LZW", "LZWDecode"}, {"AHx", "ASCIIHexDecode"}, {"A85", "ASCII85Decode"},
+                                                            {"RL", "RunLengthDecode"}};
+    for (std::string& n : fs)
+      if (auto it = abbr.find(n); it != abbr.end()) n = it->second;
+    return fs;
+  }
+  P parms(const P& o, size_t k) const {
+    P p = get(o, "DecodeParms");
+    if (!p) p = get(o, "DP");
+    if (p && p->t == Obj::Arr) p = k < p->a.size() ? resolve(p->a[k]) : nullptr;
+    return p && p->t == Obj::Dict ? p : nullptr;
+  }
+  // a stream's decoded bytes (FlateDecode; no filter); "" for others. With image_filter: an image's last filter
+  // (DCTDecode, CCITTFaxDecode, JBIG2Decode, JPXDecode) is left on, its name put there
+  std::string decode(const P& o, std::string* image_filter = nullptr) const {
+    if (!o || !o->has_stream) return "";
+    const std::vector<std::string> fs = filters(o);
     std::string cur = o->stream;
-    for (const std::string& name : fs) {
-      if (name == "FlateDecode" || name == "Fl") {
+    for (size_t k = 0; k < fs.size(); ++k) {
+      const std::string& name = fs[k];
+      if (name == "FlateDecode") {
         std::string out;
         infl::zlib(cur, out, std::min<size_t>(128u << 20, budget_));  // (a damaged stream: what decoded)
         budget_ -= std::min(budget_, out.size());  // (all streams of one file together: 512 MB at most)
-        P parms = get(o, "DecodeParms");
-        if (parms && parms->t == Obj::Arr && !parms->a.empty()) parms = resolve(parms->a[0]);
-        const P pr = get(parms, "Predictor"), cols = get(parms, "Columns");
-        if (pr && pr->t == Obj::Num && pr->n >= 10) out = png_unpredict(out, cols && cols->t == Obj::Num ? (int)cols->n : 1);
+        const P pa = parms(o, k);
+        const P pr = get(pa, "Predictor"), cols = get(pa, "Columns"), colors = get(pa, "Colors"), bpc = get(pa, "BitsPerComponent");
+        auto num = [](const P& v, int d) { return v && v->t == Obj::Num ? (int)std::clamp(v->n, 1.0, 1e6) : d; };
+        if (pr && pr->t == Obj::Num && pr->n >= 10) out = png_unpredict(out, num(cols, 1), std::min(num(colors, 1), 32), std::min(num(bpc, 8), 16));
         cur.swap(out);
+      } else if (image_filter && k + 1 == fs.size() &&
+                 (name == "DCTDecode" || name == "CCITTFaxDecode" || name == "JBIG2Decode" || name == "JPXDecode")) {
+        *image_filter = name;
+        return cur;
       } else return "";  // (DCT, JBIG2, LZW ...: not text)
     }
     return cur;
@@ -518,15 +542,19 @@ class File {
   std::map<int, P> objs_;
   mutable size_t budget_ = 512u << 20;
 
-  static std::string png_unpredict(const std::string& in, int cols) {
+  // PNG row filters undone: rows of cols samples of `colors` components of bpc bits, each row after its filter byte
+  static std::string png_unpredict(const std::string& in, int cols, int colors = 1, int bpc = 8) {
     std::string out;
-    const int rowlen = std::max(1, cols) + 1;
-    std::string prev((size_t)cols, '\0');
+    const size_t bytes = ((size_t)cols * colors * bpc + 7) / 8;
+    const int bpp = std::max(1, colors * bpc / 8);  // (the byte to the left: of the previous pixel)
+    const size_t rowlen = bytes + 1;
+    std::string prev(bytes, '\0');
     for (size_t r = 0; r + rowlen <= in.size(); r += rowlen) {
       const int ft = (unsigned char)in[r];
-      std::string row = in.substr(r + 1, (size_t)cols);
-      for (int k = 0; k < cols; ++k) {
-        const int a = k ? (unsigned char)row[k - 1] : 0, b = (unsigned char)prev[k], c = k ? (unsigned char)prev[k - 1] : 0;
+      std::string row = in.substr(r + 1, bytes);
+      for (size_t k = 0; k < bytes; ++k) {
+        const int a = k >= (size_t)bpp ? (unsigned char)row[k - bpp] : 0, b = (unsigned char)prev[k],
+                  c = k >= (size_t)bpp ? (unsigned char)prev[k - bpp] : 0;
         int x = (unsigned char)row[k];
         if (ft == 1) x += a;
         else if (ft == 2) x += b;

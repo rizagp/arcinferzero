@@ -751,7 +751,9 @@ class Server {
 //   read_file {file_id (or its name), section, pages, offset, max_chars, chat_id}: a document's text (DOCX, PDF, XLSX
 //                    and text files, tools/doc_reader.h) in parts (a fifth of the loaded model's context at most, the rest by
 //                    offset: files::read_budget); a long one without section / pages / offset: its outline;
-//                    a document the model wrote: its source (to make a corrected version); images, audio: metadata
+//                    a document the model wrote: its source (to make a corrected version); images, audio: metadata.
+//                    A PDF's scanned pages (images without a text layer) read by pages: the loaded model transcribes
+//                    them from their images first, up to 4 a call, when it has an image encoder (FileVision)
 //   search_file {query, file_id, chat_id, top_k}: the passages of a document (or of every document of the chat)
 //                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
 //   run_command {command, chat_id, timeout_s}: one PowerShell command in the chat's folder (tools/server_terminal.h),
@@ -760,7 +762,21 @@ class Server {
 //                    reply says cwd and venv); reset: true: that terminal closed (with no command: only that)
 // ctx: the loaded model's context in tokens per conversation (0: not known): a read or a search gives at most what
 // files::read_budget allows, the rest by offset
-static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, int ctx) {
+// Scanned pages are transcribed here, by the server, not attached to the model's next turn as images: the text is
+// kept per file and page (tools/server_files.h), so search_file finds it and a later chat reads it without the
+// vision model; in the conversation a page costs its text (~300-800 tokens) instead of an image's ~1,000 tokens on
+// every later turn; and the web UI needs no image tool results, which the chat templates do not all take. The cost:
+// the transcription is a conversation of its own, so with one slot the chat's prompt is processed again at its next
+// turn (--slots 2 or the session cache keep it).
+struct FileVision {
+  std::function<std::string()> model;  // the loaded model's name when it has an image encoder, else ""
+  std::function<std::string(const std::string& bytes, const std::string& mime)> see;  // an image -> its text
+};
+static constexpr const char* kTranscribe =
+    "Transcribe all the text on this scanned page exactly as written, in reading order and in its own language. Use "
+    "Markdown: # for headings, - for list items, | cells | for table rows. Write only the page's text, without comments; "
+    "a page without text: (no text)";
+static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, int ctx, const FileVision& vis) {
   auto& st = files::store();
   auto reply = [&](int code, const Json& j) { rs.send(code, "application/json", j.dump()); };
   auto fail = [&](int code, const std::string& m) {
@@ -923,6 +939,12 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       Json r = Json::object();
       r.set("results", res);
       r.set("files_searched", (double)targets.size());
+      std::string unread;  // (scanned pages no vision model has read yet: their text is not searched)
+      for (size_t f = 0; f < targets.size(); ++f)
+        if (ixs[f] && !ixs[f]->doc.unread.empty())
+          unread += (unread.empty() ? "" : "; ") + targets[f].name + ": pages " + rdoc::pdfimg::ranges(ixs[f]->doc.unread);
+      if (!unread.empty())
+        r.set("not_searched", "scanned pages not transcribed yet (" + unread + "): read_file with pages has a vision model read them");
       if (res.size() == 0)
         r.set("note", "no passage has these words: try other words (the document's own terms, synonyms), or read the outline (read_file)");
       else if (left_out)
@@ -953,13 +975,40 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
                           : "a " + i.kind + " file: its content is not text");
         return reply(200, r);
       }
-      const auto ix = files::doc_index(i);
+      auto ix = files::doc_index(i);
       if (!ix) return fail(500, "cannot read the file");
+      // the pages this call asks for ("12" or "12-15"; none: from 1, to 0)
+      const bool by_pages = !a["pages"].str().empty() || a["pages"].is_number();
+      const std::string pg = a["pages"].is_number() ? std::to_string((int)a["pages"].as_number()) : a["pages"].str();
+      const int from = std::max(1, atoi(pg.c_str())), to = !by_pages ? 0 : pg.find('-') != std::string::npos ? std::max(from, atoi(pg.c_str() + pg.find('-') + 1)) : from;
+      // scanned pages among them, not transcribed yet: the loaded vision model reads them now (kScanPagesPerCall)
+      const std::string seer = vis.model ? vis.model() : "";
+      std::vector<int> want;
+      for (int p : ix->doc.unread)
+        if (p >= from && p <= to) want.push_back(p);
+      if (!want.empty() && !seer.empty() && vis.see) {
+        const std::vector<int> now(want.begin(), want.begin() + std::min<size_t>(want.size(), files::kScanPagesPerCall));
+        r.set("transcribed", files::transcribe_pages(i, now, seer, vis.see));
+        r.set("transcribed_by", seer);
+        ix = files::doc_index(i);
+        if (!ix) return fail(500, "cannot read the file");
+      }
+      std::string scan_note;  // (scanned pages left: how to read them)
+      if (!ix->doc.unread.empty()) {
+        const std::string left = rdoc::pdfimg::ranges(ix->doc.unread);
+        scan_note = !seer.empty() ? "scanned pages not transcribed yet: " + left + ". read_file with pages (e.g. \"" +
+                                        std::to_string(ix->doc.unread[0]) + "\"; up to " + std::to_string(files::kScanPagesPerCall) +
+                                        " pages a call, 10-60 s a page) has the vision model transcribe them; afterwards search_file finds their text too"
+                                  : "scanned pages " + left + " are images: the loaded model has no image encoder, so they cannot be read. "
+                                    "Tell the user to load a vision model (Qwen 3.5 4B / 9B, Gemma 4 E4B / 12B / 26B with its mmproj) and ask again";
+      }
       if (ix->doc.paras.empty()) {
-        r.set("note", ix->doc.note.empty() ? "no text in the file" : ix->doc.note);
+        r.set("note", (ix->doc.note.empty() ? "no text in the file" : ix->doc.note) + (scan_note.empty() ? "" : "; " + scan_note));
+        if (ix->doc.pages > 0) r.set("pages", (double)ix->doc.pages);
         return reply(200, r);
       }
-      if (!ix->doc.note.empty()) r.set("warning", ix->doc.note);
+      if (!ix->doc.note.empty() || !scan_note.empty())
+        r.set("warning", ix->doc.note + (ix->doc.note.empty() || scan_note.empty() ? "" : "; ") + scan_note);
       if (ix->doc.pages > 0) r.set("pages", (double)ix->doc.pages);
       std::string data;  // (what this call reads: a section, pages, or the whole text)
       const size_t n = ix->doc.paras.size();
@@ -982,12 +1031,21 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         size_t next = k + 1;
         while (next < ix->outline.size() && ix->outline[next].first < s.span) ++next;
         if (next < ix->outline.size()) r.set("next_section", (double)(next + 1));
-      } else if (!a["pages"].str().empty() || a["pages"].is_number()) {
-        const std::string pg = a["pages"].is_number() ? std::to_string((int)a["pages"].as_number()) : a["pages"].str();
-        const int from = std::max(1, atoi(pg.c_str())), to = pg.find('-') != std::string::npos ? std::max(from, atoi(pg.c_str() + pg.find('-') + 1)) : from;
+      } else if (by_pages) {
         size_t first = n, last = 0;
         for (size_t k = 0; k < n; ++k)
           if (ix->doc.paras[k].page >= from && ix->doc.paras[k].page <= to) { first = std::min(first, k); last = k + 1; }
+        if (first >= last && !scan_note.empty() &&
+            std::any_of(ix->doc.unread.begin(), ix->doc.unread.end(), [&](int p) { return p >= from && p <= to; })) {
+          r.set("pages_read", pg);
+          r.set("note", "no text read on page" + std::string(from == to ? " " : "s ") + pg + ": " + scan_note);
+          return reply(200, r);
+        }
+        if (first >= last && r.has("transcribed")) {  // (the vision model saw no text there)
+          r.set("pages_read", pg);
+          r.set("note", "the vision model found no text on page" + std::string(from == to ? " " : "s ") + pg);
+          return reply(200, r);
+        }
         if (first >= last) return fail(400, "no text on page" + std::string(from == to ? " " : "s ") + pg + (ix->doc.pages > 0 ? " (the document has " + std::to_string(ix->doc.pages) + ")" : ""));
         data = ix->text(first, last);
         r.set("pages_read", pg);
@@ -1530,7 +1588,51 @@ int main(int argc, char** argv) {
         std::shared_lock<std::shared_mutex> lk(swap_mu, std::try_to_lock);
         if (lk.owns_lock() && cur) ctx = cur->eng->ctx;
       }
-      return file_tools(rq, rs, terminal, ctx);
+      // (read_file's scanned pages: a chat request of the loaded vision model on this connection, so the web UI's
+      //  stop, which closes it, cancels the transcription too)
+      FileVision vis;
+      vis.model = [&]() -> std::string {
+        std::shared_lock<std::shared_mutex> lk(swap_mu);
+        return cur && cur->srv && cur->srv->has_vision() ? cur->alias : "";
+      };
+      vis.see = [&](const std::string& bytes, const std::string& mime) {
+        Json url = Json::object(), img = Json::object(), txt = Json::object(), content = Json::array(), msg = Json::object(),
+             msgs = Json::array(), kw = Json::object(), body = Json::object();
+        url.set("url", "data:" + mime + ";base64," + apic::base64_encode(bytes));
+        img.set("type", "image_url");
+        img.set("image_url", url);
+        txt.set("type", "text");
+        txt.set("text", kTranscribe);
+        content.push(img);
+        content.push(txt);
+        msg.set("role", "user");
+        msg.set("content", content);
+        msgs.push(msg);
+        kw.set("enable_thinking", false);
+        body.set("model", vis.model());
+        body.set("messages", msgs);
+        body.set("temperature", 0.0);
+        body.set("max_tokens", 4096);
+        body.set("stream", false);
+        body.set("chat_template_kwargs", kw);
+        HttpRequest rq2 = rq;
+        rq2.method = "POST";
+        rq2.path = "/v1/chat/completions";
+        rq2.query.clear();
+        rq2.body = body.dump();
+        int status = 0;
+        std::string out;
+        rs.on_send = [&](int st, const std::string& b) { status = st; out = b; };
+        {
+          struct Unhook { HttpResponse& r; ~Unhook() { r.on_send = nullptr; } } unhook{rs};  // (also on a throw)
+          dispatch(rq2, rs);
+        }
+        Json j;
+        Json::try_parse(out, j);
+        if (status != 200) throw std::runtime_error(j["error"]["message"].str("HTTP " + std::to_string(status)));
+        return j["choices"][0]["message"]["content"].str();
+      };
+      return file_tools(rq, rs, terminal, ctx, vis);
     }
     // the web UI's tools (tools/web_tools.h): no model involved, so they answer while a model loads or generates
     if (rq.method == "POST" && (rq.path == "/v1/tools/web_search" || rq.path == "/v1/tools/web_fetch")) {
