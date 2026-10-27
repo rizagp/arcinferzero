@@ -2821,7 +2821,7 @@ const TR_AUDIO = ["mp3", "m4a", "aac", "wav", "ogg", "oga", "opus", "flac", "wma
 // (sel: the transcript shown, whose meta / data the actions use; want: the one being opened. Set apart, an open that
 //  was slow or failed left sel on the new one while the old one was shown: Delete deleted the other one)
 const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0,
-  saveT: 0, saveFn: null, saving: Promise.resolve(), noteT: 0, listIds: "" };
+  saveT: 0, saveFn: null, saving: Promise.resolve(), inflight: 0, noteT: 0, listIds: "" };
 $("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
 function trCaps() {
   $("trbtn").disabled = $("mtbtn").disabled = $("trside").disabled = !caps.stt;
@@ -2917,8 +2917,10 @@ async function trPoll() {
     tr.list = Array.isArray(j.data) ? j.data : [];
   } catch (e) {}
   trRenderList();
-  const cur = tr.list.find((x) => x.id === tr.sel);
-  if (cur && cur.status !== tr.selStatus) trOpen(cur.id);  // (finished, failed, stopped: its transcript now)
+  const cur = tr.list.find((x) => x.id === tr.sel), opening = tr.want && tr.want !== tr.sel;
+  // (finished, failed, stopped: its transcript now; its file changed, a recording kept as MP3 after it was done:
+  //  the player set again. Not while another one the user chose is being opened: that one would be dropped)
+  if (cur && !opening && (cur.status !== tr.selStatus || (tr.meta && cur.ext !== tr.meta.ext))) trOpen(cur.id);
   else if (cur) trHeader(cur);
   const busy = tr.uploads.size || tr.list.some((x) => ["uploading", "queued", "running"].includes(x.status));
   tr.timer = setTimeout(trPoll, busy ? 1000 : 5000);
@@ -3033,7 +3035,8 @@ function trUpload(files) {
             // (sent again from what the server has, after 1, 2, 4 s; a deleted one stops at once)
             if (e.fatal || ++tries > 3) throw e;
             await new Promise((ok) => setTimeout(ok, 1000 << (tries - 1)));
-            const m = await (await fetch("/v1/transcripts/" + rec.id)).json().catch(() => null);
+            let m = null;
+            try { m = await (await fetch("/v1/transcripts/" + rec.id)).json(); } catch (e2) { continue; }  // (still down)
             if (!m || m.status !== "uploading") throw e;
             off = m.received || 0;
           }
@@ -3067,7 +3070,7 @@ async function trOpen(id) {
   if (!m || m.error) { trNote("could not open the transcript"); return; }
   // (the one shown, opened again while its text is edited or saved: its record only, the text kept; a re-render took
   //  the edit away, and the copy fetched before the save landed came back over it)
-  if (tr.sel === id && tr.data && (trEditing() || tr.saveFn)) {
+  if (tr.sel === id && tr.data && (trEditing() || tr.saveFn || tr.inflight)) {
     tr.meta = { ...m, transcript: undefined };
     tr.selStatus = m.status;
     trHeader(m);
@@ -3264,12 +3267,14 @@ function trDirty() {
   // (one save after another, each the whole transcript as it is then: two at once could land in the wrong order)
   tr.saveFn = () => {
     tr.saveFn = null;
+    ++tr.inflight;
     tr.saving = tr.saving.then(async () => {
       try {
         const r = await fetch("/v1/transcripts/" + id + "/transcript", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
         const j = await r.json().catch(() => ({}));
         trNote(r.ok ? "saved" : "not saved: " + (j.error?.message || "HTTP " + r.status), r.ok ? 2000 : 10000);
       } catch (e) { trNote("not saved: " + (e.message || e), 10000); }
+      --tr.inflight;
     });
     return tr.saving;
   };
@@ -3470,7 +3475,7 @@ const live = {
   },
   // the server lost the recording (restarted, deleted it): the capture stops, what it did not get is saved here
   lost(why) {
-    const unsent = this.chunks, n = this.n, rate = this.ctx?.sampleRate || 48000;
+    const unsent = this.chunks;
     this.chunks = [];
     this.on = false;
     clearInterval(this.timer);
@@ -3480,9 +3485,16 @@ const live = {
     this.ctx?.close().catch(() => {});
     this.id = "";
     liveButtons();
+    const frames = this.saveUnsent(unsent);
+    trNote("recording stopped: " + why + (frames ? "; the last " + trClock(frames / (this.ctx?.sampleRate || 48000)) + " it did not get are saved as a WAV" : ""), 20000);
+    tr.selStatus = "";
+    trPoll();
+  },
+  saveUnsent(unsent) {  // (a WAV of the sound the server did not get; its frames)
+    const n = this.n, rate = this.ctx?.sampleRate || 48000;
     let frames = 0;
     for (const c of unsent) frames += c.length / n;
-    if (frames) {  // (a WAV of the part the server did not get)
+    if (frames) {
       const h = new DataView(new ArrayBuffer(44)), w = (o, t) => [...t].forEach((c, i) => h.setUint8(o + i, c.charCodeAt(0)));
       w(0, "RIFF"); h.setUint32(4, 36 + frames * 2 * n, true); w(8, "WAVEfmt "); h.setUint32(16, 16, true); h.setUint16(20, 1, true);
       h.setUint16(22, n, true); h.setUint32(24, rate, true); h.setUint32(28, rate * 2 * n, true); h.setUint16(32, 2 * n, true);
@@ -3493,9 +3505,7 @@ const live = {
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 60000);
     }
-    trNote("recording stopped: " + why + (frames ? "; the last " + trClock(frames / rate) + " it did not get are saved as a WAV" : ""), 20000);
-    tr.selStatus = "";
-    trPoll();
+    return frames;
   },
   async stop() {
     if (!this.on) return;
@@ -3506,9 +3516,19 @@ const live = {
     this.node?.disconnect();
     this.ctx?.close().catch(() => {});
     while (this.sending) await new Promise((r) => setTimeout(r, 50));
-    for (let k = 0; k < 20 && this.chunks.length && this.id; ++k) await this.send(true);  // (what is left, 60 s a request)
+    // (what is left, 60 s a request; after a failure the next try 1, 2, 4 ... s later, half a minute in all)
+    for (let k = 0, wait = 1000; this.chunks.length && this.id && k < 12; ++k) {
+      const before = this.chunks.length;
+      await this.send(true);
+      if (this.chunks.length >= before && this.id) { await new Promise((r) => setTimeout(r, wait)); wait = Math.min(8000, wait * 2); }
+    }
     const id = this.id;
     if (!id) return;  // (lost on the way: said so)
+    if (this.chunks.length) {  // (the server did not take the rest: saved here, the recording ends with what it has)
+      const frames = this.saveUnsent(this.chunks);
+      this.chunks = [];
+      trNote("the last " + trClock(frames / (this.ctx?.sampleRate || 48000)) + " could not be sent: saved as a WAV", 20000);
+    }
     this.finishing = id;
     await fetch("/v1/live/" + id + "/stop", { method: "POST", body: "{}" }).catch(() => {});
     this.id = "";

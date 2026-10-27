@@ -6,7 +6,7 @@
   among them a 32-byte MP4 that hung the server, an open in the Transcripts tab that was slow or failed (Delete
   then deleted another transcript), recordings past 4 GB that lost their end, a recorder killed or a power cut
   (the recording is now picked up at the server's next start), a headset plugged in mid-meeting (now followed),
-  a live recording whose page closed (stopped and transcribed after 5 minutes without sound), subtitle cues of
+  a live recording whose page closed (stopped and transcribed when the page has sent nothing for 5 minutes), subtitle cues of
   two speakers that ended before they started. Recordings up to 6 hours are transcribed (180 minutes before).
 - **A chat reads your other chats and recordings**: type `@` to attach an earlier chat or a recording / meeting
   next to the files, or just ask ("what budget did we settle on for Bali?"): the model searches your other chats

@@ -461,7 +461,7 @@ inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b, doub
   flush();
   pk.clear();
   pk.shrink_to_fit();
-  // (the segment written around the clusters, not as a copy of them: one copy of the repacked stream at a time)
+  // (the segment written around the clusters, not copied into a string of its own first)
   std::string head;
   el(head, 0x1549A966, info);
   el(head, 0x1654AE6B, tracks);

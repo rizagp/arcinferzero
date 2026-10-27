@@ -168,6 +168,11 @@ struct Track {
       if (!pid) pid = pid_of(app);  // (ended before: started again?)
       if (!pid) return false;
       proc = OpenProcess(SYNCHRONIZE, FALSE, pid);
+      if (!proc || WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) {  // (gone: its name looked up again next time)
+        close();
+        pid = 0;
+        return false;
+      }
       AUDIOCLIENT_ACTIVATION_PARAMS ap = {};
       ap.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
       ap.ProcessLoopbackParams.TargetProcessId = pid;
@@ -267,6 +272,7 @@ struct Track {
   }
   void fail(HRESULT hr) {  // (a device unplugged or changed, an app closed: closed, tried again every second)
     if (!down) fprintf(stderr, "arc-recorder: %s: lost (0x%08lx), recording silence until it is back\n", what.c_str(), (unsigned long)hr);
+    if (kind == Process && (!proc || WaitForSingleObject(proc, 0) == WAIT_OBJECT_0)) pid = 0;  // (the app ended)
     close();
     down = true;
     retry_at = now_seconds() + 1;
@@ -387,8 +393,9 @@ std::atomic<bool> g_stop{false};
 HANDLE g_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);  // (the recording closed and handed over)
 BOOL WINAPI on_ctrl(DWORD type) {
   g_stop = true;
-  // (Ctrl+C / Ctrl+Break: the loop ends it. A closed console, a logoff, a shutdown: the process ends when this returns,
-  //  so it waits for the file and its note first, a few seconds at most)
+  // (Ctrl+C / Ctrl+Break: the loop ends it. A closed console: the process ends when this returns, so it waits for the
+  //  file, its note and the hand-over first, a few seconds at most. Logoff and shutdown may end it without calling
+  //  this at all: the note written at the start lets the server take the recording at its next start)
   if (type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) WaitForSingleObject(g_done, 4000);
   return TRUE;
 }
@@ -585,12 +592,12 @@ int main(int argc, char** argv) {
   m.set("seconds", secs);
   m.set("complete", true);
   std::ofstream(side, std::ios::binary) << m.dump();
-  SetEvent(g_done);
   std::string reply;
   const int st = post_local("/v1/transcripts/import", m.dump(), reply);
   if (st == 200) fprintf(stderr, "arc-recorder: handed to the server: the Meetings tab transcribes it now\n");
   else fprintf(stderr, "arc-recorder: the server %s: it takes the recording at its next start\n",
                st ? ("said " + std::to_string(st) + " " + reply.substr(0, 200)).c_str() : "is not running");
+  SetEvent(g_done);  // (after the hand-over: a closed console waits for it)
   CloseHandle(stop);
   CoUninitialize();
   return 0;

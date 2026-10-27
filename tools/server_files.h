@@ -54,7 +54,8 @@ inline bool read_shared(const fs::path& p, std::string& out) {
     DWORD got = 0;
     while (at < out.size() && ReadFile(h, out.data() + at, (DWORD)std::min<size_t>(out.size() - at, 1u << 30), &got, nullptr) && got)
       at += got;
-    out.resize(at);
+    ok = at == out.size();  // (a read that failed partway: no half a file)
+    if (!ok) out.clear();
   }
   CloseHandle(h);
   return ok;

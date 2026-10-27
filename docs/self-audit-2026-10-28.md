@@ -46,7 +46,7 @@ or browser check (the last column).
 | A-M1 | medium | a 44-byte WAV of 65,535 channels allocated 17 GB | at most 64 channels; reads of ~1 MB, not 65,536 frames | test_audio |
 | A-M3 | medium | Ogg: every zero lacing value became an empty packet (~80x the input in memory), the whole file repacked before the length limit | empty packets left out; repacking stops a second past the limit (and at 400 packets a second); the stream copied once less | test_audio |
 | A-M4 | medium | arc-recorder: a headset plugged in mid-meeting moved the sound to a new default device and the "Others" track went silent; an app started again (new process) was never found | every 2 s: another default device is opened instead; the recorded app's end seen, its name looked up again until it runs | (needs the user's devices) |
-| A-M5 | medium | a recording whose recorder was killed (console closed, logoff, shutdown, power cut) never reached the server | the note next to the WAV written at the start (`complete: false`, the recorder's process); the server takes it at its start once no recorder runs, sizes put right; close / logoff / shutdown wait for the file and the note | API: an unfinished note -> imported, 20 s transcribed |
+| A-M5 | medium | a recording whose recorder was killed (console closed, logoff, shutdown, power cut) never reached the server | the note next to the WAV written at the start (`complete: false`, the recorder's process); the server takes it at its start once no recorder runs, sizes put right; a closed console waits for the file, the note and the hand-over (logoff and shutdown may not call the handler: the note covers them) | API: an unfinished note -> imported, 20 s transcribed |
 | A-M6 | medium | a recording of the same minute and title truncated the one before | " (2)", " (3)", ... | |
 | A-L1 | low | Media Foundation: a selected video stream never read kept its samples queued (an hours-long video) | only the audio stream selected | API suite (videos) |
 | A-L2, L4, L6 | low | a 200-ms WASAPI buffer while the other track reopens; a title cut inside a UTF-8 character (the recorder exited); a late activation's client leaked | 2-s buffer; cut at a character's start; released by the handler | |
@@ -85,6 +85,22 @@ or browser check (the last column).
 | U-M6 | medium | Talk stayed on during a meeting: its spoken answers went into the recording | stopped at Live | |
 | U-L1..L9 | low | uploads not retried and options read late; export without the last edit; the Speech setting used the loaded model's hearing, not the chat's; an emptied line could not be removed, Shift+Enter glued words, drafts could be edited; long summaries overflowed a small context; the Files panel opened under the Transcripts view; list clicks lost while it redrew; 176.4 / 192-kHz sound cards refused; the `@` menu came back after it was closed | a piece sent again from where the server has it (3 tries), options taken at the drop, a warning before closing during an upload; export after the save; the chat's model; an emptied line removed (asked), innerText, finished transcripts only; part summaries merged in rounds; the Transcripts view left first; rows updated in place; 48-kHz capture; the input read again after the lists come | browser: edit, delete a line, Files, `@` |
 | cosmetic | - | your own recording "in another window" while finishing; a minutes title lost ".30" of "14.30"; Copy / Download in a summary's code did nothing | fixed | |
+
+## A second review: the fixes themselves
+
+A fresh review of the fix commit (c22f6dc) found these in the fixes, fixed after it:
+
+| ID | Severity | Problem in the fix | Fix |
+|---|---|---|---|
+| R1 | medium | the start's sweep deleted every folder of the library without a meta.json whose name passed `valid_id`: a folder of the user's own there (`transcribez --out ...\transcripts\lectures`, which the docs suggest) would have been deleted with everything in it | only folders whose meta.json says "deleting", and empty folders of the server's own id pattern |
+| R2 | medium | the player set again when a recording's WAV became MP3 never fired: the page saw "done" first, and the MP3 came tens of seconds later | the poll opens it again when its file changed |
+| R3 | low | a running job deleted: its end wrote "cancelled" / "failed" over "deleting" (a held file brought it back at the next start) | nothing written over "deleting" |
+| R4 | low | a cancel during the last upload piece's write was undone (queued anyway) | it stays cancelled |
+| R5 | low | arc-recorder: a process track whose stream failed when the app ended kept trying the dead process | its name looked up again; a process already gone is not opened |
+| R6, R7 | low | an open during a save already on its way, or a poll during the user's own open of another one | both count: the text kept, the user's choice kept |
+| R8 | low | the upload retry ended on the first network failure of its status check | that check retried too |
+| R9 | low | live Stop: 20 tries at once, then the rest dropped without its WAV | tries 1-8 s apart, the rest saved |
+| R10 | - | comments and docs: logoff / shutdown handling, "5 minutes without sound" (it is 5 minutes in which the page sends nothing), the 6-hour limit's memory (~5 GB for 2 tracks), the hand-over now before the console's close returns; a read that fails partway returns nothing, not half a file | corrected |
 
 ## Left, on purpose or for later
 

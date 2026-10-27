@@ -262,8 +262,8 @@ While the server is running:
     full) summarizes the earlier messages.
 - **Recordings that end badly.** A meeting recorder (`arc-server record`) that is killed, a shutdown or a power
   cut leaves its WAV in `%USERPROFILE%\arcinferzero\recordings`: the server picks it up at its next start
-  and transcribes it. A live recording whose browser tab closed or lost its connection is stopped after 5
-  minutes without sound and transcribed as well; a recording of another tab can be stopped with its Stop
+  and transcribes it. A live recording whose browser tab closed or lost its connection is stopped once the page has sent
+  nothing for 5 minutes, and transcribed as well; a recording of another tab can be stopped with its Stop
   button. Files and recordings of up to 6 hours are transcribed.
 - **Web UI: other chats and recordings.** With **Files** on, the model can look into your other chats with it
   ("what did we decide in the chat about the budget?": it searches them and reads the exchange it needs) and

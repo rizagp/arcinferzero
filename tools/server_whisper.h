@@ -445,8 +445,9 @@ class Service {
       if (!valid_id(tid) || !e.is_directory()) continue;
       Json m;
       if (!Json::try_parse(slurp(e.path() / "meta.json"), m) || !m.is_object()) {
-        // (a folder of the library with no record: one whose delete was cut, or one made just before a crash)
-        if (!fs::exists(e.path() / "meta.json")) sweep.push_back(tid);
+        // (no record: only an empty folder of the server's own naming goes, one whose delete got as far as its
+        //  meta.json; any other folder here is the user's (transcribez writes into this folder too) and stays)
+        if (own_id(tid) && fs::is_empty(e.path(), ec)) sweep.push_back(tid);
         continue;
       }
       const std::string st = m["status"].str();
@@ -663,7 +664,8 @@ class Service {
       if (!ok) return fail(500, "cannot write the file (disk full?)");
       Json& cur = it->second;
       cur.set("received", got);
-      if (got == cur["size"].as_number()) {
+      // (cancelled while the piece was written: it stays cancelled, not queued)
+      if (got == cur["size"].as_number() && cur["status"].str() == "uploading") {
         cur.set("status", "queued");
         lib_cv_.notify_all();
       }
@@ -1049,8 +1051,9 @@ class Service {
     std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();  // (the last audio)
   };
   static constexpr int kLiveMaxPiece = 120, kLiveMaxPending = 64;
-  // the library's files: at most 6 hours (a recording runs a little past the length it was given; 6 hours of 16-kHz
-  // samples are 1.4 GB, the whole file is held while it is transcribed)
+  // the library's files: at most 6 hours (a recording runs a little past the length it was given). The whole file is
+  // held while it is transcribed: 6 hours of 16-kHz samples are 1.4 GB a track, plus a copy and the log-mel (~1 GB)
+  // of the track being transcribed: a 2-track recording of 6 hours needs ~5 GB of RAM, and fails without it
   static constexpr double kLibraryMaxSeconds = 6 * 3600;
   static constexpr int kLiveIdle = 300;  // (seconds without audio: the page is gone; the recording is stopped)
   struct LiveTask {
@@ -1414,6 +1417,16 @@ class Service {
     }
     return c.empty() ? empty : c;
   }
+  // an id as new_dir makes them: yyyymmdd-hhmmss-xxxx (before 2026-10-28) or -xxxxxx, x lowercase hex
+  static bool own_id(const std::string& t) {
+    if (t.size() != 20 && t.size() != 22) return false;
+    for (size_t i = 0; i < t.size(); ++i) {
+      const char c = t[i];
+      const bool ok = i == 8 || i == 15 ? c == '-' : i < 15 ? (c >= '0' && c <= '9') : ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+      if (!ok) return false;
+    }
+    return true;
+  }
   static bool valid_id(const std::string& tid) {
     return tid.size() >= 8 && tid.size() <= 40 && tid.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz-") == std::string::npos;
   }
@@ -1520,6 +1533,7 @@ class Service {
     const fs::path dir = lib_ / tid;
     auto finish = [&](const std::string& status, const std::string& error) {
       std::lock_guard<std::mutex> lk(lib_mu_);
+      if (delete_running_) return;  // (deleted meanwhile: its "deleting" kept on disk until the folder goes)
       Json& m = metas_[tid];
       m.set("status", status);
       if (!error.empty()) m.set("error", error);
@@ -1583,6 +1597,7 @@ class Service {
       return finish("failed", std::string("transcription failed: ") + e.what());
     }
     std::unique_lock<std::mutex> lk(lib_mu_);
+    if (delete_running_) return;  // (deleted meanwhile: nothing written over its "deleting")
     Json& m = metas_[tid];
     if (stop_ && !cancel_running_) {  // (the server is stopping: transcribed again after the restart)
       m.set("status", "queued");
