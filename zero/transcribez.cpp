@@ -256,7 +256,8 @@ int main(int argc, char** argv) {
       std::sort(v.rbegin(), v.rend());
       fprintf(stderr, "GPU time %.0f ms%s:\n", tot,
               gpu->npu() ? (" (NPU encoder " + std::to_string((int)gpu->npu_ms) + " ms)").c_str() : "");
-      for (auto& [ms, k] : v) fprintf(stderr, "  %-14s %8.0f ms  %4.1f %%\n", k.c_str(), ms, 100 * ms / tot);
+      for (auto& [ms, k] : v)
+        fprintf(stderr, "  %-14s %8.0f ms  %4.1f %%  (%lld launches)\n", k.c_str(), ms, 100 * ms / tot, (long long)gpu->prof_n[k]);
     }
     return failed ? 1 : 0;
   } catch (const std::exception& e) {

@@ -162,6 +162,71 @@ __kernel void swiglu_quant(__global const float* gu, int F, int M, int M_valid, 
   }
 }
 
+// ---- Whisper (zero/whisper_engine.h): its LayerNorms and the GELU of its FFN together with the next GEMM's
+// quantization, one launch instead of two or three (the values as zero/kernels/whisper.cl wh_bias_res /
+// wh_layernorm / wh_bias_gelu compute them, quantized as swiglu_quant does; no f32 copy written in between)
+inline float wh_gelu_erf(float x) { return 0.5f * x * (1.0f + erf(x * 0.70710678118654752f)); }
+// with_res: x[m] += y[m] + rb first (the residual after a projection; rows < M_valid); then the LayerNorm (eps 1e-5,
+// g, b) of row m, quantized; rows >= M_valid quantize as zeros. grid (256, Mp), local (256, 1).
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void wh_ln_quant(__global float* x, __global const float* y, __global const half* rb, int with_res, int D,
+                          int M, int M_valid, __global const half* g, __global const half* b, __global char* aq,
+                          __global float* asc, __global ushort* absum, int act32) {
+  const int m = get_group_id(1), l = get_local_id(0), lane = get_sub_group_local_id();
+  const bool valid = m < M_valid;
+  __global float* r = x + (size_t)m * D;
+  __local float red[256];
+  float mu = 0.0f, inv = 0.0f;
+  if (valid) {  // (the work-group's own row: the branch is the same for all of it)
+    if (with_res) {
+      __global const float* yr = y + (size_t)m * D;
+      for (int i = l; i < D; i += 256) r[i] += yr[i] + vload_half(i, rb);
+      barrier(CLK_GLOBAL_MEM_FENCE);
+    }
+    float s = 0.0f;
+    for (int i = l; i < D; i += 256) s += r[i];
+    red[l] = s;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int k = 128; k > 0; k >>= 1) {
+      if (l < k) red[l] += red[l + k];
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    mu = red[0] / D;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    float q = 0.0f;
+    for (int i = l; i < D; i += 256) { const float d = r[i] - mu; q += d * d; }
+    red[l] = q;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int k = 128; k > 0; k >>= 1) {
+      if (l < k) red[l] += red[l + k];
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    inv = rsqrt(red[0] / D + 1e-5f);
+  }
+  for (int s = get_sub_group_id(); s < D / 256; s += get_num_sub_groups()) {
+    const int base = s * 256 + 16 * lane;
+    float v[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) v[i] = valid ? (r[base + i] - mu) * inv * vload_half(base + i, g) + vload_half(base + i, b) : 0.0f;
+    quant_store16(v, s, m, M, D, aq, asc, absum, act32);
+  }
+}
+// gelu(ff[m] + b) quantized (the FFN's hidden rows); rows >= M_valid as zeros. grid (256, Mp), local (256, 1).
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void wh_gelu_quant(__global const float* ff, int F, __global const half* b, int M, int M_valid,
+                            __global char* aq, __global float* asc, __global ushort* absum, int act32) {
+  const int m = get_group_id(1), lane = get_sub_group_local_id();
+  const bool valid = m < M_valid;
+  __global const float* fr = ff + (size_t)m * F;
+  for (int s = get_sub_group_id(); s < F / 256; s += get_num_sub_groups()) {
+    const int base = s * 256 + 16 * lane;
+    float v[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) v[i] = valid ? wh_gelu_erf(fr[base + i] + vload_half(base + i, b)) : 0.0f;
+    quant_store16(v, s, m, M, F, aq, asc, absum, act32);
+  }
+}
+
 // Causal depthwise conv (kernel 4) + SiLU over qkv channels, then L2-norm of each q/k head (128).
 // q is additionally scaled by 1/sqrt(128) (the delta-net output scale). One sub-group per (128-channel
 // group, CT consecutive tokens; CT = 1 measured fastest), with vector loads; groups [0, nqk) are q heads,

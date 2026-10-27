@@ -28,18 +28,31 @@ count. Beam 5 on the iGPU dropped one phrase the reference keeps: a near-tie, no
 
 | | Time | x realtime | Hard terms | Word differences vs faster-whisper beam 5 (hyphens joined) | Word timestamps (mean / p90) |
 |---|---|---|---|---|---|
-| **arcinferzero iGPU greedy** | **31.8 s** | **26.7x** | 14 / 24 | 11.7 % | 124 / 400 ms |
-| **arcinferzero iGPU beam 5** | **39.3 s** | **21.6x** | 16 / 24 | 14.1 % | 124 / 340 ms |
+| **arcinferzero iGPU greedy** (2026-10-28, W1) | **25.1 s** | **33.8x** | 14 / 24 | 9.1 % | 123 / 379 ms |
+| **arcinferzero iGPU beam 5** (2026-10-28, W1) | **32.2 s** | **26.4x** | 16 / 24 | 13.3 % | 133 / 460 ms |
+| arcinferzero iGPU greedy / beam 5 before W1 | 31.8 / 39.3 s | 26.7 / 21.6x | 14 / 16 | 11.7 / 14.1 % | 124 / 400, 124 / 340 ms |
 | OpenVINO GenAI iGPU greedy | 57 s | 14.8x | 15 / 24 | 10.1 % | 131 / 440 ms |
 | OpenVINO NPU greedy | 144 s | 5.9x | 16 / 24 | 12.2 % | 140 / 520 ms |
 
-Greedy is 1.8x OpenVINO's speed; beam 5 (as accurate on the hard terms as faster-whisper) is still 1.45x faster than
-OpenVINO's greedy. faster-whisper writes "orang -orang" as two words where arcinferzero writes "orang-orang": joined
+Greedy is 2.27x OpenVINO's speed (1.8x before W1); beam 5 (as accurate on the hard terms as faster-whisper) is 1.77x
+faster than OpenVINO's greedy. faster-whisper writes "orang -orang" as two words where arcinferzero writes "orang-orang": joined
 before counting (the channel's compare.py counts them as errors: 13.7 / 15.1 % there).
 
-GPU time on the 60-s clip (greedy): encoder GEMMs 27 % (6.6 TOPS), decoder GEMMs 26 %, encoder attention 17 %
-(~0.8 TFLOPS: vit_attn_rows is shuffle-bound; FT 8 and more sub-groups per work-group change nothing), cross-attention
-10 %.
+**W1 (2026-10-28)**, the 14-minute file greedy 30.8 -> 25.1 s, beam 5 38.2 -> 32.2 s (the earlier runs of the table
+were slower: 31.8 / 39.3); decoder logits KL against the f32 reference 0.00039 -> 0.00040, top tokens 64 / 64 (NPU
+mode 0.00053, two int8 passes 0.00035):
+- cross-attention rows per work-group as many as the pass has (1 for greedy, 5 for a beam; it computed 4 rows for
+  one): 2.7 -> 1.6 s; 8 rows for the word timestamps' 100-row pass moved the timestamps a little and, on this file
+  with beam 5, cascaded into 100 fewer words: kept at 5 (`ARC_WH_RB=n`);
+- LayerNorm + quantization, the residual before it, and bias + GELU + quantization in one launch each
+  (ops.cl wh_ln_quant / wh_gelu_quant; 24 -> 18 launches per decoder layer): 27.3 s, transcript identical;
+- the word timestamps' host work (the 100-row pass's log-softmax, the heads' softmax, normalization and median
+  filter) on every core: 2.0 -> 1.3 s, identical;
+- the decoder's passes of 1-8 rows through the engine's Q8_0 GEMVs (decode.cl gemv / gemv_mt) on a raw copy of its
+  weights: 2,885 passes, 2.89 -> 2.33 ms each (58 -> 72 GB/s); +0.16 GiB of GPU memory (1.55 GiB, NPU mode 0.89).
+Left as it is: the encoder GEMMs (7.0 s, ~8 TOPS, the DP4a peak) and its attention (4.5 s, vit_attn_rows f32 at
+~2.7 TFLOPS, ~68 % of the f32 peak). `WH_TIMES=1` splits the wall time (log-mel 0.26 s, windows, word timestamps);
+`ARC_PROF=1` lists each kernel's time and launches.
 
 **NPU mode** (14-minute file): NPU + iGPU greedy 81 s (10.5x realtime; OpenVINO NPU 144 s + 253 s compiling), beam 5
 91 s; logits KL 0.00052 against the f32 reference (64 / 64 top tokens). It keeps the iGPU free for the LLM: 0.73 GiB
@@ -52,8 +65,7 @@ normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-a
 
 ## Next steps
 
-1. Speed: a faster encoder attention (not shuffle-bound), the decoder through the GEMV kernels, fewer small launches.
-2. Speed: a faster encoder attention (not shuffle-bound), the decoder through the GEMV kernels, fewer small launches.
+1. Speed: done (W1, above).
 2. Dual decode on windows whose language is ambiguous; the mixed-language sample prompt.
 3. The formats opened in their targets (YouTube, Premiere / Resolve, Remotion), the bench row, docs (README,
    CHANGELOG, before-after).

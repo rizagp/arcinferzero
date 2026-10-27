@@ -214,7 +214,10 @@ __kernel void wh_ckv_pack(__global const float* ckv, __global const half* b, int
 // cross-attention on the packed keys / values, RB rows per work-group sharing each key / value read:
 // q[r][D] (bias added), ck / cv [h][Ap][64] f16 of A positions; out[r][D]. Scores of heads with hmap[h] >= 0 saved
 // (q.k / 8, before the softmax) into save[hmap[h]][r][A]. grid (256 * nh, ceil(n / RB)), local (256, 1).
+// (-DRB=n: as many rows as the pass has, up to 4; greedy has 1, and 4 rows' scores and reductions for one cost time)
+#ifndef RB
 #define RB 4
+#endif
 __kernel void wh_cross_attn2(__global const float* q, int D, int n, __global const half* ck, __global const half* cv,
                              int A, int Ap, __global float* out, __global const int* hmap, __global float* save) {
   const int h = get_group_id(0), r0 = get_group_id(1) * RB, t = get_local_id(0);

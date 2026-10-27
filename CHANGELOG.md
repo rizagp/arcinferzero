@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-28: Whisper faster
+
+- **A 14-minute recording transcribed in 25 s** (greedy, 33.8x realtime; 30.8 s before) and 32 s with beam 5
+  (38.2 s): 2.27x OpenVINO's speed on the same iGPU. The decoder reads its weights through the engine's GEMVs, small
+  kernels are fused, the cross-attention computes only the rows a pass has, and the word timestamps' host work runs
+  on every core. Same accuracy (decoder logits KL 0.0004 against the f32 reference). Whisper takes 0.16 GiB more
+  GPU memory (1.55 GiB).
+
 ## 2026-10-27: failure paths cleaned up (a static audit by DeepSeek, each finding checked)
 
 - **A model or Whisper that fails to load frees what it already put on the GPU**: a constructor that throws runs

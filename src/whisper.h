@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <compressapi.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -509,7 +510,19 @@ class Transcriber {
     const double total = (double)x.size() / kSampleRate;
     res.duration = total;
     int n_frames = 0, content = 0;
+    // (WH_TIMES=1: where the wall time goes, on stderr at the end: the log-mel, the windows (encoder and decoding;
+    //  the GPU's work is asynchronous, so a window's time is what the host waited for it), the word timestamps)
+    using clk = std::chrono::steady_clock;
+    static const bool times = getenv("WH_TIMES") != nullptr;
+    double t_mel = 0, t_win = 0, t_words = 0;
+    auto since = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
+    struct Report {
+      const bool& on; double &a, &b, &c;
+      ~Report() { if (on) fprintf(stderr, "whisper times: mel %.0f ms, windows %.0f ms, word timestamps %.0f ms\n", a, b, c); }
+    } report{times, t_mel, t_win, t_words};
+    auto t0 = clk::now();
     const std::vector<float> mel = log_mel(x, m_.hp.n_mels, n_frames, content);
+    t_mel = since(t0);
     int seek = std::max(0, (int)std::lround(opt.from_s * kSampleRate / kHop));
     if (opt.to_s > 0) content = std::min(content, (int)std::lround(opt.to_s * kSampleRate / kHop));
     std::vector<int> all_tokens;
@@ -546,6 +559,7 @@ class Transcriber {
           const int f = seek + t;
           win[(size_t)c * kWindowFrames + t] = f < n_frames ? mel[(size_t)c * n_frames + f] : mel[(size_t)c * n_frames + n_frames - 1];
         }
+      const auto tw = clk::now();
       b_.encode(win.data());
       std::string wlang = lang;
       if (!fixed && (!opt.detect_once || lang.empty())) {
@@ -555,6 +569,7 @@ class Transcriber {
       const std::vector<int> prompt(all_tokens.begin() + std::min((int)all_tokens.size(), std::max(prompt_reset_since, 0)),
                                     all_tokens.end());
       Decoded r = decode_with_fallback(prompt, wlang, opt, window_no);
+      t_win += since(tw);
       ++window_no;
       if (opt.no_speech_threshold > 0 && r.no_speech_prob > opt.no_speech_threshold &&
           !(opt.logprob_threshold != 0 && r.avg_logprob > opt.logprob_threshold)) {
@@ -607,7 +622,9 @@ class Transcriber {
         seek += seg_size;
       }
       if (opt.word_timestamps && !segs.empty()) {
+        const auto tt = clk::now();
         add_word_timestamps(segs, time_offset, std::min(seg_duration, 30.0));
+        t_words += since(tt);
         // (openai: unless the window ended with a lone timestamp, the next one starts at the last word's end)
         if (!single_ts_ending) {
           double last_end = -1;
@@ -915,9 +932,11 @@ class Transcriber {
     const int R = n - 1 - r0;  // (= text tokens + 1)
     // per head: softmax over the window's frames, normalized over the tokens (mean / std per frame), median filter
     // of width 7 along the frames; averaged over the heads
+    // (rows, frames and rows again in parallel: each element computed alone, in the same order, so the same values)
     std::vector<float> mat((size_t)R * frames, 0.0f);
     for (int h = 0; h < H; ++h) {
       std::vector<float> m((size_t)R * frames);
+#pragma omp parallel for schedule(static)
       for (int r = 0; r < R; ++r) {
         const float* s = &w[((size_t)h * n + r0 + r) * A];
         float mx = kMasked;
@@ -926,6 +945,7 @@ class Transcriber {
         for (int f = 0; f < frames; ++f) z += std::exp((double)s[f] - mx);
         for (int f = 0; f < frames; ++f) m[(size_t)r * frames + f] = (float)(std::exp((double)s[f] - mx) / z);
       }
+#pragma omp parallel for schedule(static)
       for (int f = 0; f < frames; ++f) {
         double mu = 0, sq = 0;
         for (int i = 0; i < R; ++i) mu += m[(size_t)i * frames + f];
@@ -934,6 +954,7 @@ class Transcriber {
         const double sd = std::sqrt(sq / R);
         for (int i = 0; i < R; ++i) m[(size_t)i * frames + f] = sd > 0 ? (float)((m[(size_t)i * frames + f] - mu) / sd) : 0.0f;
       }
+#pragma omp parallel for schedule(static)
       for (int i = 0; i < R; ++i) {  // median filter of width 7 along the frames (reflect at the edges)
         std::vector<float> row(m.begin() + (size_t)i * frames, m.begin() + (size_t)(i + 1) * frames), win(7);
         for (int f = 0; f < frames; ++f) {

@@ -44,8 +44,13 @@ class WhisperEngine : public whisper::Backend {
     gemm_src_ = read_file(kernel_dir + "/gemm.cl");
     ops_src_ = read_file(kernel_dir + "/ops.cl");
     wh_src_ = read_file(kernel_dir + "/whisper.cl");
-    if (gemm_src_.empty() || ops_src_.empty() || wh_src_.empty())
+    dec_src_ = read_file(kernel_dir + "/decode.cl");
+    if (gemm_src_.empty() || ops_src_.empty() || wh_src_.empty() || dec_src_.empty())
       throw std::runtime_error("whisper: kernels not found in " + kernel_dir);
+    {
+      const std::vector<uint32_t> tabs = build_iq_tables();
+      tabs_ = buf(tabs.size() * 4, tabs.data());
+    }
     const int D = hp_.d, A = hp_.n_audio_ctx;
     Ap_ = (A + 15) / 16 * 16;
     T1p_ = (whisper::kWindowFrames + 15) / 16 * 16;
@@ -84,23 +89,23 @@ class WhisperEngine : public whisper::Backend {
       DecL L;
       L.ln1g = half_buf(p + "self_attention/layer_norm/gamma");
       L.ln1b = half_buf(p + "self_attention/layer_norm/beta");
-      L.qkv = weight(p + "self_attention/linear_0/weight");
+      L.qkv = weight(p + "self_attention/linear_0/weight", 0, true);
       L.qkv_b = half_buf(p + "self_attention/linear_0/bias");
-      L.out = weight(p + "self_attention/linear_1/weight");
+      L.out = weight(p + "self_attention/linear_1/weight", 0, true);
       L.out_b = half_buf(p + "self_attention/linear_1/bias");
       L.ln2g = half_buf(p + "attention/layer_norm/gamma");
       L.ln2b = half_buf(p + "attention/layer_norm/beta");
-      L.cq = weight(p + "attention/linear_0/weight");
+      L.cq = weight(p + "attention/linear_0/weight", 0, true);
       L.cq_b = half_buf(p + "attention/linear_0/bias");
       L.ckv = weight(p + "attention/linear_1/weight");
       L.ckv_b = half_buf(p + "attention/linear_1/bias");
-      L.cout = weight(p + "attention/linear_2/weight");
+      L.cout = weight(p + "attention/linear_2/weight", 0, true);
       L.cout_b = half_buf(p + "attention/linear_2/bias");
       L.ln3g = half_buf(p + "ffn/layer_norm/gamma");
       L.ln3b = half_buf(p + "ffn/layer_norm/beta");
-      L.fc1 = weight(p + "ffn/linear_0/weight");
+      L.fc1 = weight(p + "ffn/linear_0/weight", 0, true);
       L.fc1_b = half_buf(p + "ffn/linear_0/bias");
-      L.fc2 = weight(p + "ffn/linear_1/weight");
+      L.fc2 = weight(p + "ffn/linear_1/weight", 0, true);
       L.fc2_b = half_buf(p + "ffn/linear_1/bias");
       L.ckv_buf = buf((size_t)Ap_ * 2 * D * 4);
       L.ck16 = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);  // (the window's keys / values, f16, head-major)
@@ -111,7 +116,7 @@ class WhisperEngine : public whisper::Backend {
     dec_lnb_ = half_buf("decoder/layer_norm/beta");
     emb_ = half_buf("decoder/embeddings/weight");
     dec_pos_ = half_buf("decoder/position_encodings/encodings");
-    head_ = weight("decoder/embeddings/weight", Vp_);  // (tied: the output head, rows padded to a multiple of 16)
+    head_ = weight("decoder/embeddings/weight", Vp_, true);  // (tied: the output head, rows padded to a multiple of 16)
     // working buffers: the encoder's largest (3,008 rows of conv1, 1,504 rows x 5,120 for the FFN)
     const size_t maxMK = std::max({(size_t)T1p_ * K1p_, (size_t)Ap_ * 3 * D, (size_t)Ap_ * F, (size_t)T1p_ * D});
     // (twice: the second half holds the residual quantization of the two-pass encoder layers, ARC_WH_Q2)
@@ -168,6 +173,7 @@ class WhisperEngine : public whisper::Backend {
   size_t gpu_bytes = 0;
   const WhisperNpuEncoder* npu() const { return npu_.get(); }
   std::map<std::string, double> prof_ms;  // (ARC_PROF=1: GPU time per kernel name)
+  std::map<std::string, int64_t> prof_n;  // (... and launches)
 
   // ---------------------------------------------------------------- Backend
   void encode(const float* mel) override {
@@ -216,10 +222,11 @@ class WhisperEngine : public whisper::Backend {
     };
     dump(-1);
     int li = 0;
+    cl_mem pend = nullptr;  // (fc2's bias: its residual is added by the next layer's first LayerNorm)
     for (const EncL& L : enc_) {
       two_ = li >= q2_from_;
-      layernorm(x_, D, A, L.ln1g, L.ln1b, hn_, Ap_);
-      quant(hn_, D, Ap_, A);
+      ln_quant(x_, pend ? y_ : nullptr, pend, D, A, L.ln1g, L.ln1b, Ap_);
+      pend = nullptr;
       gemm(L.qkv, Ap_, qkv_, 3 * D);
       {
         cl_kernel k = wk("wh_qkv_split");
@@ -240,16 +247,18 @@ class WhisperEngine : public whisper::Backend {
       }
       quant(att_, D, Ap_, A);
       gemm(L.out, Ap_, y_, D);
-      bias_res(x_, y_, D, L.out_b, A);
-      layernorm(x_, D, A, L.ln2g, L.ln2b, hn_, Ap_);
-      quant(hn_, D, Ap_, A);
+      ln_quant(x_, y_, L.out_b, D, A, L.ln2g, L.ln2b, Ap_);
       gemm(L.fc1, Ap_, ff_, F_);
-      bias_gelu(ff_, F_, L.fc1_b, Ap_, nullptr);
-      quant(ff_, F_, Ap_, A);
+      gelu_quant(ff_, F_, L.fc1_b, Ap_, A);
       gemm(L.fc2, Ap_, y_, D);
-      bias_res(x_, y_, D, L.fc2_b, A);
+      pend = L.fc2_b;
+      if (getenv("WH_DUMP_DIR")) {  // (the dump is of the layer's whole output)
+        bias_res(x_, y_, D, pend, A);
+        pend = nullptr;
+      }
       dump(++li);
     }
+    if (pend) bias_res(x_, y_, D, pend, A);
     two_ = q2_from_ <= hp_.enc_layers;  // (the cross-attention keys / values from the last layer's output too)
     layernorm(x_, D, A, enc_lng_, enc_lnb_, hn_, Ap_);
     cross_kv();
@@ -312,16 +321,20 @@ class WhisperEngine : public whisper::Backend {
     forward(tok, seq.data(), pos.data(), n, n, lg.data(), &heads, &scores);
     lens_[0] = n;
     p.assign(n > 0 ? n - 1 : 0, 0.0f);
-    std::vector<float> lp;
-    for (int i = 0; i + 1 < n; ++i) {
-      whisper::log_softmax(&lg[(size_t)i * hp_.n_vocab], hp_.n_vocab, lp);
-      p[i] = std::exp(lp[tok[i + 1]]);
+#pragma omp parallel  // (the rows are independent: each the same arithmetic on its own thread)
+    {
+      std::vector<float> lp;
+#pragma omp for schedule(static)
+      for (int i = 0; i < n - 1; ++i) {
+        whisper::log_softmax(&lg[(size_t)i * hp_.n_vocab], hp_.n_vocab, lp);
+        p[i] = std::exp(lp[tok[i + 1]]);
+      }
     }
   }
 
  private:
   struct GW {
-    cl_mem wq = nullptr, wh = nullptr;
+    cl_mem wq = nullptr, wh = nullptr, raw = nullptr;
     int N = 0, K = 0;
   };
   struct EncL {
@@ -336,7 +349,8 @@ class WhisperEngine : public whisper::Backend {
   whisper::Hparams hp_;
   int max_seq_, n_seq_ = 1, Ap_ = 0, T1p_ = 0, Vp_ = 0, F_ = 0, K1p_ = 512;
   ClRt cl_;
-  std::string gemm_src_, ops_src_, wh_src_;
+  std::string gemm_src_, ops_src_, wh_src_, dec_src_;
+  cl_mem tabs_ = nullptr;  // (decode.cl's tables: its GEMV takes them, Q8_0 reads none)
   std::map<std::string, cl_kernel> kc_map_;
   std::vector<cl_program> progs_;
   std::vector<cl_mem> mems_;
@@ -371,19 +385,20 @@ class WhisperEngine : public whisper::Backend {
     return buf(v.bytes + 64, v.data);
   }
   // an f16 matrix [N][K] as the Q8_0 GEMM form, rows padded to Np with zeros
-  GW weight(const std::string& name, int Np = 0) {
+  // (raw: also the GPU raw Q8_0 rows, for the decoder's GEMVs of passes of 1-8 rows; the same int8 values and scales)
+  GW weight(const std::string& name, int Np = 0, bool raw = false) {
     const whisper::Ct2Var& v = m_.file->get(name);
     const int N = v.shape[0], K = (int)(v.count() / N);
-    return upload_q8(name, v, N, K, Np ? Np : N, K, [&](int n, int k) { return whisper::h2f(((const uint16_t*)v.data)[(size_t)n * K + k]); });
+    return upload_q8(name, v, N, K, Np ? Np : N, K, [&](int n, int k) { return whisper::h2f(((const uint16_t*)v.data)[(size_t)n * K + k]); }, raw);
   }
   // a convolution weight [N][C][3] as [N][C * 3] (K padded to Kp)
   GW weight_conv(const std::string& name, int Kp) {
     const whisper::Ct2Var& v = m_.file->get(name);
     const int N = v.shape[0], K = v.shape[1] * v.shape[2];
-    return upload_q8(name, v, N, K, N, Kp, [&](int n, int k) { return whisper::h2f(((const uint16_t*)v.data)[(size_t)n * K + k]); });
+    return upload_q8(name, v, N, K, N, Kp, [&](int n, int k) { return whisper::h2f(((const uint16_t*)v.data)[(size_t)n * K + k]); }, false);
   }
   template <typename F>
-  GW upload_q8(const std::string& name, const whisper::Ct2Var& v, int N, int K, int Np, int Kp, F at) {
+  GW upload_q8(const std::string& name, const whisper::Ct2Var& v, int N, int K, int Np, int Kp, F at, bool raw) {
     if (v.dtype != 4) throw std::runtime_error("whisper: " + name + " is not f16");
     if (Np % 16 || Kp % 256) throw std::runtime_error("whisper: " + name + " does not fit the GEMM tiles");
     std::vector<float> f((size_t)Np * Kp, 0.0f);
@@ -398,6 +413,13 @@ class WhisperEngine : public whisper::Backend {
     w.K = Kp;
     w.wq = buf(r.wq.size() * 4, r.wq.data());
     w.wh = buf(r.wh.size() * 4, r.wh.data());
+    if (raw) {  // (decode.cl's raw form: per superblock the 8 scales, then the 256 int8 values; slack after the end)
+      const size_t bb = gguf_sb_bytes(GGML_Q8_0), bp = raw_padded_sb_bytes(GGML_Q8_0), nsb = q8.size() / bb;
+      std::vector<uint8_t> g(nsb * bp + 1024, 0);
+#pragma omp parallel for
+      for (int64_t i = 0; i < (int64_t)nsb; ++i) gpu_raw_sb(GGML_Q8_0, q8.data() + i * bb, g.data() + i * bp);
+      w.raw = buf(g.size(), g.data());
+    }
     return w;
   }
 
@@ -405,7 +427,7 @@ class WhisperEngine : public whisper::Backend {
     const std::string key = which + defs + "|" + name;
     auto it = kc_map_.find(key);
     if (it != kc_map_.end()) return it->second;
-    const std::string& src = which == "gemm" ? gemm_src_ : which == "ops" ? ops_src_ : wh_src_;
+    const std::string& src = which == "gemm" ? gemm_src_ : which == "ops" ? ops_src_ : which == "decode" ? dec_src_ : wh_src_;
     cl_program p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);
     return kc_map_[key] = cl_.kernel(p, name);
@@ -423,6 +445,7 @@ class WhisperEngine : public whisper::Backend {
     clFinish(cl_.queue);
     for (auto& [n, e] : events_) {
       prof_ms[n] += ClRt::event_ms(e);
+      ++prof_n[n];
       clReleaseEvent(e);
     }
     events_.clear();
@@ -437,8 +460,31 @@ class WhisperEngine : public whisper::Backend {
     size_t g[2] = {256, (size_t)Mp}, l[2] = {256, 1};
     run("quant", k, 2, g, l);
   }
-  // C[Mp][N] = act . W^T (the engine's GEMM launch: split-K beyond 8192, work-group rows by Mp)
-  void gemm(const GW& w, int Mp, cl_mem C, int ldc) {
+  // C[Mp][N] = act . W^T (the engine's GEMM launch: split-K beyond 8192, work-group rows by Mp). rows: a decoder
+  // pass's rows; 1-8 of them on a matrix with raw rows (and one int8 pass) go through the engine's GEMVs on the raw
+  // Q8_0 rows (decode.cl gemv / gemv_mt, as Engine::matmul1 picks them for Q8_0): the weights read once per pass at
+  // ~77 GB/s instead of the 16-row GEMM tile's ~58 (14-minute file greedy: 2,885 passes)
+  void gemm(const GW& w, int Mp, cl_mem C, int ldc, int rows = 0) {
+    static const bool no_gemv = getenv("ARC_WH_GEMV") && atoi(getenv("ARC_WH_GEMV")) == 0;
+    if (w.raw && rows >= 1 && rows <= 8 && !two_ && !no_gemv) {
+      int N = w.N, K = w.K, M = Mp, c0 = 0, a = 0;
+      if (rows == 1) {
+        const int gr = N <= 4096 ? 1 : N <= 8192 ? 2 : N <= 65536 ? 4 : 2;
+        cl_kernel k = get("decode", "-DQT=8 -DGROWS=" + std::to_string(gr), "gemv");
+        set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c0, a);
+        size_t g = ((size_t)(N + gr - 1) / gr * 16 + 255) / 256 * 256, l = 256;
+        run("dec_gemv", k, 1, &g, &l);
+      } else {
+        const int gr = std::min(N <= 4096 ? 1 : N <= 8192 ? 2 : 4, 2);
+        cl_kernel k = get("decode", "-cl-intel-256-GRF-per-thread -DQT=8 -DGROWS=" + std::to_string(gr) + " -DTB=" +
+                                         std::to_string(rows), "gemv_mt");
+        int T = rows, lc = ldc;
+        set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, T, C, lc, c0, a);
+        size_t g = ((size_t)(N + gr - 1) / gr * 16 + 255) / 256 * 256, l = 256;
+        run("dec_gemv", k, 1, &g, &l);
+      }
+      return;
+    }
     cl_kernel k = get("gemm", "-cl-intel-256-GRF-per-thread -DQTYPE=8 -DACT32", "gemm");
     int M = Mp, N = w.N, K = w.K, lc = ldc, co = 0;
     const int nsb = K / 256, splits = K > 8192 ? (nsb + 16) / 17 : 1, rgroup = 4;
@@ -483,6 +529,24 @@ class WhisperEngine : public whisper::Backend {
     size_t g[2] = {(size_t)N, (size_t)M};
     run("bias_res", k, 2, g, nullptr);
   }
+  // the LayerNorm of x's rows quantized for the next GEMM in one launch; with y: x += y + rb first (the residual of
+  // the projection before it). Rows >= valid as zeros (ops.cl wh_ln_quant)
+  void ln_quant(cl_mem x, cl_mem y, cl_mem rb, int D, int valid, cl_mem g, cl_mem b, int Mp) {
+    cl_kernel k = get("ops", two_ ? q2defs_ : std::string(), "wh_ln_quant");
+    int wr = y ? 1 : 0, d = D, MM = Mp, mv = valid, a32 = 1;
+    cl_mem yy = y ? y : x, bb = rb ? rb : g;
+    set_args(k, 0, x, yy, bb, wr, d, MM, mv, g, b, aq_, asc_, absum_, a32);
+    size_t gw[2] = {256, (size_t)Mp}, lw[2] = {256, 1};
+    run("ln_quant", k, 2, gw, lw);
+  }
+  // gelu(ff + b) of the FFN's rows quantized for fc2 (ops.cl wh_gelu_quant)
+  void gelu_quant(cl_mem ff, int F, cl_mem b, int Mp, int valid) {
+    cl_kernel k = get("ops", two_ ? q2defs_ : std::string(), "wh_gelu_quant");
+    int f = F, MM = Mp, mv = valid, a32 = 1;
+    set_args(k, 0, ff, f, b, MM, mv, aq_, asc_, absum_, a32);
+    size_t gw[2] = {256, (size_t)Mp}, lw[2] = {256, 1};
+    run("gelu_quant", k, 2, gw, lw);
+  }
   void layernorm(cl_mem x, int D, int valid, cl_mem g, cl_mem b, cl_mem out, int Mp) {
     cl_kernel k = wk("wh_layernorm");
     int d = D, mv = valid;
@@ -521,11 +585,12 @@ class WhisperEngine : public whisper::Backend {
       size_t g[2] = {(size_t)D, (size_t)Mp};
       run("embed", k, 2, g, nullptr);
     }
+    cl_mem pend = nullptr;  // (fc2's bias: its residual is added by the next LayerNorm)
     for (int l = 0; l < L; ++l) {
       const DecL& W = dec_[l];
-      layernorm(x_, D, n, W.ln1g, W.ln1b, hn_, Mp);
-      quant(hn_, D, Mp, n);
-      gemm(W.qkv, Mp, qkv_, 3 * D);
+      ln_quant(x_, pend ? y_ : nullptr, pend, D, n, W.ln1g, W.ln1b, Mp);
+      pend = nullptr;
+      gemm(W.qkv, Mp, qkv_, 3 * D, n);
       {
         cl_kernel k = wk("wh_kv_store");
         int d = D, LL = L, c = ctx, ll = l;
@@ -541,11 +606,9 @@ class WhisperEngine : public whisper::Backend {
         run("self_attn", k, 2, g, lw);
       }
       quant(att_, D, Mp, n);
-      gemm(W.out, Mp, y_, D);
-      bias_res(x_, y_, D, W.out_b, n);
-      layernorm(x_, D, n, W.ln2g, W.ln2b, hn_, Mp);
-      quant(hn_, D, Mp, n);
-      gemm(W.cq, Mp, y_, D);
+      gemm(W.out, Mp, y_, D, n);
+      ln_quant(x_, y_, W.out_b, D, n, W.ln2g, W.ln2b, Mp);
+      gemm(W.cq, Mp, y_, D, n);
       bias(y_, D, W.cq_b, n);
       {
         cl_mem hm = no_save_;
@@ -560,12 +623,17 @@ class WhisperEngine : public whisper::Backend {
           }
         }
         // (split over the positions: CP = 192 per work-group, then combined; whisper.cl wh_cross_part)
-        const int S = (A + 191) / 192;
-        cl_kernel k = wk("wh_cross_part");
+        // (RB: rows per work-group, as many as the pass has up to 5: one row's pass computes one row, a beam of 5
+        //  reads the keys / values once instead of twice; more rows (word timestamps' pass) in groups of 5.
+        //  ARC_WH_RB=n: up to n. 8 for the word timestamps' 100-row pass moved timestamps a little, and on the
+        //  14-minute file that cascaded into windows starting elsewhere and 100 fewer words with beam 5: kept at 5)
+        static const int rb_max = getenv("ARC_WH_RB") ? std::clamp(atoi(getenv("ARC_WH_RB")), 1, 8) : 5;
+        const int S = (A + 191) / 192, rb = std::min(n, rb_max);
+        cl_kernel k = get("whisper", "-DRB=" + std::to_string(rb), "wh_cross_part");
         int d = D, nn = n, a = A, ap = Ap_, s = S;
         cl_mem sv = save_ ? save_ : att_;
         set_args(k, 0, y_, d, nn, W.ck16, W.cv16, a, ap, s, pm_, pl_, po_, hm, sv);
-        size_t g[3] = {(size_t)256 * hp_.n_head, (size_t)S, (size_t)(n + 3) / 4}, lw[3] = {256, 1, 1};
+        size_t g[3] = {(size_t)256 * hp_.n_head, (size_t)S, (size_t)(n + rb - 1) / rb}, lw[3] = {256, 1, 1};
         run("cross_attn", k, 3, g, lw);
         cl_kernel kc = wk("wh_cross_comb");
         set_args(kc, 0, d, nn, s, pm_, pl_, po_, att_);
@@ -573,19 +641,15 @@ class WhisperEngine : public whisper::Backend {
         run("cross_comb", kc, 2, g2, lw2);
       }
       quant(att_, D, Mp, n);
-      gemm(W.cout, Mp, y_, D);
-      bias_res(x_, y_, D, W.cout_b, n);
-      layernorm(x_, D, n, W.ln3g, W.ln3b, hn_, Mp);
-      quant(hn_, D, Mp, n);
-      gemm(W.fc1, Mp, ff_, F);
-      bias_gelu(ff_, F, W.fc1_b, n, nullptr);
-      quant(ff_, F, Mp, n);
-      gemm(W.fc2, Mp, y_, D);
-      bias_res(x_, y_, D, W.fc2_b, n);
+      gemm(W.cout, Mp, y_, D, n);
+      ln_quant(x_, y_, W.cout_b, D, n, W.ln3g, W.ln3b, Mp);
+      gemm(W.fc1, Mp, ff_, F, n);
+      gelu_quant(ff_, F, W.fc1_b, Mp, n);
+      gemm(W.fc2, Mp, y_, D, n);
+      pend = W.fc2_b;
     }
-    layernorm(x_, D, n, dec_lng_, dec_lnb_, hn_, Mp);
-    quant(hn_, D, Mp, n);
-    gemm(head_, Mp, logits_, Vp_);
+    ln_quant(x_, y_, pend, D, n, dec_lng_, dec_lnb_, Mp);
+    gemm(head_, Mp, logits_, Vp_, n);
     std::vector<float> all((size_t)rows * Vp_);
     clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, (size_t)(n - rows) * Vp_ * 4, all.size() * 4, all.data(), 0, nullptr, nullptr);
     for (int r = 0; r < rows; ++r) memcpy(logits + (size_t)r * V, &all[(size_t)r * Vp_], (size_t)V * 4);
