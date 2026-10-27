@@ -31,6 +31,12 @@ int main() {
     st.chat_put("c1", "{\"title\":\"Rapat mingguan: tim A\",\"history\":[{\"content\":\"/files/" + a.id + "\"}]}");
     const std::string d1 = st.chat_dir("c1");
     check("folder named at the first save", fs::path(d1).filename().string().find(" Rapat mingguan tim A (c1)") == 10, d1);
+    // a first save that could not name the folder (here: no title yet) names it at a later save
+    st.put("x.bin", "draft", "c9");
+    st.chat_put("c9", "{\"title\":\"New chat\",\"history\":[]}");
+    const std::string d9 = st.chat_dir("c9");
+    st.chat_put("c9", "{\"title\":\"Judul kemudian\",\"history\":[]}");
+    check("an untitled folder named at a later save", fs::path(st.chat_dir("c9")).filename().string() == fs::path(d9).filename().string().substr(0, 10) + " Judul kemudian (c9)", st.chat_dir("c9"));
     files::Info g;
     check("the file found after the rename", st.get(a.id, g) && g.path == (fs::path(d1) / "notes.txt").string(), g.path);
     std::string t;

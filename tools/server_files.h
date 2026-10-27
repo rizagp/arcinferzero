@@ -294,9 +294,15 @@ class Store {
     try { title = Json::parse(body)["title"].str(); } catch (const std::exception&) {}
     fs::path dir = folder(id, title);
     std::error_code ec;
-    if (!fs::exists(dir / "chat.json", ec) && !title.empty() && title != "New chat") {
-      // (the first save: the folder made at an upload before it gets the chat's date and title now)
-      const fs::path named = chats_ / folder_name(id, title);
+    // (the folder made at an upload, "<date> (<id>)", gets the chat's title: at the first save, or at a later one when
+    //  that rename failed, e.g. a file in it was being read; Windows renames no folder with an open file. Its date
+    //  stays the one it got.)
+    const std::string dn = dir.filename().string();
+    const bool untitled = dn.size() >= 12 && dn.compare(10, 2, " (") == 0;
+    if ((untitled || !fs::exists(dir / "chat.json", ec)) && !title.empty() && title != "New chat") {
+      std::string nn = folder_name(id, title);
+      if (untitled) nn.replace(0, 10, dn.substr(0, 10));
+      const fs::path named = chats_ / nn;
       if (named != dir && !fs::exists(named, ec)) {
         fs::rename(dir, named, ec);
         if (!ec) {
