@@ -57,6 +57,10 @@ int main(int argc, char** argv) {
       {"Host of another machine on a loopback server", "GET /x HTTP/1.1\r\nHost: 192.168.1.5:8090\r\nOrigin: http://192.168.1.5:8090\r\n\r\n", "403"},
       {"Origin of another site", "GET /x HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n", "403"},
       {"Origin != Host", "GET /x HTTP/1.1\r\nHost: 127.0.0.1:8093\r\nOrigin: http://127.0.0.2:8093\r\n\r\n", "403"},
+      // (a name that only starts like this machine's address: another site's, whose DNS can point here)
+      {"rebinding: a name starting with 127.0.0.1.", "GET /x HTTP/1.1\r\nHost: 127.0.0.1.evil.example:8093\r\nOrigin: http://127.0.0.1.evil.example:8093\r\n\r\n", "403"},
+      {"Host 127.5.6.7 (all of 127/8 is this machine)", "GET /x HTTP/1.1\r\nHost: 127.5.6.7:8093\r\n\r\n", "200 OK"},
+      {"Host 127.0.0.256 (no address)", "GET /x HTTP/1.1\r\nHost: 127.0.0.256:8093\r\n\r\n", "403"},
       {"still alive", "GET /x HTTP/1.1\r\n\r\n", "200 OK"},
   };
   int fails = 0;

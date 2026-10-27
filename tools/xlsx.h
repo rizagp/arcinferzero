@@ -136,7 +136,7 @@ inline std::string serial_text(double s, bool time_only, bool d1904) {
 
 // ---------------------------------------------------------------- reading
 struct Fmt {
-  enum Kind { Number, Date, Time, Percent } kind = Number;
+  enum Kind { Number, Date, Time, Elapsed, Percent } kind = Number;
   std::string prefix, suffix;  // (a number's literal text, e.g. "Rp ")
 };
 // a number format by its id (built-in) or code (custom): dates have d / m / y, times h / s (or m with them), outside
@@ -146,10 +146,11 @@ inline Fmt fmt_of(int id, const std::string& code) {
   if (code.empty()) {
     if (id == 9 || id == 10) f.kind = Fmt::Percent;
     else if ((id >= 14 && id <= 17) || id == 22 || (id >= 27 && id <= 31) || id == 36 || (id >= 50 && id <= 58)) f.kind = Fmt::Date;
-    else if ((id >= 18 && id <= 21) || (id >= 32 && id <= 35) || (id >= 45 && id <= 47)) f.kind = Fmt::Time;
+    else if (id == 46) f.kind = Fmt::Elapsed;  // ([h]:mm:ss)
+    else if ((id >= 18 && id <= 21) || (id >= 32 && id <= 35) || id == 45 || id == 47) f.kind = Fmt::Time;
     return f;
   }
-  bool d = false, t = false, m = false, pct = false, digit = false;
+  bool d = false, t = false, m = false, pct = false, digit = false, el = false;
   for (size_t i = 0; i < code.size(); ++i) {
     const char c = code[i];
     std::string& lit = digit ? f.suffix : f.prefix;
@@ -167,7 +168,7 @@ inline Fmt fmt_of(int id, const std::string& code) {
       if (e == std::string::npos) break;
       const std::string in = code.substr(i + 1, e - i - 1);
       if (!in.empty() && in[0] == '$') lit += in.substr(1, in.find('-') == std::string::npos ? std::string::npos : in.find('-') - 1);
-      else if (!in.empty() && in.find_first_not_of("hHmMsS") == std::string::npos) t = true;
+      else if (!in.empty() && in.find_first_not_of("hHmMsS") == std::string::npos) t = el = true;
       i = e;
     } else {
       const char l = (char)tolower((unsigned char)c);
@@ -180,6 +181,7 @@ inline Fmt fmt_of(int id, const std::string& code) {
     }
   }
   if (d || (m && !t)) f.kind = Fmt::Date;
+  else if (el) f.kind = Fmt::Elapsed;  // ([h]:mm: a duration, 30:00 for 1.25 days)
   else if (t || m) f.kind = Fmt::Time;
   else if (pct) f.kind = Fmt::Percent;
   if (f.kind != Fmt::Number) f.prefix.clear(), f.suffix.clear();
@@ -188,6 +190,12 @@ inline Fmt fmt_of(int id, const std::string& code) {
 inline std::string value_text(double v, const Fmt& f, bool d1904) {
   char b[48];
   if (f.kind == Fmt::Date || f.kind == Fmt::Time) return serial_text(v, f.kind == Fmt::Time, d1904);
+  if (f.kind == Fmt::Elapsed) {
+    const long long secs = std::llround(std::fabs(v) * 86400);
+    if (secs % 60) snprintf(b, sizeof b, "%s%lld:%02lld:%02lld", v < 0 ? "-" : "", secs / 3600, secs / 60 % 60, secs % 60);
+    else snprintf(b, sizeof b, "%s%lld:%02lld", v < 0 ? "-" : "", secs / 3600, secs / 60 % 60);
+    return b;
+  }
   if (f.kind == Fmt::Percent) {
     snprintf(b, sizeof b, "%.10g%%", v * 100);
     return b;
@@ -365,10 +373,10 @@ inline bool number(const std::string& in, double& v, std::string& fmt, char grou
     else t += in[i];
   }
   t = doc::trim(t);
-  bool neg = false;
+  bool neg = false, plus = false;
   std::string cur;
   auto sign = [&] {
-    if (!t.empty() && (t[0] == '-' || t[0] == '+')) { neg = t[0] == '-'; t = doc::trim(t.substr(1)); }
+    if (!t.empty() && (t[0] == '-' || t[0] == '+')) { neg = t[0] == '-'; plus = t[0] == '+'; t = doc::trim(t.substr(1)); }
     else if (t.compare(0, 3, "\xE2\x88\x92") == 0) { neg = true; t = doc::trim(t.substr(3)); }  // (U+2212 minus)
   };
   auto currency = [&] {
@@ -418,6 +426,8 @@ inline bool number(const std::string& in, double& v, std::string& fmt, char grou
     ip = digits;
   }
   if ((ip.size() > 1 && ip[0] == '0' && !grp) || ip.size() + fp.size() > 15) return false;  // (an ID, a phone number)
+  // (+6281234567890, or 12+ plain digits: a phone or account number, which Excel would show as 6.28E+12)
+  if ((plus && !grp && fp.empty() && ip.size() >= 8) || (!grp && !dec && cur.empty() && !pct && ip.size() >= 12)) return false;
   v = strtod((ip + (fp.empty() ? "" : "." + fp)).c_str(), nullptr) * (neg ? -1 : 1);
   const std::string decimals = fp.empty() ? "" : "." + std::string(std::min<size_t>(fp.size(), 10), '0');
   if (pct) {
@@ -446,7 +456,7 @@ inline char group_of(const std::string& t) {
 }
 
 // "2026-10-27", "27/10/2026", "27-10-2026" (an optional " hh:mm[:ss]", "T" after an ISO date) as an Excel serial date
-inline bool date(const std::string& in, double& v, std::string& fmt) {
+inline bool date(const std::string& in, double& v, std::string& fmt, bool month_first = false) {
   const std::string t = doc::trim(in);
   size_t p = 0;
   auto num = [&](int& out, size_t lo, size_t hi) {
@@ -464,6 +474,7 @@ inline bool date(const std::string& in, double& v, std::string& fmt) {
     if (!num(d, 1, 2) || p >= t.size() || (t[p] != '/' && t[p] != '-')) return false;
     const char sep = t[p++];
     if (!num(m, 1, 2) || !lit(sep) || !num(y, 4, 4)) return false;
+    if (month_first && sep == '/') std::swap(d, m);  // (a US table: 03/04/2026 is March 4)
   }
   bool time = false;
   if (p < t.size()) {
@@ -609,7 +620,7 @@ inline std::string write(const std::string& md, const doc::Options& o, const std
           WCell c;
           c.text = plain(runs);
           c.bold = r == 0 || (!runs.empty() && std::all_of(runs.begin(), runs.end(), [](const doc::Run& x) { return x.st.b || doc::trim(x.text).empty(); }));
-          if (r > 0 && !c.text.empty()) c.num = date(c.text, c.v, c.fmt) || number(c.text, c.v, c.fmt, group);
+          if (r > 0 && !c.text.empty()) c.num = date(c.text, c.v, c.fmt, group == ',') || number(c.text, c.v, c.fmt, group);
           row.push_back(c);
         }
         s.rows.push_back(row);
@@ -867,17 +878,18 @@ inline Doc read_xlsx(const std::string& zip) {
       return xfs.size() < 100000;
     });
   }
-  size_t budget = xlsx::kMaxCells;
+  size_t budget = xlsx::kMaxCells, inflated = 0;
   std::vector<std::string> cut, unread;
   for (const Sheet& s : sheets) {
     d.paras.push_back({"Sheet: " + rdoc::tidy(s.name) + (s.hidden ? " (hidden)" : ""), 1, 1});
-    if (!budget) {
+    if (!budget || inflated > (512u << 20)) {  // (the cells, and all sheet parts together: a bounded read)
       unread.push_back(s.name);
-      d.paras.push_back({"(not read: the cell limit was reached)", 1, 0});
+      d.paras.push_back({budget ? "(not read: the workbook is too large to read whole)" : "(not read: the cell limit was reached)", 1, 0});
       continue;
     }
     std::string x;
     const bool whole = infl::zip_entry(zip, s.part, x, 64u << 20);  // (a part cut by the limit: what came before it)
+    inflated += x.size();
     xlsx::Grid g;
     g.name = s.name;
     xlsx::read_sheet(x, sst, xfs, d1904, g, budget);

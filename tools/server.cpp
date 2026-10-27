@@ -1116,7 +1116,20 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       const int tmo = (int)std::clamp(a["timeout_s"].as_number(120), 1.0, 600.0);
       std::string path = term::exe_dir();
       if (std::filesystem::is_directory(std::filesystem::path(app_dir()) / "bin", ec)) path = (std::filesystem::path(app_dir()) / "bin").string() + ";" + path;
-      const term::Result t = term::run(cmd, cwd, path, tmo, session ? state.string() : "");
+      // (the page closed the request, Stop or Esc: the command ends with it, not at its timeout)
+      term::Result t = term::run(cmd, cwd, path, tmo, session ? state.string() : "", [&] { return rs.client_gone(); });
+      if (t.cancelled) return;  // (nobody reads the reply)
+      // the output as the model can take it: within the same share of its context as a read_file part (64 KB is
+      // ~16K tokens, more than a small model's whole context): the start and the end of a longer one
+      const size_t budget = files::read_budget(ctx);
+      if (t.output.size() > budget) {
+        size_t head = budget * 3 / 4, tail = t.output.size() - (budget - head);
+        while (head > 0 && ((unsigned char)t.output[head] & 0xC0) == 0x80) --head;
+        while (tail < t.output.size() && ((unsigned char)t.output[tail] & 0xC0) == 0x80) ++tail;
+        t.output = t.output.substr(0, head) + "\n[... " + std::to_string(tail - head) + " characters left out: a smaller output "
+                   "(Select-Object -First N, Select-String, a file) shows the part you need ...]\n" + t.output.substr(tail);
+        t.truncated = true;
+      }
       Json r = Json::object();
       r.set("exit_code", (double)t.exit_code);
       r.set("output", t.output);

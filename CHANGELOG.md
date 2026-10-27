@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-10-27: web UI audit: every function tried, security and robustness fixes
+
+- **Tried with Qwen3.5 4B (vision, Whisper) in the web UI**, each passing:
+  - a voice message through Whisper; DOCX, XLSX (two sheets) and PPTX attachments (speaker notes, the hidden slide);
+  - a scanned PDF transcribed by the vision encoder; an XLSX the model wrote, opened in Excel (2 sheets, numbers as numbers);
+  - the terminal panel (folder and environment carried, PowerShell variables not, as designed), the model's commands
+    with Run / Don't run, and no terminal tool for the model while the panel is closed;
+  - web search, the Files panel (@, delete unused keeping an unsent attachment), deleting a message with its file, edit;
+  - two chats answering at once after switching to 2 slots in Settings, reopening a running chat, Stop all, Compact.
+- **Fixed**:
+  - **DNS rebinding through a name that starts like an address** (security): "127.0.0.1.evil.com" passed the Host check
+    (it only looked at the "127." start), so a page of that site could run terminal commands and read their output.
+    The Host must now be an address literal (or localhost); a server opened to the network (--host) also refuses
+    names (open it by its IP). src/http.h; tests/test_http.cpp.
+  - **Voice messages and Talk never used Whisper**: the page read /props "speech_to_text", the server sends "whisper".
+  - **Run / Don't run took the keyboard focus**: a key typed for the message box could approve a command. A chat whose
+    answer waits for that choice in the background now says "needs your OK" in the chat list.
+  - **Stop and Esc end a running command** (it ran on to its timeout, up to 10 minutes): the server polls the client and
+    ends the command with every process in its job; Esc in the terminal panel stops the command typed there. A command
+    whose process left its job no longer blocks the reply (the pipe read ends 2 s after the command).
+  - **Command output within the model's context** (the share a read_file part gets), its start and end kept.
+  - The terminal session's paths (cwd, VIRTUAL_ENV, PATH) follow the chat folder when it is renamed to its title.
+  - A file put into a chat folder (e.g. a download from the terminal) is hashed in parts, not read whole into RAM;
+    files over 512 MB are not read as documents.
+  - A chat saved in the middle of a tool round gets placeholder results for its unfinished calls (a valid history after
+    a closed page); opening a chat waits for a save on its way.
+  - XLSX: elapsed times ([h]:mm) as 30:00, not a 1900 date; phone and account numbers (+62..., 12+ digits) stay text;
+    slash dates month first in a US table. PPTX: mc:AlternateContent read once. Office files: at most 512 MB unpacked.
+  - The terminal tool's description says which programs can outlive a command (COM objects, WMI, scheduled tasks).
+  - **Answers render Markdown fully** (webui/index.html `mdBlocks`): tables (column alignment, a header row, scrolling
+    sideways in the bubble on a phone; before, they showed as "| a | b |" text), numbered and nested lists, task boxes,
+    quotes, rules, links (http(s) and mailto only, in a new tab) and bare URLs, strike; empty lines make one gap.
+    Text is escaped first, quotes too (a URL could otherwise leave its href); every prefix of a streamed answer
+    renders, a 2,000-row table in 7 ms.
+- Not changed, by design: a program on this computer can call run_command without the page's Run (it has the user's
+  rights already); the approval guards against the model. Not tried live: a request from another computer to a
+  server opened with --host (a firewall prompt), Talk with a real microphone.
+
 ## 2026-10-27: scanned PDFs read by the vision model
 
 - **Scanned PDF pages (images without a text layer) are read in the web UI**: `read_file` with `pages` on such a page

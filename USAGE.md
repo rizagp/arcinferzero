@@ -305,7 +305,8 @@ While the server is running:
   commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: the model can no longer use it, and the next one starts
   again in the chat's folder; **×** only hides the panel. A command stops after 2 minutes (the model may ask for up to
   10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
-  on this computer can use it: the server refuses it to other computers (also with `--host`), to pages of other sites,
+  on this computer can use it: the server refuses it to other computers (also with `--host`; such a server is opened by
+  its IP address, http://192.168.x.x:port/, not by a name, against DNS rebinding), to pages of other sites,
   and entirely with `--no-terminal`.
 - **Web UI: voice messages and talking.** The microphone in the message box records a voice message (the bin
   discards it, Send sends it). The headset in the chat header starts **Talk**: the microphone stays on, the end of

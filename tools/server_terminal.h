@@ -6,7 +6,9 @@
 #pragma once
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -17,7 +19,7 @@ namespace term {
 struct Result {
   int exit_code = -1;
   std::string output;
-  bool timed_out = false, truncated = false;
+  bool timed_out = false, truncated = false, cancelled = false;
   double seconds = 0;
 };
 
@@ -80,9 +82,10 @@ inline std::string session_script(const std::string& state, const std::string& c
          "if (-not $__azOk) { exit 1 }\n";
 }
 
-// command (PowerShell) in cwd; extra_path goes first in PATH; state: the session's file ("" : none, a fresh shell)
+// command (PowerShell) in cwd; extra_path goes first in PATH; state: the session's file ("" : none, a fresh shell);
+// cancelled: asked every 200 ms, true ends the command like a timeout (the client closed its request: Stop, Esc)
 inline Result run(const std::string& command, const std::string& cwd, const std::string& extra_path, int timeout_s,
-                  const std::string& state = "") {
+                  const std::string& state = "", const std::function<bool()>& cancelled = nullptr) {
   Result r;
   auto q = [](std::string s) {  // (a PowerShell single-quoted string)
     for (size_t i = 0; (i = s.find('\'', i)) != std::string::npos; i += 2) s.insert(i, "'");
@@ -136,12 +139,14 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
     if (job) CloseHandle(job);
     throw std::runtime_error("cannot start PowerShell (error " + std::to_string(GetLastError()) + ")");
   }
-  if (job) AssignProcessToJobObject(job, pi.hProcess);  // (before it runs: its children are in the job too)
+  // (before it runs: its children are in the job too. Not in one: a timeout ends PowerShell itself only)
+  const bool in_job = job && AssignProcessToJobObject(job, pi.hProcess);
   ResumeThread(pi.hThread);
   CloseHandle(pi.hThread);
   // the output, read on its own thread (a full pipe would stop the command): the first part and the last part
   std::string head, tail;
   size_t total = 0;
+  std::atomic<bool> read_done{false};
   std::thread reader([&] {
     char b[8192];
     DWORD n;
@@ -154,17 +159,27 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
         if (tail.size() > kMaxOut / 4 * 2) tail.erase(0, tail.size() - kMaxOut / 4);
       }
     }
+    read_done = true;
   });
-  if (WaitForSingleObject(pi.hProcess, (DWORD)timeout_s * 1000) == WAIT_TIMEOUT) {
-    r.timed_out = true;
-    if (job) TerminateJobObject(job, 1);
-    else TerminateProcess(pi.hProcess, 1);
+  // the command's end, its timeout, or the client gone (polled: a request whose page stopped it)
+  const auto deadline = t0 + std::chrono::seconds(timeout_s);
+  while (WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT) {
+    const bool over = std::chrono::steady_clock::now() >= deadline, gone = !over && cancelled && cancelled();
+    if (!over && !gone) continue;
+    (over ? r.timed_out : r.cancelled) = true;
+    if (in_job) TerminateJobObject(job, 1);
+    TerminateProcess(pi.hProcess, 1);
     WaitForSingleObject(pi.hProcess, 5000);
+    break;
   }
   DWORD code = 0;
   GetExitCodeProcess(pi.hProcess, &code);
   r.exit_code = (int)code;
-  if (job) TerminateJobObject(job, 1);  // (what it left running in the background ends with it: its pipe closes)
+  if (in_job) TerminateJobObject(job, 1);  // (what it left running in the background ends with it: its pipe closes)
+  // (a process that left the job, e.g. one started through COM or WMI, may still hold the pipe: the read ends after
+  //  2 s at most instead of waiting for it)
+  for (int k = 0; k < 20 && !read_done; ++k) Sleep(100);
+  if (!read_done) CancelIoEx(rd, nullptr);
   reader.join();
   CloseHandle(rd);
   CloseHandle(pi.hProcess);

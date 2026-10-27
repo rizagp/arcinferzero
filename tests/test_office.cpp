@@ -176,6 +176,12 @@ int main(int argc, char** argv) {
           !xlsx::number("007", v, f) && !xlsx::number("1234567890123456", v, f) && !xlsx::number("Rp", v, f) && !xlsx::number("1e5", v, f));
     check("date: ISO and day first", xlsx::date("2026-10-27", v, f) && v == 46322 && f == "yyyy-mm-dd" && xlsx::date("27/10/2026", v, f) && v == 46322 &&
           f == "dd/mm/yyyy" && xlsx::date("27-10-2026", v, f) && v == 46322);
+    check("number: phone and account numbers stay text", !xlsx::number("+6281234567890", v, f) && !xlsx::number("123401000123456", v, f) &&
+          !xlsx::number("628123456789", v, f) && xlsx::number("12345678901", v, f) && xlsx::number("+5", v, f) && v == 5);
+    check("date: a US table reads 03/04/2026 as March 4", xlsx::date("03/04/2026", v, f, true) && v == 46085 &&
+          xlsx::date("03/04/2026", v, f) && v == 46115 && xlsx::date("2026-03-04", v, f, true) && v == 46085);
+    check("elapsed time: 1.25 days as 30:00", xlsx::value_text(1.25, xlsx::fmt_of(164, "[h]:mm"), false) == "30:00" &&
+          xlsx::value_text(1.5 / 24 + 2, xlsx::fmt_of(46, ""), false) == "49:30" && xlsx::fmt_of(46, "").kind == xlsx::Fmt::Elapsed);
     check("date: with a time", xlsx::date("2026-10-27T12:00", v, f) && v == 46322.5 && f == "yyyy-mm-dd hh:mm");
     check("date: not a date", !xlsx::date("2026-02-30", v, f) && !xlsx::date("31/04/2026", v, f) && !xlsx::date("2025-02-29", v, f) &&
           !xlsx::date("1899-12-31", v, f) && !xlsx::date("10:30", v, f) && !xlsx::date("2026-10-27 25:00", v, f));
@@ -183,7 +189,7 @@ int main(int argc, char** argv) {
           xlsx::serial_text(61, false, false) == "1900-03-01" && xlsx::serial_text(1, false, false) == "1900-01-01" &&
           xlsx::serial_text(0.75, true, false) == "18:00" && xlsx::serial_text(44860, false, true) == "2026-10-27");
     check("formats", xlsx::fmt_of(14, "").kind == xlsx::Fmt::Date && xlsx::fmt_of(164, "\"Total\" 0").kind == xlsx::Fmt::Number &&
-          xlsx::fmt_of(164, "[$-421]dd mmmm yyyy").kind == xlsx::Fmt::Date && xlsx::fmt_of(164, "[h]:mm").kind == xlsx::Fmt::Time &&
+          xlsx::fmt_of(164, "[$-421]dd mmmm yyyy").kind == xlsx::Fmt::Date && xlsx::fmt_of(164, "[h]:mm").kind == xlsx::Fmt::Elapsed &&
           xlsx::fmt_of(164, "0.0%").kind == xlsx::Fmt::Percent && xlsx::fmt_of(164, "[$Rp-421] #,##0").prefix == "Rp " &&
           xlsx::fmt_of(164, "General").kind == xlsx::Fmt::Number && xlsx::fmt_of(164, "#,##0;[Red]-#,##0").kind == xlsx::Fmt::Number);
   }
@@ -284,6 +290,14 @@ int main(int argc, char** argv) {
     check("pptx: slide number and footer left out", all(d).find("Rahasia") == std::string::npos && all(d).find("7\n") == std::string::npos, all(d));
     check("pptx: a merged table cell once", has(d, "Gabung") && has(d, "1 | 2") && all(d).find("Gabung | Gabung") == std::string::npos, all(d));
     check("pptx: SmartArt text", has(d, "Rencana") && has(d, "Eksekusi"), all(d));
+    {  // (mc:AlternateContent: the Choice read, its Fallback copy not)
+      std::vector<rdoc::Para> body;
+      std::string title;
+      const std::string sp = "<p:sp><p:txBody><a:p><a:r><a:t>Rumus luas</a:t></a:r></a:p></p:txBody></p:sp>";
+      pptx::slide_text("<p:sld><mc:AlternateContent><mc:Choice Requires=\"a14\">" + sp + "</mc:Choice><mc:Fallback>" + sp +
+                       "</mc:Fallback></mc:AlternateContent></p:sld>", body, title, 1, false);
+      check("pptx: AlternateContent read once", body.size() == 1 && body[0].text == "Rumus luas", std::to_string(body.size()));
+    }
     check("pptx resolve", pptx::resolve("ppt/slides/", "../media/a.png") == "ppt/media/a.png" && pptx::resolve("ppt/slides/", "/ppt/x.xml") == "ppt/x.xml" &&
           pptx::resolve("ppt/", "../../../x") == "x");
     // hostile: missing slide parts, a relationship to itself, deep nesting, a binary .ppt, garbage

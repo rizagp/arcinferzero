@@ -192,13 +192,45 @@ class HttpServer {
     const std::string h = o.substr(0, e);
     return h == "127.0.0.1" || h == "localhost" || h == "[::1]" || h == "::1";
   }
-  // a Host header (or a bind address) naming this machine: localhost, 127.x.x.x or [::1], with or without a port
-  static bool local_host(const std::string& host) {
+  // a Host header's host part, lower case, without the port
+  static std::string host_part(const std::string& host) {
     std::string h = host;
     std::transform(h.begin(), h.end(), h.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if (!h.empty() && h[0] == '[') h = h.substr(0, h.find(']') + 1);
     else if (std::count(h.begin(), h.end(), ':') == 1) h = h.substr(0, h.find(':'));
-    return h == "localhost" || h.rfind("127.", 0) == 0 || h == "[::1]" || h == "::1";
+    return h;
+  }
+  // four decimal parts 0-255: "127.0.0.1" yes, "127.0.0.1.evil.com" no
+  static bool ipv4_literal(const std::string& h) {
+    int parts = 0;
+    for (size_t i = 0; i <= h.size(); ++parts) {
+      const size_t e = std::min(h.find('.', i), h.size());
+      if (e == i || e - i > 3) return false;
+      int v = 0;
+      for (size_t k = i; k < e; ++k) {
+        if (!isdigit((unsigned char)h[k])) return false;
+        v = v * 10 + (h[k] - '0');
+      }
+      if (v > 255) return false;
+      i = e + 1;
+      if (e == h.size()) { ++parts; break; }
+    }
+    return parts == 4;
+  }
+  // a Host header (or a bind address) naming this machine: localhost, 127.x.x.x or [::1], with or without a port.
+  // (A literal address only: a name that only starts like one, "127.0.0.1.evil.com", is another site's, whose DNS
+  //  can point at this machine: DNS rebinding.)
+  static bool local_host(const std::string& host) {
+    const std::string h = host_part(host);
+    return h == "localhost" || (ipv4_literal(h) && h.rfind("127.", 0) == 0) || h == "[::1]" || h == "::1";
+  }
+  // a Host header that is an address (or localhost), not a DNS name: what a server opened to the network (--host)
+  // accepts, as a rebinding attack needs a name of its own that resolves to this machine
+  static bool address_host(const std::string& host) {
+    const std::string h = host_part(host);
+    if (h == "localhost" || ipv4_literal(h)) return true;
+    if (h.size() < 3 || h.front() != '[' || h.back() != ']') return false;
+    return h.find_first_not_of("0123456789abcdef:.", 1) == h.size() - 1;  // ([ipv6], v4-mapped included)
   }
   // the page the server itself served (the web UI opened from another device with --host): Origin = http://<Host>
   static bool same_origin(const std::string& origin, const std::string& host) {
@@ -363,6 +395,8 @@ class HttpServer {
       //  Origin; a server bound to this machine only answers requests that name this machine)
       if (loopback_ && !rq.header("host").empty() && !local_host(rq.header("host")))
         return reply_close(c, 403, "this server answers requests for localhost / 127.0.0.1 only");
+      if (!loopback_ && !rq.header("host").empty() && !address_host(rq.header("host")))
+        return reply_close(c, 403, "open this server by its address (http://<IP>:<port>/), not by a name (DNS rebinding)");
       if (!origin.empty() && !local_origin(origin) && !same_origin(origin, rq.header("host")))
         return reply_close(c, 403, "cross-origin requests are only allowed from this machine");
       rs.cors_origin = origin;

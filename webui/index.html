@@ -154,7 +154,19 @@ main { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 6% 10px; }
 .msg code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 13px; }
 .msg :not(pre) > code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
 .msg h3, .msg h4, .msg h5, .msg h6 { margin: 8px 0 2px; }
-.msg ul { margin: 4px 0; padding-left: 22px; }
+.msg ul, .msg ol { margin: 4px 0; padding-left: 24px; }
+.msg li > ul, .msg li > ol { margin: 2px 0; }
+.msg .task { font-size: 1.1em; }
+.msg .gap { height: .55em; }
+.msg hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--muted) 45%, transparent); margin: 8px 0; }
+.msg blockquote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--accent); color: var(--muted); }
+.msg a { color: var(--accent); }
+.msg del { opacity: .75; }
+.msg .tablewrap { overflow-x: auto; margin: 6px 0; max-width: 100%; }
+.msg table { border-collapse: collapse; font-size: 13.5px; width: max-content; max-width: none; }  /* (as wide as its cells; the wrapper scrolls) */
+.msg th, .msg td { border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent); padding: 4px 9px; text-align: left; vertical-align: top; max-width: 24em; }
+.msg th { background: var(--code); font-weight: 600; white-space: nowrap; }
+.msg tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--code) 45%, transparent); }
 .content { min-height: 1em; }
 .codeblock { margin: 6px 0; }
 .codebar { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
@@ -373,7 +385,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <button class="iconbtn" id="termhide" title="Hide (the terminal stays open)" aria-label="Hide the terminal"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6z"/></svg></button>
     </div>
     <div class="termlog" id="termlog"></div>
-    <div class="termin"><span>PS&gt;</span><textarea id="termin" rows="1" placeholder="PowerShell command" title="Enter runs; Shift+Enter: a new line; Up: the last command" aria-label="Command"></textarea></div>
+    <div class="termin"><span>PS&gt;</span><textarea id="termin" rows="1" placeholder="PowerShell command" title="Enter runs; Shift+Enter: a new line; Up: the last command; Esc: stop the one running" aria-label="Command"></textarea></div>
   </aside>
 </div>
 <svg width="0" height="0" style="position:absolute"><defs><g id="g-gear"><path d="M19.4 13c.1-.3.1-.7.1-1s0-.7-.1-1l2.1-1.6c.2-.2.2-.4.1-.6l-2-3.5c-.1-.2-.4-.3-.6-.2l-2.5 1c-.5-.4-1.1-.7-1.7-1L14.5 2.4c0-.2-.2-.4-.5-.4h-4c-.3 0-.5.2-.5.4l-.4 2.7c-.6.3-1.2.6-1.7 1l-2.5-1c-.2-.1-.5 0-.6.2l-2 3.5c-.1.2-.1.5.1.6L4.6 11c0 .3-.1.7-.1 1s0 .7.1 1l-2.1 1.6c-.2.2-.2.4-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.7c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5c.1-.2.1-.5-.1-.6L19.4 13zM12 15.5c-1.9 0-3.5-1.6-3.5-3.5s1.6-3.5 3.5-3.5 3.5 1.6 3.5 3.5-1.6 3.5-3.5 3.5z"/></g></defs></svg>
@@ -483,7 +495,7 @@ async function refreshModel() {
     if (p.n_ctx) ctxLen = p.n_ctx;
     // (speech_to_text: Whisper on this server, {"model": id}: voice for every model; without it, audio goes to a
     //  model that hears it itself, Gemma 4 E4B / 12B)
-    const stt = p.speech_to_text;
+    const stt = p.speech_to_text || p.whisper;  // (the server reports it as "whisper": {model, device, max_minutes})
     caps = { thinking: p.thinking !== false, efforts: Array.isArray(p.reasoning_effort) ? p.reasoning_effort : [], sampling: p.sampling || null,
       stt: stt ? (typeof stt === "object" && stt.model ? String(stt.model) : "whisper") : "", slots: p.stats?.slots || 1 };
     $("slots").value = String(caps.slots);
@@ -530,9 +542,93 @@ $("modelbtn").addEventListener("click", (e) => {
 });
 document.addEventListener("click", (e) => { if (!e.target.closest("#modelmenu")) $("modelmenu").hidden = true; });
 
-function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+// inline formatting of escaped text: code spans first (their text stays as it is), links (http(s) and mailto only, in
+// a new tab; a URL without quotes or angle brackets, so it cannot leave its href), bare URLs, bold, italic, strike
 function inline(s) {
-  return s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  const keep = [];
+  const put = (html) => "\u0000" + (keep.push(html) - 1) + "\u0000";
+  s = s.replace(/`([^`]+)`/g, (m, c) => put("<code>" + c + "</code>"));
+  const link = (url, text) => put('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + text + "</a>");
+  s = s.replace(/\[([^\]\n]+)\]\(((?:https?:\/\/|mailto:)[^\s()<>"'&]*(?:&amp;[^\s()<>"'&]*)*)\)/g, (m, t, u) => link(u, t));
+  s = s.replace(/(^|[\s(\u0000])(https?:\/\/[^\s<>"'()&\u0000]*(?:&amp;[^\s<>"'()&\u0000]*)*)/g, (m, pre, u) => {
+    const end = u.match(/[.,;:!?]+$/), url = end ? u.slice(0, -end[0].length) : u;  // (a sentence's full stop is not the URL's)
+    return pre + link(url, url) + (end ? end[0] : "");
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+  for (let k = 0; k < 3 && s.includes("\u0000"); k++) s = s.replace(/\u0000(\d+)\u0000/g, (m, i) => keep[+i]);  // (a link's text may hold a code span)
+  return s;
+}
+// a table row's cells: the text between its pipes
+const mdCells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+const mdSep = (line) => line.includes("-") && mdCells(line).every((c) => /^:?-+:?$/.test(c));
+const MD_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+// Markdown blocks of escaped lines: headings, lists (nested by their indent, numbered from their first number, task
+// boxes), tables (with the column alignment row), quotes, rules, lines; one gap however many empty lines
+function mdBlocks(lines) {
+  let out = "", gap = false;
+  const open = [];  // (the lists open: tag and indent)
+  const closeLists = (ind = -1) => { while (open.length && open[open.length - 1].indent > ind) out += "</li></" + open.pop().tag + ">"; };
+  const space = () => { if (out && !gap) { out += '<div class="gap"></div>'; gap = true; } };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i], li = line.match(MD_ITEM);
+    if (li) {
+      const ind = li[1].replace(/\t/g, "    ").length, ord = /\d/.test(li[2]), tag = ord ? "ol" : "ul";
+      closeLists(ind);
+      const top = open[open.length - 1];
+      if (top && top.indent === ind && top.tag === tag) out += "</li><li>";
+      else {
+        if (top && top.indent === ind) out += "</li></" + open.pop().tag + ">";
+        const n = parseInt(li[2], 10);
+        out += "<" + tag + (ord && n !== 1 ? ' start="' + n + '"' : "") + "><li>";
+        open.push({ tag, indent: ind });
+      }
+      const task = li[3].match(/^\[([ xX])\]\s+(.*)$/);
+      out += task ? '<span class="task">' + (task[1] === " " ? "\u2610" : "\u2611") + "</span> " + inline(task[2]) : inline(li[3]);
+      gap = false;
+      continue;
+    }
+    if (line.trim() === "") {
+      if (open.length) {  // (an empty line inside a list: the list goes on when an item follows)
+        let j = i + 1;
+        while (j < lines.length && lines[j].trim() === "") j++;
+        if (j < lines.length && MD_ITEM.test(lines[j])) continue;
+      }
+      closeLists();
+      space();
+      continue;
+    }
+    if (open.length && /^\s{2,}\S/.test(line)) { out += "<br>" + inline(line.trim()); continue; }  // (an item's next line)
+    closeLists();
+    gap = false;
+    const h = line.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (h) { const n = Math.min(6, h[1].length + 2); out += "<h" + n + ">" + inline(h[2]) + "</h" + n + ">"; continue; }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) { out += "<hr>"; continue; }
+    if (/^\s{0,3}&gt;/.test(line)) {  // (a quote: its lines, read as blocks of their own)
+      const q = [];
+      while (i < lines.length && /^\s{0,3}&gt;/.test(lines[i])) q.push(lines[i++].replace(/^\s{0,3}&gt;\s?/, ""));
+      i--;
+      out += "<blockquote>" + mdBlocks(q) + "</blockquote>";
+      continue;
+    }
+    if (line.includes("|") && i + 1 < lines.length && mdSep(lines[i + 1])) {
+      const head = mdCells(line), al = mdCells(lines[i + 1]).map((c) => c.endsWith(":") ? (c.startsWith(":") ? "center" : "right") : "");
+      const cell = (tag, c, k) => "<" + tag + (al[k] ? ' style="text-align:' + al[k] + '"' : "") + ">" + inline(c) + "</" + tag + ">";
+      let t = '<div class="tablewrap"><table><thead><tr>' + head.map((c, k) => cell("th", c, k)).join("") + "</tr></thead><tbody>";
+      i += 2;
+      for (; i < lines.length && lines[i].includes("|") && lines[i].trim(); i++) {
+        const r = mdCells(lines[i]);
+        t += "<tr>" + head.map((x, k) => cell("td", r[k] ?? "", k)).join("") + "</tr>";  // (as many cells as the header)
+      }
+      i--;
+      out += t + "</tbody></table></div>";
+      continue;
+    }
+    out += "<div>" + inline(line) + "</div>";
+  }
+  closeLists();
+  return out.replace(/(<div class="gap"><\/div>)+$/, "");
 }
 function markdown(src) {
   const parts = src.split(/```/);
@@ -549,17 +645,7 @@ function markdown(src) {
         esc(body.replace(/\n$/, "")) + "</code></pre>" + bar("bottom") + "</div>";
       return;
     }
-    const lines = esc(p).split("\n");
-    let inList = false;
-    for (const line of lines) {
-      const h = line.match(/^(#{1,4})\s+(.*)$/), li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/);
-      if (li) { if (!inList) { html += "<ul>"; inList = true; } html += "<li>" + inline(li[1]) + "</li>"; continue; }
-      if (inList) { html += "</ul>"; inList = false; }
-      if (h) html += "<h" + (h[1].length + 2) + ">" + inline(h[2]) + "</h" + (h[1].length + 2) + ">";
-      else if (line.trim() === "") html += "<br>";
-      else html += "<div>" + inline(line) + "</div>";
-    }
-    if (inList) html += "</ul>";
+    html += mdBlocks(esc(p).split("\n"));
   });
   return html;
 }
@@ -991,9 +1077,10 @@ const TERM_TOOLS = [
     description: "Run one PowerShell command on the user's Windows computer, in this chat's terminal. It starts in the " +
       "chat's folder (the chat's uploaded files and the documents you wrote are there under their names); the folder " +
       "(cd) and environment variables (an activated .venv, $env:X) carry over to the next command, PowerShell variables " +
-      "and functions do not, and no program keeps running after its command. For what the other tools cannot do: " +
+      "and functions do not, and the programs a command starts end with it (except ones Windows starts for it: COM " +
+      "objects such as Excel.Application, WMI, scheduled tasks; close those yourself, e.g. $xl.Quit()). For what the other tools cannot do: " +
       "inspect or convert files, count, compute, run programs such as python or the arcinferzero tools (runz, serverz). " +
-      "The user may have to allow each command. Output (stdout and stderr) up to 64 KB; timeout 120 s unless timeout_s " +
+      "The user may have to allow each command. Output (stdout and stderr) up to 64 KB, less for a small context (then its start and end); timeout 120 s unless timeout_s " +
       "(up to 600). The result says the folder (cwd) and the active venv after the command.",
     parameters: { type: "object", properties: {
       command: { type: "string", description: "PowerShell; several lines are fine" },
@@ -1124,7 +1211,7 @@ function askRun(d, signal) {
     signal?.addEventListener("abort", stop);
     d.appendChild(box);
     scroll();
-    box.querySelector(".run").focus();
+    // (no focus on Run: a key the user types for the message box or the terminal must not approve a command)
   });
 }
 function termCmd(d, cmd) {
@@ -1155,7 +1242,10 @@ async function runTermTool(args, card, signal, job) {
   }
   if ($("term").value !== "auto") {
     card.status.textContent = "· waiting for you";
-    if (!(await askRun(card.el, signal))) {
+    if (job) { job.asking = true; renderConvs(); }
+    let ok;
+    try { ok = await askRun(card.el, signal); } finally { if (job) { job.asking = false; renderConvs(); } }
+    if (!ok) {
       card.status.textContent = "· not run";
       return "error: the user did not allow this command";
     }
@@ -1287,6 +1377,11 @@ $("termclose").addEventListener("click", termClose);
 $("termin").addEventListener("input", () => { const a = $("termin"); a.style.height = "auto"; a.style.height = a.scrollHeight + "px"; });
 $("termin").addEventListener("keydown", async (e) => {
   const a = $("termin"), id = convId, t = id && terms.get(id);
+  if (e.key === "Escape" && t?.ctl) {  // (the command running here stops: the server ends it and what it started)
+    e.preventDefault();
+    t.ctl.abort();
+    return;
+  }
   if (e.key === "ArrowUp" && !a.value && t) {  // (the last command typed here again)
     const last = [...t.log].reverse().find((x) => x.by === "you");
     if (last) { e.preventDefault(); a.value = last.cmd; }
@@ -1299,7 +1394,9 @@ $("termin").addEventListener("keydown", async (e) => {
   a.value = "";
   a.style.height = "auto";
   const x = termAdd(id, { by: "you", cmd });
-  const j = await termRun(id, cmd, 600).catch((err) => ({ ok: false, error: String(err.message || err) }));
+  t.ctl = new AbortController();
+  const j = await termRun(id, cmd, 600, t.ctl.signal).catch((err) => ({ ok: false, error: err.name === "AbortError" ? "stopped (Esc)" : String(err.message || err) }));
+  t.ctl = null;
   termDone(id, x, { out: j.ok ? j.output : "failed: " + j.error, exit: j.ok ? j.exit_code : null, s: j.seconds, timed: j.timed_out });
   if ($("filespanel").classList.contains("open")) loadFiles();
 });
@@ -1678,12 +1775,29 @@ function ensureConv() {
   return convId;
 }
 let saving = Promise.resolve();
+// the history as it is saved: calls of a round still running get a placeholder result, so a chat opened after the
+// page closed mid-round is a valid conversation (the live history keeps the real results when they come)
+function closedCalls(h) {
+  const out = [];
+  for (let k = 0; k < h.length; k++) {
+    const m = h[k];
+    out.push(m);
+    if (m.role !== "assistant" || !(m.tool_calls || []).length) continue;
+    const have = new Set();
+    let j = k + 1;
+    for (; j < h.length && h[j].role === "tool"; j++) { have.add(h[j].tool_call_id); out.push(h[j]); }
+    for (const c of m.tool_calls)
+      if (!have.has(c.id)) out.push({ role: "tool", tool_call_id: c.id, name: c.function?.name, content: "error: not finished (the answer was interrupted)" });
+    k = j - 1;
+  }
+  return out;
+}
 function saveConv(force, job) {
   if (job?.deleted) return saving;  // (its chat was deleted while it ran: not written again)
   const h = job ? job.history : history;
   if (!h.length && !(force && (job || convId))) return saving;
   const id = job ? job.id : ensureConv();
-  const c = { id, title: titleOf(h), at: Date.now(), model: job ? job.model : modelId, snippet: snippetOf(h), history: h };
+  const c = { id, title: titleOf(h), at: Date.now(), model: job ? job.model : modelId, snippet: snippetOf(h), history: closedCalls(h) };
   const t = terms.get(id);  // (its terminal: open or not, and its log)
   if (t && (t.open || t.log.length)) c.terminal = { open: t.open, cwd: t.cwd, venv: t.venv, shell: t.shell, log: t.log.filter((x) => !x.running) };
   const body = JSON.stringify(c);
@@ -1720,7 +1834,7 @@ function renderConvs() {
     const day = new Date(c.at || 0);
     d.querySelector(".time").textContent = day.toDateString() === new Date().toDateString() ? hhmm(c.at) : day.toLocaleDateString([], { day: "numeric", month: "short" });
     const job = jobs.get(c.id);
-    d.querySelector(".snip").textContent = job ? (job.waiting ? "waiting for a free slot…" : "answering…") : c.snippet || "";
+    d.querySelector(".snip").textContent = job ? (job.asking ? "needs your OK: Run or Don't run" : job.waiting ? "waiting for a free slot…" : "answering…") : c.snippet || "";
     if (job) d.classList.add("busy");
     d.addEventListener("click", (e) => { if (!e.target.closest(".del")) openConv(c.id); });
     d.querySelector(".del").addEventListener("click", () => deleteConv(c));
@@ -1782,6 +1896,7 @@ async function openConv(id) {
   let c = {};
   if (!job)
     try {
+      await saving;  // (a save still on its way, e.g. of an answer that just ended: read after it)
       const r = await fetch("/v1/chats/" + id);
       if (!r.ok) throw new Error("HTTP " + r.status);
       c = await r.json();

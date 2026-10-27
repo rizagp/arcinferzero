@@ -38,6 +38,18 @@ int main() {
     st.chat_put("c9", "{\"title\":\"New chat\",\"history\":[]}");
     const std::string d9 = st.chat_dir("c9");
     st.chat_put("c9", "{\"title\":\"Judul kemudian\",\"history\":[]}");
+    {  // (the terminal session's paths move with a renamed folder)
+      st.put("y.bin", "draft2", "c8");
+      const std::string d8 = st.chat_dir("c8");
+      std::string esc;
+      for (char ch : d8) esc += ch == '\\' ? std::string("\\\\") : std::string(1, ch);
+      { std::ofstream o(fs::path(d8) / ".terminal.json", std::ios::binary); o << "{\"cwd\":\"" << esc << "\",\"env\":{\"VIRTUAL_ENV\":\"" << esc << "\\\\.venv\"}}"; }
+      st.chat_put("c8", "{\"title\":\"Venv pindah\",\"history\":[]}");
+      std::string t8, esc2;
+      for (char ch : st.chat_dir("c8")) esc2 += ch == '\\' ? std::string("\\\\") : std::string(1, ch);
+      check("terminal paths follow a renamed folder", files::Store::read((fs::path(st.chat_dir("c8")) / ".terminal.json").string(), t8) &&
+            t8.find(esc2 + "\\\\.venv") != std::string::npos && t8.find(esc + "\"") == std::string::npos, t8);
+    }
     check("an untitled folder named at a later save", fs::path(st.chat_dir("c9")).filename().string() == fs::path(d9).filename().string().substr(0, 10) + " Judul kemudian (c9)", st.chat_dir("c9"));
     files::Info g;
     check("the file found after the rename", st.get(a.id, g) && g.path == (fs::path(d1) / "notes.txt").string(), g.path);
@@ -128,6 +140,13 @@ int main() {
     check("PATH first", r.output.find("C:\\nowhere") == 0, r.output);
     r = term::run("Start-Process ping.exe -ArgumentList '-n','60','127.0.0.1' -NoNewWindow; Start-Sleep 60", cwd, "", 3);
     check("timeout ends it and its children", r.timed_out && r.seconds < 15, std::to_string(r.seconds));
+    {  // (the client gone: the command ends at once, not at its timeout)
+      const auto t0 = std::chrono::steady_clock::now();
+      int asked = 0;
+      r = term::run("Start-Sleep 30", cwd, "", 60, "", [&] { return ++asked > 3; });
+      const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      check("a cancelled command ends at once", r.cancelled && !r.timed_out && s < 10, std::to_string(s));
+    }
     r = term::run("1..100000", cwd, "", 60);
     check("long output cut", r.truncated && r.output.size() < term::kMaxOut + 200 && r.output.find("100000") != std::string::npos,
           std::to_string(r.output.size()));

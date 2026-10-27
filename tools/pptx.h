@@ -59,7 +59,11 @@ inline void slide_text(const std::string& x, std::vector<rdoc::Para>& body, std:
   int lvl = 0, row = 0, col = 0;
   xlsx::Grid grid;
   auto bullets = [&] { return !notes && in_sp && !ph.empty() && ph != "title" && ph != "ctrTitle" && ph != "subTitle"; };
+  int fallback = 0;  // (inside mc:Fallback: a copy of the mc:Choice before it, for older readers: read once)
   xlsx::walk(x, [&](const std::string& n, const std::string& tag, size_t a, size_t b) {
+    if (n == "Fallback") { if (!xlsx::self_closing(tag)) ++fallback; return true; }
+    if (n == "/Fallback") { fallback = std::max(0, fallback - 1); return true; }
+    if (fallback) return true;
     if (n == "sp") { in_sp = true; ph.clear(); }
     else if (n == "/sp") in_sp = false;
     else if (n == "ph" && in_sp) {
@@ -139,11 +143,13 @@ inline Doc read_pptx(const std::string& zip) {
     }
     return slides.size() < 5000;
   });
-  size_t chars = 0;
+  size_t chars = 0, inflated = 0, unread = 0;
   for (size_t k = 0; k < slides.size(); ++k) {
     const int page = (int)k + 1;
+    if (inflated > (512u << 20)) { unread = slides.size() - k; break; }  // (all parts together: a bounded read)
     std::string x;
     infl::zip_entry(zip, slides[k], x, 16u << 20);
+    inflated += x.size();
     bool hidden = false;
     xlsx::walk(x, [&](const std::string& n, const std::string& tag, size_t, size_t) {
       if (n == "sld") hidden = xlsx::attr(tag, "show") == "0" || xlsx::attr(tag, "show") == "false";
@@ -156,8 +162,10 @@ inline Doc read_pptx(const std::string& zip) {
     for (const auto& [id, rel] : pptx::rels_of(zip, slides[k])) {
       std::string part;
       const bool is_notes = ends(rel.type, "/notesSlide");
-      if ((is_notes || ends(rel.type, "/diagramData")) && infl::zip_entry(zip, rel.target, part, 16u << 20))
+      if ((is_notes || ends(rel.type, "/diagramData")) && inflated <= (512u << 20) && infl::zip_entry(zip, rel.target, part, 16u << 20)) {
+        inflated += part.size();
         pptx::slide_text(part, is_notes ? notes : smart, ignored, page, is_notes);
+      }
     }
     body.insert(body.end(), smart.begin(), smart.end());
     if (title.empty())  // (no title placeholder: its first line)
@@ -179,6 +187,8 @@ inline Doc read_pptx(const std::string& zip) {
     }
   }
   d.pages = (int)slides.size();
+  if (unread) d.note = "large presentation: its parts unpack to more than 512 MB; " + std::to_string(unread) + " of " +
+                       std::to_string(slides.size()) + " slides not read";
   if (slides.empty()) d.note = "the presentation has no slides";
   return d;
 }

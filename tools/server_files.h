@@ -335,6 +335,7 @@ class Store {
         fs::rename(dir, named, ec);
         if (!ec) {
           rescan();
+          retarget_terminal(named, dir, named);
           dir = named;
         }
         ec.clear();
@@ -404,6 +405,36 @@ class Store {
   }
 
  private:
+  // the chat's terminal session (.terminal.json: cwd, VIRTUAL_ENV, PATH as absolute paths) after its folder moved
+  static void retarget_terminal(const fs::path& dir, const fs::path& from, const fs::path& to) {
+    std::string t;
+    if (!read((dir / ".terminal.json").string(), t)) return;
+    auto json_esc = [](const std::string& x) {  // (as ConvertTo-Json writes a path: backslashes doubled)
+      std::string o;
+      for (char c : x) o += c == '\\' ? std::string("\\\\") : std::string(1, c);
+      return o;
+    };
+    const std::string a = json_esc(from.string()), b = json_esc(to.string());
+    bool any = false;
+    for (size_t k = 0; (k = t.find(a, k)) != std::string::npos; k += b.size()) {
+      t.replace(k, a.size(), b);
+      any = true;
+    }
+    if (any) try { write(dir / ".terminal.json", t); } catch (const std::exception&) {}
+  }
+  // FNV-1a of a file, read in parts (a file put into the folder by hand or by a command may be gigabytes)
+  static bool hash_file(const std::string& path, std::string& out) {
+    std::ifstream f(fs::path(path), std::ios::binary);
+    if (!f) return false;
+    uint64_t h = 1469598103934665603ull;
+    std::vector<char> b(1 << 20);
+    while (f) {
+      f.read(b.data(), (std::streamsize)b.size());
+      for (std::streamsize k = 0; k < f.gcount(); ++k) h = (h ^ (unsigned char)b[(size_t)k]) * 1099511628211ull;
+    }
+    out = hex64(h);
+    return true;
+  }
   static std::string hash(const std::string& data) {
     uint64_t h = 1469598103934665603ull;
     for (unsigned char b : data) h = (h ^ b) * 1099511628211ull;
@@ -543,10 +574,8 @@ class Store {
         if (b != by_name.end() && (uint64_t)b->second.second["bytes"].as_number(-1) == bytes && valid_id(b->second.first, 16)) {
           i.id = b->second.first;
           i.created = (int64_t)b->second.second["created"].as_number((double)i.created);
-        } else {  // (new or changed by hand: hashed now)
-          std::string data;
-          if (!read(i.path, data)) continue;
-          i.id = hash(data);
+        } else {  // (new or changed by hand: hashed now, in parts)
+          if (!hash_file(i.path, i.id)) continue;
           changed = true;
         }
         by_id_[i.id].push_back(i);
@@ -594,6 +623,7 @@ inline void doc_index_forget(const std::string& id) {
   std::lock_guard<std::mutex> g(c.mu);
   c.lru.remove_if([&](const auto& e) { return e.first == id; });
 }
+inline constexpr uint64_t kMaxReadBytes = 512ull << 20;
 inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
   DocCache& c = doc_cache();
   {
@@ -605,6 +635,12 @@ inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
       }
   }
   std::string data;
+  if (i.bytes > kMaxReadBytes) {  // (a file this large is no document to read: a note instead of its bytes in RAM)
+    rdoc::Doc d;
+    d.note = "the file is too large to read here (" + std::to_string(i.bytes >> 20) + " MB; at most " +
+             std::to_string(kMaxReadBytes >> 20) + " MB)";
+    return std::make_shared<const rdoc::Index>(std::move(d));
+  }
   if (!Store::read(i.path, data)) return nullptr;
   rdoc::Doc d = rdoc::read(i.name, data);
   if (d.pages > 0 && (ext_of(i.name) == "pdf" || data.compare(0, 5, "%PDF-") == 0)) {
