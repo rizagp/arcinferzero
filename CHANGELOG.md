@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-28: Whisper for mixed languages and jargon
+
+- **Indonesian and English in one recording**: `--lang id,en` (server `language=id,en`) checks each utterance's
+  language and transcribes it in that language, instead of translating the other language's sentences or leaving
+  them out. On a test file alternating Indonesian speech and English sentences: 18.5 % / 6.9 % of the words wrong
+  (was 45.7 % / 43.5 %; faster-whisper 61.6 % / 19.1 %). About 3x slower than one language (14 minutes in 72 s).
+- **A glossary**: `--terms "Qwen, GGUF, Level Zero, ..."` (server `terms`) before every window: the 14-minute
+  channel recording's hard terms 14 -> 21 of 24. Tip: the terms inside a casual sentence keep the casual spelling.
+- **The previous text is no longer the next window's prompt by default** (`--previous-text` turns it on): with it
+  Whisper dropped whole windows (one became "Terima kasih.") and carried errors over.
+
 ## 2026-10-28: Whisper faster
 
 - **A 14-minute recording transcribed in 25 s** (greedy, 33.8x realtime; 30.8 s before) and 32 s with beam 5

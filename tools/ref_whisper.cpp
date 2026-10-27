@@ -137,6 +137,17 @@ class CpuBackend : public Backend {
     for (Seq& s : seqs_) { s.k.assign(hp_.dec_layers, {}); s.v.assign(hp_.dec_layers, {}); s.len = 0; }
   }
   void copy(int dst, int src) override { seqs_[dst] = seqs_[src]; }
+  // (the reference: the part on the whole window's context; the window's keys / values kept aside meanwhile)
+  bool encode_part(const float* mel, int frames, bool short_context) override {
+    (void)frames;
+    (void)short_context;
+    if (!in_part_) { keep_ = ckv_; in_part_ = true; }
+    encode(mel);
+    return true;
+  }
+  void part_done() override {
+    if (in_part_) { ckv_ = std::move(keep_); in_part_ = false; }
+  }
   void append(int s, const int* tok, int n, int rows, float* logits) override {
     run(s, tok, n, rows, logits, nullptr, nullptr);
   }
@@ -163,8 +174,9 @@ class CpuBackend : public Backend {
   const Ct2File& f_;
   Hparams hp_;
   std::vector<float> enc_;
-  std::vector<std::vector<float>> ckv_;
+  std::vector<std::vector<float>> ckv_, keep_;
   std::vector<Seq> seqs_;
+  bool in_part_ = false;
 
   // out[i] = softmax(q_i . k_j / sqrt(64)) . v_j over the heads; q rows at q + i * ldq + qoff, k / v rows likewise;
   // causal: row i sees keys j <= kv_base + i (decoder self-attention), else all nk keys

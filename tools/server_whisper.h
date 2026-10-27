@@ -4,7 +4,8 @@
 //
 // Extensions: response_format also fw, captions (Remotion), full_json (arcinferzero's), sbv, srv3, ass, ttml, md,
 // csv, tsv; language "id,en" (detected among the listed ones per window) or "auto"; beam_size 1..5 (default 5);
-// condition_on_previous_text; stream=true also sends {"type": "transcript.progress"} events.
+// condition_on_previous_text; terms (a glossary kept before every window); dual_language (0..1, default 0.8);
+// stream=true also sends {"type": "transcript.progress"} events.
 //
 // Safety: the upload stays in memory (the HTTP body limit, 256 MB) and is decoded by Media Foundation from memory, no
 // client path or file name is used; the decoding stops past --whisper-max-minutes; one transcription runs at a
@@ -29,6 +30,12 @@ class LockedBackend : public whisper::Backend {
   using Turn = std::function<void(const std::function<void()>&)>;
   LockedBackend(whisper::Backend& b, Turn t) : b_(b), t_(std::move(t)) {}
   void encode(const float* mel) override { t_([&] { b_.encode(mel); }); }
+  bool encode_part(const float* mel, int frames, bool short_context) override {
+    bool whole = false;
+    t_([&] { whole = b_.encode_part(mel, frames, short_context); });
+    return whole;
+  }
+  void part_done() override { b_.part_done(); }  // (a flag: no GPU work)
   void reset(int n) override { t_([&] { b_.reset(n); }); }
   void append(int s, const int* tok, int n, int rows, float* logits) override { t_([&] { b_.append(s, tok, n, rows, logits); }); }
   void append_batch(const int* seqs, const int* tok, int k, float* logits, int n_vocab) override {
@@ -112,11 +119,23 @@ class Service {
     }
     opt.initial_prompt = field("prompt");
     if (opt.initial_prompt.size() > 4000) opt.initial_prompt.resize(4000);  // (the model reads its last 223 tokens)
+    opt.terms = field("terms");
+    if (opt.terms.size() > 4000) opt.terms.resize(4000);  // (its first 150 tokens are used)
+    auto unit = [&](const char* k, float& out) {  // (a number 0..1, the whole field)
+      const std::string v = field(k);
+      char* e = nullptr;
+      const float x = strtof(v.c_str(), &e);
+      if (e == v.c_str() || *e || !(x >= 0 && x <= 1)) return false;
+      out = x;
+      return true;
+    };
+    if (!field("dual_language").empty() && !unit("dual_language", opt.dual_language))
+      return fail(400, "dual_language: 0..1");
     if (!field("beam_size").empty()) opt.beam = std::clamp(atoi(field("beam_size").c_str()), 1, 5);
-    if (field("condition_on_previous_text") == "false") opt.condition_on_previous_text = false;
+    if (field("condition_on_previous_text") == "true") opt.condition_on_previous_text = true;  // (default off)
     if (!field("temperature").empty()) {  // (0: the fallback through higher temperatures, as OpenAI's API does)
-      const float t = (float)atof(field("temperature").c_str());
-      if (!(t >= 0 && t <= 1)) return fail(400, "temperature: 0..1");
+      float t = 0;
+      if (!unit("temperature", t)) return fail(400, "temperature: 0..1");
       if (t > 0) {
         std::vector<float> ts = {t};
         for (float x : opt.temperatures) if (x > t + 1e-4f) ts.push_back(x);

@@ -413,6 +413,12 @@ class Backend {
   virtual ~Backend() = default;
   // the encoder on one window: mel [n_mels][3000]; its output stays for the decoder calls that follow
   virtual void encode(const float* mel) = 0;
+  // the encoder on a part of the window for its language: its first `frames` frames of mel (silence after them);
+  // short_context: on the window's first 10 s only, where the backend can (a quick first look). The decoder calls
+  // that follow read this output until part_done(), then the window's again. Returns whether the context was the
+  // whole window
+  virtual bool encode_part(const float* mel, int frames, bool short_context) = 0;
+  virtual void part_done() = 0;
   // n empty decoder sequences on the current encoder output (beams / samples)
   virtual void reset(int n_seq) = 0;
   // appends n tokens to sequence s; logits [rows][n_vocab] of its last `rows` positions
@@ -439,9 +445,16 @@ struct Options {
   int best_of = 5;                  // samples at temperature > 0
   std::vector<float> temperatures = {0.0f, 0.2f, 0.4f, 0.6f, 0.8f, 1.0f};
   float compression_ratio_threshold = 2.4f, logprob_threshold = -1.0f, no_speech_threshold = 0.6f;
-  bool condition_on_previous_text = true;
+  // the previous window's text as the next one's prompt (openai's default): off, since with it the 14-minute test file
+  // came out 23 % different from faster-whisper (9 % without) in one-phrase segments, and a 7-minute narration lost
+  // two windows (one became "Terima kasih.")
+  bool condition_on_previous_text = false;
   float prompt_reset_on_temperature = 0.5f;
-  std::string initial_prompt;  // glossary / sample sentence
+  std::string initial_prompt;  // the first window's previous text (a sample sentence); later windows have their own
+  std::string terms;           // a glossary before every window's previous text ("GPU, kernel, deploy"), at most
+                               // kMaxTermsTokens tokens; the previous text gets the rest of the 223
+  float dual_language = 0.8f;  // language detected per window: when the likeliest is below this probability, the two
+                               // likeliest are each decoded and the likelier text is kept (0: off)
   bool timestamps = true;
   float max_initial_timestamp = 1.0f;
   bool suppress_blank = true;
@@ -531,6 +544,7 @@ class Transcriber {
       all_tokens = m_.tok->encode(" " + trim(opt.initial_prompt), false);
     }
     const int n_initial = (int)all_tokens.size();
+    const std::vector<int> terms = terms_tokens(opt.terms);
     // languages: "auto" (any), one code (fixed), or a list "id,en" (detected per window among them only)
     std::vector<std::string> allowed;
     {
@@ -550,94 +564,127 @@ class Transcriber {
     const bool fixed = allowed.size() == 1;
     std::string lang = fixed ? allowed[0] : "";
     std::vector<float> win((size_t)m_.hp.n_mels * kWindowFrames);
+    // the encoder on the frames [f0, f0 + n), silence after them (n = a whole window: the frames as they come); part
+    // 1 / 2: for the part's language only on a short / the whole context (encode_part: the window's output stays);
+    // returns whether the context was the whole window
+    auto encode = [&](int f0, int n, int part = 0) {
+      for (int c = 0; c < m_.hp.n_mels; ++c) {
+        const float* row = mel.data() + (size_t)c * n_frames;
+        for (int t = 0; t < kWindowFrames; ++t) {
+          const int f = f0 + t;
+          win[(size_t)c * kWindowFrames + t] = t < n && f < n_frames ? row[f] : row[n_frames - 1];
+        }
+      }
+      if (part) return b_.encode_part(win.data(), n, part == 1);
+      b_.encode(win.data());
+      return true;
+    };
+    // the prompt: the glossary, then as much of the previous text as fits (decode keeps the last 223 tokens)
+    auto make_prompt = [&](bool previous) {
+      std::vector<int> p = terms;
+      if (previous) {
+        const int from = std::min((int)all_tokens.size(), std::max(prompt_reset_since, 0));
+        const int room = m_.hp.n_text_ctx / 2 - 1 - (int)terms.size();
+        p.insert(p.end(), all_tokens.begin() + std::max(from, (int)all_tokens.size() - room), all_tokens.end());
+      }
+      return p;
+    };
+    static const bool dbg = getenv("WH_DEBUG_LANG") != nullptr;
     int window_no = 0;
+    std::string prev_lang;  // (the last segment's)
     while (seek < content) {
       const int seg_size = std::min(kWindowFrames, content - seek);
       const double time_offset = (double)seek * kHop / kSampleRate, seg_duration = (double)seg_size * kHop / kSampleRate;
-      for (int c = 0; c < m_.hp.n_mels; ++c)
-        for (int t = 0; t < kWindowFrames; ++t) {
-          const int f = seek + t;
-          win[(size_t)c * kWindowFrames + t] = f < n_frames ? mel[(size_t)c * n_frames + f] : mel[(size_t)c * n_frames + n_frames - 1];
-        }
       const auto tw = clk::now();
-      b_.encode(win.data());
+      double tw_words = 0;
+      encode(seek, kWindowFrames);
       std::string wlang = lang;
+      std::vector<std::pair<std::string, float>> lp;
       if (!fixed && (!opt.detect_once || lang.empty())) {
-        wlang = detect_language(allowed);
+        lp = language_probs(allowed);
+        wlang = lp[0].first;
         if (opt.detect_once) lang = wlang;
+        if (dbg && lp.size() > 1)
+          fprintf(stderr, "window %7.2f s: %s %.3f %s %.3f\n", time_offset, lp[0].first.c_str(), lp[0].second,
+                  lp[1].first.c_str(), lp[1].second);
       }
-      const std::vector<int> prompt(all_tokens.begin() + std::min((int)all_tokens.size(), std::max(prompt_reset_since, 0)),
-                                    all_tokens.end());
-      Decoded r = decode_with_fallback(prompt, wlang, opt, window_no);
-      t_win += since(tw);
-      ++window_no;
-      if (opt.no_speech_threshold > 0 && r.no_speech_prob > opt.no_speech_threshold &&
-          !(opt.logprob_threshold != 0 && r.avg_logprob > opt.logprob_threshold)) {
-        seek += seg_size;  // (silence)
-        if (progress && !progress(std::min(total, (double)seek * kHop / kSampleRate), total, res.segments)) break;
-        continue;
-      }
-      const std::vector<int>& tokens = r.tokens;
-      const int tb = m_.sp.timestamp_begin;
+      // an ambiguous language: speech that mixes two, or one full of the other's terms
+      const bool ambiguous = !opt.detect_once && opt.dual_language > 0 && opt.task == "transcribe" && lp.size() > 1 &&
+                             lp[0].second < opt.dual_language;
       std::vector<Segment> segs;
-      auto add = [&](double s, double e, const std::vector<int>& toks) {
-        Segment g;
-        g.start = s;
-        g.end = e;
-        g.tokens = toks;
-        g.text = m_.decode_text(toks);
-        g.lang = wlang;
-        g.avg_logprob = r.avg_logprob;
-        g.no_speech_prob = r.no_speech_prob;
-        g.compression_ratio = r.compression_ratio;
-        g.temperature = r.temperature;
-        if (!trim(g.text).empty()) segs.push_back(g);
-      };
-      const bool single_ts_ending = tokens.size() >= 2 && tokens[tokens.size() - 2] < tb && tokens.back() >= tb;
-      std::vector<size_t> consecutive;
-      for (size_t i = 1; i < tokens.size(); ++i)
-        if (tokens[i] >= tb && tokens[i - 1] >= tb) consecutive.push_back(i);
-      if (!consecutive.empty()) {
-        std::vector<size_t> slices = consecutive;
-        if (single_ts_ending) slices.push_back(tokens.size());
-        size_t last = 0;
-        for (size_t cur : slices) {
-          std::vector<int> sl(tokens.begin() + last, tokens.begin() + cur);
-          if (!sl.empty()) {
-            const double s = time_offset + (sl.front() - tb) * 0.02, e = time_offset + (sl.back() - tb) * 0.02;
-            add(s, e, sl);
+      int advance = seg_size;
+      bool silent = false;
+      float temperature = 0;
+      // its pauses split it into runs of one language or the other: each run decoded alone, in its language (decoded
+      // whole in one, Whisper translates the other language's speech or leaves it out)
+      // (every window when the languages are a list, "id,en": the speech is said to mix them; with auto, the ambiguous
+      //  ones: a window mostly in one language comes out above 0.97 for it, as sure as one with only its terms)
+      std::vector<Run> runs;
+      const bool listed = allowed.size() > 1 && opt.dual_language > 0 && !opt.detect_once && opt.task == "transcribe";
+      if ((ambiguous || listed) && lp.size() > 1)
+        runs = language_runs(x, seek, seg_size, seek + seg_size >= content, {lp[0].first, lp[1].first}, encode);
+      if (runs.size() > 1) {
+        for (const Run& u : runs) {
+          encode(seek + u.a, u.b - u.a);
+          const double off = (double)(seek + u.a) * kHop / kSampleRate;
+          const Decoded ru = decode_with_fallback(make_prompt(u.lang == prev_lang), u.lang, opt, window_no);
+          if (silence(ru, opt)) continue;
+          std::vector<Segment> s;
+          bool whole = false;
+          split(ru, u.lang, off, u.b - u.a, s, whole);
+          if (opt.word_timestamps && !s.empty()) {
+            const auto tt = clk::now();
+            add_word_timestamps(s, off, std::min((double)(u.b - u.a) * kHop / kSampleRate, 30.0));
+            tw_words += since(tt);
           }
-          last = cur;
+          temperature = std::max(temperature, ru.temperature);
+          if (!s.empty()) prev_lang = u.lang;
+          segs.insert(segs.end(), s.begin(), s.end());
         }
-        if (single_ts_ending) seek += seg_size;
-        else seek += (tokens[last - 1] - tb) * 2;  // (to the last complete segment's end; 2 frames per 0.02 s)
+        advance = runs.back().b;
       } else {
-        double duration = seg_duration;
-        for (auto it = tokens.rbegin(); it != tokens.rend(); ++it)
-          if (*it >= tb) {
-            if (*it != tb) duration = (*it - tb) * 0.02;
-            break;
+        Decoded r = decode_with_fallback(make_prompt(true), wlang, opt, window_no);
+        // no pause between the languages: the window decoded in both, the likelier text kept
+        if (ambiguous && !silence(r, opt)) {
+          Decoded r2 = decode_with_fallback(make_prompt(true), lp[1].first, opt, window_no);
+          if (dbg)
+            fprintf(stderr, "lang %7.2f s: %s %.2f avg %.3f n %zu | %s %.2f avg %.3f n %zu\n", time_offset,
+                    wlang.c_str(), lp[0].second, r.avg_logprob, r.tokens.size(), lp[1].first.c_str(), lp[1].second,
+                    r2.avg_logprob, r2.tokens.size());
+          if (r2.avg_logprob > r.avg_logprob) {
+            r = std::move(r2);
+            wlang = lp[1].first;
           }
-        add(time_offset, time_offset + duration, tokens);
-        seek += seg_size;
-      }
-      if (opt.word_timestamps && !segs.empty()) {
-        const auto tt = clk::now();
-        add_word_timestamps(segs, time_offset, std::min(seg_duration, 30.0));
-        t_words += since(tt);
-        // (openai: unless the window ended with a lone timestamp, the next one starts at the last word's end)
-        if (!single_ts_ending) {
-          double last_end = -1;
-          for (const Segment& g : segs)
-            if (!g.words.empty()) last_end = g.words.back().end;
-          if (last_end > time_offset) seek = (int)std::lround(last_end * kSampleRate / kHop);
+        }
+        silent = silence(r, opt);
+        temperature = r.temperature;
+        if (!silent) {
+          bool whole = false;
+          advance = split(r, wlang, time_offset, seg_size, segs, whole);
+          if (opt.word_timestamps && !segs.empty()) {
+            const auto tt = clk::now();
+            add_word_timestamps(segs, time_offset, std::min(seg_duration, 30.0));
+            tw_words += since(tt);
+            // (openai: unless the window ended with a lone timestamp, the next one starts at the last word's end)
+            if (!whole) {
+              double last_end = -1;
+              for (const Segment& g : segs)
+                if (!g.words.empty()) last_end = g.words.back().end;
+              if (last_end > time_offset) advance = (int)std::lround(last_end * kSampleRate / kHop) - seek;
+            }
+          }
         }
       }
+      t_win += since(tw) - tw_words;
+      t_words += tw_words;
+      ++window_no;
+      seek += advance;
       for (Segment& g : segs) {
         for (int t : g.tokens) all_tokens.push_back(t);
         res.segments.push_back(g);
       }
-      if (!opt.condition_on_previous_text || r.temperature > opt.prompt_reset_on_temperature)
+      if (!segs.empty()) prev_lang = segs.back().lang;
+      if (!silent && (!opt.condition_on_previous_text || temperature > opt.prompt_reset_on_temperature))
         prompt_reset_since = (int)all_tokens.size();
       (void)n_initial;
       if (progress && !progress(std::min(total, (double)seek * kHop / kSampleRate), total, res.segments)) break;
@@ -645,18 +692,35 @@ class Transcriber {
     return res;
   }
 
-  // the language of the current window: <|startoftranscript|> alone, the most likely language token (among
-  // `allowed` when given: "id,en" for speech that mixes them)
-  std::string detect_language(const std::vector<std::string>& allowed = {}) {
+  // the languages of the current window, likeliest first: <|startoftranscript|> alone, the softmax over the language
+  // tokens (those in `allowed` when given: "id,en" for speech that mixes them)
+  std::vector<std::pair<std::string, float>> language_probs(const std::vector<std::string>& allowed = {}) {
     std::vector<float> lg(m_.hp.n_vocab);
     b_.reset(1);
     b_.append(0, &m_.sp.sot, 1, 1, lg.data());
-    int best = -1;
+    std::vector<std::pair<std::string, float>> p;
+    float mx = kMasked;
     for (auto& [c, t] : m_.sp.languages) {
       if (!allowed.empty() && std::find(allowed.begin(), allowed.end(), c) == allowed.end()) continue;
-      if (best < 0 || lg[t] > lg[best]) best = t;
+      p.push_back({c, lg[t]});
+      mx = std::max(mx, lg[t]);
     }
-    return m_.sp.lang_code(best);
+    if (p.empty()) return {{"en", 1.0f}};
+    double s = 0;
+    for (auto& x : p) s += std::exp((double)x.second - mx);
+    for (auto& x : p) x.second = (float)(std::exp((double)x.second - mx) / s);
+    std::stable_sort(p.begin(), p.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    return p;
+  }
+  std::string detect_language(const std::vector<std::string>& allowed = {}) { return language_probs(allowed)[0].first; }
+
+  // the glossary's tokens, its first kMaxTermsTokens (the previous text keeps the rest of the prompt)
+  static constexpr int kMaxTermsTokens = 150;
+  std::vector<int> terms_tokens(const std::string& terms) const {
+    if (trim(terms).empty()) return {};
+    std::vector<int> t = m_.tok->encode(" " + trim(terms), false);
+    if ((int)t.size() > kMaxTermsTokens) t.resize(kMaxTermsTokens);
+    return t;
   }
 
  private:
@@ -668,6 +732,142 @@ class Transcriber {
     float avg_logprob = 0, no_speech_prob = 0, compression_ratio = 0, temperature = 0;
     double sum_logprob = 0;
   };
+
+  // a window to skip: likely no speech, and its text not confident enough to keep anyway
+  static bool silence(const Decoded& r, const Options& opt) {
+    return opt.no_speech_threshold > 0 && r.no_speech_prob > opt.no_speech_threshold &&
+           !(opt.logprob_threshold != 0 && r.avg_logprob > opt.logprob_threshold);
+  }
+
+  // a decoded window's segments, split at its timestamp pairs; returns the frames it covers: to its last complete
+  // segment's end, or all of them when it ends with a lone timestamp (whole) or has no pair
+  int split(const Decoded& r, const std::string& lang, double time_offset, int seg_size, std::vector<Segment>& segs,
+            bool& whole) const {
+    const std::vector<int>& tokens = r.tokens;
+    const int tb = m_.sp.timestamp_begin;
+    auto add = [&](double s, double e, const std::vector<int>& toks) {
+      Segment g;
+      g.start = s;
+      g.end = e;
+      g.tokens = toks;
+      g.text = m_.decode_text(toks);
+      g.lang = lang;
+      g.avg_logprob = r.avg_logprob;
+      g.no_speech_prob = r.no_speech_prob;
+      g.compression_ratio = r.compression_ratio;
+      g.temperature = r.temperature;
+      if (!trim(g.text).empty()) segs.push_back(g);
+    };
+    whole = tokens.size() >= 2 && tokens[tokens.size() - 2] < tb && tokens.back() >= tb;
+    std::vector<size_t> consecutive;
+    for (size_t i = 1; i < tokens.size(); ++i)
+      if (tokens[i] >= tb && tokens[i - 1] >= tb) consecutive.push_back(i);
+    if (!consecutive.empty()) {
+      std::vector<size_t> slices = consecutive;
+      if (whole) slices.push_back(tokens.size());
+      size_t last = 0;
+      for (size_t cur : slices) {
+        std::vector<int> sl(tokens.begin() + last, tokens.begin() + cur);
+        if (!sl.empty()) add(time_offset + (sl.front() - tb) * 0.02, time_offset + (sl.back() - tb) * 0.02, sl);
+        last = cur;
+      }
+      return whole ? seg_size : (tokens[last - 1] - tb) * 2;  // (2 frames per 0.02 s)
+    }
+    double duration = (double)seg_size * kHop / kSampleRate;
+    for (auto it = tokens.rbegin(); it != tokens.rend(); ++it)
+      if (*it >= tb) {
+        if (*it != tb) duration = (*it - tb) * 0.02;
+        break;
+      }
+    add(time_offset, time_offset + duration, tokens);
+    return seg_size;
+  }
+
+  // the pauses in the frames [f0, f0 + n) of the audio: quiet stretches of 0.3 s or more, each as one frame (its
+  // middle; 0.15 s into one that reaches the end), relative to f0. Quiet: below 30 % of the way from the noise floor
+  // (the 10th percentile of the 10-ms frames' energy) to the speech (the 95th), when those are 10 dB apart or more
+  static std::vector<int> pauses(const std::vector<float>& x, int f0, int n) {
+    if (n < 100) return {};
+    std::vector<float> db(n);
+    for (int f = 0; f < n; ++f) {
+      const size_t a = (size_t)(f0 + f) * kHop;
+      double s = 0;
+      int m = 0;
+      for (size_t i = a; i < a + kHop && i < x.size(); ++i, ++m) s += (double)x[i] * x[i];
+      db[f] = (float)(10 * std::log10(s / std::max(1, m) + 1e-10));
+    }
+    std::vector<float> s = db;
+    std::sort(s.begin(), s.end());
+    const float lo = s[n / 10], hi = s[n * 95 / 100];
+    if (hi - lo < 10) return {};
+    const float th = lo + 0.3f * (hi - lo);
+    std::vector<int> cuts;
+    for (int f = 0, q = 0; f <= n; ++f) {
+      if (f < n && db[f] < th) { ++q; continue; }
+      if (q >= 30 && f - q > 0) cuts.push_back(f < n ? f - q / 2 : f - q + 15);
+      q = 0;
+    }
+    return cuts;
+  }
+
+  struct Run { int a, b; std::string lang; };  // frames [a, b) of a window, in one language
+  // a window's language runs: its pauses split it into utterances (one shorter than 1.5 s joined to the next), each
+  // one encoded alone (encode_part: the window's own encoder output stays) and its language detected between the
+  // window's two likeliest: first on a 10-s context, then, when that says the other language at 0.8 or more, on the
+  // whole window's (the 10-s look leans to English: on the 14-minute Indonesian file it called ~8 % of the
+  // utterances English, at 0.66-0.74, that the whole context does not; it missed none of the mixed file's English
+  // ones), the other language kept at 0.8 or more there. Up to its last pause (the next window starts there) or, the
+  // file's last window, to its end. Empty when it has fewer than two utterances.
+  // (Not the decoder attending to the utterance's part of the window's encoder output: the encoder mixes the
+  //  positions, and on the mixed test file ~40 % of the utterances near a change of language came out wrong that way)
+  template <class Encode>
+  std::vector<Run> language_runs(const std::vector<float>& x, int seek, int n, bool last,
+                                 const std::vector<std::string>& two, Encode& encode) {
+    std::vector<int> cuts = pauses(x, seek, n);
+    if (last && (cuts.empty() || cuts.back() < n - 30)) cuts.push_back(n);
+    std::vector<Run> u;
+    int a = 0;
+    for (int c : cuts)  // (at least 2.5 or 3.5 s: 1.6x or 2x faster, the mixed file's English 15 / 37 % words wrong)
+      if (c - a >= 150) { u.push_back({a, c, ""}); a = c; }
+    if (!u.empty() && a < cuts.back()) u.back().b = cuts.back();  // (a short last piece joins the one before)
+    if (u.size() < 2) return {};
+    static const bool dbg = getenv("WH_DEBUG_LANG") != nullptr;
+    for (Run& v : u) {
+      const bool whole = encode(seek + v.a, v.b - v.a, 1);
+      auto p = language_probs(two);
+      if (p[0].first != two[0] && !whole && p[0].second >= 0.8f) {
+        encode(seek + v.a, v.b - v.a, 2);
+        p = language_probs(two);
+      }
+      v.lang = p[0].first != two[0] && p[0].second < 0.8f ? two[0] : p[0].first;
+      if (dbg)
+        fprintf(stderr, "utt %7.2f-%7.2f s: %s %.3f\n", (seek + v.a) * 0.01, (seek + v.b) * 0.01, p[0].first.c_str(),
+                p[0].second);
+    }
+    b_.part_done();
+    // neighbours in one language joined; a run in the other language shorter than 4 s goes back to the window's
+    // (on the 14-minute Indonesian file, the utterances detected as English were 1.5-3.5 s of Indonesian with an
+    //  English term or two, and decoded in English they came out as made-up English sentences; the mixed test
+    //  file's English sentences make runs of 5.6 s and more)
+    auto join = [](std::vector<Run>& rs) {
+      std::vector<Run> o;
+      for (const Run& v : rs)
+        if (!o.empty() && o.back().lang == v.lang) o.back().b = v.b;
+        else o.push_back(v);
+      rs = o;
+    };
+    std::vector<Run> runs = u;
+    join(runs);
+    for (Run& r : runs)
+      if (r.lang != two[0] && r.b - r.a < 400) r.lang = two[0];
+    join(runs);
+    if (dbg && runs.size() > 1) {
+      fprintf(stderr, "runs %7.2f s:", (double)seek * kHop / kSampleRate);
+      for (const Run& r : runs) fprintf(stderr, " %s %.1f-%.1f", r.lang.c_str(), r.a * 0.01, r.b * 0.01);
+      fprintf(stderr, " (%zu utterances)\n", u.size());
+    }
+    return runs;
+  }
 
   static std::string trim(const std::string& s) {
     size_t a = 0, b = s.size();

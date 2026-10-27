@@ -76,12 +76,18 @@ void usage() {
           "usage: transcribez <file | folder | wildcard> ... [options]\n"
           "  --model <folder>            a faster-whisper model folder (default: large-v3-turbo from the HF cache)\n"
           "  --device gpu|npu            the Arc iGPU (default), or the encoder on the NPU and the decoder on the iGPU\n"
-          "  --lang auto|id|en|id,en     language: detected per 30-s window (auto), fixed, or among the listed ones\n"
+          "  --lang auto|id|en|id,en     language: detected per 30-s window (auto), fixed, or a list for speech that\n"
+          "                              mixes them (each utterance's language; ~3x slower)\n"
           "  --beam 1|5                  greedy or beam search (default 5)\n"
           "  --words / --no-words        word timestamps (default on)\n"
-          "  --prompt \"<text>\"           glossary / sample sentence;  --prompt-file <file>\n"
+          "  --terms \"<list>\"            a glossary kept before every window (\"GPU, kernel, deploy\"; ~150 tokens\n"
+          "                              at most); --terms-file <file>\n"
+          "  --prompt \"<text>\"           the first window's previous text (a sample sentence); --prompt-file <f>\n"
+          "  --dual-language P           auto: a window whose likeliest language is below P (default 0.8) is split by\n"
+          "                              language (as id,en does for every window); 0: off, also for a list\n"
           "  --translate                 to English instead of transcribing\n"
-          "  --no-previous-text          each window without the text before it as its prompt (no carried-over errors)\n"
+          "  --previous-text             each window with the text before it as its prompt (openai's default; off: it\n"
+          "                              carried errors over and dropped whole windows in the tests)\n"
           "  --from <s> --to <s>         only part of the file\n"
           "  --format <list>             json, fw, captions, verbose_json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv,\n"
           "                              tsv (default json,srt,txt)\n"
@@ -117,6 +123,9 @@ int main(int argc, char** argv) {
       else if (a == "--no-words") words = false;
       else if (a == "--prompt") opt.initial_prompt = next();
       else if (a == "--prompt-file") opt.initial_prompt = read_text(next());
+      else if (a == "--terms") opt.terms = next();
+      else if (a == "--terms-file") opt.terms = read_text(next());
+      else if (a == "--dual-language") opt.dual_language = std::clamp((float)atof(next().c_str()), 0.0f, 1.0f);
       else if (a == "--translate") opt.task = "translate";
       else if (a == "--from") opt.from_s = atof(next().c_str());
       else if (a == "--to") opt.to_s = atof(next().c_str());
@@ -140,7 +149,8 @@ int main(int argc, char** argv) {
       else if (a == "--dump-encoder") dump_enc = next();
       else if (a == "--dump-logits") dump_lg = next();
       else if (a == "--no-fallback") opt.temperatures = {0.0f};
-      else if (a == "--no-previous-text") opt.condition_on_previous_text = false;
+      else if (a == "--previous-text") opt.condition_on_previous_text = true;
+      else if (a == "--no-previous-text") opt.condition_on_previous_text = false;  // (the default; kept for scripts)
       else if (!a.empty() && a[0] == '-') throw std::runtime_error("unknown option " + a);
       else inputs.push_back(a);
     }

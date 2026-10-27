@@ -183,10 +183,17 @@ otherwise it loads Whisper itself and exits when done.
 
 ```
 arc-transcribe <file | folder | wildcard> ... [options]
-  --lang auto|id|en|...       language (default auto, per 30-s window)
+  --lang auto|id|en|id,en     language (default auto, per 30-s window); a list: speech that mixes them, each
+                              utterance's language checked (~3x slower; docs/whisper-native-status.md, W2)
   --beam 1|5                  greedy or beam 5 (default 5)
   --words / --no-words        word timestamps (default on)
-  --prompt "<text>"           glossary / sample sentence;  --prompt-file <file>
+  --terms "<list>"            a glossary kept before every window ("GPU, kernel, deploy", ~150 tokens at most);
+                              --terms-file <file>. A bare list makes the text formal; terms inside a casual
+                              sentence keep the casual spelling
+  --prompt "<text>"           the first window's previous text (a sample sentence);  --prompt-file <file>
+  --dual-language P           auto: a window whose likeliest language is below P (0.8) is split by language
+  --previous-text             each window with the text before it as its prompt (off: it carried errors over
+                              and dropped whole windows in the tests)
   --vad                       skip silence (meetings; off by default for exact timestamps)
   --translate                 to English instead of transcribing
   --from <s> --to <s>         only part of the file
@@ -231,7 +238,8 @@ Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` 
   `timestamp_granularities[]=word`), `stream=true` (server-sent events `transcript.text.delta`, then
   `transcript.text.done` with `usage`). Extensions: `response_format` = `fw` | `captions` | `full_json` | `sbv` | `srv3`
   | `ass` | `ttml` | `md` | `csv` | `tsv`; `language` = `auto` or a list (`id,en`); `beam_size` 1..5 (default 5);
-  `condition_on_previous_text=false`; `transcript.progress` events (`done`, `total` seconds) while streaming.
+  `terms` (a glossary kept before every window); `dual_language` (0..1, default 0.8);
+  `condition_on_previous_text=true` (off by default); `transcript.progress` events (`done`, `total` seconds) while streaming.
 - Which model answers: Whisper, unless `model` names a chat model (the loaded one or one of `--list-models`: then the
   old path, Gemma 4 hearing the clip). Without `--whisper`, a `model` containing "whisper" gets a 400 that says so.
 - Translation: large-v3-turbo was not trained for the translate task and mostly answers in the spoken language; a

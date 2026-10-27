@@ -110,6 +110,8 @@ class WhisperEngine : public whisper::Backend {
       L.ckv_buf = buf((size_t)Ap_ * 2 * D * 4);
       L.ck16 = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);  // (the window's keys / values, f16, head-major)
       L.cv16 = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
+      L.ck16b = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
+      L.cv16b = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
       dec_.push_back(L);
     }
     dec_lng_ = half_buf("decoder/layer_norm/gamma");
@@ -176,8 +178,25 @@ class WhisperEngine : public whisper::Backend {
   std::map<std::string, int64_t> prof_n;  // (... and launches)
 
   // ---------------------------------------------------------------- Backend
-  void encode(const float* mel) override {
-    const int D = hp_.d, A = hp_.n_audio_ctx, T = whisper::kWindowFrames, C = hp_.n_mels;
+  void encode(const float* mel) override { encode_frames(mel, whisper::kWindowFrames, false, false); }
+  // a part of the window for its language (its first `frames` frames, silence after them), into the second keys /
+  // values, which the decoder reads until part_done() (the window's stay). short_context: the encoder on the first
+  // 10 s of the window only (the part + 0.5 s when longer), ~1/4 of the work; the NPU's graphs have the whole
+  // window's shape. Returns whether the context was the whole window
+  bool encode_part(const float* mel, int frames, bool short_context) override {
+    return encode_frames(mel, frames, true, short_context);
+  }
+  void part_done() override { part_ = false; }
+
+  bool encode_frames(const float* mel, int frames, bool part, bool short_context) {
+    const int D = hp_.d, C = hp_.n_mels, W = whisper::kWindowFrames;
+    // (the part alone, without the silence after it, came out English for most Indonesian utterances; with 10 s of
+    //  context, a few low-confidence ones; whisper.h checks those on the whole window)
+    const int A = short_context && !npu_ ? std::clamp(std::max((frames + 1) / 2 + 25, 500), 16, hp_.n_audio_ctx)
+                                         : hp_.n_audio_ctx;
+    const int Ap = (A + 15) / 16 * 16, T = std::min(W, 2 * A), Tp = (T + 15) / 16 * 16;
+    part_ = part;
+    part_a_ = A;
     if (npu_) {  // the encoder on the NPU; its output here for the cross-attention keys / values
       const auto t0 = std::chrono::steady_clock::now();
       const uint16_t* h = npu_->encode(mel);
@@ -188,28 +207,34 @@ class WhisperEngine : public whisper::Backend {
       set_args(k, 0, h16_, d, a, hn_);
       size_t g[2] = {(size_t)D, (size_t)Ap_};
       run("h2f", k, 2, g, nullptr);
-      cross_kv();
-      return;
+      cross_kv(A, Ap_, part);
+      return true;
     }
-    clEnqueueWriteBuffer(cl_.queue, mel_, CL_FALSE, 0, (size_t)C * T * 4, mel, 0, nullptr, nullptr);
+    if (T == W) {
+      clEnqueueWriteBuffer(cl_.queue, mel_, CL_FALSE, 0, (size_t)C * T * 4, mel, 0, nullptr, nullptr);
+    } else {  // (the part's frames, rows of T)
+      std::vector<float> m((size_t)C * T);
+      for (int c = 0; c < C; ++c) memcpy(&m[(size_t)c * T], mel + (size_t)c * W, (size_t)T * 4);
+      clEnqueueWriteBuffer(cl_.queue, mel_, CL_TRUE, 0, m.size() * 4, m.data(), 0, nullptr, nullptr);
+    }
     {  // conv1 + GELU
       cl_kernel k = wk("wh_im2col1");
       int c = C, t = T, kp = K1p_;
       set_args(k, 0, mel_, c, t, kp, col_);
-      size_t g[2] = {(size_t)K1p_, (size_t)T1p_};
+      size_t g[2] = {(size_t)K1p_, (size_t)Tp};
       run("im2col1", k, 2, g, nullptr);
-      quant(col_, K1p_, T1p_, T);
-      gemm(conv1_, T1p_, h1_, D);
-      bias_gelu(h1_, D, conv1_b_, T1p_, nullptr);
+      quant(col_, K1p_, Tp, T);
+      gemm(conv1_, Tp, h1_, D);
+      bias_gelu(h1_, D, conv1_b_, Tp, nullptr);
     }
     {  // conv2 + GELU + positions
       cl_kernel k = wk("wh_im2col2");
       int t = T, d = D, a = A;
       set_args(k, 0, h1_, t, d, a, col_);
-      size_t g[2] = {(size_t)3 * D, (size_t)Ap_};
+      size_t g[2] = {(size_t)3 * D, (size_t)Ap};
       run("im2col2", k, 2, g, nullptr);
-      quant(col_, 3 * D, Ap_, A);
-      gemm(conv2_, Ap_, x_, D);
+      quant(col_, 3 * D, Ap, A);
+      gemm(conv2_, Ap, x_, D);
       bias_gelu(x_, D, conv2_b_, A, enc_pos_);
     }
     // (checks: WH_DUMP_DIR=<folder> writes the residual stream after each layer, L<n>.bin, L-1: after the convolutions)
@@ -225,32 +250,32 @@ class WhisperEngine : public whisper::Backend {
     cl_mem pend = nullptr;  // (fc2's bias: its residual is added by the next layer's first LayerNorm)
     for (const EncL& L : enc_) {
       two_ = li >= q2_from_;
-      ln_quant(x_, pend ? y_ : nullptr, pend, D, A, L.ln1g, L.ln1b, Ap_);
+      ln_quant(x_, pend ? y_ : nullptr, pend, D, A, L.ln1g, L.ln1b, Ap);
       pend = nullptr;
-      gemm(L.qkv, Ap_, qkv_, 3 * D);
+      gemm(L.qkv, Ap, qkv_, 3 * D);
       {
         cl_kernel k = wk("wh_qkv_split");
-        int d = D, mp = Ap_;
+        int d = D, mp = Ap;
         set_args(k, 0, qkv_, L.qkv_b, d, mp, q16_, k16_, v16_);
-        size_t g[2] = {(size_t)D, (size_t)Ap_};
+        size_t g[2] = {(size_t)D, (size_t)Ap};
         run("qkv_split", k, 2, g, nullptr);
       }
       {
         static const std::string ft = getenv("ARC_WH_FT") ? std::string(" -DFT=") + getenv("ARC_WH_FT") : std::string();
         cl_kernel k = ok("vit_attn_rows", "-cl-intel-256-GRF-per-thread -DHD=64" + ft);
-        int n = A, mp = Ap_, nh = hp_.n_head;
+        int n = A, mp = Ap, nh = hp_.n_head;
         set_args(k, 0, q16_, k16_, v16_, n, mp, nh, att_);
         static const int arsg = getenv("ARC_WH_ARSG") ? std::max(1, atoi(getenv("ARC_WH_ARSG"))) : 4;
         const size_t rows = (size_t)8 * arsg;
         size_t g[2] = {((size_t)A + rows - 1) / rows * rows, (size_t)hp_.n_head}, lw[2] = {rows, 1};
         run("enc_attn", k, 2, g, lw);
       }
-      quant(att_, D, Ap_, A);
-      gemm(L.out, Ap_, y_, D);
-      ln_quant(x_, y_, L.out_b, D, A, L.ln2g, L.ln2b, Ap_);
-      gemm(L.fc1, Ap_, ff_, F_);
-      gelu_quant(ff_, F_, L.fc1_b, Ap_, A);
-      gemm(L.fc2, Ap_, y_, D);
+      quant(att_, D, Ap, A);
+      gemm(L.out, Ap, y_, D);
+      ln_quant(x_, y_, L.out_b, D, A, L.ln2g, L.ln2b, Ap);
+      gemm(L.fc1, Ap, ff_, F_);
+      gelu_quant(ff_, F_, L.fc1_b, Ap, A);
+      gemm(L.fc2, Ap, y_, D);
       pend = L.fc2_b;
       if (getenv("WH_DUMP_DIR")) {  // (the dump is of the layer's whole output)
         bias_res(x_, y_, D, pend, A);
@@ -260,18 +285,20 @@ class WhisperEngine : public whisper::Backend {
     }
     if (pend) bias_res(x_, y_, D, pend, A);
     two_ = q2_from_ <= hp_.enc_layers;  // (the cross-attention keys / values from the last layer's output too)
-    layernorm(x_, D, A, enc_lng_, enc_lnb_, hn_, Ap_);
-    cross_kv();
+    layernorm(x_, D, A, enc_lng_, enc_lnb_, hn_, Ap);
+    cross_kv(A, Ap, part);
+    return A == hp_.n_audio_ctx;
   }
-  // the decoder layers' cross-attention keys / values of this window, from the encoder output in hn_
-  void cross_kv() {
-    const int D = hp_.d, A = hp_.n_audio_ctx;
-    quant(hn_, D, Ap_, A);
+  // the decoder layers' cross-attention keys / values of this window (or part: the second ones), from the encoder
+  // output in hn_ (A positions, Ap rows); packed with the window's row stride either way
+  void cross_kv(int A, int Ap, bool part) {
+    const int D = hp_.d;
+    quant(hn_, D, Ap, A);
     for (DecL& L : dec_) {
-      gemm(L.ckv, Ap_, L.ckv_buf, 2 * D);
+      gemm(L.ckv, Ap, L.ckv_buf, 2 * D);
       cl_kernel k = wk("wh_ckv_pack");
       int d = D, ap = Ap_;
-      set_args(k, 0, L.ckv_buf, L.ckv_b, d, ap, L.ck16, L.cv16);
+      set_args(k, 0, L.ckv_buf, L.ckv_b, d, ap, part ? L.ck16b : L.ck16, part ? L.cv16b : L.cv16);
       size_t g[2] = {(size_t)D, (size_t)A};
       run("ckv_pack", k, 2, g, nullptr);
     }
@@ -343,11 +370,14 @@ class WhisperEngine : public whisper::Backend {
   };
   struct DecL {
     cl_mem ln1g, ln1b, qkv_b, out_b, ln2g, ln2b, cq_b, ckv_b, cout_b, ln3g, ln3b, fc1_b, fc2_b, ckv_buf, ck16, cv16;
+    cl_mem ck16b, cv16b;  // (encode_part's keys / values: the window's stay)
     GW qkv, out, cq, ckv, cout, fc1, fc2;
   };
   const whisper::Model& m_;
   whisper::Hparams hp_;
   int max_seq_, n_seq_ = 1, Ap_ = 0, T1p_ = 0, Vp_ = 0, F_ = 0, K1p_ = 512;
+  bool part_ = false;  // (the decoder on encode_part's output, of part_a_ positions)
+  int part_a_ = 0;
   ClRt cl_;
   std::string gemm_src_, ops_src_, wh_src_, dec_src_;
   cl_mem tabs_ = nullptr;  // (decode.cl's tables: its GEMV takes them, Q8_0 reads none)
@@ -559,7 +589,8 @@ class WhisperEngine : public whisper::Backend {
   // heads: also the alignment heads' cross-attention scores of every row into scores [heads][n][A]
   void forward(const int* tok, const int* seq, const int* pos, int n, int rows, float* logits,
                const std::vector<std::pair<int, int>>* heads, std::vector<float>* scores) {
-    const int D = hp_.d, A = hp_.n_audio_ctx, L = hp_.dec_layers, ctx = hp_.n_text_ctx, F = F_, V = hp_.n_vocab;
+    const int D = hp_.d, L = hp_.dec_layers, ctx = hp_.n_text_ctx, F = F_, V = hp_.n_vocab;
+    const int A = part_ ? part_a_ : hp_.n_audio_ctx;  // (the encoder positions the cross-attention reads)
     const int Mp = (n + 15) / 16 * 16;
     for (int i = 0; i < n; ++i)
       if (pos[i] >= ctx) throw std::runtime_error("whisper: more than " + std::to_string(ctx) + " text positions");
@@ -632,7 +663,7 @@ class WhisperEngine : public whisper::Backend {
         cl_kernel k = get("whisper", "-DRB=" + std::to_string(rb), "wh_cross_part");
         int d = D, nn = n, a = A, ap = Ap_, s = S;
         cl_mem sv = save_ ? save_ : att_;
-        set_args(k, 0, y_, d, nn, W.ck16, W.cv16, a, ap, s, pm_, pl_, po_, hm, sv);
+        set_args(k, 0, y_, d, nn, part_ ? W.ck16b : W.ck16, part_ ? W.cv16b : W.cv16, a, ap, s, pm_, pl_, po_, hm, sv);
         size_t g[3] = {(size_t)256 * hp_.n_head, (size_t)S, (size_t)(n + rb - 1) / rb}, lw[3] = {256, 1, 1};
         run("cross_attn", k, 3, g, lw);
         cl_kernel kc = wk("wh_cross_comb");
