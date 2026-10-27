@@ -8,6 +8,11 @@
   when the chat is opened. **The model gets `run_command` only while the chat's terminal is open**; Close ends it
   (the model loses it, the next one starts fresh in the chat's folder), × only hides the panel. Settings > Terminal is
   now the model's access to an open terminal: Ask each time (the default), Run without asking, Model never.
+- **The model knows which shell it writes for**: when the terminal opens, it is asked once for PowerShell's version
+  and edition and Windows' name, version and build (kept with the chat), and the system prompt says it ("Windows
+  PowerShell 5.1.26100 (Desktop) on Microsoft Windows 11 Home Single Language 25H2 (build 26200), AMD64") with the
+  syntax that differs: PowerShell, not bash or cmd; curl.exe / where.exe; and for 5.1 no `&&` / `||`, no ternary or
+  `??`, Set-Content's encoding.
 - **Folder and environment kept between commands** (tools/server_terminal.h, `run_command` with `session: true`):
   each command still runs in its own PowerShell, and the variables that differ from a fresh one plus the folder are
   written to the chat folder's `.terminal.json` after it and set again before the next. `cd`, `$env:X`, an activated

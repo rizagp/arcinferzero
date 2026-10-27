@@ -751,7 +751,7 @@ function compactable() {
   return history.length - 2 - lead;
 }
 function sysMessages(id = convId) {
-  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termUsable(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
+  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termUsable(id) ? TERM_SYSTEM(terms.get(id).shell) : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -991,11 +991,25 @@ const TERM_TOOLS = [
     parameters: { type: "object", properties: {
       command: { type: "string", description: "PowerShell; several lines are fine" },
       timeout_s: { type: "integer" } }, required: ["command"] } } }];
-const TERM_SYSTEM = "The user has opened this chat's terminal: you can run PowerShell commands on their Windows computer " +
-  "with run_command, as in one terminal session (cd and an activated .venv stay; the user may run commands in it too). " +
+const TERM_SYSTEM = (shell) => "The user has opened this chat's terminal: you can run PowerShell commands on their " +
+  "Windows computer with run_command, as in one terminal session (cd and an activated .venv stay; the user may run " +
+  "commands in it too). " + termShellNote(shell) +
   "Use the file tools to read and write documents, the terminal for the rest. Before a command that changes or deletes " +
   "anything, say what it will do. Never touch anything outside the chat's folder unless the user asked for it. If the " +
   "user does not allow a command, do not try it again in another form: ask what they want.";
+// what the terminal is (asked once when it opens: PowerShell's version and edition, Windows' name and build), with the
+// syntax that trips models up in it: commands written for bash or for PowerShell 7 fail in Windows PowerShell 5.1
+function termShellNote(shell) {
+  if (!shell?.ps) return "The shell is PowerShell on Windows: write PowerShell, not bash or cmd. ";
+  const v5 = /^5\./.test(shell.ps);
+  return "The terminal is " + (v5 ? "Windows PowerShell " : "PowerShell ") + shell.ps + (shell.edition ? " (" + shell.edition + ")" : "") +
+    " on " + (shell.os || "Windows") + (shell.build ? " (build " + shell.build + ")" : "") + (shell.arch ? ", " + shell.arch : "") +
+    ". Write PowerShell, not bash or cmd: paths with \\, quote paths with spaces, Get-ChildItem / Get-Content / " +
+    "Select-String / Remove-Item rather than ls -la, cat, grep, rm -rf; curl.exe and where.exe (curl and where are " +
+    "PowerShell aliases); $env:NAME for variables; a here-string @' ... '@ for text with quotes. " +
+    (v5 ? "This is 5.1: no && or || between commands (use ; or if ($?) { ... }), no ternary ?: and no ?? or ?., " +
+      "Set-Content / Out-File write UTF-16 or ANSI unless -Encoding utf8 (which adds a BOM). " : "");
+}
 const toolsOn = (id) => $("web").checked || $("ftools").checked || termUsable(id);
 const MAX_ROUNDS = 8;
 // While talking (F24.5), the tools run in the background: a call gets an immediate answer ("search #n started"), the
@@ -1210,6 +1224,17 @@ function renderTerm() {
   }));
   if (atEnd) box.scrollTop = box.scrollHeight;
 }
+// the terminal's shell and Windows, asked once (kept with the chat): the model writes commands for that shell
+const TERM_PROBE = "$o = Get-CimInstance Win32_OperatingSystem; $v = (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion' -ErrorAction SilentlyContinue).DisplayVersion; " +
+  "[pscustomobject]@{ ps = \"$($PSVersionTable.PSVersion)\"; edition = \"$($PSVersionTable.PSEdition)\"; os = (\"$($o.Caption) $v\").Trim(); " +
+  "build = \"$($o.BuildNumber)\"; arch = $env:PROCESSOR_ARCHITECTURE } | ConvertTo-Json -Compress";
+async function termProbe(id) {
+  try {
+    const j = await termRun(id, TERM_PROBE, 30);
+    const m = j.ok && /\{.*\}/s.exec(j.output || "");
+    if (m) termOf(id).shell = JSON.parse(m[0]);
+  } catch (e) {}  // (unknown: the prompt says PowerShell on Windows)
+}
 async function termOpen() {
   const id = ensureConv(), t = termOf(id);
   t.hidden = false;
@@ -1224,6 +1249,7 @@ async function termOpen() {
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
       t.cwd = j.cwd || "";
+      await termProbe(id);
     } catch (e) {
       t.open = false;
       t.log.pop();
@@ -1649,7 +1675,7 @@ function saveConv(force, job) {
   const id = job ? job.id : ensureConv();
   const c = { id, title: titleOf(h), at: Date.now(), model: job ? job.model : modelId, snippet: snippetOf(h), history: h };
   const t = terms.get(id);  // (its terminal: open or not, and its log)
-  if (t && (t.open || t.log.length)) c.terminal = { open: t.open, cwd: t.cwd, venv: t.venv, log: t.log.filter((x) => !x.running) };
+  if (t && (t.open || t.log.length)) c.terminal = { open: t.open, cwd: t.cwd, venv: t.venv, shell: t.shell, log: t.log.filter((x) => !x.running) };
   const body = JSON.stringify(c);
   convs = [{ id: c.id, title: c.title, at: c.at, model: c.model, snippet: c.snippet }, ...convs.filter((x) => x.id !== c.id)];
   renderConvs();
@@ -1752,8 +1778,9 @@ async function openConv(id) {
     } catch (e) { note("opening the chat failed: " + (e.message || e)); return; }
   resetChat();
   convId = id;
-  if (!terms.has(id) && c.terminal) terms.set(id, { open: !!c.terminal.open, cwd: c.terminal.cwd || "", venv: c.terminal.venv || "",
+  if (!terms.has(id) && c.terminal) terms.set(id, { open: !!c.terminal.open, cwd: c.terminal.cwd || "", venv: c.terminal.venv || "", shell: c.terminal.shell,
     log: Array.isArray(c.terminal.log) ? c.terminal.log : [] });
+  if (terms.get(id)?.open && !terms.get(id).shell) termProbe(id);  // (a terminal saved before the shell was asked)
   renderTerm();
   history = job ? job.history : Array.isArray(c.history) ? c.history : [];
   thread.replaceChildren();

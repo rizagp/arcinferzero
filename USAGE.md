@@ -290,7 +290,8 @@ While the server is running:
   program keeps running after its command. The terminal belongs to the chat: it is still there when the chat is opened
   again. **While it is open the model may use it too** (`run_command`, shown in the panel as AI); **Settings >
   Terminal**: **Ask each time** (every command waits in its card with **Run** / **Don't run**), **Run without asking**,
-  or **Model never**. **Close** (the power button) ends it: the model can no longer use it, and the next one starts
+  or **Model never**. The model is told the shell and Windows version (asked when the terminal opens), so it writes
+  commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: the model can no longer use it, and the next one starts
   again in the chat's folder; **×** only hides the panel. A command stops after 2 minutes (the model may ask for up to
   10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
   on this computer can use it: the server refuses it to other computers (also with `--host`), to pages of other sites,
