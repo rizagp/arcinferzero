@@ -65,7 +65,7 @@ class Checker {
   // into a match), DONE (a complete match, with at most trailing whitespace).
   Res check(const std::string& s) const {
     size_t i = 0;
-    ws(s, i);
+    if (!ws(s, i)) return FAIL;  // (the 8-character limit before the value too: no endless leading whitespace)
     if (i == s.size()) return PARTIAL;
     if (object_only_ && s[i] != '{') return FAIL;
     const Res r = value(root_, s, i, 0);

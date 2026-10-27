@@ -134,7 +134,7 @@ class Engine {
 
  private:
   void release_all() {
-    if (cl_.queue) clFinish(cl_.queue);
+    if (zrt::cl) clFinish(cl_.queue);  // (init may have failed before the runtime existed: nothing to wait for)
     if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
@@ -144,6 +144,7 @@ class Engine {
       if (*it) clReleaseMemObject(*it);
     if (cl_.queue) clReleaseCommandQueue(cl_.queue);
     if (cl_.ctx) clReleaseContext(cl_.ctx);
+    dfl_close();  // (the DFlash2 drafter's mapped safetensors file)
     kcache_.clear();
     progs_.clear();
     mems_.clear();

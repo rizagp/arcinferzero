@@ -131,14 +131,16 @@ class Service {
 
     struct Count { std::atomic<int>& n; int before; Count(std::atomic<int>& x) : n(x), before(n++) {} ~Count() { --n; } } waiting{waiting_};
     if (waiting.before >= kMaxWaiting) return fail(429, "too many transcriptions waiting; try again later", "rate_limit_error");
+    std::unique_lock<std::mutex> one(run_mu_);  // (one transcription at a time: one engine)
+    if (rs.client_gone()) return;
+    // (decoded in its turn: one file's samples in memory at a time, ~2 GB at 48 kHz before the resampling for 3 hours,
+    //  instead of every waiting upload's at once)
     std::vector<float> audio;
     try {
       audio = audio::decode_16k(std::vector<uint8_t>(fit->second.data.begin(), fit->second.data.end()), max_seconds);
     } catch (const std::exception& e) {
       return fail(400, std::string(e.what()) + " (the server takes audio and video files Windows can decode)");
     }
-    std::unique_lock<std::mutex> one(run_mu_);  // (one transcription at a time: one engine)
-    if (rs.client_gone()) return;
     size_t sent = 0;
     whisper::Result r;
     if (stream) rs.sse_begin();

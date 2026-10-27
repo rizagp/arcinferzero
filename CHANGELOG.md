@@ -28,6 +28,22 @@
   - The microphone is released when the browser cannot build its audio graph; closing the terminal ends the command
     still running; deleting an answer not in the history no longer throws; voice conversion errors are shown; pages
     in browsers without speech output keep working.
+- **DeepSeek's re-audit of the fixes above** (each finding checked):
+  - A model or Whisper failing before the GPU runtime existed (no GPU / driver) gives its error again instead of
+    crashing: the cleanup added above waited on a command list that was not there yet.
+  - The DFlash2 drafter's file is closed when the model is unloaded, and a damaged one is refused (header length,
+    tensor ranges, shapes, codebook sizes checked against the file and the model).
+  - Saved-conversation and system-prompt files are closed when loading or saving throws; Whisper decodes an upload
+    in its turn (four waiting 3-hour uploads were decoded at once, ~2 GB each); requests with both
+    `Transfer-Encoding` and `Content-Length`, or two different lengths, get 400 (request smuggling behind a proxy).
+  - Web UI: Compact by hand no longer writes its summary into another chat opened meanwhile (on screen and on
+    disk); deleting a file that is attached to the message being written takes it off the message; Talk stopped
+    and started again does not send what was said before; a voice message is not sent into a chat opened while it
+    was written down, and its file stays in its own chat.
+  - Smaller: `OpenCL.dll` let go on every failed start; a model folder that hangs is checked by one thread, not
+    one more per model list; the terminal's allocations before its handles; JSON mode's limit on leading
+    whitespace; the sampler refuses empty logits.
+  - Not changed: tokenizing before the context check (as above).
 
 ## 2026-10-27: web UI audit: every function tried, security and robustness fixes
 

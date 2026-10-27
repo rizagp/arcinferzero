@@ -390,11 +390,18 @@ struct XCache {
     if (!f) return;
     const int hdr[3] = {NL, NE, (int)pools.size()};
     bool ok = fwrite(hdr, 4, 3, f) == 3;
-    for (auto& P : pools) {
-      std::vector<int> keys;
-      for (int s = P.head; s >= 0; s = P.next[s]) keys.push_back(P.key[s]);
-      const int n = (int)keys.size();
-      ok = ok && fwrite(&n, 4, 1, f) == 1 && fwrite(keys.data(), 4, keys.size(), f) == keys.size();
+    try {  // (an allocation that throws: the file closed and dropped first)
+      for (auto& P : pools) {
+        std::vector<int> keys;
+        for (int s = P.head; s >= 0; s = P.next[s]) keys.push_back(P.key[s]);
+        const int n = (int)keys.size();
+        ok = ok && fwrite(&n, 4, 1, f) == 1 && fwrite(keys.data(), 4, keys.size(), f) == keys.size();
+      }
+    } catch (...) {
+      fclose(f);
+      std::error_code e;
+      std::filesystem::remove(state_path + ".tmp", e);
+      throw;
     }
     ok = fclose(f) == 0 && ok;
     std::error_code ec;

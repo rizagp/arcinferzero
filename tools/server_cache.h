@@ -117,17 +117,18 @@
     const auto t0 = clk::now();
     int32_t h[2] = {0, 0};
     std::vector<int> toks;
-    bool ok = fread(h, 4, 2, f) == 2 && h[0] == kPrefixMagic && h[1] == (int32_t)n;
-    if (ok) {
-      toks.resize(n);
-      ok = fread(toks.data(), 4, n, f) == n;
-    }
-    if (ok && !std::equal(toks.begin(), toks.end(), P.begin())) {  // another prompt with the same hash: leave it
-      fclose(f);
-      return;
-    }
-    ok = ok && eng_.load_state(f);
+    bool other = false;
+    const bool ok = with_file(f, [&] {
+      bool k = fread(h, 4, 2, f) == 2 && h[0] == kPrefixMagic && h[1] == (int32_t)n;
+      if (k) {
+        toks.resize(n);
+        k = fread(toks.data(), 4, n, f) == n;
+      }
+      if (k && !std::equal(toks.begin(), toks.end(), P.begin())) return !(other = true);  // (another prompt, same hash)
+      return k && eng_.load_state(f);
+    });
     fclose(f);
+    if (other) return;  // (leave it)
     if (!ok) {  // another model's layout or a damaged file; the engine may have been reset
       std::filesystem::remove(file, ec);
       cached_.clear();
@@ -184,6 +185,16 @@
   // a background write: its thread is joined when the last owner lets go, however that happens (a std::thread still
   // joinable when it is destroyed ends the process: an allocation that threw between starting the thread and
   // storing it would have done that)
+  // fn's result; f closed first if fn throws (an allocation in load_state / save_state / read_header): the caller
+  // closes it as before otherwise
+  template <typename F> static bool with_file(FILE* f, F&& fn) {
+    try {
+      return fn();
+    } catch (...) {
+      fclose(f);
+      throw;
+    }
+  }
   template <typename F> static std::shared_ptr<std::thread> start_writer(F&& f) {
     return std::shared_ptr<std::thread>(new std::thread(std::forward<F>(f)), [](std::thread* t) {
       if (t->joinable()) t->join();
@@ -239,7 +250,7 @@
     }
     FILE* f = fopen((file + ".tmp").c_str(), "wb");
     if (!f) return;
-    bool ok = fwrite(h, 4, 2, f) == 2 && fwrite(P.data(), 4, n, f) == n && eng_.save_state(f, (int)n, false);
+    bool ok = with_file(f, [&] { return fwrite(h, 4, 2, f) == 2 && fwrite(P.data(), 4, n, f) == n && eng_.save_state(f, (int)n, false); });
     ok = fclose(f) == 0 && ok;
     finish(ok);
   }
@@ -269,7 +280,7 @@
       FILE* f = fopen(de.path().string().c_str(), "rb");
       if (!f) continue;
       SavedConv s;
-      if (read_header(f, s)) {
+      if (with_file(f, [&] { return read_header(f, s); })) {
         s.file = de.path().string();
         s.bytes = std::filesystem::file_size(de.path(), ec);
         s.used = (uint64_t)std::filesystem::last_write_time(de.path(), ec).time_since_epoch().count();
@@ -346,7 +357,7 @@
         });
     } else {
       FILE* f = fopen((file + ".tmp").c_str(), "wb");
-      ok = f && fwrite(head.data(), 4, head.size(), f) == head.size() && eng_.save_state(f, last_gen_cut_);
+      ok = f && with_file(f, [&] { return fwrite(head.data(), 4, head.size(), f) == head.size() && eng_.save_state(f, last_gen_cut_); });
       if (f) ok = fclose(f) == 0 && ok;
       if (ok) std::filesystem::rename(file + ".tmp", file, ec);
       ok = ok && !ec;
@@ -393,7 +404,7 @@
     const bool done = written(s);  // a background write of this conversation finishes first
     FILE* f = done ? fopen(s.file.c_str(), "rb") : nullptr;
     SavedConv tmp;
-    const bool ok = f && read_header(f, tmp) && eng_.load_state(f);
+    const bool ok = f && with_file(f, [&] { return read_header(f, tmp) && eng_.load_state(f); });
     if (f) fclose(f);
     if (!ok) {  // unreadable or from another layout: forget it; the engine was reset
       fprintf(stderr, "session cache: could not load %s\n", s.file.c_str());

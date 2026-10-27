@@ -97,6 +97,11 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   const std::wstring ws = wide(script);
   const std::wstring cl = L"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " +
                           wide(base64((const unsigned char*)ws.data(), ws.size() * sizeof(wchar_t)));
+  // (what can throw, allocated before the first handle: from the pipe to CreateProcessW nothing can leak them)
+  SIZE_T alen = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &alen);
+  std::vector<char> abuf(alen);
+  std::wstring cmd = cl, wcwd = wide(cwd);
   SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
   HANDLE rd = nullptr, wr = nullptr;
   if (!CreatePipe(&rd, &wr, &sa, 0)) throw std::runtime_error("cannot make a pipe");
@@ -118,15 +123,11 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   size_t nh = 0;
   if (nul != INVALID_HANDLE_VALUE) inherit[nh++] = nul;
   inherit[nh++] = wr;
-  SIZE_T alen = 0;
-  InitializeProcThreadAttributeList(nullptr, 1, 0, &alen);
-  std::vector<char> abuf(alen);
   si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)abuf.data();
   const bool attrs = InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &alen) &&
                      UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
                                                nh * sizeof(HANDLE), nullptr, nullptr);
   PROCESS_INFORMATION pi{};
-  std::wstring cmd = cl, wcwd = wide(cwd);
   const auto t0 = std::chrono::steady_clock::now();
   const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
                                  CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | (attrs ? EXTENDED_STARTUPINFO_PRESENT : 0),

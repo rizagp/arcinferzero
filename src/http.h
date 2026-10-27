@@ -339,6 +339,9 @@ class HttpServer {
           std::string k = hl.substr(0, colon), v = hl.substr(colon + 1);
           std::transform(k.begin(), k.end(), k.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
           v.erase(0, v.find_first_not_of(' '));
+          // (two lengths that differ: a proxy in front may have read the body by the other one, request smuggling)
+          if (k == "content-length" && rq.headers.count(k) && rq.headers[k] != v)
+            return reply_close(c, 400, "conflicting Content-Length headers");
           rq.headers[k] = v;
         }
         p = e;
@@ -359,6 +362,9 @@ class HttpServer {
         }
         ~BodyHold() { total.fetch_sub(n); }
       } hold{body_bytes_};
+      // (both framings: refused, as RFC 9112 advises, instead of taking one and reading the rest as another request)
+      if (rq.headers.count("transfer-encoding") && rq.headers.count("content-length"))
+        return reply_close(c, 400, "Transfer-Encoding and Content-Length together");
       if (rq.header("transfer-encoding").find("chunked") != std::string::npos) {
         while (true) {
           size_t le;

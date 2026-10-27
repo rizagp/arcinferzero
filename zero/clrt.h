@@ -265,18 +265,24 @@ inline bool load() {
   RCL(buildProgram, "clBuildProgram") RCL(getProgramBuildInfo, "clGetProgramBuildInfo")
   RCL(getProgramInfo, "clGetProgramInfo") RCL(releaseProgram, "clReleaseProgram")
 #undef RCL
+  auto fail = [&] {  // (no compiler context: the DLL let go, a later call starts over)
+    device = context = nullptr;
+    FreeLibrary(h);
+    return false;
+  };
   cl_uint np = 0;
-  if (getPlatformIDs(0, nullptr, &np) != 0 || !np) return false;
+  if (getPlatformIDs(0, nullptr, &np) != 0 || !np) return fail();
   std::vector<void*> plats(np);
   getPlatformIDs(np, plats.data(), nullptr);
   for (void* p : plats) {
     cl_uint nd = 0;
     if (getDeviceIDs(p, 1u << 2, 1, &device, &nd) == 0 && nd) break;
   }
-  if (!device) return false;
+  if (!device) return fail();
   cl_int err = 0;
   context = createContext(nullptr, 1, &device, nullptr, nullptr, &err);
-  return err == 0;
+  if (err != 0 || !context) return fail();
+  return true;
 }
 }  // namespace rcl
 }  // namespace zrt

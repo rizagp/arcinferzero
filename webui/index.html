@@ -962,9 +962,12 @@ async function compact(keep, signal, statsEl, job, cutAt) {
   if (cut < 2 || (h[0].role === "user" && textOf(h[0].content).startsWith(SUMMARY_HEAD) && cut <= 2)) return false;  // (nothing new to fold)
   const old = h.slice(0, cut), kept = h.slice(cut);
   if (statsEl) statsEl.textContent = "compacting the earlier conversation…";
+  const cid = convId, seq = openSeq;  // (Compact by hand, no job: the chat it was asked in)
   // (with the earlier tool results shortened as in the last request: less to read, and the server's cache of that
   //  prompt still fits, since trimTools keeps each message at its place)
   const summary = await summarize(trimTools(h).slice(0, cut), signal, job?.model, job?.id);
+  // (another chat opened meanwhile: its history and its file must not take this one's summary)
+  if (!job && (convId !== cid || openSeq !== seq)) return false;
   const nh = [...summaryPair(summary), ...kept];
   const here = job ? onScreen(job) : true;
   if (job) job.history = nh;
@@ -2052,9 +2055,15 @@ function renderFiles() {
 async function deleteFiles(list) {
   const used = list.filter((f) => f.used_by && f.used_by.length);
   const msg = list.length === 1 ? "Delete \"" + list[0].filename + "\"?" : "Delete " + list.length + " files (" + kb(list.reduce((a, f) => a + f.bytes, 0)) + ")?";
-  if (!confirm(msg + (used.length ? "\n" + used.length + " of them are in chats: those chats then show the file as gone." : ""))) return;
+  const attached = list.filter((f) => pending.some((p) => p.id === f.id));  // (in the message being written)
+  if (!confirm(msg + (used.length ? "\n" + used.length + " of them are in chats: those chats then show the file as gone." : "") +
+               (attached.length ? "\n" + attached.length + " of them are attached to your message: they are taken off it." : ""))) return;
   for (const f of list) {
     try { await fetch("/v1/files/" + f.id, { method: "DELETE" }); fileSel.delete(f.id); } catch (e) {}
+  }
+  if (attached.length) {  // (a message would otherwise go out naming files that are gone)
+    pending = pending.filter((p) => !list.some((f) => f.id === p.id));
+    renderAtts();
   }
   loadFiles();
 }
@@ -2165,6 +2174,13 @@ const joinPcm = (frames) => {
 async function sendVoice() {
   const r = rec.stop(true);
   if (!r || !r.frames.length) return;
+  // (the chat it was recorded in: its file goes there, and it is not sent into another chat opened meanwhile)
+  const ep = epoch, chat = ensureConv();
+  const moved = () => {
+    if (ep === epoch) return false;
+    note("the voice message was not sent: another chat was opened while it was written down");
+    return true;
+  };
   let url;
   try { url = await pcmToWav16k(joinPcm(r.frames), r.rate); }
   catch (e) { note("the recording could not be converted: " + (e.message || e)); return; }
@@ -2175,13 +2191,17 @@ async function sendVoice() {
       voice.status("");
       if (!text) { note("no speech heard in the recording"); return; }
       let item = { kind: "audio", url, shown: true };
-      try { const blob = await (await fetch(url)).blob(); item = { ...fileItem(await upload(blob, "voice-" + Date.now() + ".wav")), shown: true }; } catch (e) {}
+      try { const blob = await (await fetch(url)).blob(); item = { ...fileItem(await upload(blob, "voice-" + Date.now() + ".wav", chat)), shown: true }; } catch (e) {}
+      if (moved()) return;
       pending.push(item);
       input.value = (input.value.trim() ? input.value.trim() + "\n" : "") + text;
     } catch (e) { note(String(e.message || e)); return; }
   } else {
-    try { const blob = await (await fetch(url)).blob(); pending.push(fileItem(await upload(blob, "voice-" + Date.now() + ".wav"))); }
-    catch (e) { pending.push({ kind: "audio", url }); }
+    let item;
+    try { const blob = await (await fetch(url)).blob(); item = fileItem(await upload(blob, "voice-" + Date.now() + ".wav", chat)); }
+    catch (e) { item = { kind: "audio", url }; }
+    if (moved()) return;
+    pending.push(item);
   }
   send();
 }
@@ -2203,7 +2223,7 @@ let hasAudio = false;
 const voice = {
   on: false, stream: null, ctx: null, node: null, src: null,
   floor: 0.003, speaking: false, heard: 0, quiet: 0, chunks: [], pre: [], rate: 48000,
-  pend: "", talking: false, spoke: false, last: null, merge: null,
+  pend: "", talking: false, spoke: false, last: null, merge: null, gen: 0,
   status(t) { $("vstat").textContent = t; $("vstat").hidden = !t; },
   async start() {
     if (!canHear()) { note(NEED_STT); return; }
@@ -2230,6 +2250,7 @@ const voice = {
   },
   stop() {
     this.on = false;
+    this.gen = (this.gen || 0) + 1;  // (an utterance still being written down belongs to the Talk that ended)
     this.node?.disconnect(); this.src?.disconnect(); this.ctx?.close();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.node = this.src = this.ctx = this.stream = null;
@@ -2286,7 +2307,7 @@ const voice = {
     if (controller) controller.abort();
   },
   async utterance(frames, rate) {
-    const at = performance.now();
+    const at = performance.now(), gen = this.gen;
     const n = frames.reduce((a, f) => a + f.length, 0), pcm = new Float32Array(n);
     let o = 0;
     for (const f of frames) { pcm.set(f, o); o += f.length; }
@@ -2300,7 +2321,8 @@ const voice = {
       if (!said) { this.status("listening…"); return; }
     } else pending.push({ kind: "audio", url });
     for (let i = 0; i < 50 && controller; i++) await new Promise((r) => setTimeout(r, 20));  // (the stopped answer winding up)
-    if (!this.on) {  // (Talk was stopped meanwhile: what was said waits in the box instead of being sent)
+    if (!this.on || gen !== this.gen) {  // (Talk stopped meanwhile, or stopped and started again: what was said
+                                         //  waits in the box instead of being sent)
       if (said) input.value = said;
       this.merge = null;
       return;

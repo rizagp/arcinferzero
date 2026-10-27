@@ -34,6 +34,7 @@ class Sampler {
     for (const auto& [t, b] : p_.logit_bias) bans_ = bans_ || b <= -100.0f;
   }
   int sample(const std::vector<float>& raw, const std::vector<int>& recent) {
+    if (raw.empty()) throw std::runtime_error("sampler: no logits");  // (the candidates below would be empty)
     const std::vector<float>& logits = adjusted(raw, recent);
     if (p_.temperature <= 0.0f) return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     const int V = (int)logits.size();

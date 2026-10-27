@@ -27,7 +27,7 @@ class WhisperEngine : public whisper::Backend {
 
  private:
   void release_all() {
-    clFinish(cl_.queue);
+    if (zrt::cl) clFinish(cl_.queue);  // (init may have failed before the runtime existed: nothing to wait for)
     for (auto& [k, v] : kc_map_) clReleaseKernel(v);
     for (cl_program p : progs_) clReleaseProgram(p);
     for (cl_mem b : mems_) clReleaseMemObject(b);

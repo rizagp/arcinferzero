@@ -72,6 +72,17 @@ static std::vector<std::string> extra_model_dirs() {
 //  every server start: each folder is first listed by a detached thread and skipped if that takes over 2 s)
 // 1: listed, 2: not a readable folder, 0: no answer within 2 s
 static int folder_reachable(const std::filesystem::path& d) {
+  // (a folder whose last check still hangs: skipped at once, not another thread left hanging on it per model list)
+  static std::mutex mu;
+  static std::map<std::string, std::shared_ptr<std::atomic<int>>> pending;
+  {
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = pending.find(d.string());
+    if (it != pending.end()) {
+      if (it->second->load() == 0) return 0;
+      pending.erase(it);
+    }
+  }
   auto st = std::make_shared<std::atomic<int>>(0);
   std::thread([d, st] {
     std::error_code e;
@@ -80,7 +91,12 @@ static int folder_reachable(const std::filesystem::path& d) {
     st->store(ok && !e ? 1 : 2);
   }).detach();
   for (int i = 0; i < 100 && st->load() == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  return st->load();
+  const int r = st->load();
+  if (r == 0) {  // (still hanging: remembered until its thread answers)
+    std::lock_guard<std::mutex> lk(mu);
+    pending[d.string()] = st;
+  }
+  return r;
 }
 
 static std::vector<ModelInfo> scan_models() {

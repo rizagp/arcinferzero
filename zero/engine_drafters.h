@@ -126,28 +126,53 @@
 
   struct StTensor { std::string dtype; std::vector<int64_t> shape; const uint8_t* data = nullptr; size_t n = 0; };
   std::map<std::string, StTensor> dfl_st_;
+  // (the mapping stays open while the engine lives: the selector's codebooks are read from it; release_all closes it)
+  void dfl_close() {
+    if (dfl_base_) UnmapViewOfFile(dfl_base_);
+    if (dfl_map_) CloseHandle(dfl_map_);
+    if (dfl_file_ != INVALID_HANDLE_VALUE) CloseHandle(dfl_file_);
+    dfl_base_ = nullptr;
+    dfl_map_ = nullptr;
+    dfl_file_ = INVALID_HANDLE_VALUE;
+    dfl_pred_ = dfl_succ_ = nullptr;
+    dfl_st_.clear();
+  }
   void dfl_open(const std::string& file) {
     dfl_file_ = CreateFileA(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (dfl_file_ == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open " + file);
+    LARGE_INTEGER fs{};
+    if (!GetFileSizeEx(dfl_file_, &fs) || fs.QuadPart < 8) throw std::runtime_error("DFlash: " + file + " is not a safetensors file");
+    const uint64_t size = (uint64_t)fs.QuadPart;
     dfl_map_ = CreateFileMappingA(dfl_file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
     dfl_base_ = dfl_map_ ? (const uint8_t*)MapViewOfFile(dfl_map_, FILE_MAP_READ, 0, 0, 0) : nullptr;
     if (!dfl_base_) throw std::runtime_error("cannot map " + file);
+    // (a damaged file: its header length and every tensor's byte range within the file, never read past it)
     uint64_t hn = 0;
     memcpy(&hn, dfl_base_, 8);
+    if (hn > size - 8) throw std::runtime_error("DFlash: " + file + " is truncated (header)");
+    const uint64_t data0 = 8 + hn, room = size - data0;
     const Json h = Json::parse(std::string((const char*)dfl_base_ + 8, (size_t)hn));
     for (const auto& [name, t] : h.entries()) {
       if (name == "__metadata__") continue;
       StTensor st;
       st.dtype = t["dtype"].str();
       for (const auto& d : t["shape"].items()) st.shape.push_back(d.as_int());
-      st.data = dfl_base_ + 8 + hn + (size_t)t["data_offsets"][0].as_int();
-      st.n = (size_t)(t["data_offsets"][1].as_int() - t["data_offsets"][0].as_int());
+      const int64_t o0 = t["data_offsets"][0].as_int(), o1 = t["data_offsets"][1].as_int();
+      if (o0 < 0 || o1 < o0 || (uint64_t)o1 > room) throw std::runtime_error("DFlash: tensor " + name + " lies outside " + file);
+      st.data = dfl_base_ + data0 + (size_t)o0;
+      st.n = (size_t)(o1 - o0);
       dfl_st_[name] = st;
     }
   }
   const StTensor& dfl_t(const std::string& n) {
     auto it = dfl_st_.find(n);
     if (it == dfl_st_.end() || it->second.dtype != "BF16") throw std::runtime_error("DFlash: missing bf16 tensor " + n);
+    uint64_t ne = 1;  // (its shape must fit its bytes: the readers index by the shape)
+    for (int64_t d : it->second.shape) {
+      if (d < 0 || (d && ne > UINT64_MAX / 4 / (uint64_t)d)) throw std::runtime_error("DFlash: bad shape of " + n);
+      ne *= (uint64_t)d;
+    }
+    if (ne * 2 > it->second.n) throw std::runtime_error("DFlash: tensor " + n + " is shorter than its shape");
     return it->second;
   }
   std::vector<float> dfl_f32(const StTensor& t, size_t off = 0, size_t n = 0) {
@@ -165,6 +190,8 @@
   // a bf16 matrix [N][K] (columns k0 .. k0 + K of rows of Kfull) as a Q4_0 weight
   GpuWeight dfl_w(const std::string& n, int k0 = 0, int Kc = 0) {
     const StTensor& t = dfl_t(n);
+    if (t.shape.size() != 2 || k0 < 0 || (Kc ? k0 + Kc : 0) > t.shape[1])
+      throw std::runtime_error("DFlash: " + n + " is not a matrix of the expected width");
     const int N = (int)t.shape[0], Kf = (int)t.shape[1], K = Kc ? Kc : Kf;
     std::vector<float> v((size_t)N * K);
     const uint16_t* b = (const uint16_t*)t.data;
@@ -211,6 +238,12 @@
     dfl_hnorm_ = dfl_vec("hidden_norm.weight");
     dfl_norm_ = dfl_vec("norm.weight");
     dfl_hproj_ = dfl_w("candidate_selector.hidden_projection.weight");
+    // (the codebooks are read at token * rank: a row per vocabulary entry, rank columns)
+    for (const char* cb : {"candidate_selector.predecessor_codebook", "candidate_selector.successor_codebook"}) {
+      const StTensor& t = dfl_t(cb);
+      if (t.shape.size() != 2 || t.shape[0] < hp.n_vocab || t.shape[1] != dfl_rank_)
+        throw std::runtime_error(std::string("DFlash: ") + cb + " does not match the model's vocabulary and the rank");
+    }
     dfl_pred_ = (const uint16_t*)dfl_t("candidate_selector.predecessor_codebook").data;
     dfl_succ_ = (const uint16_t*)dfl_t("candidate_selector.successor_codebook").data;
     dfl_l_.resize(nl);
