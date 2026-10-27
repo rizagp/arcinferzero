@@ -12,6 +12,7 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
+#include <mferror.h>
 #include <shlwapi.h>
 #include <algorithm>
 #include <cmath>
@@ -601,6 +602,114 @@ inline std::vector<float> decode_16k_file(const std::filesystem::path& path, dou
     mf_decode(rd.p, sink, delay);
   }
   return finish_16k(sink, max_seconds);
+}
+
+// a WAV file's channels apart, each at 16 kHz (a recording's tracks: the microphone, the other side)
+inline std::vector<std::vector<float>> decode_16k_wav_channels(const std::filesystem::path& path) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) throw std::runtime_error("cannot read " + path.string());
+  const uint64_t size = std::filesystem::file_size(path);
+  auto at = [&](uint64_t o, void* d, size_t n) -> size_t {
+    f.clear();
+    f.seekg((std::streamoff)o);
+    f.read((char*)d, (std::streamsize)n);
+    return (size_t)f.gcount();
+  };
+  WavFormat w;
+  if (!wav_format(at, size, w)) throw std::runtime_error("not a WAV file");
+  WavFormat one = w;  // (each channel read as a mono file of its own)
+  one.ch = 1;
+  std::vector<To16k> sinks(w.ch);
+  const size_t bps = (size_t)w.bits / 8, frame = bps * w.ch, block = 1 << 16;
+  std::vector<uint8_t> raw(frame * block), ch(bps * block);
+  std::vector<float> mono;
+  for (uint64_t off = 0; off + frame <= w.len;) {
+    const size_t want = (size_t)std::min<uint64_t>(raw.size(), (w.len - off) / frame * frame);
+    const size_t got = at(w.data + off, raw.data(), want) / frame * frame, n = got / frame;
+    if (!n) break;
+    for (int c = 0; c < w.ch; ++c) {
+      for (size_t i = 0; i < n; ++i) memcpy(&ch[i * bps], &raw[i * frame + c * bps], bps);
+      wav_mono(one, ch.data(), n, mono);
+      sinks[c].add(mono.data(), n, w.rate);
+    }
+    off += got;
+  }
+  std::vector<std::vector<float>> out;
+  for (To16k& s : sinks) out.push_back(s.finish());
+  return out;
+}
+
+// a 16-bit PCM WAV as MP3 (Windows' own MP3 encoder through Media Foundation; 32 / 44.1 / 48 kHz): kbps 96-320.
+// False and the reason when it cannot (the WAV is then kept)
+inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::path& mp3, int kbps, std::string& err) {
+  try {
+    std::ifstream f(wav, std::ios::binary);
+    if (!f) throw std::runtime_error("cannot read " + wav.string());
+    const uint64_t size = std::filesystem::file_size(wav);
+    auto at = [&](uint64_t o, void* d, size_t n) -> size_t {
+      f.clear();
+      f.seekg((std::streamoff)o);
+      f.read((char*)d, (std::streamsize)n);
+      return (size_t)f.gcount();
+    };
+    WavFormat w;
+    if (!wav_format(at, size, w) || w.fmt != 1 || w.bits != 16 || w.ch < 1 || w.ch > 2)
+      throw std::runtime_error("only 16-bit PCM WAV, mono or stereo");
+    MfSession ses;
+    ComPtr<IMFSinkWriter> sw;
+    mf_check(MFCreateSinkWriterFromURL(std::filesystem::absolute(mp3).wstring().c_str(), nullptr, nullptr, &sw), "MP3 file");
+    ComPtr<IMFMediaType> out, in;
+    mf_check(MFCreateMediaType(&out), "media type");
+    out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    out->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_MP3);
+    out->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)w.rate);
+    out->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)w.ch);
+    out->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)std::clamp(kbps, 96, 320) * 1000 / 8);
+    DWORD stream = 0;
+    mf_check(sw->AddStream(out.p, &stream), "an MP3 stream at this rate (32 / 44.1 / 48 kHz)");
+    mf_check(MFCreateMediaType(&in), "media type");
+    in->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    in->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+    in->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)w.rate);
+    in->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)w.ch);
+    in->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+    in->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, (UINT32)(2 * w.ch));
+    in->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)(2 * w.ch * w.rate));
+    in->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+    mf_check(sw->SetInputMediaType(stream, in.p, nullptr), "PCM input");
+    mf_check(sw->BeginWriting(), "begin");
+    const size_t frame = (size_t)2 * w.ch, block = (size_t)w.rate / 2;  // (half a second a sample)
+    std::vector<uint8_t> raw(frame * block);
+    LONGLONG t = 0;
+    for (uint64_t off = 0; off + frame <= w.len;) {
+      const size_t want = (size_t)std::min<uint64_t>(raw.size(), (w.len - off) / frame * frame);
+      const size_t got = at(w.data + off, raw.data(), want) / frame * frame;
+      if (!got) break;
+      ComPtr<IMFMediaBuffer> mb;
+      mf_check(MFCreateMemoryBuffer((DWORD)got, &mb), "buffer");
+      BYTE* p = nullptr;
+      mb->Lock(&p, nullptr, nullptr);
+      memcpy(p, raw.data(), got);
+      mb->Unlock();
+      mb->SetCurrentLength((DWORD)got);
+      ComPtr<IMFSample> s;
+      mf_check(MFCreateSample(&s), "sample");
+      s->AddBuffer(mb.p);
+      const LONGLONG d = (LONGLONG)(got / frame) * 10000000LL / w.rate;
+      s->SetSampleTime(t);
+      s->SetSampleDuration(d);
+      mf_check(sw->WriteSample(stream, s.p), "write");
+      t += d;
+      off += got;
+    }
+    mf_check(sw->Finalize(), "finalize");
+    return true;
+  } catch (const std::exception& e) {
+    err = e.what();
+    std::error_code ec;
+    std::filesystem::remove(mp3, ec);
+    return false;
+  }
 }
 
 }  // namespace audio

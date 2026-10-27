@@ -67,6 +67,7 @@ struct Cue {
   std::vector<Word> words;
   std::vector<std::string> lines;
   std::vector<size_t> first;  // (each line's first word)
+  std::string speaker;        // (its segments' track, when the recording has several)
 };
 // words [a, b) as lines of at most max_chars (a longer word alone on its line): the lines' first words, or empty
 // when they take more than max_lines. Two lines: the split that evens them out (the top one not longer than needed)
@@ -100,6 +101,7 @@ inline std::vector<size_t> line_breaks(const std::vector<Word>& w, size_t a, siz
 }
 inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
   std::vector<Word> all;
+  std::vector<const std::string*> who;  // (each word's speaker: a cue holds one)
   for (const Segment& g : r.segments) {
     if (!g.words.empty()) {
       for (const Word& w : g.words) all.push_back(w);
@@ -119,11 +121,13 @@ inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
         all.push_back(w);
       }
     }
+    who.resize(all.size(), &g.speaker);
   }
   std::vector<Cue> cues;
   Cue cur;
   for (size_t i = 0; i < all.size(); ++i) {
     const Word& w = all[i];
+    if (!cur.words.empty() && *who[i] != cur.speaker) { cues.push_back(cur); cur = Cue(); }
     if (!cur.words.empty()) {
       // (the cue's words with this one must still fit its lines as they will be laid out)
       std::vector<Word> with = cur.words;
@@ -135,7 +139,10 @@ inline std::vector<Cue> make_cues(const Result& r, const CueOptions& o) {
       const bool sentence = (last == '.' || last == '?' || last == '!') && cur.end - cur.start >= o.min_s;
       if (o.one_word || long_text || long_time || pause || sentence) { cues.push_back(cur); cur = Cue(); }
     }
-    if (cur.words.empty()) cur.start = w.start;
+    if (cur.words.empty()) {
+      cur.start = w.start;
+      cur.speaker = *who[i];
+    }
     cur.words.push_back(w);
     cur.end = w.end;
   }
@@ -162,7 +169,8 @@ inline std::string to_json(const Result& r) {
   for (size_t i = 0; i < r.segments.size(); ++i) {
     const Segment& g = r.segments[i];
     o += (i ? ",\n" : "\n") + std::string(" {\"id\": ") + std::to_string(i) + ", \"start\": " + num(g.start) + ", \"end\": " +
-         num(g.end) + ", \"lang\": " + json_str(g.lang) + ", \"text\": " + json_str(trim_copy(g.text)) +
+         num(g.end) + ", \"lang\": " + json_str(g.lang) +
+         (g.speaker.empty() ? std::string() : ", \"speaker\": " + json_str(g.speaker)) + ", \"text\": " + json_str(trim_copy(g.text)) +
          ", \"avg_logprob\": " + num(g.avg_logprob, 4) + ", \"no_speech_prob\": " + num(g.no_speech_prob, 4) +
          ", \"compression_ratio\": " + num(g.compression_ratio, 3) + ", \"temperature\": " + num(g.temperature, 1) + ", \"words\": [";
     for (size_t w = 0; w < g.words.size(); ++w)
@@ -178,7 +186,8 @@ inline std::string to_fw(const Result& r) {
   for (size_t i = 0; i < r.segments.size(); ++i) {
     const Segment& g = r.segments[i];
     o += (i ? ",\n" : "\n") + std::string(" {\"start\": ") + num(g.start) + ", \"end\": " + num(g.end) + ", \"text\": " +
-         json_str(trim_copy(g.text)) + ", \"lang\": " + json_str(g.lang) + ", \"words\": [";
+         json_str(trim_copy(g.text)) + ", \"lang\": " + json_str(g.lang) +
+         (g.speaker.empty() ? std::string() : ", \"speaker\": " + json_str(g.speaker)) + ", \"words\": [";
     for (size_t w = 0; w < g.words.size(); ++w)
       o += (w ? ", " : "") + std::string("{\"start\": ") + num(g.words[w].start) + ", \"end\": " + num(g.words[w].end) +
            ", \"word\": " + json_str(g.words[w].text) + ", \"p\": " + num(g.words[w].p, 3) + "}";
@@ -235,8 +244,11 @@ inline std::string to_verbose_json(const Result& r, const std::string& task) {
 inline std::string to_openai_json(const Result& r) { return "{\"text\": " + json_str(trim_copy(r.text())) + "}\n"; }
 inline std::string to_txt(const Result& r, bool times = false) {
   std::string o;
+  const std::string* last = nullptr;
   for (const Segment& g : r.segments) {
     if (times) o += "[" + clock(g.start, '.', 3).substr(0, 8) + "] ";
+    if (!g.speaker.empty() && (!last || *last != g.speaker)) o += g.speaker + ": ";  // (when the speaker changes)
+    last = &g.speaker;
     o += trim_copy(g.text) + "\n";
   }
   return o;
@@ -270,8 +282,9 @@ inline std::string to_vtt(const std::vector<Cue>& cues, bool word_timing) {
         }
         text += xml(c.words[w].text);
       }
-      o += text + "\n\n";
+      o += (c.speaker.empty() ? "" : "<v " + xml(c.speaker) + ">") + text + "\n\n";
     } else {
+      if (!c.speaker.empty()) o += "<v " + xml(c.speaker) + ">";
       for (const std::string& l : c.lines) o += xml(l) + "\n";
       o += "\n";
     }
@@ -318,7 +331,9 @@ inline std::string to_ass(const std::vector<Cue>& cues) {
       for (char& ch : t) if (ch == '{' || ch == '}') ch = ' ';
       text += "{\\k" + std::to_string(k) + "}" + t + (w + 1 < c.words.size() ? " " : "");
     }
-    o += "Dialogue: 0," + clock(c.start, '.', 2, false) + "," + clock(c.end, '.', 2, false) + ",Default,,0,0,0,," + text + "\n";
+    std::string name = c.speaker;  // (the Name field: no commas)
+    for (char& ch : name) if (ch == ',') ch = ' ';
+    o += "Dialogue: 0," + clock(c.start, '.', 2, false) + "," + clock(c.end, '.', 2, false) + ",Default," + name + ",0,0,0,," + text + "\n";
   }
   return o;
 }
@@ -335,7 +350,8 @@ inline std::string to_ttml(const std::vector<Cue>& cues, const std::string& lang
 inline std::string to_md(const Result& r, const std::string& title) {
   std::string o = "# " + title + "\n\n";
   for (const Segment& g : r.segments)
-    o += "**[" + clock(g.start, '.', 3).substr(0, 8) + "]** " + trim_copy(g.text) + "\n\n";
+    o += "**[" + clock(g.start, '.', 3).substr(0, 8) + "]" + (g.speaker.empty() ? "" : " " + g.speaker + ":") + "** " +
+         trim_copy(g.text) + "\n\n";
   return o;
 }
 inline std::string to_table(const Result& r, char sep) {
@@ -345,9 +361,10 @@ inline std::string to_table(const Result& r, char sep) {
     for (char c : s) { if (c == '"') t += '"'; t += c; }
     return t + "\"";
   };
-  std::string o = std::string("start") + sep + "end" + sep + "lang" + sep + "text\n";
+  const bool who = std::any_of(r.segments.begin(), r.segments.end(), [](const Segment& g) { return !g.speaker.empty(); });
+  std::string o = std::string("start") + sep + "end" + sep + "lang" + sep + (who ? std::string("speaker") + sep : "") + "text\n";
   for (const Segment& g : r.segments)
-    o += num(g.start) + sep + num(g.end) + sep + g.lang + sep + cell(trim_copy(g.text)) + "\n";
+    o += num(g.start) + sep + num(g.end) + sep + g.lang + sep + (who ? cell(g.speaker) + sep : "") + cell(trim_copy(g.text)) + "\n";
   return o;
 }
 

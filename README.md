@@ -358,8 +358,10 @@ test uses port 8091 and needs the GPU memory.
   chat header, chat with images, audio and files (one folder per chat), voice messages, **Talk** (a spoken
   conversation), web search, documents the model writes (DOCX / PDF / DOC / RTF, corrected on request) and reads (long DOCX / PDF through
   their outline and a search, not a prompt of the whole file), a terminal the
-  model may use after you allow each command, context use and compaction; the settings behind the gear. Details:
-  [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
+  model may use after you allow each command, context use and compaction; the settings behind the gear. With
+  `--whisper`: a **Transcripts** tab (audio / video files and live recordings to text and subtitles, playback with
+  the word lit, edits, exports) and a **Meetings** tab (microphone + the meeting's sound as Me / Others, summary and
+  minutes by the loaded model). Details: [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
 - OpenAI API: `POST /v1/chat/completions` (streaming, `reasoning_content`, tool calls streamed while they are
   generated, string arguments and array / object arguments alike (Pi's `edit` puts its whole change in an array),
   `usage`; the last streamed chunk carries `usage` and llama-server's `timings` together),

@@ -1797,10 +1797,11 @@ int main(int argc, char** argv) {
       return rs.send(200, "application/json", r.dump());
     }
     // the saved transcripts and their queue (the Transcript tab; tools/server_whisper.h)
-    if (rq.path == "/v1/transcripts" || rq.path.rfind("/v1/transcripts/", 0) == 0) {
+    if (rq.path == "/v1/transcripts" || rq.path.rfind("/v1/transcripts/", 0) == 0 || rq.path == "/v1/live" ||
+        rq.path.rfind("/v1/live/", 0) == 0) {
       if (!wh)
         return rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
-      return wh->transcripts(rq, rs);
+      return rq.path.rfind("/v1/live", 0) == 0 ? wh->live(rq, rs) : wh->transcripts(rq, rs);
     }
     // OpenAI audio transcription / translation (multipart upload): the clip goes to a model with an audio encoder
     if (rq.method == "POST" && (rq.path == "/v1/audio/transcriptions" || rq.path == "/v1/audio/translations")) {

@@ -258,6 +258,12 @@ Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` 
   format; `max_chars`, `max_lines`, `max_cue_s`, `word_cues=1`) with the file name; `GET /v1/transcripts/<id>/media`
   (byte ranges); `POST /v1/transcripts/<id>/cancel`; `DELETE /v1/transcripts/<id>`. One file at a time, after the
   OpenAI endpoint's requests in its lock; 507 when the disk lacks the file's size + 512 MB.
+- **Live recordings** (the Transcripts tab's Live, the Meetings tab): `POST /v1/live` `{name, language, terms,
+  beam_size, tracks: 1 | 2, rate, speakers, kind, mp3_kbps}` -> a transcript record with status `live`;
+  `POST /v1/live/<id>/audio?since=N` 16-bit PCM, the tracks interleaved -> `{segments, partial, count, heard_s,
+  pending}`; `POST /v1/live/<id>/mark` `{t}`; `POST /v1/live/<id>/stop` (the accurate pass is queued, then the
+  recording becomes MP3). `kind: "meeting"` puts a transcript in the Meetings tab; `PUT /v1/transcripts/<id>`
+  `{summary}` keeps a meeting's summary (`summary.md`).
 - **Safety**: the upload is held in memory within the HTTP body limit (256 MB) and decoded from memory by Media
   Foundation (WAV directly); no path or file name from the client is used; decoding stops past the length limit; one
   transcription runs at a time, at most 4 requests are running or waiting (429 past that); a client that closes its
@@ -265,7 +271,7 @@ Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` 
 
 ## The Transcript function ("Transkrip")
 
-A tab in the web UI header, next to Chat and Meeting:
+Built 2026-10-28 (W5; the status page has what it does and how it was checked). The plan it followed:
 
 ```
 [ Chat ]  [ Transkrip ]  [ Rapat ]
@@ -288,6 +294,8 @@ Formats: [✓] SRT  [ ] VTT  [ ] YouTube SBV  [ ] YouTube SRV3  [ ] ASS  [ ] TTM
 - Everything saved in `transcripts\` as it is made; a history of past transcripts.
 
 ## The Meeting function ("Rapat")
+
+Built 2026-10-28 in the browser (W6 / W7: live, Me / Others from the microphone and a shared tab or screen, the accurate pass, summaries and minutes); `arc-recorder.exe` below is still to come. The plan:
 
 ```
 [ Chat ]  [ Transkrip ]  [ Rapat ]

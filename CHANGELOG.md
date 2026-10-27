@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-28: Transcripts and Meetings in the web UI
+
+- **Transcripts tab**: drop audio or video files; each is transcribed in the queue with its progress; the
+  transcript plays with its media, the word being said lit; click a word to play from it, double-click a line to
+  correct it, find and replace a term everywhere, and export SRT, VTT, YouTube, ASS, TTML, text, Markdown, CSV,
+  Remotion or JSON.
+- **Live**: record the microphone or a tab's / the screen's sound and read the text about 2 s behind; when you
+  stop, the whole recording is transcribed again accurately and kept as MP3 (192 kbps).
+- **Meetings tab**: "Start a meeting" records your microphone as "Me" and the meeting (a browser tab, or the
+  screen's sound) as "Others"; afterwards "Summarize" (the loaded chat model: summary, decisions, tasks, open
+  questions with their minute, in the meeting's language) and the minutes as DOCX or PDF.
+
 ## 2026-10-28: Whisper takes video files and keeps transcripts
 
 - **Video and voice notes**: the audio of MP4, MOV, MKV, WebM, AVI and WMV files, and Ogg Opus voice notes

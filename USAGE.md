@@ -260,7 +260,24 @@ While the server is running:
   - There is no answer length limit to set: an answer may use the rest of the context (the reasoning is bounded by
     the server's thinking budget), and **Compact** in the chat header (or automatically when the context is nearly
     full) summarizes the earlier messages.
-  - Transcripts and Meetings in the left rail come with Whisper native ([docs/whisper-native.md](docs/whisper-native.md)).
+- **Web UI: Transcripts and Meetings** (the left rail's second and third buttons; the server started with
+  `--whisper auto`, or `arc-server start -Whisper auto`; [docs/whisper-native.md](docs/whisper-native.md)).
+  - **Transcripts**: drop audio or video files (MP3, M4A, WAV, Ogg / Opus voice notes, MP4, MOV, MKV, WebM, AVI,
+    WMV) or choose them; they upload and wait their turn, each with its progress. Pick the **language** (detect,
+    Indonesian, English, or **Indonesian + English mixed**, about 3x slower), **Accurate** (beam 5) or **Fast**, and
+    a **Glossary** of names and terms the speech uses (written inside a casual sentence, the text keeps a casual
+    spelling). Open a transcript: it plays with its media and lights the word being said; click a word or a time to
+    play from there; double-click a line to correct it; **Find / Replace all** changes a term everywhere; tick the
+    formats (SRT, WebVTT, YouTube SBV / SRV3, ASS, TTML, text, Markdown, CSV, Remotion captions / pipeline, JSON) and
+    the subtitle shape, then **Export**. Everything is kept in `%USERPROFILE%\arcinferzero\transcripts\`.
+  - **Live**: choose the microphone or a tab's / the screen's sound (Chrome asks what to share: tick "Share tab
+    audio") and press **Live**: the text comes about 2 s behind, grey while a sentence is still being said;
+    **★ Mark** marks a moment. **Stop**: the whole recording is transcribed again accurately, then kept as MP3.
+  - **Meetings**: **Start a meeting** records your microphone as "Me" and the meeting's sound (the tab of Meet /
+    Zoom web / Teams web, or the screen) as "Others"; use headphones, so the microphone does not hear the others
+    too. Afterwards **Summarize** (the loaded chat model writes the summary, decisions, action items and open
+    questions with their minute, in the meeting's language) and **Minutes DOCX / PDF** (also in the Files panel).
+    A recording made elsewhere can be dropped in the Meetings list too.
 - **Web UI: web search.** Turn on **Web search** in the settings and the model can search the web (`web_search`) and
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
   on with what it found. The server does the requests itself (Brave Search, Bing when Brave gives nothing) and

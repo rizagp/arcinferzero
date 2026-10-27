@@ -247,7 +247,76 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 #termin { flex: 1; border: 0; outline: none; resize: none; background: transparent; color: inherit; font: inherit; max-height: 30vh; padding: 2px 0; }
 #termbtn.on { color: var(--accent); }
 
+/* transcripts (Whisper on the server): the list over the side, the transcript in place of the chat */
+.app.trmode .chat { display: none; }
+.tradd { margin: 4px 12px 8px; padding: 12px; border: 2px dashed var(--line); border-radius: 10px; text-align: center; color: var(--muted); font-size: 13.5px; }
+.tradd.drag { border-color: var(--accent); color: var(--accent); }
+.tradd button { color: var(--accent); font-weight: 600; }
+.tropts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 12px 8px; border-bottom: 1px solid var(--line); }
+.tropts select, .tropts textarea { font: inherit; font-size: 13px; color: var(--text); background: var(--head); border: 0; border-radius: 6px; padding: 5px 8px; min-width: 0; }
+.tropts textarea { grid-column: 1 / -1; resize: vertical; min-height: 32px; }
+.trrow { display: flex; gap: 10px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.trrow:hover { background: var(--hover); }
+.trrow.on { background: var(--active); }
+.trrow .thumb { width: 38px; height: 38px; border-radius: 6px; flex: none; background: var(--head); display: grid; place-items: center; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
+.trrow .ftxt { flex: 1; min-width: 0; }
+.trrow .fname { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trrow .fmeta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trrow .fmeta.err { color: var(--danger); }
+.bar { height: 4px; border-radius: 2px; background: var(--line); margin-top: 4px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+.trview { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--side); }
+.trview[hidden] { display: none; }
+#trname { font-size: 16px; text-align: left; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+#trsub { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#trnote { font-size: 12.5px; color: var(--accent); max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trmedia { background: #000; display: flex; justify-content: center; }
+.trmedia[hidden] { display: none; }
+.trmedia video { width: 100%; max-height: 34vh; display: block; }
+.trmedia.audio { background: var(--head); }
+.trmedia.audio video { height: 54px; }
+.trtools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--head); font-size: 13px; }
+.trtools[hidden], .trfoot[hidden] { display: none; }
+.trtools input[type=text] { font: inherit; font-size: 13px; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; width: 150px; }
+.trtools .fbtn, .trfoot .fbtn { flex: none; }
+.trtools label { margin-left: auto; display: inline-flex; gap: 4px; align-items: center; color: var(--muted); }
+#trbody { padding: 10px 5% 30px; background: var(--side); }
+.seg { display: flex; gap: 12px; padding: 3px 0; max-width: 980px; margin: 0 auto; }
+.seg .t { flex: none; width: 70px; color: var(--accent); font-size: 12.5px; font-variant-numeric: tabular-nums; padding-top: 3px; text-align: left; }
+.seg .t small { font-size: 10.5px; color: var(--muted); text-transform: uppercase; display: block; line-height: 1.2; }
+.seg .x { flex: 1; min-width: 0; line-height: 1.65; border-radius: 4px; }
+.seg .x:hover { background: var(--hover); }
+.seg .x[contenteditable="true"] { outline: 2px solid var(--accent); padding: 0 4px; background: var(--input); }
+.w { cursor: pointer; border-radius: 3px; }
+.w:hover { background: var(--active); }
+.w.cur { background: var(--accent); color: var(--accent-text); }
+.w.low { text-decoration: underline dotted var(--muted); }
+.w.hit { background: rgba(255, 196, 0, .45); }
+.trfoot { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 8px 14px; background: var(--head); border-top: 1px solid var(--line); font-size: 13px; }
+.trfoot label { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
+.trfoot input[type=number] { width: 52px; font: inherit; font-size: 13px; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+#trexport { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.trempty { max-width: 560px; margin: 12vh auto 0; color: var(--muted); text-align: center; line-height: 1.6; }
+.trlive { display: flex; gap: 6px; padding: 4px 12px 0; }
+.trlive select { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--text); background: var(--head); border: 0; border-radius: 6px; padding: 5px 8px; }
+.trlive .fbtn { flex: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.trlive .dot, .trrow .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--danger); display: inline-block; }
+#trlive.on { background: var(--danger); color: #fff; border-color: var(--danger); }
+#trlive.on .dot, #trsub .dot { animation: blink 1s steps(2, start) infinite; background: #fff; }
+#trsub .dot { background: var(--danger); margin-right: 4px; }
+@keyframes blink { to { visibility: hidden; } }
+.chat-head .fbtn { flex: none; padding: 5px 9px; }
+.seg .t b { display: block; font-size: 11px; color: var(--text); font-weight: 600; line-height: 1.2; }
+.seg .mk { color: #e8a400; margin-right: 4px; }
+.seg.partial .x { color: var(--muted); font-style: italic; }
+.trsummary { max-width: 980px; margin: 0 auto 14px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--head); line-height: 1.55; }
+.trsummary h1, .trsummary h2, .trsummary h3 { font-size: 15px; margin: 10px 0 4px; }
+.trsummary ul { margin: 4px 0; padding-left: 22px; }
+
 @media (max-width: 760px) {
+  .app.trmode:not(.trviewing) .trview { display: none; }
+  .app.trmode.trviewing .side { display: none; }
+  #trside, #trbackbtn { display: grid !important; }
   .rail { display: none; }
   .side { width: 100%; max-width: none; min-width: 0; }
   .app.chatting .side { display: none; }
@@ -264,9 +333,9 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 <body>
 <div class="app" id="app">
   <nav class="rail" aria-label="Sections">
-    <button class="on" title="Chats" aria-label="Chats"><svg viewBox="0 0 24 24"><path d="M12 3C6.5 3 2 6.9 2 11.7c0 2.4 1.1 4.6 2.9 6.2L4 22l4.3-2.2c1.2.4 2.4.6 3.7.6 5.5 0 10-3.9 10-8.7S17.5 3 12 3zm0 15.4c-1.1 0-2.2-.2-3.2-.6l-.5-.2-2 1 .4-1.9-.4-.4C4.8 15 4 13.4 4 11.7 4 8 7.6 5 12 5s8 3 8 6.7-3.6 6.7-8 6.7z"/></svg></button>
-    <button disabled title="Transcripts: coming with Whisper native (docs/whisper-native.md)" aria-label="Transcripts (coming soon)"><svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h8v2H8zm0 4h8v2H8z"/></svg><span class="soon">soon</span></button>
-    <button disabled title="Meetings: coming with Whisper native (docs/whisper-native.md)" aria-label="Meetings (coming soon)"><svg viewBox="0 0 24 24"><path d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.8 2 1.9 2 3.4V19h6v-2.5c0-2.3-4.7-3.5-7-3.5z"/></svg><span class="soon">soon</span></button>
+    <button class="on" id="chatsbtn" title="Chats" aria-label="Chats"><svg viewBox="0 0 24 24"><path d="M12 3C6.5 3 2 6.9 2 11.7c0 2.4 1.1 4.6 2.9 6.2L4 22l4.3-2.2c1.2.4 2.4.6 3.7.6 5.5 0 10-3.9 10-8.7S17.5 3 12 3zm0 15.4c-1.1 0-2.2-.2-3.2-.6l-.5-.2-2 1 .4-1.9-.4-.4C4.8 15 4 13.4 4 11.7 4 8 7.6 5 12 5s8 3 8 6.7-3.6 6.7-8 6.7z"/></svg></button>
+    <button id="trbtn" disabled title="Transcripts need Whisper on the server (start it with --whisper auto)" aria-label="Transcripts"><svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h8v2H8zm0 4h8v2H8z"/></svg></button>
+    <button id="mtbtn" disabled title="Meetings need Whisper on the server (start it with --whisper auto)" aria-label="Meetings"><svg viewBox="0 0 24 24"><path d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.8 2 1.9 2 3.4V19h6v-2.5c0-2.3-4.7-3.5-7-3.5z"/></svg></button>
     <button id="filesbtn" title="Files: everything attached in the chats, kept in the data folder (uploads)" aria-label="Files"><svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg></button>
     <span class="grow"></span>
     <button id="gear" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M19.4 13c.1-.3.1-.7.1-1s0-.7-.1-1l2.1-1.6c.2-.2.2-.4.1-.6l-2-3.5c-.1-.2-.4-.3-.6-.2l-2.5 1c-.5-.4-1.1-.7-1.7-1L14.5 2.4c0-.2-.2-.4-.5-.4h-4c-.3 0-.5.2-.5.4l-.4 2.7c-.6.3-1.2.6-1.7 1l-2.5-1c-.2-.1-.5 0-.6.2l-2 3.5c-.1.2-.1.5.1.6L4.6 11c0 .3-.1.7-.1 1s0 .7.1 1l-2.1 1.6c-.2.2-.2.4-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.7c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5c.1-.2.1-.5-.1-.6L19.4 13zM12 15.5c-1.9 0-3.5-1.6-3.5-3.5s1.6-3.5 3.5-3.5 3.5 1.6 3.5 3.5-1.6 3.5-3.5 3.5z"/></svg></button>
@@ -276,6 +345,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
     <div class="side-head">
       <h2>Chats</h2>
       <button class="iconbtn" id="newchat" title="New chat" aria-label="New chat"><svg viewBox="0 0 24 24"><path d="M3 17.2V21h3.8l11-11.1-3.7-3.7L3 17.2zM20.7 7c.4-.4.4-1 0-1.4l-2.3-2.3c-.4-.4-1-.4-1.4 0l-1.8 1.8 3.7 3.7L20.7 7z"/></svg></button>
+      <button class="iconbtn" id="trside" title="Transcripts" aria-label="Transcripts" style="display:none"><svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h8v2H8zm0 4h8v2H8z"/></svg></button>
       <button class="iconbtn" id="filesside" title="Files" aria-label="Files" style="display:none"><svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg></button>
       <button class="iconbtn" id="gearside" title="Settings" aria-label="Settings" style="display:none"><svg viewBox="0 0 24 24"><use href="#g-gear"/></svg></button>
     </div>
@@ -298,6 +368,30 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <button class="fbtn" id="fdelsel" disabled>Delete selected</button>
         <button class="fbtn" id="fdelunused">Delete unused</button>
       </div>
+    </div>
+    <div class="panel" id="trpanel" aria-label="Transcripts">
+      <div class="side-head">
+        <button class="iconbtn" id="trback" title="Chats" aria-label="Back to the chats"><svg viewBox="0 0 24 24"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20z"/></svg></button>
+        <h2 id="trtitle">Transcripts</h2><span id="trtotal" class="ftotal"></span>
+      </div>
+      <div class="trlive">
+        <button class="fbtn" id="trlive" title="Record and transcribe as it is spoken: the text comes ~2 s behind; when you stop, the whole recording is transcribed again accurately"><span class="dot"></span><span id="trlivetxt">Live</span></button>
+        <select id="trsrc" aria-label="Sound to record"></select>
+      </div>
+      <div class="tradd" id="tradd"><span id="traddtxt">Drop audio or video files here, or</span> <button id="trpick">choose files</button>
+        <input type="file" id="trfile" multiple hidden accept="audio/*,video/*,.mkv,.webm,.opus,.ogg,.oga,.m4a,.wma,.wmv,.avi,.mov,.flac,.aac"></div>
+      <div class="tropts">
+        <select id="trlang" aria-label="Language" title="The speech's language: detected per 30 s, one, or two mixed (each utterance's own; about 3x slower)">
+          <option value="auto">Language: detect</option><option value="id">Indonesian</option><option value="en">English</option>
+          <option value="id,en">Indonesian + English mixed</option>
+        </select>
+        <select id="trbeam" aria-label="Accuracy" title="Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy">
+          <option value="5">Accurate (beam 5)</option><option value="1">Fast (greedy)</option>
+        </select>
+        <textarea id="trterms" rows="1" placeholder="Glossary: names and terms the speech uses (Qwen, GGUF, Level Zero…)" aria-label="Glossary"
+          title="Kept before every 30 s of audio, so Whisper writes these words as given. Written inside a casual sentence, the text keeps a casual spelling; a bare list makes it more formal"></textarea>
+      </div>
+      <div class="body" id="trlist"></div>
     </div>
     <div class="panel" id="panel" aria-label="Settings">
       <div class="side-head">
@@ -376,6 +470,39 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <button class="iconbtn" id="rec" title="Voice message: record, then send" aria-label="Record a voice message"><svg viewBox="0 0 24 24"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 0 0-7 0v6A3.5 3.5 0 0 0 12 15zm6.2-3.5c0 3.4-2.7 6.1-6.2 6.2s-6.2-2.8-6.2-6.2H4c0 4.1 3.1 7.4 7 7.9V22h2v-2.6c3.9-.5 7-3.8 7-7.9h-1.8z"/></svg></button>
       </div>
     </footer>
+  </section>
+
+  <section class="trview" id="trview" hidden aria-label="Transcript">
+    <header class="chat-head">
+      <button class="iconbtn" id="trbackbtn" title="Transcripts" aria-label="Back to the transcripts" style="display:none"><svg viewBox="0 0 24 24"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20z"/></svg></button>
+      <div class="who"><button id="trname" title="Rename">Transcripts</button><div id="trsub">Audio and video files to text and subtitles</div></div>
+      <span id="trnote"></span>
+      <button class="fbtn" id="trmark" title="Mark this moment (★ in the transcript)" hidden>★ Mark</button>
+      <button class="fbtn" id="trstoplive" title="Stop recording: the whole recording is then transcribed again accurately" hidden>■ Stop</button>
+      <button class="fbtn" id="trsum" title="Summary, decisions, tasks and open questions, by the loaded chat model" hidden>Summarize</button>
+      <button class="fbtn" id="trdocx" title="Minutes as a Word document (the summary and the transcript)" hidden>Minutes DOCX</button>
+      <button class="fbtn" id="trpdf" title="Minutes as a PDF (the summary and the transcript)" hidden>PDF</button>
+      <button class="iconbtn" id="trcancel" title="Stop the transcription (what is done is kept)" aria-label="Stop" hidden><svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg></button>
+      <button class="iconbtn" id="trdel" title="Delete the transcript and its file" aria-label="Delete" hidden><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>
+    </header>
+    <div class="trmedia" id="trmedia" hidden><video id="trvideo" controls preload="metadata"></video></div>
+    <div class="trtools" id="trtools" hidden>
+      <input type="text" id="trfind" placeholder="Find" aria-label="Find">
+      <input type="text" id="trrepl" placeholder="Replace with" aria-label="Replace with">
+      <button class="fbtn" id="trreplbtn" title="Replace every match in the transcript (the words' times are kept where they can be)">Replace all</button>
+      <span id="trfound"></span>
+      <label title="Scroll the transcript with the playback"><input type="checkbox" id="trfollow" checked> Follow</label>
+    </div>
+    <main id="trbody"><div class="trempty">Drop audio or video files in the list on the left (MP3, M4A, WAV, Ogg / Opus voice notes, MP4, MOV, MKV, WebM, AVI, WMV).<br>
+      Whisper on this server writes them as text with every word's time; subtitles and text come out in the formats you tick.</div></main>
+    <div class="trfoot" id="trfoot" hidden>
+      <span id="trfmts"></span>
+      <label title="Characters per subtitle line">Line <input type="number" id="trchars" min="8" max="200" value="42"></label>
+      <label title="Lines per subtitle"><input type="number" id="trlines" min="1" max="4" value="2"> lines</label>
+      <label title="Longest subtitle, seconds">≤ <input type="number" id="trmaxs" min="0.5" max="30" step="0.5" value="7"> s</label>
+      <label title="One word per subtitle (short vertical videos)"><input type="checkbox" id="trword"> word by word</label>
+      <button class="fbtn" id="trexport">Export</button>
+    </div>
   </section>
 
   <aside class="termpane" id="termpane" hidden aria-label="Terminal">
@@ -507,6 +634,7 @@ async function refreshModel() {
     +caps.sampling.top_p.toFixed(2) + ", top-k " + caps.sampling.top_k + ")" : "");
   if (!$("tempon").checked && t !== null) $("temp").value = +t.toFixed(2);
   showModel();
+  trCaps();
 }
 let models = [];
 // (a catalog name is "org/repo": the repository part reads better; the id says the variant)
@@ -2632,6 +2760,690 @@ input.addEventListener("paste", (e) => {
 
 showEmpty("New conversation");
 loadConvs();
+// ---- Transcripts (Whisper on the server, /v1/transcripts): audio and video files to text and subtitles. The list
+// over the side (files uploaded in 16-MB pieces, the server's queue with its progress), the transcript in place of the
+// chat: the media with the word being played lit, a word clicked plays from it, a segment double-clicked is edited
+// (the words' times kept where the words stay), find / replace over the whole, exports in the formats ticked. The
+// options and formats are remembered.
+const TR_FORMATS = [["srt", "SRT"], ["vtt", "WebVTT"], ["sbv", "YouTube SBV"], ["srv3", "YouTube SRV3"], ["ass", "ASS"], ["ttml", "TTML"],
+  ["txt", "Text"], ["md", "Markdown"], ["csv", "CSV"], ["captions", "Remotion captions"], ["fw", "Remotion pipeline (fw)"], ["json", "JSON"]];
+const TR_PIECE = 16 << 20;
+const TR_AUDIO = ["mp3", "m4a", "aac", "wav", "ogg", "oga", "opus", "flac", "wma"];
+const tr = { kind: "", list: [], sel: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0, saveT: 0, noteT: 0 };
+$("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
+function trCaps() {
+  $("trbtn").disabled = $("mtbtn").disabled = $("trside").disabled = !caps.stt;
+  $("trbtn").title = caps.stt ? "Transcripts: audio and video files to text and subtitles (Whisper on this server)"
+    : "Transcripts need Whisper on the server (start it with --whisper auto)";
+  $("mtbtn").title = caps.stt ? "Meetings: recorded with your microphone and the meeting's sound, transcribed as Me / Others, summarized"
+    : "Meetings need Whisper on the server (start it with --whisper auto)";
+}
+(function trLoadPrefs() {
+  const p = prefs.tr || {};
+  if (p.lang) $("trlang").value = p.lang;
+  if (p.beam) $("trbeam").value = p.beam;
+  if (p.terms) $("trterms").value = p.terms;
+  const f = Array.isArray(p.fmts) ? p.fmts : ["srt", "txt"];
+  $("trfmts").querySelectorAll("input").forEach((c) => { c.checked = f.includes(c.value); });
+  if (p.chars) $("trchars").value = p.chars;
+  if (p.lines) $("trlines").value = p.lines;
+  if (p.maxs) $("trmaxs").value = p.maxs;
+  $("trword").checked = !!p.word;
+})();
+function trSavePrefs() {
+  prefs.tr = { lang: $("trlang").value, beam: $("trbeam").value, terms: $("trterms").value,
+    fmts: [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value),
+    chars: $("trchars").value, lines: $("trlines").value, maxs: $("trmaxs").value, word: $("trword").checked };
+  store.set("arcinferzero-prefs", prefs);
+}
+["trlang", "trbeam", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
+$("trfmts").addEventListener("change", trSavePrefs);
+const trClock = (s) => {
+  s = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = String(s % 60).padStart(2, "0");
+  return h ? h + ":" + String(m).padStart(2, "0") + ":" + x : m + ":" + x;
+};
+function trNote(t, ms) {
+  $("trnote").textContent = t;
+  $("trnote").title = t;
+  clearTimeout(tr.noteT);
+  tr.noteT = setTimeout(() => { $("trnote").textContent = ""; }, ms || 6000);
+}
+// kind "": the Transcripts tab (files, live recordings of one source); "meeting": the Meetings tab (the microphone
+// and the meeting's sound as two tracks, Me / Others; summaries and minutes)
+function trMode(on, kind) {
+  const k = kind || "";
+  if (on && k !== tr.kind) {  // (the other tab's list: nothing of this one chosen)
+    tr.kind = k;
+    if (!live.on || tr.sel !== live.id) trClose();
+  }
+  app.classList.toggle("trmode", on);
+  $("trpanel").classList.toggle("open", on);
+  $("trview").hidden = !on;
+  $("chatsbtn").classList.toggle("on", !on);
+  $("trbtn").classList.toggle("on", on && !tr.kind);
+  $("mtbtn").classList.toggle("on", on && tr.kind === "meeting");
+  const m = tr.kind === "meeting";
+  $("trtitle").textContent = m ? "Meetings" : "Transcripts";
+  $("traddtxt").textContent = m ? "Or drop a meeting's recording here, or" : "Drop audio or video files here, or";
+  const src = m ? [["both", "Microphone + the meeting's sound (a tab or the screen)"], ["tab", "The meeting's sound only"], ["mic", "Microphone only (people in the room)"]]
+    : [["mic", "Microphone"], ["tab", "A tab's or the screen's sound"], ["both", "Microphone + a tab's or the screen's sound"]];
+  const keep = (prefs.tr || {})[m ? "msrc" : "src"];
+  $("trsrc").innerHTML = src.map(([v, t]) => '<option value="' + v + '">' + t + "</option>").join("");
+  if (keep && src.some(([v]) => v === keep)) $("trsrc").value = keep;
+  liveButtons();
+  if (on) { openPanel(false); openFiles(false); trPoll(); }
+  else { clearTimeout(tr.timer); app.classList.remove("trviewing"); $("trvideo").pause(); }
+}
+function trClose() {  // (nothing chosen)
+  tr.sel = "";
+  tr.meta = tr.data = null;
+  $("trvideo").pause();
+  $("trvideo").removeAttribute("src");
+  $("trvideo").dataset.id = "";
+  for (const id of ["trmedia", "trtools", "trfoot", "trcancel", "trdel", "trsum", "trdocx", "trpdf", "trmark", "trstoplive"]) $(id).hidden = true;
+  $("trname").textContent = tr.kind === "meeting" ? "Meetings" : "Transcripts";
+  $("trsub").textContent = "";
+  $("trbody").replaceChildren();
+  app.classList.remove("trviewing");
+}
+$("trsrc").addEventListener("change", () => {
+  prefs.tr = { ...(prefs.tr || {}), [tr.kind === "meeting" ? "msrc" : "src"]: $("trsrc").value };
+  store.set("arcinferzero-prefs", prefs);
+});
+$("trbtn").addEventListener("click", () => trMode(true, ""));
+$("mtbtn").addEventListener("click", () => trMode(true, "meeting"));
+$("trside").addEventListener("click", () => trMode(true, tr.kind));
+$("chatsbtn").addEventListener("click", () => trMode(false));
+$("trback").addEventListener("click", () => trMode(false));
+$("trbackbtn").addEventListener("click", () => app.classList.remove("trviewing"));
+async function trPoll() {
+  clearTimeout(tr.timer);
+  if (!app.classList.contains("trmode")) return;
+  try {
+    const j = await (await fetch("/v1/transcripts")).json();
+    tr.list = Array.isArray(j.data) ? j.data : [];
+  } catch (e) {}
+  trRenderList();
+  const cur = tr.list.find((x) => x.id === tr.sel);
+  if (cur && cur.status !== tr.selStatus) trOpen(cur.id);  // (finished, failed, stopped: its transcript now)
+  else if (cur) trHeader(cur);
+  const busy = tr.uploads.size || tr.list.some((x) => ["uploading", "queued", "running"].includes(x.status));
+  tr.timer = setTimeout(trPoll, busy ? 1000 : 5000);
+}
+function trState(x) {
+  const up = tr.uploads.get(x.id);
+  if (up) return { text: "Uploading " + Math.floor(100 * up.sent / up.size) + " %", p: up.sent / up.size };
+  const langs = (x.languages || []).join(" + ");
+  switch (x.status) {
+    case "uploading": return { text: "The upload did not finish (the page was closed?): delete it and add the file again", err: true };
+    case "live": return { text: x.id === live.id ? "Recording · " + trClock(live.heard) : "Recording (in another window)" };
+    case "queued": return { text: "Waiting" + (x.position > 1 ? " (" + x.position + " in line)" : ""), p: 0 };
+    case "running": return { text: Math.floor(100 * (x.progress || 0)) + " % · " + trClock(x.done_s) + " / " + trClock(x.duration) +
+      (x.x_realtime ? " · " + Math.round(x.x_realtime) + "x realtime" : ""), p: x.progress || 0 };
+    case "done": return { text: trClock(x.duration) + (langs ? " · " + langs : "") + " · " + (x.words || 0) + " words · " +
+      new Date(x.created * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) };
+    case "failed": return { text: "Failed: " + (x.error || "unknown error"), err: true };
+    case "cancelled": return { text: "Stopped at " + trClock(x.done_s) + " (what was done is kept)" };
+    default: return { text: x.status || "" };
+  }
+}
+function trRenderList() {
+  const box = $("trlist"), m = tr.kind === "meeting";
+  box.replaceChildren();
+  const list = tr.list.filter((x) => (x.kind === "meeting") === m);
+  const n = list.length;
+  $("trtotal").textContent = n ? n + (m ? " meeting" : " transcript") + (n === 1 ? "" : "s") : "";
+  if (!n) {
+    const d = document.createElement("div");
+    d.className = "none";
+    d.textContent = m ? "Meetings you record (or whose recordings you drop here) appear here." : "Transcripts of the files you add or record appear here.";
+    box.appendChild(d);
+  }
+  for (const x of list) {
+    const r = document.createElement("div");
+    r.className = "trrow" + (x.id === tr.sel ? " on" : "");
+    r.innerHTML = '<div class="thumb"></div><div class="ftxt"><span class="fname"></span><div class="fmeta"></div></div>';
+    if (x.status === "live") r.querySelector(".thumb").innerHTML = '<span class="dot"></span>';
+    else r.querySelector(".thumb").textContent = String(x.ext || "").slice(0, 4);
+    r.querySelector(".fname").textContent = x.name;
+    r.querySelector(".fname").title = x.name;
+    const s = trState(x), meta = r.querySelector(".fmeta");
+    meta.textContent = s.text;
+    meta.title = s.text;
+    if (s.err) meta.classList.add("err");
+    if (s.p !== undefined) {
+      const b = document.createElement("div");
+      b.className = "bar";
+      b.innerHTML = "<i></i>";
+      b.firstChild.style.width = (100 * s.p).toFixed(1) + "%";
+      r.querySelector(".ftxt").appendChild(b);
+    }
+    r.addEventListener("click", () => trOpen(x.id));
+    box.appendChild(r);
+  }
+}
+// the file chooser and drops: each file added on the server, then sent in pieces, one file after another
+$("trpick").addEventListener("click", () => $("trfile").click());
+$("trfile").addEventListener("change", () => { trUpload([...$("trfile").files]); $("trfile").value = ""; });
+for (const el of [$("tradd"), $("trview")]) {
+  el.addEventListener("dragover", (e) => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); $("tradd").classList.add("drag"); } });
+  el.addEventListener("dragleave", () => $("tradd").classList.remove("drag"));
+  el.addEventListener("drop", (e) => {
+    $("tradd").classList.remove("drag");
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    trUpload([...e.dataTransfer.files]);
+  });
+}
+let trUploading = Promise.resolve();
+function trUpload(files) {
+  trUploading = trUploading.then(async () => {
+    for (const f of files) {
+      let rec;
+      try {
+        const r = await fetch("/v1/transcripts", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: f.name, size: f.size, language: $("trlang").value, beam_size: +$("trbeam").value,
+            terms: $("trterms").value.trim(), kind: tr.kind }) });
+        rec = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(rec.error?.message || "HTTP " + r.status);
+      } catch (e) { trNote("could not add " + f.name + ": " + (e.message || e), 10000); continue; }
+      const up = { size: f.size, sent: 0 };
+      tr.uploads.set(rec.id, up);
+      tr.list = [rec, ...tr.list.filter((x) => x.id !== rec.id)];
+      trRenderList();
+      if (!tr.sel) trOpen(rec.id);
+      try {
+        for (let off = 0; off < f.size;) {
+          const piece = f.slice(off, Math.min(f.size, off + TR_PIECE));
+          const r = await fetch("/v1/transcripts/" + rec.id + "/source?offset=" + off, { method: "PUT", body: piece });
+          if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error?.message || "HTTP " + r.status); }
+          off += piece.size;
+          up.sent = off;
+          trRenderList();
+        }
+      } catch (e) { trNote("the upload of " + f.name + " failed: " + (e.message || e), 10000); }
+      tr.uploads.delete(rec.id);
+      trPoll();
+    }
+  });
+}
+function trHeader(m) {
+  const rec = live.on && m.id === live.id;
+  $("trname").textContent = m.name;
+  $("trname").title = "Rename " + m.name;
+  if (!rec) $("trsub").textContent = trState(m).text;
+  $("trcancel").hidden = !["queued", "running"].includes(m.status);
+  $("trdel").hidden = rec;
+  $("trmark").hidden = $("trstoplive").hidden = !rec;
+  const done = !rec && m.kind === "meeting" && (m.status === "done" || m.status === "cancelled");
+  $("trsum").hidden = $("trdocx").hidden = $("trpdf").hidden = !done;
+}
+async function trOpen(id) {
+  tr.sel = id;
+  app.classList.add("trviewing");
+  let m;
+  try { m = await (await fetch("/v1/transcripts/" + id)).json(); } catch (e) { m = null; }
+  if (!m || m.error) { trNote("could not open the transcript"); return; }
+  if (tr.sel !== id) return;  // (another one chosen meanwhile)
+  tr.meta = m;
+  tr.selStatus = m.status;
+  tr.data = m.transcript || null;
+  trHeader(m);
+  trRenderList();
+  const v = $("trvideo");
+  if (v.dataset.id !== id) {
+    v.pause();
+    v.dataset.id = id;
+    v.src = m.status === "uploading" || m.status === "live" ? "" : "/v1/transcripts/" + id + "/media";
+    $("trmedia").classList.toggle("audio", TR_AUDIO.includes(m.ext));
+  }
+  $("trmedia").hidden = m.status === "uploading" || m.status === "live";
+  trRender();
+}
+$("trvideo").addEventListener("error", () => {
+  if ($("trvideo").getAttribute("src")) trNote("this file's format does not play in the browser; the transcript is fine", 10000);
+});
+function trRender() {
+  const body = $("trbody"), m = tr.meta, rec = live.on && tr.sel === live.id;
+  const d = rec ? { segments: [...live.draft].sort((a, b) => a.start - b.start) } : tr.data;
+  const atEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 60;
+  body.replaceChildren();
+  tr.words = [];
+  tr.cur = -1;
+  $("trtools").hidden = $("trfoot").hidden = !d || rec;
+  if (m && m.summary && !rec) {
+    const s = document.createElement("div");
+    s.className = "trsummary";
+    s.innerHTML = markdown(m.summary);
+    body.appendChild(s);
+  }
+  if (rec && !d.segments.length && !live.partial.length) {
+    const e = document.createElement("div");
+    e.className = "trempty";
+    e.textContent = "Listening… the text appears about 2 s after it is said.";
+    body.appendChild(e);
+    return;
+  }
+  if (!d) {
+    const e = document.createElement("div");
+    e.className = "trempty";
+    e.textContent = m.status === "failed" ? "The transcription failed: " + (m.error || "unknown error")
+      : m.status === "cancelled" ? "Stopped before anything was written." : trState(m).text + "…";
+    body.appendChild(e);
+    return;
+  }
+  const many = new Set(d.segments.map((g) => g.lang).filter(Boolean)).size > 1;
+  const marks = rec ? live.marks : (m?.marks || []);
+  let who = "";
+  d.segments.forEach((g, i) => {
+    const row = document.createElement("div");
+    row.className = "seg";
+    const t = document.createElement("button");
+    t.className = "t";
+    t.textContent = trClock(g.start);
+    t.title = "Play from here";
+    if (g.speaker && g.speaker !== who) { const b = document.createElement("b"); b.textContent = g.speaker; t.prepend(b); }
+    who = g.speaker || "";
+    if (many && g.lang) { const s = document.createElement("small"); s.textContent = g.lang; t.appendChild(s); }
+    t.addEventListener("click", () => trSeek(g.start));
+    const x = document.createElement("div");
+    x.className = "x";
+    x.title = "Double-click to edit";
+    if (g.words && g.words.length) {
+      g.words.forEach((w, k) => {
+        if (k) x.append(" ");
+        const s = document.createElement("span");
+        s.className = "w" + ((w.p ?? 1) < 0.5 ? " low" : "");
+        s.textContent = String(w.word).trim();
+        s.dataset.i = tr.words.length;
+        tr.words.push({ s: w.start, e: w.end, el: s });
+        x.appendChild(s);
+      });
+    } else x.textContent = g.text;
+    // (a mark: on the last segment that starts before it)
+    if (marks.some((k) => (k >= g.start || i === 0) && (i + 1 >= d.segments.length || k < d.segments[i + 1].start))) {
+      const s = document.createElement("span");
+      s.className = "mk";
+      s.textContent = "★";
+      s.title = "marked";
+      x.prepend(s);
+    }
+    x.addEventListener("click", (e) => { const i = e.target.dataset?.i; if (i !== undefined && x.contentEditable !== "true") trSeek(tr.words[+i].s); });
+    if (!rec) x.addEventListener("dblclick", () => trEdit(g, x));
+    row.append(t, x);
+    body.appendChild(row);
+  });
+  if (rec) for (const p of live.partial) {  // (what is being said: replaced by its final text)
+    const row = document.createElement("div");
+    row.className = "seg partial";
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = trClock(p.start);
+    if (p.speaker) { const b = document.createElement("b"); b.textContent = p.speaker; t.prepend(b); }
+    const x = document.createElement("div");
+    x.className = "x";
+    x.textContent = p.text + " …";
+    row.append(t, x);
+    body.appendChild(row);
+  }
+  if (rec && atEnd) body.scrollTop = body.scrollHeight;
+  trFind();
+}
+function trSeek(t) {
+  const v = $("trvideo");
+  if (!v.getAttribute("src")) return;
+  v.currentTime = Math.max(0, t - 0.05);
+  v.play().catch(() => {});
+}
+// the word being played: lit, and kept in view while Follow is on
+function trTick() {
+  const v = $("trvideo"), t = v.currentTime, w = tr.words;
+  let lo = 0, hi = w.length - 1, k = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (w[mid].s <= t) { k = mid; lo = mid + 1; } else hi = mid - 1; }
+  if (k >= 0 && t > w[k].e + 0.5) k = -1;
+  if (k === tr.cur) return;
+  if (tr.cur >= 0 && w[tr.cur]) w[tr.cur].el.classList.remove("cur");
+  tr.cur = k;
+  if (k < 0) return;
+  w[k].el.classList.add("cur");
+  if ($("trfollow").checked && !v.paused) {
+    const r = w[k].el.getBoundingClientRect(), b = $("trbody").getBoundingClientRect();
+    if (r.top < b.top + 30 || r.bottom > b.bottom - 30) w[k].el.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+}
+$("trvideo").addEventListener("timeupdate", trTick);
+$("trvideo").addEventListener("seeked", trTick);
+(function frame() { if (!$("trvideo").paused) trTick(); requestAnimationFrame(frame); })();
+// a segment's new text: words kept (with their times) where the old words line up with the new ones, the others
+// timed between their neighbours
+function trSetText(g, text) {
+  const old = g.words || [], toks = text.split(/\s+/).filter(Boolean);
+  const key = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const n = old.length, m = toks.length;
+  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; --i)
+    for (let j = m - 1; j >= 0; --j)
+      L[i][j] = key(old[i].word) === key(toks[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const at = new Array(m).fill(-1);
+  for (let i = 0, j = 0; i < n && j < m;) {
+    if (key(old[i].word) === key(toks[j])) { at[j] = i; ++i; ++j; }
+    else if (L[i + 1][j] >= L[i][j + 1]) ++i; else ++j;
+  }
+  const words = [];
+  for (let j = 0; j < m;) {
+    if (at[j] >= 0) { const o = old[at[j]]; words.push({ start: o.start, end: o.end, word: toks[j], p: o.p ?? 1 }); ++j; continue; }
+    let k = j;
+    while (k < m && at[k] < 0) ++k;  // (new words j..k-1: between the word before and the one after)
+    const a = words.length ? words[words.length - 1].end : g.start, b = k < m ? old[at[k]].start : g.end;
+    const step = Math.max(0, b - a) / (k - j);
+    for (let q = j; q < k; ++q) words.push({ start: +(a + (q - j) * step).toFixed(3), end: +(a + (q - j + 1) * step).toFixed(3), word: toks[q], p: 1 });
+    j = k;
+  }
+  g.text = text;
+  g.words = words;
+}
+function trEdit(g, x) {
+  if (x.contentEditable === "true") return;
+  x.contentEditable = "true";
+  x.textContent = g.text.trim();
+  x.focus();
+  let left = false;
+  const done = (keep) => {
+    if (left) return;
+    left = true;
+    x.contentEditable = "false";
+    const t = x.textContent.replace(/\s+/g, " ").trim();
+    if (keep && t && t !== g.text.trim()) { trSetText(g, t); trDirty(); }
+    trRender();
+  };
+  x.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); done(true); }
+    else if (e.key === "Escape") { e.preventDefault(); done(false); }
+  });
+  x.addEventListener("blur", () => done(true), { once: true });
+}
+function trDirty() {
+  clearTimeout(tr.saveT);
+  const id = tr.sel, data = tr.data;
+  tr.saveT = setTimeout(async () => {
+    try {
+      const r = await fetch("/v1/transcripts/" + id + "/transcript", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+      const j = await r.json().catch(() => ({}));
+      trNote(r.ok ? "saved" : "not saved: " + (j.error?.message || "HTTP " + r.status), r.ok ? 2000 : 10000);
+    } catch (e) { trNote("not saved: " + (e.message || e), 10000); }
+  }, 600);
+}
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function trFind() {
+  const f = $("trfind").value.trim();
+  tr.words.forEach((w) => w.el.classList.remove("hit"));
+  if (!f || !tr.data) { $("trfound").textContent = ""; return; }
+  const re = new RegExp(reEsc(f), "giu");
+  let n = 0;
+  for (const g of tr.data.segments) n += (g.text.match(re) || []).length;
+  const one = f.split(/\s+/).length === 1 ? new RegExp("^\\W*" + reEsc(f) + "\\W*$", "iu") : null;
+  if (one) tr.words.forEach((w) => { if (one.test(w.el.textContent)) w.el.classList.add("hit"); });
+  $("trfound").textContent = n ? n + " found" : "not found";
+}
+$("trfind").addEventListener("input", trFind);
+$("trreplbtn").addEventListener("click", () => {
+  const f = $("trfind").value.trim(), to = $("trrepl").value.trim();
+  if (!f || !tr.data) return;
+  const re = new RegExp(reEsc(f), "giu");
+  let n = 0;
+  for (const g of tr.data.segments) {
+    const before = g.text;
+    const after = before.replace(re, () => { ++n; return to; }).replace(/\s+/g, " ").trim();
+    if (after !== before.trim()) trSetText(g, after);
+  }
+  if (!n) { trNote("not found"); return; }
+  trRender();
+  trDirty();
+  trNote(n + " replaced");
+});
+$("trexport").addEventListener("click", () => {
+  const f = [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value);
+  if (!f.length) { trNote("tick a format first"); return; }
+  const q = "&max_chars=" + encodeURIComponent($("trchars").value) + "&max_lines=" + encodeURIComponent($("trlines").value) +
+    "&max_cue_s=" + encodeURIComponent($("trmaxs").value) + ($("trword").checked ? "&word_cues=1" : "");
+  f.forEach((fmt, k) => setTimeout(() => {  // (the server names each file; one link at a time)
+    const a = document.createElement("a");
+    a.href = "/v1/transcripts/" + tr.sel + "/export?format=" + fmt + q;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, k * 400));
+});
+$("trname").addEventListener("click", async () => {
+  if (!tr.meta) return;
+  const n = prompt("Name", tr.meta.name);
+  if (!n || n === tr.meta.name) return;
+  const r = await fetch("/v1/transcripts/" + tr.sel, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: n }) });
+  if (r.ok) { tr.meta.name = n; trHeader(tr.meta); trPoll(); } else trNote("not renamed");
+});
+$("trcancel").addEventListener("click", async () => {
+  await fetch("/v1/transcripts/" + tr.sel + "/cancel", { method: "POST" }).catch(() => {});
+  trPoll();
+});
+$("trdel").addEventListener("click", async () => {
+  if (!tr.meta || !confirm("Delete \"" + tr.meta.name + "\", its transcript and its file?")) return;
+  const r = await fetch("/v1/transcripts/" + tr.sel, { method: "DELETE" }).catch(() => null);
+  if (!r || !r.ok) { trNote("not deleted"); return; }
+  trClose();
+  trPoll();
+});
+
+// ---- live recording: the microphone and / or a tab's or the screen's sound (getDisplayMedia, "share tab audio"),
+// one track each (the Meetings tab: Me / Others), sent to /v1/live in half-second pieces at the sound card's rate;
+// the server writes the recording, cuts it into utterances and returns their text (~2 s behind) and the text of the
+// one still being said. Stop: the whole recording transcribed again accurately, then kept as MP3.
+const live = {
+  on: false, id: "", ctx: null, node: null, streams: [], chunks: [], sending: false, since: 0, draft: [], partial: [],
+  marks: [], heard: 0, n: 1, t0: 0, timer: 0, clock: 0,
+  async start() {
+    if (this.on) return;
+    const src = $("trsrc").value, want = src === "both" ? ["mic", "tab"] : [src], streams = [];
+    try {
+      for (const w of want) {
+        if (w === "mic") {
+          streams.push(await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }));
+        } else {
+          const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, systemAudio: "include" });
+          if (!s.getAudioTracks().length) {
+            s.getTracks().forEach((t) => t.stop());
+            throw new Error("the shared tab or screen has no sound: share it again with \"Share tab audio\" (or \"Share system audio\") ticked");
+          }
+          streams.push(s);
+        }
+      }
+    } catch (e) {
+      streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+      trNote("cannot record: " + (e.message || e), 12000);
+      return;
+    }
+    let rec;
+    try {
+      this.ctx = new AudioContext();
+      this.n = streams.length;
+      const merger = this.ctx.createChannelMerger(this.n);
+      streams.forEach((s, k) => this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks())).connect(merger, 0, k));
+      this.node = this.ctx.createScriptProcessor(4096, this.n, this.n);
+      this.node.onaudioprocess = (e) => {  // (16-bit, the tracks interleaved; the node's own output stays silent)
+        if (!this.on) return;
+        const ch = [], n = this.n;
+        for (let c = 0; c < n; ++c) ch.push(e.inputBuffer.getChannelData(c));
+        const len = ch[0].length, out = new Int16Array(len * n);
+        for (let i = 0; i < len; ++i)
+          for (let c = 0; c < n; ++c) { const v = Math.max(-1, Math.min(1, ch[c][i])); out[i * n + c] = v < 0 ? v * 32768 : v * 32767; }
+        this.chunks.push(out);
+      };
+      merger.connect(this.node);
+      this.node.connect(this.ctx.destination);
+      const meeting = tr.kind === "meeting", when = new Date().toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      const r = await fetch("/v1/live", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: (meeting ? "Meeting " : "Recording ") + when, language: $("trlang").value, beam_size: +$("trbeam").value,
+          terms: $("trterms").value.trim(), tracks: this.n, rate: this.ctx.sampleRate, kind: tr.kind,
+          speakers: this.n === 2 ? ["Me", "Others"] : [""] }) });
+      rec = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(rec.error?.message || "HTTP " + r.status);
+    } catch (e) {
+      streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+      this.node?.disconnect();
+      this.ctx?.close();
+      trNote("cannot record: " + (e.message || e), 12000);
+      return;
+    }
+    Object.assign(this, { on: true, id: rec.id, streams, chunks: [], since: 0, draft: [], partial: [], marks: [], heard: 0, t0: performance.now() });
+    // (a share ended from the browser's own bar ends the recording)
+    streams.forEach((s) => s.getAudioTracks().forEach((t) => t.addEventListener("ended", () => this.stop())));
+    this.timer = setInterval(() => this.send(), 500);
+    this.clock = setInterval(() => {
+      if (tr.sel === this.id) $("trsub").innerHTML = '<span class="dot"></span>Recording ' + trClock((performance.now() - this.t0) / 1000) +
+        (this.n > 1 ? " · Me + Others" : "") + " · the text comes ~2 s behind";
+    }, 500);
+    liveButtons();
+    tr.list = [rec, ...tr.list];
+    trRenderList();
+    trOpen(rec.id);
+  },
+  async send() {
+    if (this.sending || !this.id) return;
+    this.sending = true;
+    const parts = this.chunks;
+    this.chunks = [];
+    let len = 0;
+    for (const p of parts) len += p.length;
+    const body = new Int16Array(len);
+    let o = 0;
+    for (const p of parts) { body.set(p, o); o += p.length; }
+    try {
+      const r = await fetch("/v1/live/" + this.id + "/audio?since=" + this.since, { method: "POST", body: body.buffer });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+      this.draft.push(...(j.segments || []));
+      this.since = j.count || this.draft.length;
+      this.partial = j.partial || [];
+      this.heard = j.heard_s || 0;
+      if (tr.sel === this.id && app.classList.contains("trmode")) trRender();
+    } catch (e) {
+      this.chunks = parts.concat(this.chunks);  // (sent again with the next piece)
+      trNote("recording: " + (e.message || e));
+    }
+    this.sending = false;
+  },
+  async stop() {
+    if (!this.on) return;
+    this.on = false;
+    clearInterval(this.timer);
+    clearInterval(this.clock);
+    this.streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+    this.node?.disconnect();
+    this.ctx?.close().catch(() => {});
+    while (this.sending) await new Promise((r) => setTimeout(r, 50));
+    if (this.chunks.length) await this.send();
+    const id = this.id;
+    await fetch("/v1/live/" + id + "/stop", { method: "POST", body: "{}" }).catch(() => {});
+    this.id = "";
+    liveButtons();
+    trNote("stopped: the recording is transcribed again accurately now", 8000);
+    tr.selStatus = "";
+    trPoll();
+  },
+  mark() {
+    if (!this.on) return;
+    const t = this.heard + 0.5;
+    this.marks.push(t);
+    fetch("/v1/live/" + this.id + "/mark", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ t }) }).catch(() => {});
+    trNote("★ marked at " + trClock(t), 3000);
+    trRender();
+  },
+};
+function liveButtons() {
+  $("trlive").classList.toggle("on", live.on);
+  $("trlivetxt").textContent = live.on ? "Stop" : tr.kind === "meeting" ? "Start a meeting" : "Live";
+  $("trsrc").disabled = live.on;
+}
+$("trlive").addEventListener("click", () => live.on ? live.stop() : live.start());
+$("trstoplive").addEventListener("click", () => live.stop());
+$("trmark").addEventListener("click", () => live.mark());
+window.addEventListener("beforeunload", (e) => { if (live.on) { e.preventDefault(); e.returnValue = ""; } });
+
+// ---- a meeting's summary (the loaded chat model; a long one in parts, then the parts' summaries together) and its
+// minutes as a document (create_document: DOCX / PDF, in the Files panel)
+function trLines(d) {
+  return d.segments.map((g) => "[" + trClock(g.start) + "] " + (g.speaker ? g.speaker + ": " : "") + g.text.trim());
+}
+async function trAsk(system, user, max) {
+  const r = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: loadedId, stream: false, enable_thinking: false, temperature: 0.3, max_tokens: max || 1500,
+      messages: [{ role: "system", content: system }, { role: "user", content: user }] }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+  return String(j.choices?.[0]?.message?.content || "").trim();
+}
+$("trsum").addEventListener("click", async () => {
+  if (!tr.data || !tr.data.segments.length) { trNote("nothing to summarize"); return; }
+  const id = tr.sel, lines = trLines(tr.data);
+  // (named, not "the transcript's language": a small model answered an Indonesian meeting in English)
+  const count = {};
+  for (const g of tr.data.segments) if (g.lang) count[g.lang] = (count[g.lang] || 0) + g.text.length;
+  const top = Object.keys(count).sort((a, b) => count[b] - count[a])[0] || "";
+  let lang = top;
+  try { lang = new Intl.DisplayNames(["en"], { type: "language" }).of(top) || top; } catch (e) {}
+  const SYS = "You write meeting minutes from a transcript (lines: [time] speaker: text). Write them in " + (lang || "the transcript's language") + ". " +
+    "Sections in Markdown: ## Summary (a few sentences), ## Decisions, ## Action items (who, what, by when when it was said), " +
+    "## Open questions. After each point, the time it comes from as [m:ss]. Only what the transcript says; leave a section out when it has nothing.";
+  // (the model's context: about a third of it for the transcript, at ~3 characters a token)
+  const budget = Math.max(6000, Math.floor((ctxLen || 8192) * 3 / 3)), parts = [];
+  let cur = "";
+  for (const l of lines) { if (cur.length + l.length + 1 > budget && cur) { parts.push(cur); cur = ""; } cur += l + "\n"; }
+  if (cur) parts.push(cur);
+  $("trsum").disabled = true;
+  try {
+    let text;
+    if (parts.length === 1) {
+      trNote("summarizing…", 600000);
+      text = await trAsk(SYS, "Transcript:\n" + parts[0]);
+    } else {
+      const sums = [];
+      for (let k = 0; k < parts.length; ++k) {
+        trNote("summarizing part " + (k + 1) + " of " + parts.length + "…", 600000);
+        sums.push("Part " + (k + 1) + ":\n" + await trAsk("Summarize this part of a meeting transcript in " + (lang || "its language") + ": what was said, " +
+          "decided and asked, each point with its [m:ss] time. Markdown bullets only, at most 15.", parts[k], 700));
+      }
+      trNote("putting the parts together…", 600000);
+      text = await trAsk(SYS + " You get the summaries of the meeting's parts, in order, instead of the transcript.", sums.join("\n\n"));
+    }
+    const r = await fetch("/v1/transcripts/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: text }) });
+    if (!r.ok) throw new Error("not saved");
+    trNote("summarized", 3000);
+    if (tr.sel === id) trOpen(id);
+  } catch (e) { trNote("summary failed: " + (e.message || e), 12000); }
+  $("trsum").disabled = false;
+});
+async function trMinutes(format) {
+  if (!tr.data) return;
+  const m = tr.meta, title = "Minutes: " + m.name.replace(/\.[a-z0-9]{1,5}$/i, "");
+  const content = (m.summary ? m.summary + "\n\n" : "") + "## Transcript\n\n" + trLines(tr.data).join("\n\n");
+  try {
+    const r = await fetch("/v1/tools/create_document", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: title, format, title, date: new Date(m.created * 1000).toLocaleDateString(), content, page_numbers: true }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+    const a = document.createElement("a");
+    a.href = (j.url || "/files/" + j.file_id) + "?download=1";
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    trNote(format.toUpperCase() + " saved (also in the Files panel)" + (m.summary ? "" : "; Summarize first for a summary at its top"), 8000);
+  } catch (e) { trNote("minutes failed: " + (e.message || e), 12000); }
+}
+$("trdocx").addEventListener("click", () => trMinutes("docx"));
+$("trpdf").addEventListener("click", () => trMinutes("pdf"));
+
 refreshModel();
 </script>
 </body>

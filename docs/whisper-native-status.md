@@ -143,6 +143,46 @@ against a server (`w4/api.py`, 31 checks): 3 files queued in order, progress whi
 at 25 %, 14 export formats, ranges (206 / 416), an edit and a rename, wrong offsets / sizes / languages / ids, a file
 that is not audio, a restart in the middle of a transcription and of an upload, a delete while running.
 
+**W5 (2026-10-28): the Transcripts tab** (`webui/index.html`, the rail's second button; on with `--whisper`):
+files dropped or chosen are uploaded in 16-MB pieces into the server's queue, each with its progress bar
+(uploading, waiting with its place, % with the speed, done with its length, languages and words); a transcript
+opens with its media (`<video>` with byte ranges; a format the browser cannot play says so), the word being
+played lit and followed, a word or a time clicked plays from there, low-probability words dotted, a segment
+double-clicked edited (the words that stay keep their times, new ones are timed between their neighbours), find /
+replace over the whole transcript (saved, and in every export), exports in the formats ticked with the cue options
+(remembered). Checked in the browser: playback and highlight, an edit, a replace (3 found, 3 replaced, in the SRT),
+an upload of 23 MB in two pieces, a stop at 9:54 with its text kept, the phone layout. A file of 56 minutes end
+to end through the same API: uploaded in 0.4 s, transcribed in 129 s with beam 5 (26x realtime), 5,607 words.
+
+**W6 (2026-10-28): live** (`/v1/live`, the tab's Live button): the microphone and / or a tab's or the screen's
+sound (`getDisplayMedia` with "share tab audio") as one or two tracks at the sound card's rate, sent every 0.5 s;
+the server writes the recording (WAV, sizes kept right as it grows) and cuts each track into utterances at its
+pauses (10-ms energy against a noise floor; 0.6 s, or 0.3 s past 6 s; 15 s at most), transcribed greedy at once,
+and the utterance still being said is transcribed again every second as the partial text (grey). Stop: the
+recording queued for the accurate pass (beam 5, each track alone with its speaker, merged by time), then kept as
+MP3 (Windows' own encoder, 192 kbps unless `mp3_kbps`; ~1.4 MB a minute in stereo). Marks (★) kept. The engine is
+shared a window at a time (`Options::window_turn`): a live utterance goes first, and the queue's windows wait while
+live utterances are queued. Two tracks sent in real time (60 s, 48 kHz) while the queue transcribed the 14-minute
+file with beam 5:
+
+| | Text behind the audio (median / p90) |
+|---|---|
+| utterances only (cut at 0.6 s or 25 s), nothing else running | final text 2.2 s / 16.5 s after the utterance's end |
+| + partial text, the queue busy, live first only when waiting | 6.8 / 9.8 s |
+| **+ the queue waiting while live utterances are queued** | **2.5 / 3.8 s** (the queue went on in the gaps) |
+| the same, nothing else running | 2.0 / 3.3 s |
+
+**W7 (2026-10-28): the Meetings tab** (the rail's third button): the same list for meetings only; "Start a meeting"
+records the microphone as "Me" and the meeting's sound (a tab or the screen) as "Others"; a meeting's recording
+dropped there goes the same way. Done: "Summarize" asks the loaded chat model for the summary, decisions, action
+items and open questions with their [m:ss], in the meeting's language named (a 4B model answered an Indonesian
+meeting in English when only told "the transcript's language"); a transcript longer than the context goes in
+parts (one context's worth of characters each), then the parts' summaries together; kept as `summary.md`, shown
+above the transcript. "Minutes DOCX / PDF": the summary and the transcript through `create_document` (in the Files
+panel too). Checked with the browser's capture fed from two test files: Me / Others in the draft and the accurate
+pass, a mark, the MP3, an Indonesian summary, a 15-KB DOCX; a 56-minute meeting summarized in 3 parts with the 4B
+model (16K context) in ~6 minutes (each part's summary now at most 700 tokens).
+
 **NPU mode** (14-minute file): NPU + iGPU greedy 81 s (10.5x realtime; OpenVINO NPU 144 s + 253 s compiling), beam 5
 91 s; logits KL 0.00052 against the f32 reference (64 / 64 top tokens). It keeps the iGPU free for the LLM: 0.73 GiB
 of GPU memory instead of 1.39 GiB.
@@ -158,6 +198,9 @@ normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-a
 2. Mixed languages and jargon: done (W2, above).
 3. Formats: checked in Remotion and Chrome and by structure (W3, above); YouTube, Premiere and Resolve by the user.
    Video files and the transcript library: done (W4, above).
+4. The Transcripts tab, live recording, the Meetings tab with summaries and minutes: done (W5-W7, above). Left:
+   `arc-recorder.exe` (W8: a desktop app's own sound without sharing a tab, recordings that outlive the browser),
+   `@` on a recording in a chat (QUEUE 8).
 4. Then the web UI tabs (Transcript, Meeting), `arc-recorder.exe` (separate process, WASAPI process loopback +
    microphone, `recorder.json` + named pipe, reconnect after a server crash), Talk mode with the choice of Gemma
    hearing directly or Whisper -> any model.
