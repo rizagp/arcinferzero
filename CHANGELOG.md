@@ -9,6 +9,8 @@
 - Batched steps and verification passes of MoE models run their experts on smaller tiles: the 35B 2 / 4 slots
   1.33x -> 1.44x / 1.99x -> 2.19x together, bit-identical.
 - `runz --bench-batch N --prof-gen`: the GPU time per kernel of a step alone and batched.
+- Prompt MoE on the 35B 2 % faster (an emulated integer multiply in the expert kernel done in float, same results);
+  found by reading the kernels' GPU assembly with ocloc ([docs/kernel-audit-2026-10-27.md](docs/kernel-audit-2026-10-27.md)).
 
 ## 2026-10-27: Qwen vision encoder faster on the dense models
 

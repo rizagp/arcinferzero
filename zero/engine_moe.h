@@ -342,7 +342,8 @@
     static const int ny_env = getenv("ARC_MOE_RG_NY") ? atoi(getenv("ARC_MOE_RG_NY")) : 0;
     const std::string xd = xc_ ? " -DXCACHE" : "";
     for (int i = part; i < (part == 0 ? 2 : 3); ++i) {
-      cl_kernel k = kernel("decode", "-cl-intel-256-GRF-per-thread -DMOE_RG -DQT=" + std::to_string(L.ex_type[i]) + xd,
+      static const std::string imul = getenv("ARC_RG_IMUL") && atoi(getenv("ARC_RG_IMUL")) != 0 ? " -DRG_IMUL" : "";
+      cl_kernel k = kernel("decode", "-cl-intel-256-GRF-per-thread -DMOE_RG -DQT=" + std::to_string(L.ex_type[i]) + xd + imul,
                            "moe_rg");
       // (Flash Next: h rows of Fp = 768 for F = 640 values; the down projection's rows padded to Fp with zeros)
       const int Fp = hp.n_ff_exp_pad;

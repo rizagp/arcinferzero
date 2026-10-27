@@ -1974,9 +1974,15 @@ __kernel void moe_rg(__global const uchar* raw, int N, int K, __global const uin
             const int m = mg + q;
 #if PER32
             res[m] = fma(RG_B(avl, m) * dl, (float)c0[q], fma(RG_B(avh, m) * d, (float)c1[q], res[m]));
-#else
+#elif defined(RG_IMUL)
             const int plo = c0[q] * (short)a0, phi = c1[q] * (short)b0;
             tq[m] = fma(RG_B(avl, m), (float)plo, fma(RG_B(avh, m), (float)phi, tq[m]));
+#else
+            // (the scale multiply in float: the int product is exact (abs(c0) < 2^20) and both forms round it once,
+            //  so the same values; the int32 multiply is emulated (mul + mach) and broke the DP4a chains: ocloc
+            //  IQ3_S 288 -> 764 of 1024 DP4a without a wait; -DRG_IMUL: the int form)
+            const float plo = (float)c0[q] * (float)a0, phi = (float)c1[q] * (float)b0;
+            tq[m] = fma(RG_B(avl, m), plo, fma(RG_B(avh, m), phi, tq[m]));
 #endif
           }
 #else
