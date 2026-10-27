@@ -102,6 +102,25 @@
     } catch (const std::exception& e) {
       return rs.send(400, "application/json", err(e.what()).dump());
     }
+    // Same wording and error type as llama-server, so that clients recognize a context overflow (Pi then compacts
+    // the conversation and retries). The hybrid DeltaNet state cannot drop old tokens, so there is no server-side
+    // context shift.
+    auto overflow = [&](size_t n, const char* at_least) {
+      Json e = Json::object();
+      e.set("code", 400);
+      e.set("message", std::string("the request exceeds the available context size (prompt ") + at_least + std::to_string(n) +
+                           " tokens, context " + std::to_string(eng_.ctx) + " tokens), try increasing it");
+      e.set("type", "exceed_context_size_error");
+      e.set("n_prompt_tokens", (int)std::min<size_t>(n, INT_MAX));
+      e.set("n_ctx", eng_.ctx);
+      Json r = Json::object();
+      r.set("error", e);
+      return rs.send(400, "application/json", r.dump());
+    };
+    // (no token holds more than max_token_bytes() bytes of text: a prompt longer than ctx such tokens cannot fit,
+    //  refused before the tokenizer allocates for it; every prompt that might fit is tokenized as before)
+    if (const size_t L = tok_.max_token_bytes(); L && prompt.size() / L > (size_t)eng_.ctx)
+      return overflow(prompt.size() / L, "at least ");
     std::vector<int> P = tok_.encode(prompt, true);
     // media: the template writes one <|image|> per image part and one <|audio|> per input_audio part; each becomes
     // <|image> / <|audio> + n embedding rows + <image|> / <audio|>. Images are read non-causally, audio causally.
@@ -204,21 +223,7 @@
       }
     }
     if (P.empty()) return rs.send(400, "application/json", err("the prompt is empty (no tokens)").dump());
-    if ((int)P.size() + 64 > eng_.ctx) {
-      // Same wording and error type as llama-server, so that clients recognize a context overflow (Pi then
-      // compacts the conversation and retries). The hybrid DeltaNet state cannot drop old tokens, so there is no
-      // server-side context shift.
-      Json e = Json::object();
-      e.set("code", 400);
-      e.set("message", "the request exceeds the available context size (prompt " + std::to_string(P.size()) +
-                           " tokens, context " + std::to_string(eng_.ctx) + " tokens), try increasing it");
-      e.set("type", "exceed_context_size_error");
-      e.set("n_prompt_tokens", (int)P.size());
-      e.set("n_ctx", eng_.ctx);
-      Json r = Json::object();
-      r.set("error", e);
-      return rs.send(400, "application/json", r.dump());
-    }
+    if ((int)P.size() + 64 > eng_.ctx) return overflow(P.size(), "");
     if (max_tokens <= 0 || (int)P.size() + max_tokens > eng_.ctx) max_tokens = eng_.ctx - (int)P.size();
 
     if (!lock.owns_lock()) acquire(lock);

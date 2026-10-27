@@ -1853,48 +1853,6 @@ int main(int argc, char** argv) {
       apic::Adapter ad("transcription", req, rs);
       return dispatch(rq2, rs);
     }
-    // n > 1 (several answers to one chat request): the request runs n times (the prompt is cached after the first;
-    // a given seed changes per answer); not with streaming
-    if (rq.method == "POST" && rq.path == "/v1/chat/completions") {
-      Json in;
-      if (Json::try_parse(rq.body, in) && in["n"].as_int(1) > 1) {
-        if (in["stream"].as_bool(false))
-          return rs.send(400, "application/json", "{\"error\":{\"message\":\"n > 1 is supported without streaming\",\"type\":\"invalid_request_error\"}}");
-        const int n = (int)std::min<int64_t>(in["n"].as_int(1), 16);
-        Json merged, choices = Json::array();
-        int64_t prompt_tok = 0, compl_tok = 0;
-        for (int k = 0; k < n; ++k) {
-          Json one = in;
-          one.set("n", 1);
-          if (in["seed"].is_number()) one.set("seed", in["seed"].as_int() + k);
-          HttpRequest rq2 = rq;
-          rq2.body = one.dump();
-          int status = 0;
-          std::string body;
-          rs.on_send = [&](int st, const std::string& b) { status = st; body = b; };
-          {
-            struct Unhook { HttpResponse& r; ~Unhook() { r.on_send = nullptr; } } unhook{rs};  // (also on a throw)
-            dispatch(rq2, rs);
-          }
-          if (status != 200) return rs.send(status ? status : 500, "application/json", body);
-          Json r;
-          Json::try_parse(body, r);
-          if (merged.is_null()) merged = r;
-          Json c = r["choices"][0];
-          c.set("index", k);
-          choices.push(c);
-          prompt_tok = r["usage"]["prompt_tokens"].as_int();
-          compl_tok += r["usage"]["completion_tokens"].as_int();
-        }
-        merged.set("choices", choices);
-        Json u = Json::object();
-        u.set("prompt_tokens", prompt_tok);
-        u.set("completion_tokens", compl_tok);
-        u.set("total_tokens", prompt_tok + compl_tok);
-        merged.set("usage", u);
-        return rs.send(200, "application/json", merged.dump());
-      }
-    }
     // Ollama: the model list, one model's details, the version, the loaded model
     if (rq.path == "/api/version") return rs.send(200, "application/json", "{\"version\":\"0.9.0\"}");
     if (rq.path == "/api/tags" || rq.path == "/api/ps" || (rq.path == "/api/show" && rq.method == "POST")) {
@@ -1970,6 +1928,56 @@ int main(int argc, char** argv) {
         err.set("type", "server_error");
         r.set("error", err);
         return rs.send(503, "application/json", r.dump());
+      }
+    }
+    // n > 1 (several answers to one chat request; here in dispatch, which the API adapters call too, so that
+    // /v1/completions takes n): the request runs n times (the prompt is cached after the first;
+    // a given seed changes per answer); not with streaming
+    if (rq.method == "POST" && rq.path == "/v1/chat/completions") {
+      Json in;
+      if (Json::try_parse(rq.body, in) && in["n"].as_int(1) > 1) {
+        if (in["stream"].as_bool(false))
+          return rs.send(400, "application/json", "{\"error\":{\"message\":\"n > 1 is supported without streaming\",\"type\":\"invalid_request_error\"}}");
+        const int n = (int)std::min<int64_t>(in["n"].as_int(1), 16);
+        // (a request through an API adapter, /v1/completions: its hook is kept around each run and takes the merged
+        //  answer, so the reply is in that API's format)
+        const auto outer = rs.on_send;
+        Json merged, choices = Json::array();
+        int64_t prompt_tok = 0, compl_tok = 0;
+        for (int k = 0; k < n; ++k) {
+          Json one = in;
+          one.set("n", 1);
+          if (in["seed"].is_number()) one.set("seed", in["seed"].as_int() + k);
+          HttpRequest rq2 = rq;
+          rq2.body = one.dump();
+          int status = 0;
+          std::string body;
+          rs.on_send = [&](int st, const std::string& b) { status = st; body = b; };
+          {
+            struct Unhook {  // (also on a throw)
+              HttpResponse& r;
+              const std::function<void(int, const std::string&)>& o;
+              ~Unhook() { r.on_send = o; }
+            } unhook{rs, outer};
+            dispatch(rq2, rs);
+          }
+          if (status != 200) return rs.send(status ? status : 500, "application/json", body);
+          Json r;
+          Json::try_parse(body, r);
+          if (merged.is_null()) merged = r;
+          Json c = r["choices"][0];
+          c.set("index", k);
+          choices.push(c);
+          prompt_tok = r["usage"]["prompt_tokens"].as_int();
+          compl_tok += r["usage"]["completion_tokens"].as_int();
+        }
+        merged.set("choices", choices);
+        Json u = Json::object();
+        u.set("prompt_tokens", prompt_tok);
+        u.set("completion_tokens", compl_tok);
+        u.set("total_tokens", prompt_tok + compl_tok);
+        merged.set("usage", u);
+        return rs.send(200, "application/json", merged.dump());
       }
     }
     if (swap && (rq.path == "/v1/models" || rq.path == "/models")) {  // every model a request can switch to

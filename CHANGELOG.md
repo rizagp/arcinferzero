@@ -44,6 +44,18 @@
     one more per model list; the terminal's allocations before its handles; JSON mode's limit on leading
     whitespace; the sampler refuses empty logits.
   - Not changed: tokenizing before the context check (as above).
+- **Third round** (each finding checked):
+  - A prompt longer than the context can possibly hold (more than context x the longest token's bytes) is refused
+    before tokenizing: 30 MB in 0.8 s, with the usual context-overflow error ("at least N tokens"); every prompt that
+    might fit is tokenized and checked exactly as before.
+  - `/v1/completions` with `n` > 1 returns n completions (the API adapters skipped the n > 1 handling: one came back).
+  - Closing the terminal stops the model's running command too (the answer goes on, told the terminal was closed).
+  - Web UI: Talk stopped and started again leaves no clip of the old session attached (without Whisper); a file the
+    server could not delete stays attached and the failure is shown.
+  - Smaller: a half-written cache file is removed when saving throws; DFlash2 dimensions past INT_MAX refused; COM
+    released when a server thread that decoded an image ends.
+  - Not changed: background web results are not capped (they pile up only while you never pause; capping them
+    would drop results the model was promised).
 
 ## 2026-10-27: web UI audit: every function tried, security and robustness fixes
 

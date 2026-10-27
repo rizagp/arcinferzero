@@ -185,13 +185,17 @@
   // a background write: its thread is joined when the last owner lets go, however that happens (a std::thread still
   // joinable when it is destroyed ends the process: an allocation that threw between starting the thread and
   // storing it would have done that)
-  // fn's result; f closed first if fn throws (an allocation in load_state / save_state / read_header): the caller
-  // closes it as before otherwise
-  template <typename F> static bool with_file(FILE* f, F&& fn) {
+  // fn's result; f closed first if fn throws (an allocation in load_state / save_state / read_header), and the
+  // half-written file `tmp` (when given) removed: the caller closes it as before otherwise
+  template <typename F> static bool with_file(FILE* f, F&& fn, const std::string& tmp = std::string()) {
     try {
       return fn();
     } catch (...) {
       fclose(f);
+      if (!tmp.empty()) {
+        std::error_code e;
+        std::filesystem::remove(tmp, e);
+      }
       throw;
     }
   }
@@ -250,7 +254,8 @@
     }
     FILE* f = fopen((file + ".tmp").c_str(), "wb");
     if (!f) return;
-    bool ok = with_file(f, [&] { return fwrite(h, 4, 2, f) == 2 && fwrite(P.data(), 4, n, f) == n && eng_.save_state(f, (int)n, false); });
+    bool ok = with_file(f, [&] { return fwrite(h, 4, 2, f) == 2 && fwrite(P.data(), 4, n, f) == n && eng_.save_state(f, (int)n, false); },
+                        file + ".tmp");
     ok = fclose(f) == 0 && ok;
     finish(ok);
   }
@@ -357,7 +362,8 @@
         });
     } else {
       FILE* f = fopen((file + ".tmp").c_str(), "wb");
-      ok = f && with_file(f, [&] { return fwrite(head.data(), 4, head.size(), f) == head.size() && eng_.save_state(f, last_gen_cut_); });
+      ok = f && with_file(f, [&] { return fwrite(head.data(), 4, head.size(), f) == head.size() && eng_.save_state(f, last_gen_cut_); },
+                          file + ".tmp");
       if (f) ok = fclose(f) == 0 && ok;
       if (ok) std::filesystem::rename(file + ".tmp", file, ec);
       ok = ok && !ec;

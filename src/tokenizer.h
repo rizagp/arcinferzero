@@ -87,9 +87,14 @@ class Tokenizer {
     gpt2_ = gpt2;
     init(merges);
   }
+  // the most bytes of text one token stands for, at most: the longest token string (byte-level BPE writes a byte as
+  // 1-2 UTF-8 bytes, SentencePiece a space as U+2581 and a lone byte as <0xXX>: never shorter than the text)
+  size_t max_token_bytes() const { return max_tok_bytes_; }
 
  private:
+  size_t max_tok_bytes_ = 0;
   void init(const std::vector<std::string>& merges) {
+    for (const std::string& t : tokens) max_tok_bytes_ = std::max(max_tok_bytes_, t.size());
     for (size_t i = 0; i < tokens.size(); ++i) {
       if (i < types.size() && (types[i] == 3 || types[i] == 4)) {
         special[tokens[i]] = (int)i;

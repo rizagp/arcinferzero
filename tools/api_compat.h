@@ -499,7 +499,22 @@ class Adapter {
       }
       return rs_.send(200, "application/json", out.dump());
     }
-    rs_.send(200, "application/json", final_object(content, reasoning, calls, finish).dump());
+    Json out = final_object(content, reasoning, calls, finish);
+    if (kind_ == "completions") {  // (n > 1: every answer as a choice of its own, not only the first)
+      Json cs = Json::array();
+      int k = 0;
+      for (const Json& c0 : r["choices"].items()) {
+        const std::string t = c0["message"]["content"].str(), f = c0["finish_reason"].str("stop");
+        Json c = Json::object();
+        c.set("text", req_["echo"].as_bool(false) ? req_["prompt"].str() + t : t);
+        c.set("index", k++);
+        c.set("logprobs", Json());
+        c.set("finish_reason", f == "tool_calls" ? "stop" : f);
+        cs.push(c);
+      }
+      if (k > 1) out.set("choices", cs);
+    }
+    rs_.send(200, "application/json", out.dump());
   }
 
   Json final_object(const std::string& content, const std::string& reasoning, const std::vector<Call>& calls,

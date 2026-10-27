@@ -1259,9 +1259,23 @@ async function runTermTool(args, card, signal, job) {
   }
   card.status.textContent = "· running…";
   const e = termAdd(chat, { by: "ai", cmd });
+  // (its own controller: ended by the answer's Stop or by closing the terminal, see termClose)
+  const t = terms.get(chat), ac = new AbortController(), stop = () => ac.abort();
+  signal?.addEventListener("abort", stop);
+  (t.running ||= new Set()).add(ac);
   let j;
-  try { j = await termRun(chat, cmd, args.timeout_s, signal); }
-  catch (x) { termDone(chat, e, { out: x.name === "AbortError" ? "stopped" : String(x.message || x), exit: null }); throw x; }
+  try { j = await termRun(chat, cmd, args.timeout_s, ac.signal); }
+  catch (x) {
+    termDone(chat, e, { out: x.name === "AbortError" ? "stopped" : String(x.message || x), exit: null });
+    if (x.name === "AbortError" && !signal?.aborted) {  // (the terminal closed, the answer goes on: told so)
+      card.status.textContent = "· stopped: the terminal was closed";
+      return "error: the user closed the terminal while the command ran; it was stopped";
+    }
+    throw x;
+  } finally {
+    t.running.delete(ac);
+    signal?.removeEventListener("abort", stop);
+  }
   termDone(chat, e, { out: j.ok ? j.output : "failed: " + j.error, exit: j.ok ? j.exit_code : null, s: j.seconds, timed: j.timed_out });
   if (!j.ok) { card.status.textContent = "· failed: " + j.error; return "error: " + j.error; }
   termResult(card.el, j);
@@ -1370,6 +1384,7 @@ function termClose() {
   const id = convId, t = id && terms.get(id);
   if (!t?.open) return;
   t.ctl?.abort();  // (a command still running ends with the terminal: the server stops a request that went away)
+  for (const c of t.running || []) c.abort();  // (the model's too)
   t.open = false;
   t.log.push({ by: "sep", out: "terminal closed · " + hhmm(Date.now()) });
   fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: id, reset: true }) }).catch(() => {});
@@ -2058,11 +2073,16 @@ async function deleteFiles(list) {
   const attached = list.filter((f) => pending.some((p) => p.id === f.id));  // (in the message being written)
   if (!confirm(msg + (used.length ? "\n" + used.length + " of them are in chats: those chats then show the file as gone." : "") +
                (attached.length ? "\n" + attached.length + " of them are attached to your message: they are taken off it." : ""))) return;
+  const gone = new Set(), failed = [];  // (a 404 / 500 does not throw: only what the server deleted counts as gone)
   for (const f of list) {
-    try { await fetch("/v1/files/" + f.id, { method: "DELETE" }); fileSel.delete(f.id); } catch (e) {}
+    try {
+      const r = await fetch("/v1/files/" + f.id, { method: "DELETE" });
+      if (r.ok) { gone.add(f.id); fileSel.delete(f.id); } else failed.push(f.filename);
+    } catch (e) { failed.push(f.filename); }
   }
-  if (attached.length) {  // (a message would otherwise go out naming files that are gone)
-    pending = pending.filter((p) => !list.some((f) => f.id === p.id));
+  if (failed.length) note("could not delete " + failed.join(", "));
+  if (pending.some((p) => gone.has(p.id))) {  // (a message would otherwise go out naming files that are gone)
+    pending = pending.filter((p) => !gone.has(p.id));
     renderAtts();
   }
   loadFiles();
@@ -2319,14 +2339,19 @@ const voice = {
     if (caps.stt) {  // (Whisper writes it down: the model gets text)
       try { said = await transcribe(url); } catch (e) { this.status(String(e.message || e)); return; }
       if (!said) { this.status("listening…"); return; }
-    } else pending.push({ kind: "audio", url });
+    }
     for (let i = 0; i < 50 && controller; i++) await new Promise((r) => setTimeout(r, 20));  // (the stopped answer winding up)
-    if (!this.on || gen !== this.gen) {  // (Talk stopped meanwhile, or stopped and started again: what was said
-                                         //  waits in the box instead of being sent)
-      if (said) input.value = said;
+    if (!this.on || gen !== this.gen) {
+      // Talk stopped meanwhile: what was said waits in the box (its text, or the clip as an attachment). Stopped and
+      // started again: it belonged to the Talk that ended, and the new one's first utterance must not carry it along
+      if (!this.on) {
+        if (said) input.value = said;
+        else if (!caps.stt) { pending.push({ kind: "audio", url }); renderAtts(); }
+      }
       this.merge = null;
       return;
     }
+    if (!caps.stt) pending.push({ kind: "audio", url });  // (no Whisper: the model hears the clip itself)
     // the previous utterance and its answer leave the conversation: only while that message is still this chat's
     // (another chat opened, or a deleted message, and nothing is removed)
     const m = this.merge;

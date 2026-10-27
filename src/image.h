@@ -63,7 +63,12 @@ inline std::vector<uint8_t> from_data_url(const std::string& url) {
 }
 
 inline ImageRGB decode(const std::vector<uint8_t>& bytes) {
-  static thread_local bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) || true;
+  // (COM for this thread, released when the thread ends: the server's connections each run on a thread of their own)
+  struct Com {
+    bool ok = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+    ~Com() { if (ok) CoUninitialize(); }
+  };
+  static thread_local Com com;
   (void)com;
   IWICImagingFactory* f = nullptr;
   if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f))))

@@ -190,7 +190,7 @@
   // a bf16 matrix [N][K] (columns k0 .. k0 + K of rows of Kfull) as a Q4_0 weight
   GpuWeight dfl_w(const std::string& n, int k0 = 0, int Kc = 0) {
     const StTensor& t = dfl_t(n);
-    if (t.shape.size() != 2 || k0 < 0 || (Kc ? k0 + Kc : 0) > t.shape[1])
+    if (t.shape.size() != 2 || t.shape[0] > INT_MAX || t.shape[1] > INT_MAX || k0 < 0 || (Kc ? (int64_t)k0 + Kc : 0) > t.shape[1])
       throw std::runtime_error("DFlash: " + n + " is not a matrix of the expected width");
     const int N = (int)t.shape[0], Kf = (int)t.shape[1], K = Kc ? Kc : Kf;
     std::vector<float> v((size_t)N * K);
