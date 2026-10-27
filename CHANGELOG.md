@@ -27,10 +27,15 @@
 - **Fewer false headings by font**: list items (a bullet, "a.", "1)") and lines ending in ':' ',' ';', table of
   contents lines (dot leaders), numbers ("39,84%") and sentences are never headings; a bold line counts only when it
   stands apart (a gap before it larger than a line's), not as a table's cell (the next cell a little up the page) and
-  not when the same bold line comes three times or more ("Done", a table's labels). Numbered lines in capitals
-  ("II. PIHAK KEDUA") and short numbered titles in a larger font ("1. Peserta") stay headings. On real documents: a
-  215-page memo 817 -> 108 headings (its sections and risks R1-R10, not its list items), a 70-page slide deck 523 ->
-  0 level-4+ headings (one slide title per slide; 138 by font alone), a 18-page agreement keeps all its PASAL headings.
+  not when the same heading comes three times or more ("Done", a table's labels); a larger font's line of 16 words or
+  more is a sentence. Numbered lines in capitals ("II. PIHAK KEDUA") and short numbered titles in a larger font
+  ("1. Peserta") stay headings. On real documents: a 215-page memo 817 -> 108 headings (its sections and risks
+  R1-R10, not its list items), a 70-page slide deck 523 -> 0 level-4+ headings (one slide title per slide; 138 by font
+  alone), a 18-page agreement keeps all its PASAL headings.
+- **Heading levels with many font sizes**: with more than five sizes above the body text's, the levels go to the five
+  on the most pages in short lines, the others take the level of the nearest of them below. A 142-page requirements
+  document with a cover and slides attached: its chapters, sections and subsections (I, II.1, II.3.1, IV.1.1.1) at
+  four levels instead of all at one (the cover's and the slides' sizes had taken the five levels).
 - Checks: `tests/test_doc_read.cpp` with a Word-made bookmarked fixture (`tests/data/doc_bookmarks.pdf`: headings
   1-3, bold list items; also read with its bookmarks taken out), a hand-made PDF (a named destination, a GoTo action,
   a UTF-16 title, a title not in the text) and PDF text strings.

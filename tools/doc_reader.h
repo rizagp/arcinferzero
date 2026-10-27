@@ -962,14 +962,26 @@ inline Doc read_pdf(const std::string& data) {
   for (const auto& [s, n] : by_size)
     if (n > most) { most = n; body = s; }
   const double body_size = body / 2.0;
-  std::vector<double> head_sizes;
+  // the heading levels: the larger sizes, largest first; more than five: the five on the most pages in short lines
+  // (a cover's or an attached slide's sizes, on a page or two, do not push the document's own heading sizes out), the
+  // others at the level of the nearest of them below
+  std::map<int, std::set<int>> short_on;
+  for (const auto& l : r.lines)
+    if (l.text.size() < 80) short_on[(int)std::lround(l.size * 2)].insert(l.page);
+  std::vector<int> head_bins;
   for (const auto& [s, n] : by_size)
-    if (s / 2.0 >= body_size * 1.15) head_sizes.push_back(s / 2.0);
-  std::sort(head_sizes.rbegin(), head_sizes.rend());
-  if (head_sizes.size() > 5) head_sizes.resize(5);
+    if (s / 2.0 >= body_size * 1.15) head_bins.push_back(s);
+  std::sort(head_bins.rbegin(), head_bins.rend());
+  if (head_bins.size() > 5) {  // (on as many pages: the larger)
+    std::stable_sort(head_bins.begin(), head_bins.end(), [&](int a, int b) { return short_on[a].size() > short_on[b].size(); });
+    head_bins.resize(5);
+    std::sort(head_bins.rbegin(), head_bins.rend());
+  }
   auto level_of = [&](double sz) {
-    for (size_t k = 0; k < head_sizes.size(); ++k)
-      if (std::abs(sz - head_sizes[k]) < 0.3) return (int)k + 1;
+    const int b = (int)std::lround(sz * 2);
+    if (b / 2.0 < body_size * 1.15) return 0;
+    for (size_t k = 0; k < head_bins.size(); ++k)
+      if (head_bins[k] <= b) return (int)k + 1;
     return 0;
   };
   // the usual line gap (in font sizes): the median over lines that follow each other in one size
@@ -1009,7 +1021,7 @@ inline Doc read_pdf(const std::string& data) {
   double prev_y = 0, prev_size = 0, gap = 0;
   int prev_page = 0;
   bool prev_bold = false, all_bold = true, prev_columns = false, apart = true, cell = false;
-  const int bold_level = std::min(6, (int)head_sizes.size() + 1);
+  const int bold_level = std::min(6, (int)head_bins.size() + 1);
   auto end_para = [&] {
     apart = apart && !cell;  // (the next line a little up the page: the next cell of a table's row, this one a cell)
     cur.text = tidy(cur.text);
@@ -1017,7 +1029,7 @@ inline Doc read_pdf(const std::string& data) {
       const bool caps = std::none_of(cur.text.begin(), cur.text.end(), [](char c) { return islower((unsigned char)c); });
       // (in a larger font: not a bulleted line, nor a numbered one longer than a title, "a. SB1. Optimalisasi
       //  kepesertaan melalui strategi ekstensifikasi, ..."; "1. Peserta" is a heading)
-      if (cur.level && (cur.text.size() > 200 || bullet(cur.text) || not_heading(cur.text) ||
+      if (cur.level && (cur.text.size() > 200 || std::count(cur.text.begin(), cur.text.end(), ' ') >= 15 || bullet(cur.text) || not_heading(cur.text) ||
                         (item(cur.text) && !caps && cur.text.size() > 80)))
         cur.level = 0;
       // (a short bold paragraph that stands apart and is not a sentence or a list item, e.g. "BAB II LANDASAN TEORI":
@@ -1064,11 +1076,11 @@ inline Doc read_pdf(const std::string& data) {
   }
   cell = false;
   end_para();
-  // (the same bold line three times or more, "Done", "Risiko Fraud": a table's labels, not sections)
-  std::map<std::string, int> bold_seen;
-  for (const Para& p : d.paras) bold_seen[p.text] += p.level == bold_level;
+  // (the same heading three times or more, "Done", "Risiko Fraud": a table's labels or a slide's caption, not sections)
+  std::map<std::string, int> seen_as_heading;
+  for (const Para& p : d.paras) seen_as_heading[p.text] += p.level > 0;
   for (Para& p : d.paras)
-    if (p.level == bold_level && bold_seen[p.text] >= 3) p.level = 0;
+    if (seen_as_heading[p.text] >= 3) p.level = 0;
   // bookmarks, when the PDF has them, are its outline (the author's headings, not guessed from fonts): each one marks
   // the first paragraph on its page that starts with its title (the rest of that paragraph split off as body text),
   // or is put in before the page's text when none does
