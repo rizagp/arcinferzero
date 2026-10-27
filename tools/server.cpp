@@ -747,13 +747,16 @@ class Server {
 //                    into the chat's folder (and its source next to it), returns it as a file
 //   list_files {kind, name_contains, within_hours, chat_id, limit}: the saved files, newest first, with their metadata
 //   read_file {file_id (or its name), section, pages, offset, max_chars, chat_id}: a document's text (DOCX, PDF and
-//                    text files, tools/doc_reader.h) in parts; a long one without section / pages / offset: its outline;
+//                    text files, tools/doc_reader.h) in parts (a fifth of the loaded model's context at most, the rest by
+//                    offset: files::read_budget); a long one without section / pages / offset: its outline;
 //                    a document the model wrote: its source (to make a corrected version); images, audio: metadata
 //   search_file {query, file_id, chat_id, top_k}: the passages of a document (or of every document of the chat)
 //                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
 //   run_command {command, chat_id, timeout_s}: one PowerShell command in the chat's folder (tools/server_terminal.h),
 //                    sent by the page only after the user allowed it; refused (403) to any computer but this one
-static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
+// ctx: the loaded model's context in tokens per conversation (0: not known): a read or a search gives at most what
+// files::read_budget allows, the rest by offset
+static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, int ctx) {
   auto& st = files::store();
   auto reply = [&](int code, const Json& j) { rs.send(code, "application/json", j.dump()); };
   auto fail = [&](int code, const std::string& m) {
@@ -894,9 +897,12 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
       std::sort(all.begin(), all.end(), [](const Found& x, const Found& y) { return x.score > y.score; });
       if (all.size() > top) all.resize(top);
       Json res = Json::array();
+      size_t given = 0, left_out = 0;  // (the passages' text within the read budget; the best one always)
       for (const Found& h : all) {
         const rdoc::Index& ix = *ixs[h.file];
         const rdoc::Chunk& c = ix.chunks[h.chunk];
+        if (res.size() && given + c.text.size() > files::read_budget(ctx)) { ++left_out; continue; }
+        given += c.text.size();
         Json j = Json::object();
         j.set("file_id", targets[h.file].id);
         j.set("filename", targets[h.file].name);
@@ -914,6 +920,9 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
       r.set("files_searched", (double)targets.size());
       if (res.size() == 0)
         r.set("note", "no passage has these words: try other words (the document's own terms, synonyms), or read the outline (read_file)");
+      else if (left_out)
+        r.set("note", std::to_string(left_out) + " more passages left out to keep within the model's context: search with more "
+                      "precise words, or read a result's section (read_file)");
       return reply(200, r);
     }
     if (rq.path == "/v1/tools/read_file") {
@@ -990,13 +999,25 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal) {
           return reply(200, r);
         }
       }
-      const size_t off = (size_t)std::max(0.0, a["offset"].as_number(0)), mx = (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
+      // (a part at a time: max_chars, and never more than the model's context takes in one read)
+      const size_t asked = (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
+      const size_t off = (size_t)std::max(0.0, a["offset"].as_number(0)), mx = std::min(asked, files::read_budget(ctx));
       size_t end = std::min(data.size(), off + mx);
+      if (end < data.size()) {  // (cut at a paragraph's end, else a line's or a space, when one is in the last third)
+        size_t at = data.rfind("\n\n", end);
+        if (at == std::string::npos || at <= off + mx * 2 / 3) at = data.rfind(' ', end);
+        if (at != std::string::npos && at > off + mx * 2 / 3) end = at;
+      }
       while (end < data.size() && end > off && ((unsigned char)data[end] & 0xC0) == 0x80) --end;  // (not inside a UTF-8 character)
       r.set("content", off < data.size() ? data.substr(off, end - off) : std::string());
       r.set("offset", (double)off);
       r.set("total_chars", (double)data.size());
-      if (end < data.size()) r.set("next_offset", (double)end);
+      if (end < data.size()) {
+        r.set("next_offset", (double)end);
+        r.set("note", "a part of " + std::to_string(files::tokens_of(data.size())) + " tokens" +
+                          (mx < asked ? " (as much as the model's context takes at once)" : "") +
+                          ": read on with offset: " + std::to_string(end) + " only when the question needs the rest");
+      }
       return reply(200, r);
     }
     if (rq.path == "/v1/tools/run_command") {
@@ -1478,8 +1499,14 @@ int main(int argc, char** argv) {
       return files_api(rq, rs);
     if (rq.method == "POST" && (rq.path == "/v1/tools/create_document" || rq.path == "/v1/tools/list_files" ||
                                 rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/search_file" ||
-                                rq.path == "/v1/tools/run_command"))
-      return file_tools(rq, rs, terminal);
+                                rq.path == "/v1/tools/run_command")) {
+      int ctx = 0;  // (the loaded model's context; not waited for during a model switch: then the usual limits)
+      {
+        std::shared_lock<std::shared_mutex> lk(swap_mu, std::try_to_lock);
+        if (lk.owns_lock() && cur) ctx = cur->eng->ctx;
+      }
+      return file_tools(rq, rs, terminal, ctx);
+    }
     // the web UI's tools (tools/web_tools.h): no model involved, so they answer while a model loads or generates
     if (rq.method == "POST" && (rq.path == "/v1/tools/web_search" || rq.path == "/v1/tools/web_fetch")) {
       auto fail = [&](int st, const std::string& m) {

@@ -11,7 +11,7 @@
         for (const Json& p : m["content"].items()) any = any || p["type"].str() == "file" || p["type"].str() == "input_file";
       bool tools = false;  // (the file tools offered: a long document goes in as its outline)
       for (const Json& t : body["tools"].items()) tools = tools || t["function"]["name"].str() == "read_file";
-      if (any) body.set("messages", files::expand_files(body["messages"], tools));
+      if (any) body.set("messages", files::expand_files(body["messages"], tools, eng_.ctx));
     }
     const Json& messages = body["messages"];
     if (!messages.is_array() || messages.size() == 0) return rs.send(400, "application/json", err("messages required").dump());

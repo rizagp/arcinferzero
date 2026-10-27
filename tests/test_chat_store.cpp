@@ -1,7 +1,8 @@
 // CPU-only checks of the web UI's chat folders (tools/server_files.h) and its terminal tool (tools/server_terminal.h),
 // in a scratch data folder under %TEMP% (deleted at the end): files into a chat's folder, the folder named at the first
-// save, hard links between chats, a file put in or deleted by hand, deleting a chat; a command's output, exit code,
-// timeout (with the processes it started) and long output.
+// save, hard links between chats, a file put in or deleted by hand, deleting a chat; a document in a message whole or
+// as its outline by the model's context; a command's output, exit code, timeout (with the processes it started) and
+// long output.
 #include <cstdlib>
 #include <string>
 #include "../tools/server_files.h"
@@ -87,6 +88,31 @@ int main() {
     bool threw = false;
     try { st.chat_put("..\\x", "{}"); } catch (const std::exception&) { threw = true; }
     check("a bad chat id is refused", threw);
+  }
+  // a document in a message: whole when it fits a quarter of the model's context, else its outline (read_file then
+  // reads it a part at a time: files::read_budget)
+  {
+    std::string md;
+    for (int k = 1; k <= 8; ++k) {
+      md += "# Bab " + std::to_string(k) + "\n\n";
+      for (int s = 0; s < 20; ++s) md +="Kalimat isi bab yang cukup panjang untuk mengisi dokumen uji. ";
+      md += "\n\n";
+    }
+    const files::Info doc = files::store().put("panjang.md", md, "c7");
+    Json msgs = Json::array(), m = Json::object(), parts = Json::array(), p = Json::object(), f = Json::object();
+    f.set("file_id", doc.id);
+    p.set("type", "file");
+    p.set("file", f);
+    parts.push(p);
+    m.set("role", "user");
+    m.set("content", parts);
+    msgs.push(m);
+    auto text_of = [](const Json& out) { return out[0]["content"][0]["text"].str(); };
+    check("document: whole without a known context", text_of(files::expand_files(msgs, true)).find("Outline:") == std::string::npos);
+    check("document: its outline for an 8K context", text_of(files::expand_files(msgs, true, 8192)).find("Outline:") != std::string::npos);
+    check("document: whole without the file tools", text_of(files::expand_files(msgs, false, 8192)).find("Outline:") == std::string::npos);
+    check("read budget: a fifth of the context", files::read_budget(8192) == 4915 && files::read_budget(1000) == 1500 &&
+          files::read_budget(0) == (size_t)-1, std::to_string(files::read_budget(8192)));
   }
   {
     const std::string cwd = root.string();

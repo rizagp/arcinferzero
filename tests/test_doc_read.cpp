@@ -232,6 +232,23 @@ int main(int argc, char** argv) {
     check("PDFDocEncoding text string", rdoc::pdf::File::text_string("a\x84" "b\x93") == "a\xe2\x80\x94" "b\xef\xac\x81");
     check("UTF-16 text string with a surrogate pair", rdoc::pdf::File::text_string(std::string("\xfe\xff\xd8\x3d\xde\x00", 6)) == "\xf0\x9f\x98\x80");
   }
+  // a long section without headings over several pages (a table of five pages): its pages as parts one level below
+  {
+    rdoc::Doc d;
+    d.pages = 6;
+    d.paras.push_back({"Matriks Risiko", 1, 1});
+    for (int pg = 1; pg <= 5; ++pg)
+      for (int k = 0; k < 10; ++k) d.paras.push_back({"Baris tabel risiko halaman " + std::to_string(pg) + " dengan isi sel yang panjang, " + std::string(240, 'x'), pg, 0});
+    d.paras.push_back({"Lampiran", 6, 1});
+    d.paras.push_back({"Isi lampiran.", 6, 0});
+    const rdoc::Index ix(d);
+    size_t parts = 0;
+    for (const auto& s : ix.outline) parts += s.title.rfind("page ", 0) == 0 && s.level == 2;
+    check("a long section: its pages as parts", ix.outline.size() == 2 + parts && parts >= 2 && ix.outline[0].title == "Matriks Risiko" &&
+          ix.outline[1].page >= 2 && ix.outline.back().title == "Lampiran", std::to_string(ix.outline.size()));
+    check("a long section: each part a few pages at most", std::all_of(ix.outline.begin(), ix.outline.end(), [](const rdoc::Section& s) { return s.chars < 9000; }));
+    check("a long section read whole: its parts with it", ix.outline[0].span == ix.outline.back().first);
+  }
   // search: the chunk with the words first; Indonesian particles
   {
     std::string md;
