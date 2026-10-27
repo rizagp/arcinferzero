@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-27: Qwen vision encoder faster on the dense models
+
+- **Images 22-30 % faster to encode on Qwen3.5 4B / 9B and Qwen3.8 27B**: the vision encoder's matrix products run on
+  the engine's int8 GEMM in two passes, as the Gemma 4 encoder's (27B: a 768-token image 1.76 -> 1.27 s, a photo
+  571 -> 450 ms); the model's KL against the f16 encoder 0.0004-0.0024 on 5 test images. The 35B and Flash Next keep
+  the f16 encoder (their models are too sensitive to it); `ARC_VIT_Q2=0 / 1` turns it off / on for any model.
+- Measured, not changed: the NPU next to the GPU does not pay off on the 35B (-3 to -8 %) or Flash Next (noise),
+  whatever share it gets; `--npu on` keeps them off.
+
 ## 2026-10-26: Whisper native (speech to text on the iGPU or the NPU)
 
 - **`arc-transcribe` / `bin\transcribez.exe`**: Whisper large-v3-turbo (faster-whisper's `model.bin` from the

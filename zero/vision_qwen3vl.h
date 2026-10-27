@@ -5,10 +5,11 @@
 // LayerNorm and a 2x2 merger MLP into the language model's embedding space: one token per 32x32 pixels.
 // Matches llama.cpp tools/mtmd (models/qwen3vl.cpp, bicubic dyn-size preprocessing); no deepstack layers.
 //
-// The CPU only decodes, resizes and lays out the image (milliseconds). The matrix products run in floating point
-// (the mmproj's f16 weights, f32 activations and accumulation: zero/kernels/ops.cl vit_gemm_f16): with the language
-// model's int8 GEMM the encoder's output drifted 10-23 % from the f32 reference on photos (every layer's int8
-// activations contributed), in f16 0.6-1.8 %. Attention f16 q / K / V with f32 math, norms and activations f32.
+// The CPU only decodes, resizes and lays out the image (milliseconds). The matrix products: dense models on the
+// engine's int8 GEMM in two passes (Q8_0 weights, activations plus their rounding residual; see i8_), the 35B and
+// Flash Next in floating point (the mmproj's f16 weights, f32 activations and accumulation: zero/kernels/ops.cl
+// vit_gemm_f16). One int8 pass is not enough: the encoder's output drifted 10-23 % from the f32 reference on photos,
+// in f16 0.6-1.8 %. Attention f16 q / K / V with f32 math, norms and activations f32.
 // Weights are uploaded on the first image, buffers grow with the largest image seen.
 #pragma once
 #include "engine.h"
@@ -182,10 +183,22 @@ class VisionQwen3VL {
   GgufFile f_;
   Engine& e_;
   float mean_[3] = {0.5f, 0.5f, 0.5f}, std_[3] = {0.5f, 0.5f, 0.5f};
-  struct FW {  // an f16 weight [N][K] on the GPU
+  struct FW {  // an f16 weight [N][K] on the GPU, or (i8_) Q8_0 rows with K padded to whole superblocks
     cl_mem w = nullptr;
     int N = 0, K = 0;
+    GpuWeight q8;
   };
+  // (the matrix products on the engine's int8 GEMM in two passes, as the Gemma 4 encoder's: Q8_0 weights, the
+  //  activations quantized per 32 values plus their rounding residual quantized the same way, in this encoder's own
+  //  buffers (the Qwen engines run one pass). Dense models (4B, 9B, 27B): the encoder 22-30 % faster, the model's KL
+  //  against the f16 encoder 0.0004-0.0024 on 5 images (32 tokens, 31-32 / 32 the same; 2026-10-27). Not the 35B
+  //  or Flash Next: those models turn any rounding difference on small text into KL ~0.01 (the 35B 0.003-0.011,
+  //  int8 on a single matrix kind as much as on all). ARC_VIT_Q2=0 / 1: off / on for any model)
+  bool i8_ = false;
+  cl_mem vaq_ = nullptr, vasc_ = nullptr, vab_ = nullptr;
+  int q2_rows_ = 0, q2_kp_ = 0;
+  std::string q2defs_;
+  size_t q2_off_[3] = {0, 0, 0};  // the residual pass's offsets (bytes) in vaq_ / vasc_ / vab_
   struct Layer {
     cl_mem ln1w, ln1b, ln2w, ln2b, qkv_b, out_b, up_b, down_b;
     FW qkv, out, up, down;
@@ -214,6 +227,18 @@ class VisionQwen3VL {
     return e_.buf(v.size() * 4, v.data());
   }
   FW f16(const std::vector<float>& v, int N, int K) {
+    if (i8_) {
+      const int Kp = (K + 255) / 256 * 256;
+      std::vector<float> p((size_t)N * Kp, 0.0f);
+      for (int n = 0; n < N; ++n) memcpy(&p[(size_t)n * Kp], &v[(size_t)n * K], (size_t)K * 4);
+      const auto q = quantize_rows_q8_0(p.data(), N, Kp);
+      FW w;
+      w.q8 = e_.make_weight(GGML_Q8_0, q.data(), q.size(), N, Kp);
+      w.N = N;
+      w.K = K;
+      q2_kp_ = std::max(q2_kp_, Kp);
+      return w;
+    }
     std::vector<uint16_t> h(v.size());
     for (size_t i = 0; i < v.size(); ++i) h[i] = f32_to_fp16(v[i]);
     FW w;
@@ -228,6 +253,7 @@ class VisionQwen3VL {
   }
   void load() {
     if (loaded_) return;
+    i8_ = getenv("ARC_VIT_Q2") ? atoi(getenv("ARC_VIT_Q2")) != 0 : !e_.hp.moe && !e_.hp.hc;
     // the two temporal patch kernels see the same frame: their sum is the 2-D patch embedding
     {
       std::vector<float> w = host("v.patch_embd.weight"), w1 = host("v.patch_embd.weight.1");
@@ -261,6 +287,18 @@ class VisionQwen3VL {
     mm2_b_ = f32("mm.2.bias");
     if (mm0_.K != 4 * n_embd || mm2_.N != n_out || mm0_.N % 16 || n_out % 16)
       throw std::runtime_error("mmproj: unexpected Qwen3-VL merger shapes");
+    if (i8_) {  // the two passes' activations for chunks of the engine's chunk size: [pass][rows][K], per-32 scales
+      e_.ensure_stage();  // (MoE models decode Q8_0 rows just in time: staging for these sizes)
+      q2_rows_ = (e_.max_chunk + 127) / 128 * 128;
+      const size_t aq = (size_t)q2_rows_ * q2_kp_, sc = (size_t)q2_rows_ * (q2_kp_ / 32), ab = (size_t)q2_rows_ * (q2_kp_ / 16);
+      vaq_ = e_.buf(2 * aq);
+      vasc_ = e_.buf(2 * sc * 4);
+      vab_ = e_.buf(2 * ab * 2);
+      q2defs_ = "-DQ2_AQ=" + std::to_string(aq) + " -DQ2_SC=" + std::to_string(sc) + " -DQ2_AB=" + std::to_string(ab);
+      q2_off_[0] = aq;
+      q2_off_[1] = sc * 4;
+      q2_off_[2] = ab * 2;
+    }
     loaded_ = true;
   }
   // buffers for Mp patch rows (grown as needed: the smaller set released first)
@@ -284,6 +322,34 @@ class VisionQwen3VL {
   cl_kernel kern(const char* name, const std::string& defs) { return e_.kernel("ops", "-DVIT " + defs, name); }
   // C[:, c_off : c_off + w.N] (+)= A[rows][K] * W^T for M (padded, a multiple of 16) rows, n of them stored
   void gemm(cl_mem A, int lda, const FW& w, cl_mem C, int ldc, int c_off, bool acc, int M, int n) {
+    if (w.q8.raw) {  // two int8 passes on the engine's GEMM, rows in equal chunks of at most q2_rows_
+      const int nch = (n + q2_rows_ - 1) / q2_rows_, rows = ((n + nch - 1) / nch + 127) / 128 * 128;
+      cl_kernel kq = kern("vit_quant_pad", q2defs_);
+      const int saved = e_.cur_T_;
+      const cl_mem a0 = e_.aq_, s0 = e_.asc_, b0 = e_.absum_;
+      struct Restore { Engine& e; cl_mem a, s, b; int t; ~Restore() { e.aq_ = a; e.asc_ = s; e.absum_ = b; e.cur_T_ = t; } } rst{e_, a0, s0, b0, saved};
+      for (int r0 = 0; r0 < n; r0 += rows) {
+        const int nv = std::min(rows, n - r0), Mp = std::min(rows, M - r0);
+        int ld = lda, kv = w.K, kp = w.q8.K, mm = Mp, mv = nv;
+        set_args(kq, 0, e_.from(A, (size_t)r0 * lda * 4), ld, kv, kp, mm, mv, vaq_, vasc_, vab_);
+        size_t g[2] = {256, (size_t)Mp}, lw[2] = {256, 1};
+        e_.run("vit_gemm", kq, 2, g, lw);
+        e_.cur_T_ = nv;
+        const cl_mem out = e_.from(C, (size_t)r0 * ldc * 4);
+        e_.aq_ = vaq_;
+        e_.asc_ = vasc_;
+        e_.absum_ = vab_;
+        e_.matmul("vit_gemm", w.q8, Mp, out, ldc, c_off, acc ? 1 : 0, true);
+        e_.aq_ = e_.from(vaq_, q2_off_[0]);  // (the residual's pass, added)
+        e_.asc_ = e_.from(vasc_, q2_off_[1]);
+        e_.absum_ = e_.from(vab_, q2_off_[2]);
+        e_.matmul("vit_gemm", w.q8, Mp, out, ldc, c_off, 1, true);
+        e_.aq_ = a0;
+        e_.asc_ = s0;
+        e_.absum_ = b0;
+      }
+      return;
+    }
     cl_kernel k = kern("vit_gemm_f16", "-cl-intel-256-GRF-per-thread " + vgdefs_);  // (128 registers spill: 2.2x slower)
     int ld = lda, K = w.K, lc = ldc, co = c_off, ac = acc ? 1 : 0, mv = n;
     set_args(k, 0, A, ld, w.w, K, C, lc, co, ac, mv);
