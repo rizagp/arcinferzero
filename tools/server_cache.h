@@ -373,6 +373,8 @@
     const int u_cur = usable(P, cached_, current_resume(), current_floor());
     int bi = -1, bu = u_cur + 512;  // loading must save at least ~512 tokens of prompt processing
     for (size_t i = 0; i < saved_.size(); ++i) {
+      // (longer than this context, e.g. saved before --slots shared it out: kept for a later larger context, not loaded)
+      if ((int)saved_[i].tokens.size() > eng_.ctx) continue;
       const int u = usable(P, saved_[i].tokens, saved_[i].resume, saved_[i].floor);
       if (u > bu) { bi = (int)i; bu = u; }
     }

@@ -59,6 +59,10 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 .conv .row { display: flex; gap: 8px; align-items: baseline; }
 .conv .title { flex: 1; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv .time { font-size: 12px; color: var(--muted); flex: none; }
+.conv.busy .snip { color: var(--accent); }
+.jobsbar { display: flex; align-items: center; gap: 10px; margin: 0 12px 6px; padding: 6px 10px; border-radius: 8px; background: var(--active); color: var(--accent); font-size: 13px; }
+.jobsbar span { flex: 1; }
+.jobsbar button { color: var(--danger); font-size: 13px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); }
 .conv .snip { color: var(--muted); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv .del { position: absolute; right: 10px; bottom: 8px; width: 26px; height: 26px; border-radius: 50%; display: none; place-items: center; color: var(--muted); background: var(--side); }
 .conv:hover .del { display: grid; }
@@ -218,7 +222,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
   .app.chatting .side { display: none; }
   .app:not(.chatting) .chat { display: none; }
   #backbtn { display: grid; }
-  #gearside, #filesside { display: grid !important; }
+  #gearside, #filesside, #gearchat { display: grid !important; }
   main { padding: 10px 8px; }
   .msg { max-width: 88%; }
   .menu { left: 10px; }
@@ -244,6 +248,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <button class="iconbtn" id="gearside" title="Settings" aria-label="Settings" style="display:none"><svg viewBox="0 0 24 24"><use href="#g-gear"/></svg></button>
     </div>
     <div class="search"><input id="search" placeholder="Search chats" aria-label="Search chats"></div>
+    <div class="jobsbar" id="jobsbar" hidden><span id="jobstxt"></span><button id="stopall" title="Stop every answer that runs">Stop all</button></div>
     <div class="list" id="convlist"></div>
 
     <div class="panel" id="filespanel" aria-label="Files">
@@ -272,6 +277,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <h3>Answers</h3>
           <div class="opt" id="thinkrow"><div class="lab">Thinking<small id="thinkhelp">The model reasons before it answers: better answers, more time</small></div>
             <select id="thinkmode" aria-label="Thinking"></select></div>
+          <div class="opt"><div class="lab">Conversations at once<small id="slothelp">Chats that answer at the same time</small></div>
+            <select id="slots" aria-label="Conversations at once"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
           <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown) that appear in its answer</small></div>
             <label class="switch"><input type="checkbox" id="ftools"><span></span></label></div>
           <div class="opt"><div class="lab">Terminal<small>The model may run PowerShell commands on this computer, in the chat's folder (its files are there): ask each time, or run without asking</small></div>
@@ -314,6 +321,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <button id="modelbtn" title="Choose the model" aria-haspopup="true"><span id="model">connecting…</span><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
         <div id="modelsub"></div>
       </div>
+      <button class="iconbtn" id="gearchat" title="Settings" aria-label="Settings" style="display:none"><svg viewBox="0 0 24 24"><use href="#g-gear"/></svg></button>
       <button class="iconbtn" id="talk" title="Talk" aria-label="Talk"><svg viewBox="0 0 24 24"><path d="M12 2a9 9 0 0 0-9 9v7a3 3 0 0 0 3 3h2v-8H5v-2a7 7 0 0 1 14 0v2h-3v8h2a3 3 0 0 0 3-3v-7a9 9 0 0 0-9-9z"/></svg></button>
       <button class="iconbtn" id="compact" title="Compact: summarize the earlier messages so the conversation takes less context (done automatically when the context is nearly full)" aria-label="Compact" disabled><svg viewBox="0 0 24 24"><path d="M8 19h3v3h2v-3h3l-4-4-4 4zm8-15h-3V1h-2v3H8l4 4 4-4zM4 9v2h16V9H4zm0 3h16v2H4v-2z"/></svg></button>
       <div class="menu" id="modelmenu" hidden></div>
@@ -344,7 +352,7 @@ const thread = $("thread"), input = $("input"), app = $("app");
 let history = [], controller = null, modelId = "", loadedId = "";
 let ctxLen = 0, used = 0;  // the server's context size; tokens the conversation took at the last reply
 // the loaded model's controls (/props): its thinking switch, Qwen3.8's effort levels, its default sampling
-let caps = { thinking: true, efforts: [], sampling: null, stt: "" };
+let caps = { thinking: true, efforts: [], sampling: null, stt: "", slots: 1 };
 const ANSWER_RESERVE = 2048;  // (room kept for an answer when deciding to compact before sending)
 
 // ---- settings (the gear panel), kept per browser
@@ -385,6 +393,8 @@ $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
 $("gear").addEventListener("click", () => { const on = !$("panel").classList.contains("open"); openPanel(on); if (on) dataSummary(); });
 $("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); });
+// (a small screen shows the chat or the list: the chat's own gear goes to the list with the settings open)
+$("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); });
 $("panelback").addEventListener("click", () => openPanel(false));
 
 // the thinking choices this model has: Qwen3.8 off / low / medium / high, others on / off, none without the switch
@@ -408,6 +418,26 @@ function thinkingNow() {
 }
 
 // ---- the server: the models it can switch to, the loaded one's context and controls
+// the slots: chats answering at the same time on the server (one more waits), each with a part of the context
+const slotHelp = () => "Chats that answer at the same time (the server's slots; with all of them answering, no new one starts). The context is " +
+  "shared out: " + (ctxLen ? k1(ctxLen) + " tokens" : "its part") + " per chat now";
+$("slots").addEventListener("change", async () => {
+  const n = parseInt($("slots").value, 10);
+  if (n === caps.slots) return;
+  if (!confirm("Load the model again with " + n + " conversation" + (n > 1 ? "s" : "") + " at once? It takes 5-40 s, and each chat " +
+      "gets about 1/" + n + " of the context" + (jobs.size ? "; the answers running now finish first" : "") +
+      ". Long chats are compacted before their next answer. This lasts until the server restarts.")) { $("slots").value = String(caps.slots); return; }
+  $("slots").disabled = true;
+  $("slothelp").textContent = "loading the model with " + n + " slot" + (n > 1 ? "s" : "") + "…";
+  try {
+    const r = await fetch("/v1/server/slots", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slots: n }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) note("changing the slots failed: " + (j.error?.message || "HTTP " + r.status));
+  } catch (e) { note("changing the slots failed: " + (e.message || e)); }
+  $("slots").disabled = false;
+  await refreshModel();  // (caps.slots, the context per chat)
+  for (const w of [...slotWaiters]) w();  // (more slots: waiting chats go)
+});
 async function refreshModel() {
   try {
     const j = await (await fetch("/v1/models")).json();
@@ -423,7 +453,9 @@ async function refreshModel() {
     //  model that hears it itself, Gemma 4 E4B / 12B)
     const stt = p.speech_to_text;
     caps = { thinking: p.thinking !== false, efforts: Array.isArray(p.reasoning_effort) ? p.reasoning_effort : [], sampling: p.sampling || null,
-      stt: stt ? (typeof stt === "object" && stt.model ? String(stt.model) : "whisper") : "" };
+      stt: stt ? (typeof stt === "object" && stt.model ? String(stt.model) : "whisper") : "", slots: p.stats?.slots || 1 };
+    $("slots").value = String(caps.slots);
+    $("slothelp").textContent = slotHelp();
   } catch (e) {}
   fillThinking();
   const t = caps.sampling ? caps.sampling.temperature : null;
@@ -595,9 +627,16 @@ async function upload(blob, name) {
 }
 const fileItem = (j) => ({ kind: j.kind, url: j.url, id: j.id, name: j.filename, bytes: j.bytes });
 async function addFiles(files) {
+  const ep = epoch;
   for (const f of files) {
-    try { pending.push(fileItem(await upload(f, f.name))); renderAtts(); continue; }
-    catch (e) { console.error(e); }
+    try {
+      const it = fileItem(await upload(f, f.name));
+      if (ep !== epoch) { note(f.name + " was saved in the chat it was attached to"); continue; }
+      pending.push(it);
+      renderAtts();
+      continue;
+    } catch (e) { console.error(e); }
+    if (ep !== epoch) continue;
     // (the upload failed: as before, inside the message)
     if (f.type.startsWith("image/")) pending.push({ kind: "image", url: await readDataURL(f) });
     else if (f.type.startsWith("audio/")) {
@@ -708,9 +747,9 @@ const SUMMARIZE = "Summarize our conversation so far, for your own reference whe
   "name, number, code word, file name, path, setting, piece of code that is still needed); and what is still open. " +
   "Be brief: one short line per item, skip filler text. Write it in the language of the conversation. Output only the summary.";
 const overflow = (t) => /exceed_context_size_error|exceeds the available context/.test(t);
-async function chatOnce(messages, signal) {
+async function chatOnce(messages, signal, model = modelId) {
   const res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, signal,
-    body: JSON.stringify({ model: modelId, messages: wire(messages), stream: false, temperature: 0, max_tokens: 1500,
+    body: JSON.stringify({ model, messages: wire(messages), stream: false, temperature: 0, max_tokens: 1500,
       chat_template_kwargs: { enable_thinking: false }, reasoning_effort: "none" }) });
   const t = await res.text();
   if (!res.ok) { const e = new Error(t); e.overflow = overflow(t); throw e; }
@@ -718,10 +757,10 @@ async function chatOnce(messages, signal) {
 }
 // the messages as they are (the server reuses its cache of that prefix) and the request; when even that does not fit,
 // the first half is summarized on its own and then the rest with that summary in front
-async function summarize(msgs, signal) {
+async function summarize(msgs, signal, model) {
   if (signal?.aborted) throw new DOMException("stopped", "AbortError");
   try {
-    return await chatOnce([...sysMessages(), ...msgs, { role: "user", content: SUMMARIZE }], signal);
+    return await chatOnce([...sysMessages(), ...msgs, { role: "user", content: SUMMARIZE }], signal, model);
   } catch (e) {
     if (!e.overflow) throw e;
     // the first part holds at least one exchange beyond a leading summary, so every round gets shorter
@@ -732,32 +771,40 @@ async function summarize(msgs, signal) {
       const flat = msgs.map((m) => m.role + ": " + textOf(m.content)).join("\n\n");
       if (flat.length < 2000) throw e;
       const half = Math.floor(flat.length / 2), noted = { role: "assistant", content: "(noted)" };
-      const first = await summarize([{ role: "user", content: "Conversation text, part 1:\n" + flat.slice(0, half) }, noted], signal);
-      return summarize([...summaryPair(first), { role: "user", content: "Conversation text, continued:\n" + flat.slice(half) }, noted], signal);
+      const first = await summarize([{ role: "user", content: "Conversation text, part 1:\n" + flat.slice(0, half) }, noted], signal, model);
+      return summarize([...summaryPair(first), { role: "user", content: "Conversation text, continued:\n" + flat.slice(half) }, noted], signal, model);
     }
-    const first = await summarize(msgs.slice(0, mid), signal);
-    return summarize([...summaryPair(first), ...msgs.slice(mid)], signal);
+    const first = await summarize(msgs.slice(0, mid), signal, model);
+    return summarize([...summaryPair(first), ...msgs.slice(mid)], signal, model);
   }
 }
-// keep: the last messages kept word for word (the latest exchange); the kept part starts with a user message
-async function compact(keep, signal, statsEl) {
-  let cut = history.length - keep;
-  while (cut > 0 && history[cut]?.role !== "user") cut--;
-  if (cut < 2) return false;
-  const old = history.slice(0, cut), kept = history.slice(cut);
+// keep: the last messages kept word for word (the latest exchange); the kept part starts with a user message.
+// cutAt: everything before that message instead (the retry when the server says the prompt does not fit). job: the
+// running answer's chat (it may not be on screen); none: the chat on screen (the Compact button)
+async function compact(keep, signal, statsEl, job, cutAt) {
+  const h = job ? job.history : history;
+  let cut = cutAt ?? h.length - keep;
+  while (cut > 0 && h[cut]?.role !== "user") cut--;
+  if (cut < 2 || (h[0].role === "user" && textOf(h[0].content).startsWith(SUMMARY_HEAD) && cut <= 2)) return false;  // (nothing new to fold)
+  const old = h.slice(0, cut), kept = h.slice(cut);
   if (statsEl) statsEl.textContent = "compacting the earlier conversation…";
-  const summary = await summarize(old, signal);
-  history = [...summaryPair(summary), ...kept];
-  const oldSet = new Set(old);
-  let firstKept = null;
-  for (const m of thread.querySelectorAll(".msg")) {
-    if (oldSet.has(m._h)) m.classList.add("old");
-    else if (!firstKept && !m.classList.contains("old")) firstKept = m;
+  const summary = await summarize(old, signal, job?.model);
+  const nh = [...summaryPair(summary), ...kept];
+  const here = job ? onScreen(job) : true;
+  if (job) job.history = nh;
+  if (here) {
+    history = nh;
+    const oldSet = new Set(old);
+    let firstKept = null;
+    for (const m of thread.querySelectorAll(".msg")) {
+      if (oldSet.has(m._h)) m.classList.add("old");
+      else if (!firstKept && !m.classList.contains("old")) firstKept = m;
+    }
+    thread.insertBefore(compactedNote(old.length, summary), firstKept);
   }
-  thread.insertBefore(compactedNote(old.length, summary), firstKept);
-  used = 0;
-  showUse();
-  saveConv();
+  if (job) job.used = estTokens(nh);
+  if (here) { used = job ? job.used : 0; showUse(); }
+  saveConv(false, job);
   return true;
 }
 function compactedNote(n, summary) {
@@ -864,7 +911,7 @@ const WEB_VOICE_SYSTEM = "In this spoken conversation the web tools run in the b
   "say one short sentence that you are looking it up; never guess the results. When results arrive, answer from them.";
 const bg = { n: 0, ready: [], ctl: new AbortController() };
 function bgDeliver() {
-  if (!bg.ready.length || controller || voice.speaking || rec.on || input.value.trim()) return;
+  if (!bg.ready.length || controller || voice.speaking || rec.on || input.value.trim() || pending.length) return;
   const items = bg.ready.splice(0);
   voice.last = null;  // (a pause-joined utterance must not take the results message with it)
   input.value = items.map((r) => "[Results of #" + r.id + ": " + r.label + "]\n" + r.text).join("\n\n");
@@ -899,7 +946,6 @@ function answerFiles(el, files) {
   for (const f of files) toolCardFile(box, f);
   el.insertBefore(box, el.querySelector(".stats"));
 }
-let made = [];  // (the documents written during the answer that runs)
 function toolCard(el) {
   const d = document.createElement("div");
   d.className = "tool";
@@ -919,14 +965,14 @@ function toolCard(el) {
   }, file: (f) => toolCardFile(d, f), el: d };
 }
 // one call: its card shows what runs and the outcome; returns the text the model gets as the tool's result
-async function runTool(call, card, signal) {
+async function runTool(call, card, signal, job) {
   const name = call.function.name;
   let args;
   try { args = JSON.parse(call.function.arguments || "{}"); } catch (e) { args = null; }
   card.head.textContent = args ? toolLabel(name, args) : name + " " + call.function.arguments;
   if (!args) { card.status.textContent = "invalid arguments"; return "error: the arguments are not valid JSON"; }
-  if (name === "list_files" || name === "read_file" || name === "search_file" || name === "create_document") return runFileTool(name, args, card, signal);
-  if (name === "run_command") return runTermTool(args, card, signal);
+  if (name === "list_files" || name === "read_file" || name === "search_file" || name === "create_document") return runFileTool(name, args, card, signal, job);
+  if (name === "run_command") return runTermTool(args, card, signal, job);
   if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
   const body = name === "web_search" ? { query: String(args.query ?? ""), max_results: 6 }
@@ -949,14 +995,14 @@ async function runTool(call, card, signal) {
     (j.next_offset ? "\n\n[the page goes on: call web_fetch with offset " + j.next_offset + " to read more]" : "");
 }
 
-// Run / Don't run under the command in its card (a stop counts as Don't run)
+// Run / Don't run under the command in its card (Stop: the answer stops, the command does not count as refused)
 function askRun(d, signal) {
-  return new Promise((done) => {
+  return new Promise((done, fail) => {
     const box = document.createElement("div");
     box.className = "ask";
     box.innerHTML = '<button class="run">Run</button><button class="no">Don\'t run</button>';
     const end = (ok) => { box.remove(); signal?.removeEventListener("abort", stop); done(ok); };
-    const stop = () => end(false);
+    const stop = () => { box.remove(); fail(new DOMException("stopped", "AbortError")); };
     box.querySelector(".run").onclick = () => end(true);
     box.querySelector(".no").onclick = () => end(false);
     signal?.addEventListener("abort", stop);
@@ -982,7 +1028,7 @@ function termResult(d, j) {
   det.appendChild(out);
   d.appendChild(det);
 }
-async function runTermTool(args, card, signal) {
+async function runTermTool(args, card, signal, job) {
   const cmd = String(args.command ?? "").trim();
   if (!cmd) { card.status.textContent = "· no command"; return "error: command is empty"; }
   termCmd(card.el, cmd);
@@ -996,7 +1042,7 @@ async function runTermTool(args, card, signal) {
   }
   card.status.textContent = "· running…";
   const res = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ command: cmd, chat_id: ensureConv(), timeout_s: args.timeout_s }), signal });
+    body: JSON.stringify({ command: cmd, chat_id: job?.id || ensureConv(), timeout_s: args.timeout_s }), signal });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) {
     const m = j.error?.message || "HTTP " + res.status;
@@ -1020,11 +1066,11 @@ function toolLabel(name, args) {
   if (name === "run_command") return name;
   return name + " " + (args.query ?? args.url ?? "") + (args.offset ? " @" + args.offset : "");
 }
-async function runFileTool(name, args, card, signal) {
-  const body = { ...args };
-  if (name === "list_files") { if (args.scope === "chat") body.chat_id = convId || "-"; delete body.scope; }
-  if (name === "create_document") body.chat_id = ensureConv();  // (into this chat's folder)
-  if ((name === "read_file" || name === "search_file") && convId) body.chat_id = convId;  // (a name: this chat's file first; no file: this chat's documents)
+async function runFileTool(name, args, card, signal, job) {
+  const body = { ...args }, chat = job?.id || convId;  // (the job's chat: another one may be on screen)
+  if (name === "list_files") { if (args.scope === "chat") body.chat_id = chat || "-"; delete body.scope; }
+  if (name === "create_document") body.chat_id = chat || ensureConv();  // (into this chat's folder)
+  if ((name === "read_file" || name === "search_file") && chat) body.chat_id = chat;  // (a name: this chat's file first; no file: this chat's documents)
   card.head.textContent = toolLabel(name, args);
   card.status.textContent = name === "create_document" ? "· writing…" : name === "read_file" ? "· reading…" : "· listing…";
   const res = await fetch("/v1/tools/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
@@ -1037,7 +1083,7 @@ async function runFileTool(name, args, card, signal) {
   if (name === "create_document") {
     card.status.textContent = "· " + kb(j.bytes || 0);
     card.file(j);
-    made.push(j);
+    job?.made?.push(j);  // (a Talk background call has none: it may end in a later answer)
     if ($("filespanel").classList.contains("open")) loadFiles();
   } else if (name === "list_files") card.status.textContent = "· " + (j.count || 0) + " files";
   else if (name === "search_file") card.status.textContent = "· " + (j.results || []).length + " passages" +
@@ -1051,31 +1097,45 @@ async function runFileTool(name, args, card, signal) {
 // (so a stop keeps what came); onOverflow: when the server says the prompt does not fit, compact and try once more.
 // No max_tokens: the answer may use the rest of the context (the server's reasoning budget bounds the thinking), and
 // no temperature unless set in the settings: the server then samples as the model's GGUF recommends.
-async function streamTurn(el, st, onOverflow) {
+const IDLE_MS = 10 * 60 * 1000;
+async function streamTurn(el, st, onOverflow, job) {
+  // (the watchdog: the server sends prompt progress every piece and each token, so 10 minutes of nothing is a stuck
+  //  request or connection; the answer stops as with Stop)
+  let idle = 0;
+  const kick = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => { job.idle = true; job.controller.abort(); }, IDLE_MS);
+  };
   const thinkBox = el.querySelector(".think"), thinkText = thinkBox.querySelector("div"), content = el.querySelector(".content");
   const bar = el.querySelector(".progress > div"), stats = el.querySelector(".stats");
-  stats.textContent = modelId !== loadedId ? "loading the model…" : "processing prompt…";
+  stats.textContent = job.model !== loadedId ? "loading the model…" : "processing prompt…";
   const think = thinkingNow();
   let res;
   for (let attempt = 0; ; attempt++) {
-    const body = { model: modelId, messages: wire([...sysMessages(), ...history]), stream: true, stream_options: { include_usage: true },
+    const body = { model: job.model, messages: wire([...sysMessages(), ...job.history]), stream: true, stream_options: { include_usage: true },
       chat_template_kwargs: { enable_thinking: think.on } };
-    if (think.effort && !(modelId !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
+    if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
     if (toolsOn()) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...($("term").value !== "off" ? TERM_TOOLS : [])];
-    res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
+    kick();
+    res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
     if (res.ok) break;
     const t = await res.text();
     if (attempt === 0 && overflow(t) && onOverflow && await onOverflow(stats)) { stats.textContent = "processing prompt…"; continue; }
+    if (overflow(t)) throw new Error("the conversation does not fit this model's context even after compacting" +
+      (caps.slots > 1 ? " (each of the " + caps.slots + " conversations at once has a part of it: fewer in Settings give more)" : "") +
+      ": delete the long messages or tool results, or start a new chat");
     throw new Error(t);
   }
   const reader = res.body.getReader(), dec = new TextDecoder();
+  kick();
   let buf = "", first = true, frame = 0, painted = 0;
   // the screen follows at most every 120 ms (a long answer re-rendered per token made streaming slow down, and while
   // the model runs on the same iGPU the browser gets little GPU time to draw: parts of the page stayed blank), and
   // the thinking text only while its box is open (filled when it is opened)
   const paint = (all) => {
     frame = 0;
+    if (!all && !onScreen(job)) return;  // (another chat on screen: its bubbles are drawn when it comes back, and at the end)
     painted = performance.now();
     if (st.reasoning) {
       thinkBox.hidden = false;
@@ -1086,12 +1146,14 @@ async function streamTurn(el, st, onOverflow) {
   };
   thinkBox.ontoggle = () => { if (thinkBox.open) thinkText.textContent = st.reasoning; };
   const later = () => {
-    if (!frame) frame = setTimeout(() => requestAnimationFrame(() => paint()), Math.max(0, 120 - (performance.now() - painted)));
+    // (a plain timer: an animation frame waits while the tab is hidden, and a frame that never came stopped all later ones)
+    if (!frame) frame = setTimeout(paint, Math.max(0, 120 - (performance.now() - painted)));
   };
   try {
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
+    kick();
     buf += dec.decode(value, { stream: true });
     let idx;
     while ((idx = buf.indexOf("\n\n")) >= 0) {
@@ -1124,25 +1186,80 @@ async function streamTurn(el, st, onOverflow) {
     }
   }
   } finally {  // (the last pieces at once, also when stopped)
+    clearTimeout(idle);
     if (frame) clearTimeout(frame);
     if (!first) paint(true);
   }
 }
-function turnStats(el, st) {
+function turnStats(el, st, job) {
   el.querySelector(".progress")?.remove();
   const stats = el.querySelector(".stats"), t = st.timings;
   if (!t) { stats.textContent = st.note ? "" : "stopped"; return; }
   stats.textContent = "prompt " + (t.prompt_n + t.cache_n) + " tok (" + t.cache_n + " cached) in " + (t.prompt_ms / 1000).toFixed(1) +
     " s · " + t.prompt_per_second.toFixed(1) + " t/s · generated " + t.predicted_n + " tok at " + t.predicted_per_second.toFixed(2) + " t/s";
-  used = t.prompt_n + t.cache_n + t.predicted_n;
+  job.used = t.prompt_n + t.cache_n + t.predicted_n;
+  if (onScreen(job)) { used = job.used; showUse(); }
 }
 
-let epoch = 0;  // (a new or other chat on screen: an answer still winding down leaves it alone)
+// ---- answers as jobs, one per chat: an answer goes on while another chat is on screen (opening its chat again shows
+// it running, with Stop), at most as many at once as the server has conversation slots (/props stats.slots: one
+// more request would wait at the server anyway, its prompt not even started). The chat on screen: history and
+// controller are its job's while it runs.
+const jobs = new Map();  // chat id -> { id, history, controller, nodes (its bubbles), user, made, used, slot, waiting }
+const slotWaiters = new Set();
+const onScreen = (job) => job.id === convId;
+const slotsTaken = () => [...jobs.values()].filter((j) => j.slot).length;
+// (as many answers as slots: no new chat and no message elsewhere until one ends, nothing waits in a queue)
+const slotsFull = () => jobs.size >= Math.max(1, caps.slots || 1);
+const busyNote = () => {
+  const n = Math.max(1, caps.slots || 1);
+  return (n === 1 ? "A chat is answering" : "All " + n + " conversations at once are answering") +
+    ": wait until one finishes, or stop it (the bar over the chat list); more at once: Settings";
+};
+async function takeSlot(job, statsEl) {
+  while (slotsTaken() >= Math.max(1, caps.slots || 1)) {
+    if (!job.waiting) { job.waiting = true; renderConvs(); }
+    const n = caps.slots || 1;
+    statsEl.textContent = "waiting: another chat is answering (" + n + " conversation" + (n > 1 ? "s" : "") + " at once; more in Settings)…";
+    await new Promise((ok) => {
+      const wake = () => { slotWaiters.delete(wake); job.controller.signal.removeEventListener("abort", wake); ok(); };
+      slotWaiters.add(wake);
+      job.controller.signal.addEventListener("abort", wake);
+    });
+    if (job.controller.signal.aborted) throw new DOMException("stopped", "AbortError");
+  }
+  job.waiting = false;
+  job.slot = true;
+  renderConvs();
+}
+function freeSlot(job) {
+  job.slot = false;
+  for (const w of [...slotWaiters]) w();
+}
+// a chat's size in tokens, estimated from its messages (about 3.5 characters a token; an image ~1,000, audio ~1,500,
+// a document ~6,000 or less), plus ~1,500 for the system prompt and the tools: for a chat opened again, or a model
+// or slot change, before the server says how much it took
+function estTokens(h) {
+  let n = 1500;
+  for (const m of h) {
+    n += 8;
+    if (typeof m.content === "string") n += m.content.length / 3.5;
+    else for (const q of m.content || [])
+      n += q.type === "text" ? (q.text || "").length / 3.5 : q.type === "image_url" ? 1000 : q.type === "input_audio" ? 1500 : q.type === "file" ? 6000 : 0;
+    for (const t of m.tool_calls || []) n += (t.function?.arguments || "").length / 3.5;
+  }
+  return Math.ceil(n);
+}
+
+let epoch = 0;  // (another chat on screen: an upload still running stays out of its message box)
 async function send() {
   if (rec.on && !controller) return sendVoice();
-  const ep = epoch, gone = () => ep !== epoch;
   const text = input.value.trim();
   if ((!text && !pending.length) || controller) return;
+  if (slotsFull()) {  // (every slot answers: no queue; the message stays in the box)
+    note(busyNote());
+    return;
+  }
   input.value = "";
   grow();
   const media = pending;
@@ -1163,51 +1280,56 @@ async function send() {
   const userMsg = { role: "user", content: sent.length ? [...sent.map(part), ...(text ? [{ type: "text", text }] : [])] : text, at };
   if (shown) userMsg.voice = { id: shown.id, url: shown.url, name: shown.name };  // (kept with the chat, not sent)
   userEl._h = userMsg;
-  let el = addAssistant();
+  const job = { id: ensureConv(), history, controller: new AbortController(), nodes: [userEl], user: userMsg, made: [],
+                used: used || estTokens(history), slot: false, waiting: false, model: modelId };
+  if (!convs.some((c) => c.id === job.id))  // (in the list at once, also while it waits for a slot)
+    convs.unshift({ id: job.id, title: titleOf([userMsg]), at, model: modelId, snippet: "" });
+  jobs.set(job.id, job);
+  controller = job.controller;
+  const signal = job.controller.signal;
+  // (its bubbles: on screen while its chat is, kept with the job otherwise)
+  const bubble = () => { const e = addAssistant(); job.nodes.push(e); if (!onScreen(job)) e.remove(); return e; };
+  let el = bubble();
   scroll(true);
-  made = [];
-  controller = new AbortController();
   showUse();
   const switching = modelId !== loadedId;
   let st = { reasoning: "", answer: "", toolCalls: [], timings: null }, inHistory = false;
   try {
-    // nearly full (the last reply's size + this message + room for the answer): compact first
-    const need = used + Math.ceil(text.length / 3) + 300 * media.length + ANSWER_RESERVE;
-    if (ctxLen && used && !switching && need > 0.9 * ctxLen) await compact(2, controller.signal, el.querySelector(".stats"));
-    history.push(userMsg);
-    // the server says it does not fit: compact everything before this message and try again (once)
-    const refit = async (stats) => {
-      history.pop();
-      const done = await compact(0, controller.signal, stats);
-      history.push(userMsg);
-      return done;
-    };
+    await takeSlot(job, el.querySelector(".stats"));
+    // nearly full (the chat so far + this message + room for the answer), in the context of the model it goes to:
+    // compact first (a chat opened again, another model, or more slots: each chat's context gets smaller)
+    const ctxOf = switching ? (models.find((m) => m.id === modelId)?.context_length || 0) : ctxLen;
+    const need = job.used + Math.ceil(text.length / 3) + 300 * media.length + ANSWER_RESERVE;
+    if (ctxOf && need > 0.9 * ctxOf) await compact(2, signal, el.querySelector(".stats"), job);
+    job.history.push(userMsg);
+    saveConv(false, job);  // (on disk at once: its files belong to a saved chat, a closed page keeps the question)
+    // the server says it does not fit: compact everything before this message and try again (once a round)
+    const refit = (stats) => compact(0, signal, stats, job, job.history.indexOf(userMsg));
     for (let round = 0; ; round++) {
-      await streamTurn(el, st, round === 0 ? refit : null);
-      if (gone()) throw new DOMException("stopped", "AbortError");
-      turnStats(el, st);
+      await streamTurn(el, st, refit, job);
+      turnStats(el, st, job);
       if (switching && round === 0) refreshModel();  // (the server switched: its context and controls)
       if (!st.toolCalls.length || !toolsOn() || round + 1 >= MAX_ROUNDS) break;
       const calls = st.toolCalls.map((c, i) => ({ ...c, id: c.id || "call_" + round + "_" + i }));
       const msg = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, tool_calls: calls, at: Date.now() };
-      history.push(msg);
+      job.history.push(msg);
       el._h = msg;
       inHistory = true;
-      if (voice.on) {  // in the background: the answers now, the results later (bgDeliver)
+      if (voice.on && onScreen(job)) {  // in the background: the answers now, the results later (bgDeliver)
         for (const c of calls) {
-          const id = ++bg.n, card = toolCard(el);
+          const id = ++bg.n, card = toolCard(el), sig = bg.ctl.signal;  // (this chat's: another chat on screen aborts it)
           let args = {};
           try { args = JSON.parse(c.function.arguments || "{}"); } catch (e) {}
           const label = c.function.name + " " + String(args.query ?? args.url ?? "").slice(0, 80);
-          runTool(c, card, bg.ctl.signal).catch((e) => "error: " + (e.message || e)).then((text) => {
-            if (bg.ctl.signal.aborted) return;
+          runTool(c, card, sig, { id: job.id }).catch((e) => "error: " + (e.message || e)).then((text) => {
+            if (sig.aborted) return;
             bg.ready.push({ id, label, text });
             bgDeliver();
           });
-          history.push({ role: "tool", tool_call_id: c.id, name: c.function.name,
+          job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name,
             content: "started: #" + id + " runs in the background; its results will arrive in a later message [Results of #" + id + "]" });
         }
-        el = addAssistant();
+        el = bubble();
         st = { reasoning: "", answer: "", toolCalls: [], timings: null };
         inHistory = false;
         if (!msg.content.trim()) {  // (it said nothing with the call: a short spoken note instead of another turn)
@@ -1224,48 +1346,53 @@ async function send() {
       }
       const results = await Promise.all(calls.map((c) => {
         const card = toolCard(el);
-        return runTool(c, card, controller.signal).catch((e) => {
+        return runTool(c, card, signal, job).catch((e) => {
           card.status.textContent = e.name === "AbortError" ? "· stopped" : "· failed: " + (e.message || e);
           if (e.name === "AbortError") throw e;
           return "error: " + (e.message || e);
         });
       }));
-      if (gone()) throw new DOMException("stopped", "AbortError");
-      calls.forEach((c, i) => history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: results[i] }));
-      el = addAssistant();
+      calls.forEach((c, i) => job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: results[i] }));
+      saveConv(false, job);  // (each round on disk)
+      el = bubble();
       st = { reasoning: "", answer: "", toolCalls: [], timings: null };
       inHistory = false;
       scroll();
     }
   } catch (e) {
     if (e.name !== "AbortError") el.querySelector(".content").innerHTML += '<div style="color:var(--danger)">' + esc(String(e.message || e)) + "</div>";
+    else if (job.idle) el.querySelector(".content").innerHTML += '<div style="color:var(--danger)">stopped: no output from the server for 10 minutes</div>';
     if (switching) refreshModel();
   }
-  if (gone()) return;  // (another chat is on screen: this one was saved when it was left)
-  turnStats(el, st);
+  turnStats(el, st, job);
   if (!inHistory) {  // calls that did not run (Web off, or the last round): shown as they are
     for (const tc of st.toolCalls) toolCard(el).head.textContent = "tool call: " + tc.function.name + " " + tc.function.arguments;
   }
-  if (!history.includes(userMsg)) history.push(userMsg);  // (stopped while compacting)
+  if (!job.history.includes(userMsg)) job.history.push(userMsg);  // (stopped while waiting or compacting)
   // stopped while tools ran: every call gets a result, so the conversation stays valid
-  const last = history[history.length - 1];
-  for (const c of last.tool_calls || []) history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: stopped by the user" });
+  const last = job.history[job.history.length - 1];
+  for (const c of last.tool_calls || []) job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: stopped by the user" });
   if (!inHistory) {
     const reply = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, at: Date.now() };
-    history.push(reply);
+    job.history.push(reply);
     el._h = reply;
-    answerFiles(el, made);
+    answerFiles(el, job.made);
   }
-  made = [];
-  controller = null;
-  showUse();
-  scroll();
-  saveConv();
-  if (voice.on) {
-    voice.flush();
-    if (!voice.talking && !voice.speaking) voice.status("listening…");
+  if (job.slot) freeSlot(job);
+  jobs.delete(job.id);
+  saveConv(false, job);
+  if (onScreen(job)) {
+    if (controller === job.controller) controller = null;
+    used = job.used;
+    showUse();
+    scroll();
+    if (voice.on) {
+      voice.flush();
+      if (!voice.talking && !voice.speaking) voice.status("listening…");
+    }
+    setTimeout(bgDeliver, 0);  // (background results that came while this answer ran)
   }
-  setTimeout(bgDeliver, 0);  // (background results that came while this answer ran)
+  renderConvs();
 }
 
 // ---- conversations: kept by the server in the data folder (chats\<id>.json, server_files.h), with their files in
@@ -1294,10 +1421,12 @@ function ensureConv() {
   return convId;
 }
 let saving = Promise.resolve();
-function saveConv(force) {
-  if (!history.length && !(force && convId)) return saving;
-  ensureConv();
-  const c = { id: convId, title: titleOf(history), at: Date.now(), model: modelId, snippet: snippetOf(history), history };
+function saveConv(force, job) {
+  if (job?.deleted) return saving;  // (its chat was deleted while it ran: not written again)
+  const h = job ? job.history : history;
+  if (!h.length && !(force && (job || convId))) return saving;
+  const id = job ? job.id : ensureConv();
+  const c = { id, title: titleOf(h), at: Date.now(), model: job ? job.model : modelId, snippet: snippetOf(h), history: h };
   const body = JSON.stringify(c);
   convs = [{ id: c.id, title: c.title, at: c.at, model: c.model, snippet: c.snippet }, ...convs.filter((x) => x.id !== c.id)];
   renderConvs();
@@ -1308,6 +1437,11 @@ function saveConv(force) {
 }
 function renderConvs() {
   const box = $("convlist"), q = $("search").value.trim().toLowerCase();
+  const nrun = [...jobs.values()].filter((j) => j.slot).length, nwait = jobs.size - nrun;
+  $("jobsbar").hidden = !jobs.size;
+  $("newchat").disabled = slotsFull();
+  $("newchat").title = slotsFull() ? busyNote() : "New chat";
+  $("jobstxt").textContent = nrun + " chat" + (nrun === 1 ? "" : "s") + " answering" + (nwait ? ", " + nwait + " waiting" : "");
   box.replaceChildren();
   const shown = convs.filter((c) => !q || String(c.title).toLowerCase().includes(q) || String(c.snippet || "").toLowerCase().includes(q));
   if (!shown.length) {
@@ -1326,7 +1460,9 @@ function renderConvs() {
     d.querySelector(".title").textContent = title;
     const day = new Date(c.at || 0);
     d.querySelector(".time").textContent = day.toDateString() === new Date().toDateString() ? hhmm(c.at) : day.toLocaleDateString([], { day: "numeric", month: "short" });
-    d.querySelector(".snip").textContent = c.snippet || "";
+    const job = jobs.get(c.id);
+    d.querySelector(".snip").textContent = job ? (job.waiting ? "waiting for a free slot…" : "answering…") : c.snippet || "";
+    if (job) d.classList.add("busy");
     d.addEventListener("click", (e) => { if (!e.target.closest(".del")) openConv(c.id); });
     d.querySelector(".del").addEventListener("click", () => deleteConv(c));
     box.appendChild(d);
@@ -1334,6 +1470,9 @@ function renderConvs() {
 }
 async function deleteConv(c) {
   if (!confirm("Delete the chat \"" + c.title + "\"? Its attached files that no other chat uses are deleted too.")) return;
+  const job = jobs.get(c.id);  // (its answer stops first, and saves nothing more)
+  if (job) { job.deleted = true; job.controller.abort(); }
+  await saving;
   try {
     const r = await fetch("/v1/chats/" + c.id, { method: "DELETE" });
     if (!r.ok && r.status !== 404) { note("deleting the chat failed: HTTP " + r.status); return; }
@@ -1344,10 +1483,10 @@ async function deleteConv(c) {
   if ($("filespanel").classList.contains("open")) loadFiles();
 }
 $("search").addEventListener("input", renderConvs);
+$("stopall").addEventListener("click", () => { for (const j of jobs.values()) j.controller.abort(); });
 function resetChat() {
   epoch++;
-  if (controller) controller.abort();
-  controller = null;
+  controller = null;  // (an answer still running goes on as its chat's job: opening the chat again shows it)
   if (voice.on) voice.stop();
   if (rec.on) rec.stop(false);
   history = []; used = 0; pending = []; renderAtts();
@@ -1378,18 +1517,22 @@ function partsMedia(m) {
 }
 // an earlier conversation on screen again, from its saved messages
 async function openConv(id) {
-  let c;
-  try {
-    const r = await fetch("/v1/chats/" + id);
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    c = await r.json();
-  } catch (e) { note("opening the chat failed: " + (e.message || e)); return; }
+  const job = jobs.get(id);
+  let c = {};
+  if (!job)
+    try {
+      const r = await fetch("/v1/chats/" + id);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      c = await r.json();
+    } catch (e) { note("opening the chat failed: " + (e.message || e)); return; }
   resetChat();
   convId = id;
-  history = Array.isArray(c.history) ? c.history : [];
+  history = job ? job.history : Array.isArray(c.history) ? c.history : [];
   thread.replaceChildren();
+  // (a running answer: the messages before its question from the history, then its own bubbles as they are)
+  const k = job ? history.indexOf(job.user) : -1;
   let el = null, files = [];  // (files: the documents written since the last user message)
-  for (const m of history) {
+  for (const m of job ? (k < 0 ? history : history.slice(0, k)) : history) {
     if (m.role === "user") {
       const t = typeof m.content === "string" ? m.content : m.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
       if (t.startsWith(SUMMARY_HEAD)) { thread.appendChild(compactedNote(0, t.slice(SUMMARY_HEAD.length))); continue; }
@@ -1437,14 +1580,19 @@ async function openConv(id) {
       }
     }
   }
-  if (!history.length) showEmpty("New conversation");
+  if (job) {
+    for (const n of job.nodes) thread.appendChild(n);
+    controller = job.controller;
+    used = job.used;
+  } else used = history.length ? estTokens(history) : 0;  // (an estimate until the next answer: compaction before it if needed)
+  if (!history.length && !job) showEmpty("New conversation");
   if (c.model && models.some((x) => x.id === c.model)) modelId = c.model;
   showModel();
   renderConvs();
   app.classList.add("chatting");
   scroll(true);
 }
-$("newchat").addEventListener("click", newChat);
+$("newchat").addEventListener("click", () => { if (slotsFull()) note(busyNote()); else newChat(); });
 $("backbtn").addEventListener("click", () => app.classList.remove("chatting"));
 
 // ---- Files: every saved file in one list (kind, size, date, the chats using it), to attach again or delete
@@ -1534,6 +1682,8 @@ async function dataSummary() {
 async function clearData(files) {
   const what = files ? "every chat and every uploaded file" : "every chat (the files stay in the Files panel)";
   if (!confirm("Delete " + what + "? This cannot be undone.")) return;
+  for (const j of jobs.values()) { j.deleted = true; j.controller.abort(); }
+  await saving;  // (a save already on its way lands first, then goes)
   try {
     const r = await (await fetch("/v1/chats" + (files ? "?files=1" : ""), { method: "DELETE" })).json();
     const n = (k, w) => k + " " + w + (k === 1 ? "" : "s");
@@ -1552,10 +1702,17 @@ $("fdelunused").addEventListener("click", async () => {
   const unused = fileData.filter((f) => !f.used_by || !f.used_by.length);
   if (!unused.length) { note("every file is in a chat"); return; }
   if (!confirm("Delete the " + unused.length + " files no chat uses (" + kb(unused.reduce((a, f) => a + f.bytes, 0)) + ")?")) return;
-  try { await fetch("/v1/files/delete_unused", { method: "POST" }); } catch (e) {}
+  // (the files waiting in the message box or used by a running answer stay: their chats are not saved with them yet)
+  const keep = new Set([...pending.map((x) => x.id), ...[...jobs.values()].flatMap((j) => fileRefs(j.history))]);
+  try {
+    await fetch("/v1/files/delete_unused", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: unused.map((f) => f.id).filter((x) => !keep.has(x)) }) });
+  } catch (e) {}
   loadFiles();
 });
 
+// the file ids a chat's messages refer to ("/files/<id>", "file_id": "<id>")
+const fileRefs = (h) => [...JSON.stringify(h).matchAll(/\/files\/([0-9a-f]{16})|"file_id":"(?:file-)?([0-9a-f]{16})"/g)].map((x) => x[1] || x[2]);
 // ---- voice messages: the microphone records until Send (or the bin discards it). With Whisper on the server
 // (caps.stt) the recording is written as text and sent as a text message, so every model can be talked to; without
 // it the recording goes to a model that hears audio itself (Gemma 4 E4B / 12B) as before.
@@ -1898,10 +2055,10 @@ async function deleteMsg(el) {
 async function editMsg(el) {
   const m = el._h;
   const text = typeof m.content === "string" ? m.content : m.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
-  const media = partsMedia(m).filter((x) => x.id && !x.shown);
+  const media = partsMedia(m).filter((x) => !x.shown);  // (saved files, and images / audio sent inside the message)
   removeTurn(el);
   await saveConv(true);
-  pending.push(...media.filter((x) => !pending.some((p) => p.id === x.id)));
+  pending.push(...media.filter((x) => !x.id || !pending.some((p) => p.id === x.id)));
   input.value = text;
   renderAtts();
   grow();

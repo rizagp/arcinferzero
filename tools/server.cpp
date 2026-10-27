@@ -1099,8 +1099,8 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
         const auto u = uses.find(i.id);
         auto used_by = [&](const std::string& c) { return u != uses.end() && std::find(u->second.begin(), u->second.end(), c) != u->second.end(); };
         for (const std::string& c : st.holders(i.id))
-          if (!used_by(c)) st.remove_from(i.id, c);
-        if (u == uses.end()) st.remove(i.id);  // (the old uploads folder's copy)
+          if (!used_by(c) && !st.draft(c)) st.remove_from(i.id, c);  // (a chat not saved yet: its files stay)
+        if (u == uses.end()) st.remove_from(i.id, "");  // (the old uploads folder's copy)
         files::Info left;
         if (!st.get(i.id, left)) { ++n; freed += (double)i.bytes; }
       }
@@ -1433,6 +1433,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "arcinferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
     return 1;
   }
+  ServeOpts cur_so = so;  // (the loaded model's options: a change of --slots loads it again with them)
   std::vector<ModelInfo> catalog = swap ? scan_models() : std::vector<ModelInfo>();
   std::shared_mutex swap_mu;  // requests share it; switching models takes it exclusively
   if (wh)  // (each Whisper step: with the loaded model's engine lock; a model switch can come between two)
@@ -1534,6 +1535,58 @@ int main(int argc, char** argv) {
       r.set("total_chars", (double)total);
       if (end < total) r.set("next_offset", (double)end);
       return rs.send(200, "application/json", r.dump());
+    }
+    // conversations at once (the web UI's Settings): the loaded model again with N slots, its context shared out
+    // (--ctx auto: each slot 128K / N for streamed MoE models, what fits N for the others). Waits for the running
+    // requests; this computer only. Later model switches keep N.
+    if (rq.method == "POST" && rq.path == "/v1/server/slots") {
+      auto fail = [&](int st, const std::string& m) {
+        Json er = Json::object(), r = Json::object();
+        er.set("message", m);
+        r.set("error", er);
+        return rs.send(st, "application/json", r.dump());
+      };
+      if (!rq.local_peer) return fail(403, "changing the slots is only for this computer");
+      Json in;
+      if (!Json::try_parse(rq.body, in) || !in["slots"].is_number()) return fail(400, "expected {\"slots\": 1-8}");
+      const int n = std::clamp((int)in["slots"].as_number(), 1, 8);
+      std::unique_lock<std::shared_mutex> lk(swap_mu);
+      if (!cur) return no_model(rs);
+      auto reply = [&] {
+        Json r = Json::object();
+        r.set("slots", cur->eng->slot_count());
+        r.set("n_ctx", cur->eng->ctx);
+        r.set("model", cur->alias);
+        return rs.send(200, "application/json", r.dump());
+      };
+      if (cur->eng->slot_count() == n) return reply();
+      const std::string path = cur->path, al = cur->alias;
+      const ServeOpts prev = cur_so;
+      const auto t0 = clk::now();
+      fprintf(stderr, "slots: %d -> %d, loading %s again\n", cur->eng->slot_count(), n, al.c_str());
+      if (cur->srv) cur->srv->save_held();
+      cur.reset();
+      ServeOpts s2 = prev;
+      s2.eo.slots = n;
+      s2.ctx_auto = true;
+      s2.warm_prompt = false;
+      try {
+        cur = load_model(path, al, s2);
+        cur_so = s2;
+        so.eo.slots = n;  // (the next model switches too)
+        fprintf(stderr, "slots: %d, loaded in %.1f s\n", n, ms_since(t0) / 1000);
+        return reply();
+      } catch (const std::exception& e) {
+        fprintf(stderr, "slots: could not load %s with %d slots: %s; loading it as before\n", al.c_str(), n, e.what());
+        std::string also;
+        try {
+          cur = load_model(path, al, prev);
+        } catch (const std::exception& e2) {
+          cur.reset();
+          also = std::string("; loading it as before failed too: ") + e2.what();
+        }
+        return fail(500, std::string("could not load the model with ") + std::to_string(n) + " slots: " + e.what() + also);
+      }
     }
     // other API formats (tools/api_compat.h): translated into a chat request; the answer is translated back
     static const std::map<std::string, std::string> kinds = {
@@ -1837,6 +1890,7 @@ int main(int argc, char** argv) {
           try {
             s2.warm_prompt = false;  // (the waiting request warms it)
             cur = load_model(m->path, m->alias, s2);
+            cur_so = s2;
             fprintf(stderr, "switched to %s in %.1f s\n", m->alias.c_str(), ms_since(t0) / 1000);
             std::ofstream(app_dir() + "/last-model.txt") << m->path << "\n";  // (pi-arc starts with this model next time)
           } catch (const std::exception& e) {
@@ -1854,7 +1908,7 @@ int main(int argc, char** argv) {
             if (!s3.eo.mtp || !same_file(prev_path, model)) s3.eo.dflash.clear();
             std::string also;
             try {  // (that failing too leaves no model: requests get 503 until one names a model that loads)
-              if (!prev_path.empty()) cur = load_model(prev_path, prev_alias, s3);
+              if (!prev_path.empty()) cur = load_model(prev_path, prev_alias, s3), cur_so = s3;
             } catch (const std::exception& e2) {
               cur.reset();
               also = std::string("; loading ") + prev_alias + " again failed too: " + e2.what();

@@ -17,6 +17,32 @@
   phase (a 14-minute 48-kHz MP3: 21.4 s -> 1.6 s; bit-identical samples). Checked: MP3 and M4A through
   `arc-transcribe` and `/v1/audio/transcriptions`.
 
+## 2026-10-27: web UI answers in the background, conversations at once from Settings
+
+- **An answer goes on when another chat is opened** (webui/index.html: one job per chat): its chat in the list shows
+  "answering…", opening it again shows the answer as it runs (with Stop), and it is saved when it ends; the question
+  is saved at once and each tool round too, so a closed page keeps them. At most as many answers run as the server
+  has slots: with every slot answering, New chat is off and a message in another chat stays in its box (no queue)
+  until one ends or is stopped. Failsafes: a bar over the chat list
+  ("2 chats answering, 1 waiting", **Stop all**), a watchdog that stops an answer after 10 minutes without a byte from
+  the server, deleting or clearing a chat stops its answer (and nothing is saved again), closing the page ends every
+  request (the server cancels a request whose connection closes).
+- **Conversations at once** in Settings (`POST /v1/server/slots {"slots": N}`, this computer only): the loaded model
+  again with N slots (5-40 s, after the running requests), the context shared out (`--ctx auto`); later model switches
+  keep N, a server restart goes back to its `--slots`. A chat that no longer fits (more slots, a smaller model, a chat
+  opened again) is compacted before its next answer, from an estimate of its size against the target model's
+  context; when the server still says it does not fit, every tool round compacts and tries once more. The session
+  cache skips (keeps) saved conversations longer than the context instead of failing to load and dropping them.
+- Fixes from a review: Talk background results stay in their chat (the old chat's abort is checked, not the new
+  one's); Stop while a command waits for Run / Don't run stops the answer instead of saving a refusal; the overflow
+  retry compacts everything before the question (it kept the last exchange); two commands at once no longer wait for
+  each other (only the command's own handles go to it: PROC_THREAD_ATTRIBUTE_HANDLE_LIST); "delete unused" leaves the
+  files of a chat whose first answer runs, of the message box and of running answers; editing a message keeps images
+  and audio sent inside it; Talk results never take the message box's attachments; an upload that ends after another
+  chat was opened stays out of that chat; a streamed answer's redraw no longer waits for an animation frame (one that
+  never came, in a hidden tab, stopped every later redraw).
+- Small screens: the gear in the chat header too; a written document's card also under the final answer.
+
 ## 2026-10-26: long DOCX / PDF without a long prompt
 
 - **Uploaded DOCX and PDF are read** (tools/doc_reader.h, tools/inflate.h: DEFLATE, ZIP, a PDF object and content

@@ -244,6 +244,12 @@ While the server is running:
   - A message's menu (the arrow on its bubble): **Edit** (correct it and send again) or **Delete** (the message with
     its answer, and its files when no other message uses them).
   - The model knows when each message was sent (day, date, time and time zone go with every message).
+  - **Answers go on in the background**: open another chat while one answers and it keeps going ("answering…" in the
+    list); open it again to watch it or Stop it. **Conversations at once** in the settings sets how many chats answer
+    at the same time (the server loads the model again, 5-40 s; each chat then has 1/N of the context, and a chat
+    too long for it is summarized before its next answer). With every slot answering, New chat is off and a
+    message in another chat waits in its box until one ends (or Stop). A bar over the chat list shows
+    what runs and has **Stop all**; an answer with no output from the server for 10 minutes stops by itself.
   - **Settings** behind the gear (bottom left; on a phone in the chats' header): **Thinking** as the model offers it
     (Qwen3.8: off / low / medium / high; the other models: on / off), **Files**, **Terminal**, **Web search**, the **Voice** of Talk mode
     (the Windows voice that reads answers aloud and its rate), **Advanced** (your own temperature instead of the

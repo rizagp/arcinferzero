@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace term {
 
@@ -74,17 +75,32 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
   li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
   if (job) SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
-  STARTUPINFOW si{};
-  si.cb = sizeof si;
-  si.dwFlags = STARTF_USESTDHANDLES;
-  si.hStdInput = nul;
-  si.hStdOutput = wr;
-  si.hStdError = wr;
+  // (only these two handles go to the child: a command started at the same time by another request must not get
+  //  this one's pipe, or this pipe stays open, and this call waits, until that command ends)
+  STARTUPINFOEXW si{};
+  si.StartupInfo.cb = sizeof si;
+  si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  si.StartupInfo.hStdInput = nul;
+  si.StartupInfo.hStdOutput = wr;
+  si.StartupInfo.hStdError = wr;
+  HANDLE inherit[2];
+  size_t nh = 0;
+  if (nul != INVALID_HANDLE_VALUE) inherit[nh++] = nul;
+  inherit[nh++] = wr;
+  SIZE_T alen = 0;
+  InitializeProcThreadAttributeList(nullptr, 1, 0, &alen);
+  std::vector<char> abuf(alen);
+  si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)abuf.data();
+  const bool attrs = InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &alen) &&
+                     UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
+                                               nh * sizeof(HANDLE), nullptr, nullptr);
   PROCESS_INFORMATION pi{};
   std::wstring cmd = cl, wcwd = wide(cwd);
   const auto t0 = std::chrono::steady_clock::now();
-  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                                 nullptr, wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
+  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                                 CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | (attrs ? EXTENDED_STARTUPINFO_PRESENT : 0),
+                                 nullptr, wcwd.empty() ? nullptr : wcwd.c_str(), &si.StartupInfo, &pi);
+  if (attrs) DeleteProcThreadAttributeList(si.lpAttributeList);
   CloseHandle(wr);
   if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
   if (!ok) {

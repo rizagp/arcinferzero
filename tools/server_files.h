@@ -252,6 +252,17 @@ class Store {
   }
 
   // ---- chats
+  // a chat being written: its folder without chat.json yet, made in the last day (its first answer runs, or its
+  // files wait in the message box); "delete unused" leaves its files alone
+  bool draft(const std::string& id) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    scan();
+    auto it = folders_.find(id);
+    std::error_code ec;
+    if (it == folders_.end() || fs::exists(it->second / "chat.json", ec)) return false;
+    const auto t = fs::last_write_time(it->second, ec);
+    return !ec && fs::file_time_type::clock::now() - t < std::chrono::hours(24);
+  }
   // the chat's folder ("" : none yet)
   std::string chat_dir(const std::string& id) {
     std::lock_guard<std::recursive_mutex> g(mu_);
