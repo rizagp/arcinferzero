@@ -101,8 +101,16 @@ __kernel void rmsnorm_quant(__global const float* x, int row_off, __global const
   for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
     const int base = s * 256 + 16 * lane;
     float v[16];
+    if (valid) {  // (one vector load per lane and array, the row flag tested once; the same arithmetic)
+      const float16 xa = vload16(0, xr + base), wa = vload16(0, w + base);
+      const float xv[16] = {xa.s0, xa.s1, xa.s2, xa.s3, xa.s4, xa.s5, xa.s6, xa.s7, xa.s8, xa.s9, xa.sa, xa.sb, xa.sc, xa.sd, xa.se, xa.sf};
+      const float wv[16] = {wa.s0, wa.s1, wa.s2, wa.s3, wa.s4, wa.s5, wa.s6, wa.s7, wa.s8, wa.s9, wa.sa, wa.sb, wa.sc, wa.sd, wa.se, wa.sf};
 #pragma unroll
-    for (int i = 0; i < 16; ++i) v[i] = valid ? xr[base + i] * r * w[base + i] : 0.0f;
+      for (int i = 0; i < 16; ++i) v[i] = xv[i] * r * wv[i];
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
+    }
     if (write_h)
 #pragma unroll
       for (int i = 0; i < 16; ++i) hout[(size_t)m * K + base + i] = v[i];
@@ -126,10 +134,30 @@ __kernel void swiglu_quant(__global const float* gu, int F, int M, int M_valid, 
   const int nsg = get_num_groups(0) * get_num_sub_groups();
   for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < F / 256; s += nsg) {
     const int base = s * 256 + 16 * lane;
+    // (the row's flags tested once, the 16 values of a lane as one vector load each: the per-element branches kept
+    //  every load apart; the same arithmetic per element)
     float v[16];
+    if (!valid) {
 #pragma unroll
-    for (int i = 0; i < 16; ++i)
-      v[i] = !valid ? 0.0f : fused ? gr[base + i] : (gelu ? gelu_tanh(gr[base + i]) : silu(gr[base + i])) * gr[F + base + i];
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
+    } else {
+      const float16 g = vload16(0, gr + base);
+      const float gv[16] = {g.s0, g.s1, g.s2, g.s3, g.s4, g.s5, g.s6, g.s7, g.s8, g.s9, g.sa, g.sb, g.sc, g.sd, g.se, g.sf};
+      if (fused) {
+#pragma unroll
+        for (int i = 0; i < 16; ++i) v[i] = gv[i];
+      } else {
+        const float16 u = vload16(0, gr + F + base);
+        const float uv[16] = {u.s0, u.s1, u.s2, u.s3, u.s4, u.s5, u.s6, u.s7, u.s8, u.s9, u.sa, u.sb, u.sc, u.sd, u.se, u.sf};
+        if (gelu) {
+#pragma unroll
+          for (int i = 0; i < 16; ++i) v[i] = gelu_tanh(gv[i]) * uv[i];
+        } else {
+#pragma unroll
+          for (int i = 0; i < 16; ++i) v[i] = silu(gv[i]) * uv[i];
+        }
+      }
+    }
     quant_store16(v, s, m, M, F, aq, asc, absum, act32);
   }
 }
@@ -362,18 +390,28 @@ __kernel void gated_norm_quant(__global const float* o, __global const float* z,
   for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
     const int base = s * 256 + 16 * lane, d0 = (16 * lane) & 127;
     float v[16];
-    float ss = 0.0f;
+    if (valid) {  // (the row flag tested once, vector loads; the same arithmetic. `valid` is the work-group's)
+      const float16 oa = vload16(0, o + (size_t)m * K + base);
+      const float ov[16] = {oa.s0, oa.s1, oa.s2, oa.s3, oa.s4, oa.s5, oa.s6, oa.s7, oa.s8, oa.s9, oa.sa, oa.sb, oa.sc, oa.sd, oa.se, oa.sf};
+      float ss = 0.0f;
 #pragma unroll
-    for (int i = 0; i < 16; ++i) {
-      v[i] = valid ? o[(size_t)m * K + base + i] : 0.0f;
-      ss += v[i] * v[i];
+      for (int i = 0; i < 16; ++i) {
+        v[i] = ov[i];
+        ss += v[i] * v[i];
+      }
+      ss += intel_sub_group_shuffle_xor(ss, 1);
+      ss += intel_sub_group_shuffle_xor(ss, 2);
+      ss += intel_sub_group_shuffle_xor(ss, 4);
+      const float r = rsqrt(ss / 128.0f + eps);
+      const float16 wa = vload16(0, w + d0), za = vload16(0, z + (size_t)m * K + base);
+      const float wv[16] = {wa.s0, wa.s1, wa.s2, wa.s3, wa.s4, wa.s5, wa.s6, wa.s7, wa.s8, wa.s9, wa.sa, wa.sb, wa.sc, wa.sd, wa.se, wa.sf};
+      const float zv[16] = {za.s0, za.s1, za.s2, za.s3, za.s4, za.s5, za.s6, za.s7, za.s8, za.s9, za.sa, za.sb, za.sc, za.sd, za.se, za.sf};
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = v[i] * r * wv[i] * GDN_GATE(zv[i]);
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
     }
-    ss += intel_sub_group_shuffle_xor(ss, 1);
-    ss += intel_sub_group_shuffle_xor(ss, 2);
-    ss += intel_sub_group_shuffle_xor(ss, 4);
-    const float r = rsqrt(ss / 128.0f + eps);
-#pragma unroll
-    for (int i = 0; i < 16; ++i) v[i] = valid ? v[i] * r * w[d0 + i] * GDN_GATE(z[(size_t)m * K + base + i]) : 0.0f;
     quant_store16(v, s, m, M, K, aq, asc, absum, act32);
   }
 }
@@ -570,10 +608,15 @@ __kernel void attn_gate_quant(__global const float* att, __global const float* q
   for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
     const int base = s * 256 + 16 * lane, h = base / 256, d = base % 256;
     float v[16];
+    if (valid) {  // (the row flag tested once, vector loads; the same arithmetic)
+      const float16 ga = vload16(0, qkv + (size_t)m * ldq + h * 512 + 256 + d), aa = vload16(0, att + (size_t)m * K + base);
+      const float gv[16] = {ga.s0, ga.s1, ga.s2, ga.s3, ga.s4, ga.s5, ga.s6, ga.s7, ga.s8, ga.s9, ga.sa, ga.sb, ga.sc, ga.sd, ga.se, ga.sf};
+      const float av[16] = {aa.s0, aa.s1, aa.s2, aa.s3, aa.s4, aa.s5, aa.s6, aa.s7, aa.s8, aa.s9, aa.sa, aa.sb, aa.sc, aa.sd, aa.se, aa.sf};
 #pragma unroll
-    for (int i = 0; i < 16; ++i) {
-      const float g = valid ? qkv[(size_t)m * ldq + h * 512 + 256 + d + i] : 0.0f;
-      v[i] = valid ? att[(size_t)m * K + base + i] / (1.0f + exp(-g)) : 0.0f;
+      for (int i = 0; i < 16; ++i) v[i] = av[i] / (1.0f + exp(-gv[i]));
+    } else {
+#pragma unroll
+      for (int i = 0; i < 16; ++i) v[i] = 0.0f;
     }
     quant_store16(v, s, m, M, K, aq, asc, absum, act32);
   }

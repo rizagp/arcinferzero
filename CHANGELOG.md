@@ -33,6 +33,8 @@
 - Prompt MoE on the 35B 2 % faster (an emulated integer multiply in the expert kernel done in float, same results);
   found by reading the kernels' GPU assembly with ocloc ([docs/kernel-audit-2026-10-27.md](docs/kernel-audit-2026-10-27.md)).
 - Prompt attention of the 27B 9 % faster (two independent sums per head in the score loop, same results).
+- The small kernels that quantize activations between the matrix products read their inputs as vectors: about 1 ms
+  less per generated token on the 35B (~2 %), the 27B's prompt normalization a third faster; same results.
 
 ## 2026-10-27: Qwen vision encoder faster on the dense models
 
