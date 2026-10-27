@@ -50,7 +50,9 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
 
 Gemma 26B / 12B rows measured on 2026-10-23 with the laptop on a cooling pad, E4B without it (two runs each
 within 1-2 %; a hot laptop measured up to 25 % slower on long prompts). Images: the Gemma 4 26B encoder takes 7.4 s
-for a 1,064-token image (12.7 s before 2026-10-24), E4B 3.1 s, Qwen3.5 9B / Qwen3.8 27B ~2.8 s.
+for a 1,064-token image (12.7 s before 2026-10-24), E4B 3.1 s, Qwen3.5 9B / Qwen3.8 27B ~2.8 s; since 2026-10-27
+the Qwen encoders of the dense models run their matrix products on two int8 passes, 22-30 % faster (a 768-token
+image 27B 1.26-1.35 s, 9B 1.28-1.30, 4B 0.96-0.97; the 35B and Flash Next keep the f16 encoder).
 KL is the divergence of the next-token distributions from the f32 reference (0 = identical); run-to-run int8
 rounding noise is ~0.0003. The limit kept for every model and change is KL < 0.015. Flash Next's default meets it on short prompts and
 is just above it at 3.5K; `ARC_FN_PRECISE=1` (BF16 hyper-connection rows and router, two int8 passes everywhere)
@@ -179,7 +181,10 @@ Optional tools (tests and benchmarks):
 
 `zero\vision_testz` times an image through a model's encoder (Gemma 4 or Qwen3-VL `mmproj`, `ARC_PROF=1` per kernel)
 and with `ARC_VIS_LM=file` writes the model's log-probabilities for 32 tokens after the image, to compare two encoder
-builds or against `tools\gemma4v_ref` (the Gemma 4 encoder in f32 on the CPU). The source builds warning-free at
+builds or against `tools\gemma4v_ref` (the Gemma 4 encoder in f32 on the CPU). `runz --bench-batch N --prof-gen`
+shows each kernel's GPU time of a decoding step alone and batched; `ARC_KLIST=1` prints the cache file and build
+options of every kernel, to read the driver's own assembly with Intel's `ocloc disasm`
+([docs/kernel-audit-2026-10-27.md](docs/kernel-audit-2026-10-27.md)). The source builds warning-free at
 `/W4 /permissive-`; `.github/workflows/ci.yml` builds every exe and runs the model-free unit tests on each push.
 
 ### 6. Download models
@@ -369,7 +374,7 @@ test uses port 8091 and needs the GPU memory.
   statistics from the fields above.
 - Sampling and output (chat): `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `frequency_penalty`,
   `repeat_penalty` / `repeat_last_n`, `logit_bias`, `seed`, `stop`, `max_tokens`; `logprobs` / `top_logprobs`;
-  `n` > 1 (without streaming); `response_format` `json_object` / `json_schema` (sampling is constrained, so the answer
+  `n` > 1 (without streaming; `/v1/completions` takes `n` too); `response_format` `json_object` / `json_schema` (sampling is constrained, so the answer
   always parses and fits the schema: types, properties / required / additionalProperties, items, enum, const,
   anyOf / oneOf, `$ref`); `tool_choice` `none` / `auto` / `required` / a named function (the answer starts with a
   call).
@@ -413,7 +418,9 @@ test uses port 8091 and needs the GPU memory.
 - Conversation slots (`--slots N`, arcinferzero): the server holds N conversations, each with its own KV cache and
   states; requests in different slots take turns step by step (by GPU time), so two clients answer at the same
   time. When several are generating, their next tokens and drafts run in one engine pass (Qwen dense and MoE, Gemma
-  4; logits bit-identical to each slot alone; `ARC_NO_BATCH=1`: turns only). Each slot gets the context that fits N
+  4, and Flash Next without a drafter since 2026-10-27; logits bit-identical to each slot alone; `ARC_NO_BATCH=1`:
+  turns only). Flash Next gains little in real chats on this laptop (~1.05x for two: each conversation reads its own
+  missing experts from the SSD; 1.43x with the experts cached). Each slot gets the context that fits N
   of them (streamed MoE models: 128K in all, at least 32K per slot). A step that fails ends its requests and starts
   their conversations over. Details: [USAGE.md](USAGE.md#3-managing-the-server).
 - Session cache: when a request belongs to another conversation (a new Pi session, or switching back to an older
@@ -518,7 +525,8 @@ session. To continue one, use `pi-arc -c` (the last session in this folder) or `
 When a conversation gets long, Pi compacts it (summarizes the older part and keeps the last ~20 K tokens) once it
 passes `contextWindow − 16384` tokens, using the token usage the server reports. If a single request still exceeds
 the context, the server answers with llama-server's `exceed_context_size_error` ("the request exceeds the available
-context size"), which Pi recognizes: it compacts and retries. The server itself does not drop old tokens (no
+context size"), which Pi recognizes: it compacts and retries. A prompt that cannot possibly fit (more text than the
+context times the longest token) gets the same error before it is tokenized, with "at least N tokens". The server itself does not drop old tokens (no
 context shift): the Qwen3.5/3.8 DeltaNet layers keep a recurrent state that cannot forget individual tokens.
 
 Manual configuration, if you prefer: add a provider to `~/.pi/agent/models.json`:

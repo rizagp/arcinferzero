@@ -206,7 +206,9 @@ aim at 128K in all and keep at least 32K per slot: 35B 2 x 65,536, its expert ca
 26B-A4B 2 x 32,768, 72 -> 65 %). When both are writing their answers, their next tokens (with their
 drafts) go through the model in one GPU pass, so the weights are read once for both: two answers at once, 27B
 7.3 -> 10.5 tokens/s together for prose, 11.6 -> 15.4 for code; 35B 20.2 -> 24.7 and 29.0 -> 30.7; Gemma 4 26B-A4B
-19.8 -> 26.2 and 19.6 -> 26.5 (Flash Next takes turns only; Gemma's drafts are verified one slot at a time). The answers are the same as with one slot (greedy text identical; the
+19.8 -> 26.2 and 19.6 -> 26.5 (Gemma's drafts are verified one slot at a time). Flash Next batches its slots too since
+2026-10-27, without a drafter (with DFlash2 they take turns), but on this laptop two chats get only ~1.05x together:
+each conversation reads its own missing experts from the SSD (1.43x when the experts are cached). The answers are the same as with one slot (greedy text identical; the
 engine's logits bit-identical alone, interleaved or batched). `ARC_NO_BATCH=1` turns the batching off (turns only).
 
 **Qwen3.8 Flash Next (arcinferzero only).** A MoE model with 512 experts fetched from the SSD (like the 35B). Run
@@ -302,7 +304,8 @@ While the server is running:
   again. **While it is open the model may use it too** (`run_command`, shown in the panel as AI); **Settings >
   Terminal**: **Ask each time** (every command waits in its card with **Run** / **Don't run**), **Run without asking**,
   or **Model never**. The model is told the shell and Windows version (asked when the terminal opens), so it writes
-  commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: the model can no longer use it, and the next one starts
+  commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: a command still running
+  (yours or the model's, also one waiting for Run) is stopped, the model can no longer use it, and the next one starts
   again in the chat's folder; **×** only hides the panel. A command stops after 2 minutes (the model may ask for up to
   10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
   on this computer can use it: the server refuses it to other computers (also with `--host`; such a server is opened by
@@ -311,9 +314,10 @@ While the server is running:
 - **Web UI: voice messages and talking.** The microphone in the message box records a voice message (the bin
   discards it, Send sends it). The headset in the chat header starts **Talk**: the microphone stays on, the end of
   each sentence is detected after a second of quiet, and the answer is read aloud while it is written. Speak while
-  it talks to interrupt it; press the headset again to stop. Once the server has Whisper (speech to text, planned:
-  [docs/whisper-native.md](docs/whisper-native.md)) your speech is written as text first, so both work with every
-  model; until then they need Gemma 4 E4B or 12B, which hear the recording themselves. Pick the reading voice and
+  it talks to interrupt it; press the headset again to stop. With Whisper on the server (`--whisper auto`, or
+  `arc-server start -Whisper auto`; [docs/whisper-native.md](docs/whisper-native.md)) your speech is written as text
+  first, so both work with every model; without it they need Gemma 4 E4B or 12B, which hear the recording
+  themselves. Something you said just before stopping Talk waits in the message box instead of being sent. Pick the reading voice and
   speed in the settings (Windows: Settings > Time & language > Speech adds an Indonesian voice). The audio goes only
   to this server. Headphones avoid the AI hearing itself.
   With **Web** ticked as well, searches run in the background while you talk: the AI says it is looking, and
@@ -321,8 +325,10 @@ While the server is running:
 - **OpenAI API**: base URL `http://127.0.0.1:8090/v1`, any API key (for example `arcinferzero`), model `qwen3.8-27b`
   (or the model currently loaded; other models in the list are loaded automatically). Supports streaming,
   `reasoning_content`, tool calls, `usage`, repetition penalties (`frequency_penalty`, `repeat_penalty`),
-  `logit_bias`, `logprobs`, several answers at once (`n`), guaranteed-valid JSON answers (`response_format` with
-  `json_schema`), and `tool_choice` (forcing a tool call).
+  `logit_bias`, `logprobs`, several answers at once (`n`, also on `/v1/completions`), guaranteed-valid JSON answers
+  (`response_format` with `json_schema`), and `tool_choice` (forcing a tool call). Limits: a request body up to
+  256 MiB (larger: 413), all requests together up to 1 GiB at once (more: 503, try again); a prompt longer than the
+  context gets llama-server's `exceed_context_size_error`, which Pi and other clients use to compact and retry.
 - **Other formats** (same models and features):
   - **Ollama**: apps that have an "Ollama" option (e.g. Open WebUI, many editor plugins) just need to point to
     `http://127.0.0.1:8090` (`/api/chat`, `/api/generate`, `/api/tags`, ...).

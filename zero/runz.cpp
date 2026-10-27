@@ -91,7 +91,8 @@ static int run_main(int argc, char** argv) {
             "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any)\n"
             "profiling:\n"
             "  --prof                time to first token and per-kernel profile of the prompt\n"
-            "  --prof-gen            per-kernel profile of generation (ARC_PROF_LAYERS=8: per group of 8 layers)\n"
+            "  --prof-gen            per-kernel profile of generation (ARC_PROF_LAYERS=8: per group of 8 layers); with\n"
+            "                        --bench-batch: each kernel's GPU time of a step alone and batched, side by side\n"
             "accuracy:\n"
             "  --kl-ref F            KL of the next-token distributions against an f32 reference (tools\\ref_forward)\n"
             "  --kl-decode           with --kl-ref: through the token-by-token generation path\n"
@@ -109,7 +110,10 @@ static int run_main(int argc, char** argv) {
             "environment (tests): ARC_NO_XMX=1 DP4a instead of XMX (Xe2 / Xe3), ARC_XMX_TRY=1 the XMX check on any GPU (=2 / =3: a\n"
             "  right / wrong DP4a variant in the XMX slot, the check must pass / fail),\n"
             "  ARC_NO_SG8=1 the 16-lane kernels, ARC_G4_Q2MM=1 Gemma E4B on two passes, ARC_FN_Q2=1 Flash Next's dense\n"
-            "  matmuls on two passes, ARC_ZE_KPROPS=1 register spills per kernel (ARC_NO_KCACHE=1: build them again)\n");
+            "  matmuls on two passes, ARC_ZE_KPROPS=1 register spills per kernel (ARC_NO_KCACHE=1: build them again),\n"
+            "  ARC_KLIST=1 each kernel's cache file and build options (for ocloc disasm, docs/kernel-audit-2026-10-27.md),\n"
+            "  ARC_VIT_Q2=0 / 1 the Qwen vision encoder's int8 matmuls off / on, A/B switches of the 2026-10-27 kernel\n"
+            "  changes: ARC_MOE_TM_SMALL=0 (MoE tiles of 16 for 2-8 rows), ARC_MOE_GR_DN_S=1, ARC_RG_IMUL=1\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;
