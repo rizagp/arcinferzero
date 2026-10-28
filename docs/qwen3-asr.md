@@ -82,6 +82,23 @@ maybe a few words near 141 s.
 | Gemma 4 E4B (`/v1/audio/transcriptions` with the chat model) | 50 s | readable, English kept, but sentences added ("Sudah tahu sudah paham gua", "Ya itu dia masalahnya", "Saya enggak setuju nih") | a made-up paragraph ("Kita ada nama ya ... Itu lima orang jadi satu voice") |
 | **Qwen3-ASR 1.7B** (one part) | 23-30 s | every utterance there, English in English, punctuation; a few misheard words ("Ijin prinsipnya supaya tembuh nanti", "secercahitan") | "Keterkaitan dulu. Keterkaitan" (3 words; it looped on that word until the loop stop) |
 
+A second, clearer recording (`tests/data/audio test 2.aac`, 2:43, one speaker in Indonesian, a work briefing on
+risk reports), key words in each transcript (✓ as said, as far as the context shows; ✗ wrong or missing):
+
+| | Time | "tes baru" | Profil Risiko Badan | BPJS Ketenagakerjaan | akuisisi kepesertaan | retensi | JMO | kondisi saat ini | hasil audiensi ... di sini | Punctuation |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Qwen3-ASR (two passes) | 20.3 s | ✓ | ✗ profesi | ✓ (ketenaga kerjaan) | ✓ | ✓ | ✓ | ✗ "dimana ko di saat ini" | ✓ | none, lowercase |
+| Qwen3-ASR (one pass) | 18.8 s | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ Jemo | ✗ | ✓ | none |
+| Whisper turbo | 7.5 s | ✓ | ✗ proses | ✗ Ketenagaan Kerjaan | ✗ keberstaan | ✓ | ✗ JEMO | ✗ | ✗ cut | yes, the end in fragments |
+| Whisper large-v3 | 23.4 s | ✓ | ✗ proses | ✓ | ✗ keberstaan | ✓ | ✓ | ✓ | ✓ | yes, the middle in fragments |
+| Gemma 4 E4B | 36.7 s | ✗ | ✓ | ✓ | ✗ kebersih-an | ✗ | ✓ | ✓ | ✓ (audensi) | yes |
+| Gemma 4 12B | 75.0 s | ✗ | ✗ | ✗ BPGS katanaga kerja | ✗ akurasi keputusan | ✓ | ✗ jemo | ✗ | ✗ | yes; "Amerika", "tiga tuluhan", "I K C" |
+
+No model invented sentences on this recording except Gemma 4 12B, whose text drifts (it has no audio encoder: raw
+40-ms frames, see the Gemma 4 12B audio notes); on the first recording 12B wrote a short translated summary instead
+of a transcript. Here Qwen3-ASR named the language Indonesian, and wrote it without punctuation, as it did when the
+language was forced on the first recording.
+
 Notes from the runs:
 
 - The model names this speech **Malay** (it is Indonesian). The server reports it as `id` when the request's

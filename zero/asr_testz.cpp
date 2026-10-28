@@ -3,6 +3,7 @@
 // usage: asr_testz model.gguf mmproj.gguf audio [options]
 //   --ref F        compare the encoder output with ref_qwen3a's F (relative error per token, cosine)
 //   --enc-out F    write the encoder output (n_tok x 2048 f32)
+//   --save-wav F   write the (cut) audio as a 16 kHz WAV and stop (nothing loaded)
 //   --start S      from S seconds on                --seconds S   only S seconds of it
 //   --lang NAME    force the language (Indonesian, en, ...)
 //   --context T    the system turn                  --no-text     the encoder only
@@ -16,7 +17,7 @@
 
 int main(int argc, char** argv) {
   if (argc < 4) { fprintf(stderr, "usage: asr_testz model.gguf mmproj.gguf audio [--ref F] [--enc-out F] [--seconds S] [--lang L] [--context T] [--no-text]\n"); return 1; }
-  std::string ref, enc_out, lang, context;
+  std::string ref, enc_out, lang, context, save_wav;
   double seconds = 0, start = 0, parts = 0;
   bool text = true;
   int ctx = 0, chunk = 512;
@@ -26,6 +27,7 @@ int main(int argc, char** argv) {
     auto next = [&]() -> std::string { if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a.c_str()); exit(1); } return argv[++i]; };
     if (a == "--ref") ref = next();
     else if (a == "--enc-out") enc_out = next();
+    else if (a == "--save-wav") save_wav = next();
     else if (a == "--seconds") seconds = atof(next().c_str());
     else if (a == "--start") start = atof(next().c_str());
     else if (a == "--parts") parts = atof(next().c_str());
@@ -44,6 +46,21 @@ int main(int argc, char** argv) {
     if (start > 0) s.erase(s.begin(), s.begin() + std::min(s.size(), (size_t)(start * 16000)));
     if (seconds > 0) s.resize(std::min(s.size(), (size_t)(seconds * 16000)));
     printf("audio: %.1f s\n", s.size() / 16000.0);
+    if (!save_wav.empty()) {  // (the piece as a 16 kHz 16-bit WAV, nothing loaded on the GPU)
+      FILE* f = fopen(save_wav.c_str(), "wb");
+      if (!f) throw std::runtime_error("cannot write " + save_wav);
+      const uint32_t data = (uint32_t)s.size() * 2, riff = 36 + data, fmt = 16, rate = 16000, byte_rate = 32000;
+      const uint16_t pcm = 1, ch = 1, align = 2, bits = 16;
+      fwrite("RIFF", 1, 4, f); fwrite(&riff, 4, 1, f); fwrite("WAVEfmt ", 1, 8, f); fwrite(&fmt, 4, 1, f);
+      fwrite(&pcm, 2, 1, f); fwrite(&ch, 2, 1, f); fwrite(&rate, 4, 1, f); fwrite(&byte_rate, 4, 1, f);
+      fwrite(&align, 2, 1, f); fwrite(&bits, 2, 1, f); fwrite("data", 1, 4, f); fwrite(&data, 4, 1, f);
+      for (float x : s) {
+        const int16_t v = (int16_t)std::lround(std::clamp(x, -1.0f, 1.0f) * 32767);
+        fwrite(&v, 2, 1, f);
+      }
+      fclose(f);
+      return 0;
+    }
     if (getenv("ASR_ENERGY")) {  // (loudness per second: RMS and the loudest 100 ms, dBFS)
       for (size_t a = 0; a < s.size(); a += 16000) {
         double sum = 0, best = 0;
