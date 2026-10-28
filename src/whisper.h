@@ -440,6 +440,7 @@ class Backend {
 
 // ---------------------------------------------------------------- transcription options and results
 struct Options {
+  std::string engine;  // (the server: "qwen3-asr" = this request goes to Qwen3-ASR instead, tools/server_whisper.h)
   std::string language = "auto";  // "auto": detected per window; a code ("id") fixes it; "id,en": detected among them
   bool detect_once = false;       // with auto: detect in the first window only (openai's default)
   std::string task = "transcribe";  // or "translate" (to English)

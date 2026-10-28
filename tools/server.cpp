@@ -1448,7 +1448,7 @@ int main(int argc, char** argv) {
   std::string model, host = "127.0.0.1", alias;
   int port = 8080;
   bool swap = true, help = false, web_tools = true, terminal = true;
-  std::string whisper_opt = "off", whisper_dev = "gpu";
+  std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "off";
   double whisper_max_min = 180;
   ServeOpts so;
   so.eo.ctx = 40960;
@@ -1534,6 +1534,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-swap") swap = false;
     else if (a == "--no-web-tools") web_tools = false;
     else if (a == "--whisper") whisper_opt = next();
+    else if (a == "--asr") asr_opt = next();
     else if (a == "--whisper-device") {
       whisper_dev = next();
       if (whisper_dev != "gpu" && whisper_dev != "npu") throw std::runtime_error("--whisper-device: gpu or npu");
@@ -1630,7 +1631,10 @@ int main(int argc, char** argv) {
             "                        asks the loaded model, if it hears audio); --ctx auto keeps its GPU memory free\n"
             "  --whisper-device gpu|npu  Whisper's encoder on the iGPU (default) or the NPU (the decoder: the iGPU)\n"
             "  --whisper-max-minutes N  longest upload (default 180)\n"
-            "  --no-terminal         no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell in the\n"
+            "  --asr auto|FILE|off   Qwen3-ASR next to Whisper (needs --whisper): requests and transcripts with\n"
+            "                        \"model\": \"qwen3-asr\" go to it (docs/qwen3-asr.md); auto = Qwen3-ASR-1.7B GGUF\n"
+            "                        from the Hugging Face cache (its mmproj next to it); default off\n"
+            "  --no-terminal       no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell in the\n"
             "                        chat's folder after the user allows it; default: on, this computer only)\n"
             "  A client that closes its connection (Pi: Esc) cancels its request: prompt processing stops within a\n"
             "  layer, generation before the next token.\n");
@@ -1650,6 +1654,10 @@ int main(int argc, char** argv) {
   // Whisper before the model: --ctx auto then leaves its GPU memory free (so.whisper_bytes); the NPU's driver is
   // initialized before the GPU runtime (which asks for GPUs only) when Whisper or the model uses the NPU
   std::unique_ptr<srvwh::Service> wh;
+  if (asr_opt != "off" && whisper_opt == "off") {
+    fprintf(stderr, "arcinferzero-server: --asr needs --whisper (the transcription service and its library)\n");
+    return 1;
+  }
   if (whisper_opt != "off") {
     const std::string dir = whisper_opt == "auto" ? whisper::find_model() : whisper_opt;
     try {
@@ -1659,6 +1667,12 @@ int main(int argc, char** argv) {
       const auto t0 = std::chrono::steady_clock::now();
       wh = std::make_unique<srvwh::Service>(dir, whisper_dev == "npu", so.eo.kernel_dir);
       wh->max_seconds = whisper_max_min * 60;
+      if (asr_opt != "off") {  // (Qwen3-ASR: its own engine, in the service; before the model as Whisper)
+        const std::string f = asr_opt == "auto" ? q3asr::find_model() : asr_opt;
+        if (f.empty()) throw std::runtime_error("--asr auto: no Qwen3-ASR GGUF in the Hugging Face cache (hf download unsloth/Qwen3-ASR-1.7B-GGUF)");
+        wh->load_asr(f, so.eo.kernel_dir);
+        fprintf(stderr, "asr: %s (Whisper and Qwen3-ASR %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->gpu_bytes() / 1073741824.0);
+      }
       so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
       so.whisper_props = wh->props();
       fprintf(stderr, "whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-28: Qwen3-ASR next to Whisper
+
+- **Qwen3-ASR 1.7B** ([docs/qwen3-asr.md](docs/qwen3-asr.md)): `serverz --whisper auto --asr auto`, then
+  `/v1/audio/transcriptions` with `model=qwen3-asr` or "Model: Qwen3-ASR" in the Transcripts tab (a live
+  recording's pass after Stop; its text while spoken stays Whisper's). On the user's 2:34 recording of noisy mixed
+  Indonesian and English: every utterance, English kept, punctuation, 3 invented words over the last 40 s of
+  background sound (Whisper turbo lost two sentences and wrote Japanese there, large-v3 Thai, Gemma 4 E4B a
+  paragraph); ~30 s for the 2:34. No timestamps (one segment per part of up to 6 minutes); the model calls this
+  Indonesian "Malay" (reported as `id` when the request's languages have `id`).
+- **Qwen3 dense on the engine** (GGUF arch `qwen3` / `qwen3vl`): float attention and two int8 passes, KL < 0.00001
+  against the f32 reference; the int8 attention of the Qwen3.5 path gave 0.236 on it. `tools/ref_forward` takes
+  these models; `ARC_Q3_Q2=0`: one pass (KL 0.0064 / 0.0093, prompt +50 %).
+- **The qwen3a audio encoder on the GPU** (zero/audio_qwen3a.h; f32 CPU reference tools/ref_qwen3a.cpp: 0.08 %);
+  zero/asr_testz.cpp runs and checks it from the command line.
+
 ## 2026-10-28: a live recording's language preferred, not forced; recordings kept as WAV; a cap for audio to a chat model
 
 - **English in an Indonesian live recording stays English** (src/whisper.h `prefer_language`, tools/server_whisper.h

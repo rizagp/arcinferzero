@@ -385,6 +385,10 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <option value="auto">Language: detect</option><option value="id">Indonesian</option><option value="en">English</option>
           <option value="id,en">Indonesian + English mixed</option>
         </select>
+        <select id="trmodel" aria-label="Speech model" hidden
+          title="Whisper: segments with every word's time. Qwen3-ASR: often better on mixed Indonesian and English and on noise, but one text without timestamps (per part of up to 6 minutes). A live recording's text as it is spoken is always Whisper's; this model does the pass after Stop">
+          <option value="">Model: Whisper</option><option value="qwen3-asr">Model: Qwen3-ASR</option>
+        </select>
         <select id="trbeam" aria-label="Accuracy" title="Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy">
           <option value="5">Accurate (beam 5)</option><option value="1">Fast (greedy)</option>
         </select>
@@ -630,7 +634,8 @@ async function refreshModel() {
     //  model that hears it itself, Gemma 4 E4B / 12B)
     const stt = p.speech_to_text || p.whisper;  // (the server reports it as "whisper": {model, device, max_minutes})
     caps = { thinking: p.thinking !== false, efforts: Array.isArray(p.reasoning_effort) ? p.reasoning_effort : [], sampling: p.sampling || null,
-      stt: stt ? (typeof stt === "object" && stt.model ? String(stt.model) : "whisper") : "", slots: p.stats?.slots || 1 };
+      stt: stt ? (typeof stt === "object" && stt.model ? String(stt.model) : "whisper") : "", slots: p.stats?.slots || 1,
+      asr: stt && typeof stt === "object" && stt.asr ? String(stt.asr) : "" };  // (Qwen3-ASR next to Whisper, --asr)
     $("slots").value = String(caps.slots);
     $("slothelp").textContent = slotHelp();
   } catch (e) {}
@@ -2940,10 +2945,13 @@ function trCaps() {
     : "Transcripts need Whisper on the server (start it with --whisper auto)";
   $("mtbtn").title = caps.stt ? "Meetings: recorded with your microphone and the meeting's sound, transcribed as Me / Others, summarized"
     : "Meetings need Whisper on the server (start it with --whisper auto)";
+  $("trmodel").hidden = !caps.asr;
+  if (!caps.asr) $("trmodel").value = "";
 }
 (function trLoadPrefs() {
   const p = prefs.tr || {};
   if (p.lang) $("trlang").value = p.lang;
+  if (p.model) $("trmodel").value = p.model;
   if (p.beam) $("trbeam").value = p.beam;
   $("trkeep").value = p.keep === "mp3" ? "mp3" : "wav";
   if (p.terms) $("trterms").value = p.terms;
@@ -2955,12 +2963,12 @@ function trCaps() {
   $("trword").checked = !!p.word;
 })();
 function trSavePrefs() {
-  prefs.tr = { lang: $("trlang").value, beam: $("trbeam").value, keep: $("trkeep").value, terms: $("trterms").value,
+  prefs.tr = { lang: $("trlang").value, model: $("trmodel").value, beam: $("trbeam").value, keep: $("trkeep").value, terms: $("trterms").value,
     fmts: [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value),
     chars: $("trchars").value, lines: $("trlines").value, maxs: $("trmaxs").value, word: $("trword").checked };
   store.set("arcinferzero-prefs", prefs);
 }
-["trlang", "trbeam", "trkeep", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
+["trlang", "trmodel", "trbeam", "trkeep", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
 $("trfmts").addEventListener("change", trSavePrefs);
 // the glossary grows with its text (up to its max-height; a drag of its corner still sets it by hand)
 function trTermsFit() { const t = $("trterms"); t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px"; }
@@ -3122,7 +3130,8 @@ for (const el of [$("tradd"), $("trview")]) {
 let trUploading = Promise.resolve();
 function trUpload(files) {
   // (the options and the tab as they are now: a file waiting its turn is not added with what was chosen later)
-  const opts = { language: $("trlang").value, beam_size: +$("trbeam").value, terms: $("trterms").value.trim(), kind: tr.kind };
+  const opts = { language: $("trlang").value, beam_size: +$("trbeam").value, terms: $("trterms").value.trim(), kind: tr.kind,
+    ...($("trmodel").value ? { model: $("trmodel").value } : {}) };
   trUploading = trUploading.then(async () => {
     for (const f of files) {
       let rec;
@@ -3538,6 +3547,7 @@ const live = {
       const r = await fetch("/v1/live", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: (meeting ? "Meeting " : "Recording ") + when, language: $("trlang").value, beam_size: +$("trbeam").value,
           terms: $("trterms").value.trim(), tracks: this.n, rate: this.ctx.sampleRate, kind: tr.kind,
+          ...($("trmodel").value ? { model: $("trmodel").value } : {}),
           mp3_kbps: $("trkeep").value === "mp3" ? 192 : 0,
           speakers: this.n === 2 ? ["Me", "Others"] : [""] }) });
       rec = await r.json().catch(() => ({}));

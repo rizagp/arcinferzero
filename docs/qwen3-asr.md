@@ -1,0 +1,124 @@
+# Qwen3-ASR on the Arc iGPU
+
+Qwen3-ASR 1.7B (speech recognition, 30 languages) runs on arcinferzero's Level Zero engine next to Whisper: the
+server's `/v1/audio/transcriptions` and the Transcripts tab can use it instead of Whisper (added 2026-10-28).
+
+Why: on the user's noisy recording of mixed Indonesian and English, Whisper turbo and large-v3 repeated words, chose
+wrong languages and invented text over the quiet end; Gemma 4 E4B read better but added sentences nobody said.
+Qwen3-ASR came out the closest to what was said (see [Comparison](#comparison-on-a-real-recording)).
+
+## Files
+
+The GGUF conversion of [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), for example
+`unsloth/Qwen3-ASR-1.7B-GGUF` (the user's copy: unslothai's), two files in one folder:
+
+| File | What it is |
+|---|---|
+| `Qwen3-ASR-1.7B-Q8_0.gguf` (2.0 GB) | the text model: Qwen3 1.7B dense (GGUF arch `qwen3vl`), 28 layers, width 2048, 16 q heads / 8 kv heads of 128, FFN 6144 |
+| `mmproj-Qwen3-ASR-1.7B-Q8_0.gguf` (0.36 GB) | the audio encoder (projector type `qwen3a`): 3 convolutions, 24 transformer layers of width 1024, projection to 2048 |
+
+## How it runs
+
+- **Audio encoder** ([zero/audio_qwen3a.h](../zero/audio_qwen3a.h), kernels `q3a_*` and `vit_*` in
+  [zero/kernels/ops.cl](../zero/kernels/ops.cl)): Whisper's 128-bin log-mel without padding (src/whisper.h
+  `log_mel`, `pad` 0), cut into chunks of 100 frames (1 s); the first 3x3 stride-2 convolution on the CPU, the second
+  and third as im2col + f16 GEMM on the GPU; 13 tokens per chunk; 24 pre-LayerNorm transformer blocks whose attention
+  stays inside windows of 8 chunks (104 tokens), so the encoder runs on groups of 16 windows one after the other;
+  LayerNorm and the projector (GELU). f16 weights, f32 activations. About 60-100x real time.
+- **Text model** ([zero/engine.h](../zero/engine.h) `load_hparams_qwen3`, [zero/engine_qwen.h](../zero/engine_qwen.h)
+  `layer_qwen3_attn`): Qwen3 dense on the engine: q / k RMS norms and NEOX RoPE over the whole 128-dim head (M-RoPE
+  with text and audio positions is plain RoPE), **float attention** (f32 queries and K, f16 V; `attn_fa_gh` for prompt
+  chunks, the split `attn_fa_g` for single tokens) and **two-pass int8 matmul inputs**, as Gemma 4 12B / 26B.
+- **Transcription** ([zero/asr_qwen3.h](../zero/asr_qwen3.h)), as Qwen's `qwen_asr` package does it: the prompt
+  `<|im_start|>system\n{context}<|im_end|>\n<|im_start|>user\n<|audio_start|>` + the audio rows +
+  `<|audio_end|><|im_end|>\n<|im_start|>assistant\n`; greedy decoding; the answer `language Indonesian<asr_text>...`
+  (`language None` for no speech); repetitions collapsed as `detect_and_fix_repetitions` does (a pattern of up to 20
+  characters repeated 20 times or more is kept once). One part up to 20 minutes in Qwen's code; the server's
+  engine holds 6,144 tokens of context, so it cuts audio into parts of up to 6 minutes at the quietest 100 ms near
+  each cut. Added here: decoding stops once the text ends in a pattern repeated 40 times (the model looping over
+  background sound; Qwen's fix would keep one copy anyway, 40 leaves real repetition such as "tes tes tes ..."
+  untouched).
+
+## Accuracy against f32 references
+
+| Check | Result |
+|---|---|
+| Text model, 72-token chat prompt, KL against [tools/ref_forward.cpp](../tools/ref_forward.cpp) (f32 activations, dequantized weights) over every position | < 0.00001 prompt path and token-by-token path, top token 72 / 72 |
+| ... with int8 attention (the Qwen3.5 kernels, first try) | KL 0.236 (int8 q / K / V per row in the reference: 0.159; per 32 values 0.123) |
+| ... float attention, one int8 pass for the matmuls (`ARC_Q3_Q2=0`) | KL 0.0064 prompt / 0.0093 token by token |
+| Encoder against [tools/ref_qwen3a.cpp](../tools/ref_qwen3a.cpp) (f32, written from Hugging Face's modeling code), 20 s and 23.37 s of the user's recording (a short last chunk, a partial window) | relative error 0.078 % / 0.074 %, worst token 0.41 %, lowest cosine 0.999992 |
+| Synthetic: 20 s of digital silence; 20 s of white noise at -50 dBFS | empty text (Whisper turbo: empty too) |
+
+Qwen3's attention does not survive int8 scores: its k_norm weights make a few dims of K large, and one int8 scale
+per row (or per 32 values) drowns the rest. The user's limit for this model is KL < 0.01; the one-pass mode was
+under it by little, so two passes are the default.
+
+## Speed (Core Ultra 5 125H)
+
+| | |
+|---|---|
+| Text model, `runz --bench-pp 2048` (best of two) | prompt 901 tok/s, generation 22.2 tok/s (one pass: 1,376 / 24.5) |
+| Encoder | 1.45 s for 153.6 s of audio (1,997 tokens) |
+| The 2:34 recording end to end, `asr_testz` | 30 s (encoder 2.3 s, prompt 3.3 s, 387 tokens), ~5x real time |
+| ... through the server (`/v1/audio/transcriptions`, the Transcripts tab) | 28.5-38 s |
+| GPU memory in the server (`--asr`) | with Whisper turbo 6.7 GiB together (Qwen3-ASR ~5 GiB: weights in both forms, the 6,144-token float KV cache, the encoder) |
+
+## Comparison on a real recording
+
+The user's 2:34 recording (2026-10-28, a laptop microphone in a noisy room): Indonesian with English sentences,
+"tes tes ..." at the start, speech until ~113 s, then 40 s of background sound (-30 to -45 dBFS with bursts) and
+maybe a few words near 141 s.
+
+| | Time | Mixed language | Over the last 40 s |
+|---|---|---|---|
+| Whisper large-v3-turbo (beam 5, `transcribez`) | 10.3 s | English kept, but "Hello, I'm talking in English. Saya nggak ngomong buah, bukan" and the second "How come..." lost; "best-best-best" | "hai hai hai ..." (perhaps said), "Terima kasih.", "ありがとうございました。" |
+| Whisper large-v3 | 39.5 s | lowercase fragments, "Indonesia Indonesia How come you Translate...", "Hai tetap kaitan antar ini ini tetap kaitan" | Thai gibberish twice |
+| Gemma 4 E4B (`/v1/audio/transcriptions` with the chat model) | 50 s | readable, English kept, but sentences added ("Sudah tahu sudah paham gua", "Ya itu dia masalahnya", "Saya enggak setuju nih") | a made-up paragraph ("Kita ada nama ya ... Itu lima orang jadi satu voice") |
+| **Qwen3-ASR 1.7B** (one part) | 30 s | every utterance there, English in English, punctuation; a few misheard words ("Ijin prinsipnya supaya tembuh nanti", "secercahitan") | "Keterkaitan dulu. Keterkaitan" (3 words; it looped on that word until the loop stop) |
+
+Notes from the runs:
+
+- The model names this speech **Malay** (it is Indonesian). The server reports it as `id` when the request's
+  languages include `id` and not `ms` (`language: id,en`). Forcing the language (`language Indonesian<asr_text>`
+  in the prompt, `asr_testz --lang id`) gave lowercase text without punctuation and the same loop, so the server never
+  forces it.
+- Over background sound alone (113-140 s as its own clip) it wrote one word ("Kerajaan."); after speech, in one
+  context, it looped on the last word. Parts cut at pauses (`Options::part_seconds`, 20 s) were worse on this
+  recording: the pauses after 68 s came too early to cut, and the 85-s last part repeated a sentence four times and
+  lost three others. Off by default.
+- No timestamps: one segment per part (Qwen's Qwen3-ForcedAligner-0.6B would give word times; not here). Subtitle
+  formats spread a segment's time evenly over its cues.
+
+## Using it
+
+Server (needs `--whisper`: the transcription service and the library are Whisper's):
+
+```
+serverz -m <chat model> --whisper auto --asr auto
+```
+
+`--asr auto` takes a Qwen3-ASR 1.7B (else 0.6B) GGUF from the Hugging Face cache, `--asr <file.gguf>` a given one;
+the mmproj (projector `qwen3a`) is found next to it. `/props` then shows `"whisper": {..., "asr": "qwen3-asr-1.7b"}`.
+
+- `POST /v1/audio/transcriptions` with `model=qwen3-asr` (any name containing it, or the id): every response format;
+  `prompt` and `terms` become the model's context (names, terms); translations stay Whisper's.
+- Transcripts tab: "Model: Qwen3-ASR" (shown when the server has it). For a live recording the text as it is spoken
+  stays Whisper's; Qwen3-ASR does the pass after Stop.
+
+Command line ([zero/asr_testz.cpp](../zero/asr_testz.cpp)):
+
+```
+asr_testz Qwen3-ASR-1.7B-Q8_0.gguf mmproj-Qwen3-ASR-1.7B-Q8_0.gguf recording.mp3 [--lang id] [--start S] [--seconds S]
+          [--context "names, terms"] [--parts S] [--ref encoder.ref] [--no-text]
+```
+
+Checks: `ref_qwen3a mmproj.gguf audio out.ref [seconds]` writes the f32 encoder output, `asr_testz ... --seconds S
+--ref out.ref --no-text` compares; `ref_forward model.gguf <ids> ref.bin` with `REF_ALL=1` and `runz model.gguf
+--tokens-file ids --kl-ref ref.bin [--kl-decode]` for the text model.
+
+## Left to do
+
+- Timestamps (Qwen3-ForcedAligner-0.6B, or cutting at pauses done better than here).
+- Memory: the Q8_0 weights are kept in two forms (raw rows for the GEMVs, the repacked GEMM form); with a just-in-time
+  GEMM form the server would need ~2 GiB less.
+- Streaming (the user's friend runs it in vLLM for voice calls; Qwen's package feeds 2-s chunks).
