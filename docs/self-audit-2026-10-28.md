@@ -118,3 +118,28 @@ showed one more, older than the audit: both WAV writers (arc-recorder, live reco
 the file's start and went back there, so the audio wrote over it and every later header went over the first 44
 bytes of audio: the data size claimed 44 bytes the file did not have. Fixed (the samples start after the header),
 checked on a 3-s recording and a live WAV byte for byte. Details: [whisper-native-status.md](whisper-native-status.md) (W8).
+
+## All sources (the evening of 2026-10-28)
+
+The same method over the whole repository: six reviews (the HTTP / API core, the model's file tools, speech with
+Qwen3-ASR and Gemma 4 E4B, the web UI, the GPU engine's host code, the scripts and documents), each finding checked
+in the code, fixed in commit 99dd39a; one cycle (the user stopped it there). The main ones:
+
+| Area | Severity | Problem | Fix |
+|---|---|---|---|
+| HTTP | high | any page served from localhost on another port could POST /v1/tools/run_command (PowerShell), slots, chats, files | a browser request from another origin reaches only the model endpoints |
+| chat | medium | special-token text inside user / tool contents (a fetched page) became control tokens | defused with a zero-width space; normal prompts' token ids unchanged (checked on the 4B and E4B tokenizers) |
+| PDF | high | a CMap range ending at 0xFFFFFFFF looped forever; unclosed objects, repeated contents and forms took hours | 64-bit loop, 1M entries a font; a per-document work budget (partial text with a note) |
+| files | medium | quadratic indexing of long paragraphs, entity decoding, CSV quotes, PDF word cutting; the document cache unbounded in bytes | linear walks, bounded searches, a 256-MB cache cap |
+| files | medium | chat files hard-linked across chats (a command in one changed the other); whole files read every turn for metadata; device names (CON) as upload names | copies; headers / container durations only; renamed |
+| speech | high | Qwen3-ASR's 6-minute parts lost their end (no room left for text) | 4-minute parts sized to the context, the glossary capped, a cut part logged |
+| speech | medium | a queued Qwen3-ASR job locked chat voice clips out for its whole length; a missing mmproj stopped the server; a mismatched mmproj read past a buffer; 2-track meetings as 6-minute monologues; one failed part lost every part; E4B jobs changed last-model.txt | per-part turns; Whisper alone; checked; 25-s parts at pauses; a retry and the text kept; an internal-request header |
+| engine | high | a failed expert read left other overlapped reads in flight, and the cache kept experts marked present with wrong weights | cancelled and waited for; rolled back |
+| server | medium | slots + Gemma MTP: a step waited for another request's whole answer; /v1/models with no model; directory loops that threw (a thread's terminate) | waiters released; checks; increment(ec) |
+| web UI | high | a double click on Talk / the microphone opened two captures (doubled audio, a microphone left on) | one start at a time |
+| web UI | medium | Compact cleared another chat's Stop; a new Live during a Stop mixed recordings; background answers spoken by Talk | fixed |
+| scripts | medium | setup never downloaded E4B's projector; `arc-server stop -Port N` killed the 8090 server; CI on PowerShell 5.1 | fixed |
+
+Tests after it: the unit tests (14), the GPU tests (46 passed; skipped: the 26B and 27B, not on this laptop, and the
+opt-in checks), the transcript API script. Also removed: whisper.cl's `wh_cross_attn` / `wh_cross_attn2` (unused;
+large-v3 byte-identical) and 2.7 GB of stale kernel binaries from the cache folder.

@@ -239,7 +239,7 @@ While the server is running:
     4B / 9B, Qwen3.8 27B, Qwen3.6 35B), audio. Each file goes into the chat's folder; messages refer to it, and the model also gets its name,
     type, size and upload time.
   - **@ in the message** lists the files uploaded before (filtered as you type): Enter or a click attaches one again,
-    without uploading it again (in another chat's folder it becomes a hard link: the bytes are kept once).
+    without uploading it again (another chat gets its own copy: a command run in one chat does not change the other's).
   - **Files** in the left rail: every saved file of every chat with its size, date and the chats that use it;
     filter, sort, search, attach it to the message, or delete files one by one, several at once, or all files no chat
     uses. Files put into a chat's folder by hand show up too.
@@ -355,8 +355,9 @@ While the server is running:
   server (no commands, chats or files), the web UI's storage or its window. A command stops after 2 minutes (the model may ask for up to
   10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
   on this computer can use it: the server refuses it to other computers (also with `--host`; such a server is opened by
-  its IP address, http://192.168.x.x:port/, not by a name, against DNS rebinding), to pages of other sites,
-  and entirely with `--no-terminal`.
+  its IP address, http://192.168.x.x:port/, not by a name, against DNS rebinding), to pages of other sites
+  and of other servers on this computer (another port), and entirely with `--no-terminal`. Such pages reach only
+  the model endpoints (chat, audio, /tokenize); chats, files, transcripts and settings are the web UI's own.
 - **Web UI: voice messages and talking.** The microphone in the message box records a voice message (the bin
   discards it, Send sends it). The headset in the chat header starts **Talk**: the microphone stays on, the end of
   each sentence is detected after a second of quiet, and the answer is read aloud while it is written. Speak while

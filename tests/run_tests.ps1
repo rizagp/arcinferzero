@@ -103,6 +103,11 @@ $hub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } elseif ($env:HF_HOME) { Join
 if (Test-Path -LiteralPath $hub) {
   $searchRoots += @(Get-ChildItem -LiteralPath $hub -Directory -Filter "models--*" -ErrorAction SilentlyContinue |
     ForEach-Object { Join-Path $_.FullName "snapshots" } | Where-Object { Test-Path -LiteralPath $_ })
+  # (plain folders of .gguf files beside them, as the server's model list takes them: a manual download such as
+  #  agentionai-Qwen3.8-27B-AP-GGUF)
+  $searchRoots += @(Get-ChildItem -LiteralPath $hub -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notlike "models--*" -and $_.Name -notlike ".*" -and (Get-ChildItem -LiteralPath $_.FullName -Filter *.gguf -File -ErrorAction SilentlyContinue) } |
+    ForEach-Object { $_.FullName })
 }
 . (Join-Path $root "scripts\app-dir.ps1")
 $pkgs = Join-Path (Get-AppDir) "zero\models"  # (MoE packages: Gemma 4 26B, Qwen3.6 35B, Flash Next)
@@ -147,10 +152,11 @@ function Find-DFlash([string[]]$patterns) {  # a folder whose path matches and t
 if (-not $NoAutoDetect -and (-not $SkipGpu -or $ListModels)) {
   # (only the file its reference and greedy lines were made from: another 4B, e.g. QUASAR-QAT's, fails them by design)
   if (-not $Model4B) { $Model4B = Find-Gguf @("Qwen3.5-4B-UD-Q4_K_XL.gguf") }
-  if (-not $Model27B) { $Model27B = Find-Gguf @("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf") }
+  # (the 27B and Flash Next checks compare a model with itself (MTP / DFlash2 = plain): any of their files will do)
+  if (-not $Model27B) { $Model27B = Find-Gguf @("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", "Qwen3.8-27B-AP-IQ4_XS.gguf") }
   if (-not $Model35B) { $Model35B = Find-Gguf @("Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", "Qwen3.6-35B-A3B-UD-Q3_K_M.gguf") }
   # (the packaged single file first: its expert file is next to it; the shards would write their own, 56 GB)
-  if (-not $ModelFlashNext) { $ModelFlashNext = Find-Gguf @("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf") }
+  if (-not $ModelFlashNext) { $ModelFlashNext = Find-Gguf @("Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", "Qwen3.8-Flash-Next-IQ4_XS.gguf") }
   if (-not $ModelGemma) { $ModelGemma = Find-Gguf @("gemma-4-12b*qat*q4_0*.gguf", "gemma-4-12b*qat*.gguf") }
   if (-not $DFlash27B) { $DFlash27B = Find-DFlash @("*Qwen3.8-27B-DFlash2*") }
   if (-not $DFlash35B) { $DFlash35B = Find-DFlash @("*Qwen3.6-35B-A3B-DFlash2*") }

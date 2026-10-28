@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-10-28: an audit of every source and document
+
+Six reviews (server, file tools, speech, web UI, the GPU engine's host code, scripts and docs); what they found is
+fixed ([docs/self-audit-2026-10-28.md](docs/self-audit-2026-10-28.md), "All sources"):
+
+- **Other local pages are kept out**: a page of another server on this computer (another port: a dev server, a
+  folder served by Python) could call the terminal tool, the slots, chats, files and transcripts. It now reaches
+  only the model endpoints (chat completions, the audio ones, /tokenize); the web UI, Pi and command-line clients
+  work as before. Text inside a fetched page, a file or your message that looks like the model's control tokens is
+  read as text, no longer as a turn of the conversation.
+- **PDFs that hung the server**: a broken font map looped forever, and some files took hours to parse; reading a
+  PDF now has a work limit and keeps what it read with a note. Very long paragraphs, a huge word in a written PDF
+  and long CSV fields no longer slow to a crawl.
+- **Qwen3-ASR keeps the end of long recordings** (parts of 4 minutes, with room for their text; 6-minute parts lost
+  their last minute), lets voice messages in between a queued file's parts, falls back to Whisper when it cannot
+  load, and keeps the text before a part that failed. Two-track meetings come out in the order they were said.
+- **Web UI**: a double click on Talk or the microphone no longer opens it twice (an echo and a microphone that
+  stayed on); Compact, Stop, background chats in Talk and a chat's model after switching fixed.
+- **A file attached in another chat is copied there**, not linked: a command run in one chat no longer changes the
+  other chat's copy.
+- `arc-server stop -Port N` stops only that port's server; `setup` downloads E4B's projector (images, audio); the
+  launcher offers 1-7 drafts and chunks up to 8192.
+
 ## 2026-10-28: Gemma 4 E4B audio encoder checked against f32
 
 - **E4B's GPU conformer matches an f32 reference** (new `tools/gemma4a_ref.cpp`, written from llama.cpp's
