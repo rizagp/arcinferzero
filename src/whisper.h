@@ -458,6 +458,12 @@ struct Options {
   bool drop_unvoiced = true;
   std::string expect_language;  // the speech's language when known (a live recording's, once locked): a stock phrase
                                 // in another one is left out; empty: the one most of the result is in
+  // with language auto: a window detected in another language with a probability below prefer_below is decoded in
+  // this one instead (a live recording's language: noise and short words came out Russian, Spanish, Portuguese);
+  // one clearly in another language (English said in an Indonesian recording) keeps its own. Forcing the language
+  // instead translated the English into Indonesian.
+  std::string prefer_language;
+  float prefer_below = 0.7f;
   float dual_language = 0.8f;  // language detected per window: when the likeliest is below this probability, the two
                                // likeliest are each decoded and the likelier text is kept (0: off)
   bool timestamps = true;
@@ -714,17 +720,24 @@ class Transcriber {
       auto window = [&] {
         // (a part of the audio, --to: silence past its end, not the speech after it)
         encode(seek, opt.to_s > 0 ? seg_size : kWindowFrames);
+        bool preferred = false;
         if (!fixed && (!opt.detect_once || lang.empty())) {
           lp = language_probs(allowed);
           wlang = lp[0].first;
-          if (opt.detect_once) lang = wlang;
           if (dbg && lp.size() > 1)
             fprintf(stderr, "window %7.2f s: %s %.3f %s %.3f\n", time_offset, lp[0].first.c_str(), lp[0].second,
                     lp[1].first.c_str(), lp[1].second);
+          if (!opt.prefer_language.empty() && wlang != opt.prefer_language && lp[0].second < opt.prefer_below &&
+              m_.sp.lang_token(opt.prefer_language) >= 0) {
+            wlang = opt.prefer_language;
+            preferred = true;
+          }
+          if (opt.detect_once) lang = wlang;
         }
-        // an ambiguous language: speech that mixes two, or one full of the other's terms
-        const bool ambiguous = !opt.detect_once && opt.dual_language > 0 && opt.task == "transcribe" && lp.size() > 1 &&
-                               lp[0].second < opt.dual_language;
+        // an ambiguous language: speech that mixes two, or one full of the other's terms (not one sent to the
+        // preferred language: its unsure guess, decoded too, would win again with a fluent stock phrase)
+        const bool ambiguous = !preferred && !opt.detect_once && opt.dual_language > 0 && opt.task == "transcribe" &&
+                               lp.size() > 1 && lp[0].second < opt.dual_language;
         // its pauses split it into runs of one language or the other: each run decoded alone, in its language (decoded
         // whole in one, Whisper translates the other language's speech or leaves it out)
         // (every window when the languages are a list, "id,en": the speech is said to mix them; with auto, the ambiguous

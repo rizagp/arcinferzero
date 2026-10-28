@@ -811,7 +811,7 @@ class Service {
   // transcript's source.wav) and cut into utterances per track at its pauses; each utterance is transcribed at once
   // (greedy, word timestamps; before the queue's windows) into the draft. Stopping queues the accurate pass over the
   // recording (its options: beam 5 by default; each track alone with its speaker, merged by time), which replaces the
-  // draft; the recording is then kept as MP3 (192 kbps unless mp3_kbps says otherwise).
+  // draft; the recording is then kept as MP3 (192 kbps unless mp3_kbps says otherwise; 0: kept as WAV).
   //   POST /v1/live                    {name, language, terms, beam_size, tracks: 1 | 2, rate, speakers: [..],
   //                                     mp3_kbps} -> the record (status "live")
   //   POST /v1/live/<id>/audio?since=N&offset=F  the next piece (at most 120 s; F: the frames sent before it, so a
@@ -893,7 +893,9 @@ class Service {
       m.set("rate", (double)rate);
       m.set("recording", true);
       if (in["kind"].str() == "meeting") m.set("kind", "meeting");
-      m.set("mp3_kbps", (double)std::clamp((int)in["mp3_kbps"].as_number(192), 96, 320));
+      // (0: kept as the WAV it is written as: lossless for a later pass by another model, ~5.5 MB a minute a track)
+      const int kbps = (int)in["mp3_kbps"].as_number(192);
+      m.set("mp3_kbps", kbps <= 0 ? 0.0 : (double)std::clamp(kbps, 96, 320));
       m.set("marks", Json::array());
       {
         std::lock_guard<std::mutex> lk(lib_mu_);
@@ -1331,17 +1333,18 @@ class Service {
   // Language "auto" in a live recording: each utterance alone (a second or two, or a noise) was detected anew, and
   // the quiet ones came out Russian, Spanish, Portuguese, Korean ("Продолжение следует...", "Gracias.") in an
   // Indonesian recording. Once two clear utterances (1 s or longer, greedy without fallback, avg logprob > -0.6, not
-  // a stock phrase) are in one language, the rest of the recording is decoded in it. (The live worker's thread alone
-  // reads and writes s.opt.) "id,en" (speech that mixes them) is left as it is.
+  // a stock phrase) are in one language, it is the recording's preferred one: an utterance detected in another with
+  // less than 0.7 is decoded in it, one clearly in another keeps its own (forced, the language translated English
+  // into Indonesian). (The live worker's thread alone reads and writes s.opt.) "id,en" is left as it is.
   static void live_lock(Live& s, const std::vector<whisper::Segment>& segs) {
-    if (s.opt.language != "auto") return;
+    if (s.opt.language != "auto" || !s.opt.prefer_language.empty()) return;
     for (const whisper::Segment& g : segs) {
       if (g.lang.empty() || g.end - g.start < 1.0 || g.temperature > 0 || g.avg_logprob <= -0.6f ||
           whisper::stock_phrase(g.text))
         continue;
       if (++s.votes[g.lang] >= 2) {
-        s.opt.language = s.opt.expect_language = g.lang;
-        fprintf(stderr, "whisper: live recording %s: language %s from here on\n", s.id.c_str(), g.lang.c_str());
+        s.opt.prefer_language = s.opt.expect_language = g.lang;
+        fprintf(stderr, "whisper: live recording %s: language %s preferred from here on\n", s.id.c_str(), g.lang.c_str());
         return;
       }
     }
@@ -1674,9 +1677,10 @@ class Service {
     m.set("elapsed_s", el);
     m.set("x_realtime", el > 0 ? (stopped ? m["done_s"].as_number() : all_s) / el : 0.0);
     save_meta(tid);
-    // a live recording kept as MP3 once transcribed (the WAV it was written as is ~10x larger)
+    // a live recording kept as MP3 once transcribed (the WAV it was written as is ~10x larger), unless mp3_kbps is 0
     if (stopped || m["ext"].str() != "wav" || !m["recording"].as_bool()) return;
     const int kbps = (int)m["mp3_kbps"].as_number(192);
+    if (kbps <= 0) return;
     lk.unlock();
     std::string err;
     bool ok = audio::encode_mp3(src, dir / "source.mp3", kbps, err);

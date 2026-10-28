@@ -1980,6 +1980,15 @@ int main(int argc, char** argv) {
       chat_body.set("messages", msgs);
       chat_body.set("enable_thinking", false);
       chat_body.set("temperature", field("temperature").empty() ? 0.0 : atof(field("temperature").c_str()));
+      // a cap of 8 tokens a second of audio (speech is ~4) and a mild repeat penalty: greedy, Gemma 4 E4B fell into a
+      // loop on a 29-s clip of mixed Indonesian and English and wrote 16,687 tokens in 489 s, until its client went
+      double secs = 30;
+      try {
+        secs = (double)audio::decode_16k(std::vector<uint8_t>(fit->second.data.begin(), fit->second.data.end()), 3600).size() / 16000;
+      } catch (const std::exception&) {}  // (the chat request says what is wrong with the audio)
+      chat_body.set("max_tokens", field("max_tokens").empty() ? (double)std::clamp((int)(secs * 8) + 64, 96, 16384)
+                                                              : atof(field("max_tokens").c_str()));
+      chat_body.set("repeat_penalty", field("repeat_penalty").empty() ? 1.1 : atof(field("repeat_penalty").c_str()));
       HttpRequest rq2 = rq;
       rq2.path = "/v1/chat/completions";
       rq2.body = chat_body.dump();

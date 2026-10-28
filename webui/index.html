@@ -388,6 +388,9 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <select id="trbeam" aria-label="Accuracy" title="Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy">
           <option value="5">Accurate (beam 5)</option><option value="1">Fast (greedy)</option>
         </select>
+        <select id="trkeep" aria-label="Recordings kept as" title="How a live recording is kept: WAV is lossless (best for transcribing it again with another model), ~5.5 MB a minute a track; MP3 192 kbps ~1.4 MB a minute">
+          <option value="wav">Keep recordings as WAV</option><option value="mp3">Keep recordings as MP3</option>
+        </select>
         <textarea id="trterms" rows="3"placeholder="Glossary: names and terms the speech uses (Qwen, GGUF, Level Zero…)" aria-label="Glossary"
           title="Kept before every 30 s of audio, so Whisper writes these words as given. Written inside a casual sentence, the text keeps a casual spelling; a bare list makes it more formal"></textarea>
       </div>
@@ -2942,6 +2945,7 @@ function trCaps() {
   const p = prefs.tr || {};
   if (p.lang) $("trlang").value = p.lang;
   if (p.beam) $("trbeam").value = p.beam;
+  $("trkeep").value = p.keep === "mp3" ? "mp3" : "wav";
   if (p.terms) $("trterms").value = p.terms;
   const f = Array.isArray(p.fmts) ? p.fmts : ["srt", "txt"];
   $("trfmts").querySelectorAll("input").forEach((c) => { c.checked = f.includes(c.value); });
@@ -2951,12 +2955,12 @@ function trCaps() {
   $("trword").checked = !!p.word;
 })();
 function trSavePrefs() {
-  prefs.tr = { lang: $("trlang").value, beam: $("trbeam").value, terms: $("trterms").value,
+  prefs.tr = { lang: $("trlang").value, beam: $("trbeam").value, keep: $("trkeep").value, terms: $("trterms").value,
     fmts: [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value),
     chars: $("trchars").value, lines: $("trlines").value, maxs: $("trmaxs").value, word: $("trword").checked };
   store.set("arcinferzero-prefs", prefs);
 }
-["trlang", "trbeam", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
+["trlang", "trbeam", "trkeep", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
 $("trfmts").addEventListener("change", trSavePrefs);
 // the glossary grows with its text (up to its max-height; a drag of its corner still sets it by hand)
 function trTermsFit() { const t = $("trterms"); t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px"; }
@@ -3534,6 +3538,7 @@ const live = {
       const r = await fetch("/v1/live", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: (meeting ? "Meeting " : "Recording ") + when, language: $("trlang").value, beam_size: +$("trbeam").value,
           terms: $("trterms").value.trim(), tracks: this.n, rate: this.ctx.sampleRate, kind: tr.kind,
+          mp3_kbps: $("trkeep").value === "mp3" ? 192 : 0,
           speakers: this.n === 2 ? ["Me", "Others"] : [""] }) });
       rec = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(rec.error?.message || "HTTP " + r.status);

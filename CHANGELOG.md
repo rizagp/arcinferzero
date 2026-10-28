@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-28: a live recording's language preferred, not forced; recordings kept as WAV; a cap for audio to a chat model
+
+- **English in an Indonesian live recording stays English** (src/whisper.h `prefer_language`, tools/server_whisper.h
+  `live_lock`): the language a recording locked to was forced on every utterance, and Whisper forced to one language
+  translates the others: "How come you translate my words to Indonesian?" came out in Indonesian. It is preferred
+  now: an utterance detected in another language with less than 0.7 is decoded in it (noise, short words), one
+  clearly in another keeps its own. Checked with the user's 2:34 recording through the live API: its English
+  utterances in English in the draft.
+- **Recordings kept as WAV** (Transcripts tab: "Keep recordings as WAV / MP3", WAV by default; `mp3_kbps: 0`):
+  lossless for a later pass by another model (~5.5 MB a minute a track; MP3 192 kbps ~1.4 MB). Checked: the
+  recording's ext stays wav, its header 153.0 s, ranges read back whole.
+- **Audio to a chat model** (`/v1/audio/transcriptions` with a Gemma model): at most 8 tokens a second of audio
+  (+64) and repeat_penalty 1.1 unless given: greedy, Gemma 4 E4B fell into a loop on a 29-s clip and wrote 16,687
+  tokens in 489 s. Compared on that recording (mixed Indonesian and English, a noisy microphone): Whisper turbo 11
+  s, large-v3 40 s (no better: repeats, Thai over the closing silence), Gemma 4 E4B 26 s (the most readable, English
+  kept, but a whole made-up paragraph over a nearly silent piece), Gemma 4 12B: its audio does not reach the model
+  ("the audio is not provided"), to be looked into.
+
 ## 2026-10-28: a pipe inside a table cell
 
 - **`\|` and a `|` inside a code span stay in their table cell** (webui/index.html `mdCells`, tools/doc_writer.h
