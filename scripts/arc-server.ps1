@@ -19,6 +19,8 @@
 #                                     background): the microphone as "Me", the app's sound (or the speakers') as
 #                                     "Others"; record-stop ends it and the server transcribes it (the Meetings tab);
 #                                     record-status
+#   arc-server start -Whisper auto    also speech to text (Qwen3-ASR by default, Whisper, Gemma 4 E4B): the web UI's
+#                                     Transcripts / Meetings tabs, voice messages, /v1/audio/transcriptions
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
 # Log: %USERPROFILE%\arcinferzero\server.log
@@ -36,6 +38,8 @@ param(
   [ValidateSet("", "on", "off")] [string]$Npu = "",
   [string]$Whisper = "",
   [ValidateSet("", "gpu", "npu")] [string]$WhisperDevice = "",
+  [string]$Asr = "",
+  [int]$WhisperMaxMinutes = 0,
   # the other server options (0 / empty / off = the server's default)
   [int]$MtpDrafts = 0,
   [int]$ThinkBudget = 8192,
@@ -233,6 +237,10 @@ Options for start / restart:
                                  in the Hugging Face cache; <folder>: a faster-whisper folder); Whisper and Qwen3-ASR
                                  take ~8 GB of GPU memory off the context (docs/qwen3-asr.md). Kept like -Npu
   -WhisperDevice gpu|npu         Whisper's encoder on the iGPU (default) or the NPU
+  -Asr auto|off|<file.gguf>      with -Whisper: Qwen3-ASR, the default speech model (auto: from the Hugging Face cache
+                                 when it is there; off: Whisper alone). Kept like -Whisper
+  -WhisperMaxMinutes <N>         the longest upload or chat clip (default 180); the Transcripts library takes files up
+                                 to 6 hours, or N when it is more
   -NoStream                      every expert on the GPU: no expert file, no SSD reads; MoE models then get a
                                  smaller context. Without it, MoE models (35B, Flash Next, Gemma 4 26B) keep their
                                  experts (MTP layer included) on the SSD and the most used ones in a GPU cache
@@ -365,6 +373,8 @@ if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra
   $Whisper = $Matches[1].Trim('"')
   # ([^\s|]: the state's extra ends "...|think N", which "npu|think" did not match as npu: Whisper went back to the GPU)
   if (-not $WhisperDevice -and "$($st.extra)" -match "--whisper-device ([^\s|]+)") { $WhisperDevice = $Matches[1] }
+  if (-not $Asr -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
+  if ($WhisperMaxMinutes -le 0 -and "$($st.extra)" -match "--whisper-max-minutes ([0-9]+)") { $WhisperMaxMinutes = [int]$Matches[1] }
 }
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
@@ -376,6 +386,8 @@ if ($Npu -eq "on") { $extra += @("--npu", "on") }
 if ($Whisper -and $Whisper -ne "off") {
   $extra += @("--whisper", $(if ($Whisper -eq "auto") { "auto" } else { "`"$Whisper`"" }))
   if ($WhisperDevice -eq "npu") { $extra += @("--whisper-device", "npu") }
+  if ($Asr) { $extra += @("--asr", $(if ($Asr -in "auto", "off") { $Asr } else { "`"$Asr`"" })) }
+  if ($WhisperMaxMinutes -gt 0) { $extra += @("--whisper-max-minutes", $WhisperMaxMinutes) }
 }
 if ($ImageMinTokens -gt 0) { $extra += @("--image-min-tokens", $ImageMinTokens) }
 if ($ImageMaxTokens -gt 0) { $extra += @("--image-max-tokens", $ImageMaxTokens) }
@@ -391,7 +403,7 @@ if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with
 $extraKey = "$($extra -join ' ')|think $ThinkBudget"
 # (compared with the running server's only when given: pi-arc's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Whisper", "WhisperDevice" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and

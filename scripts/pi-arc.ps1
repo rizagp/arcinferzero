@@ -162,9 +162,15 @@ SERVER COMMANDS (arc-server)
   arc-server status              running model, its file, context and chunk size, saved conversations
   arc-server stop                stop the server and free the GPU memory
   arc-server clear-cache         delete all saved conversations (session cache)
+  arc-server record [-App Zoom.exe] [-NoMic] [-Title "..."]   record a meeting in the background (your
+                                 microphone as "Me", the app's or the speakers' sound as "Others");
+                                 arc-server record-stop: the server transcribes it (web UI, Meetings tab);
+                                 arc-server record-status
   arc-server help                its own options:
     -Model <shortcut|text|path>  -Ctx <N|auto>  -Chunk <N>  -SessionCacheGb <N>  -NoMtp  -Vision on|off  -NoStream
-    -Slots <N>  -Npu on|off
+    -Slots <N>  -Npu on|off  -Whisper auto|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
+    -WhisperMaxMinutes <N>  (speech to text: Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; for the web
+    UI's Transcripts / Meetings tabs, voice messages and /v1/audio/transcriptions; kept until stop)
     -Port <N> (default 8090)  -MtpDrafts <1..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
     -BudgetGb <GB>  -AttnF32  -NoPrefixCache  -PrefixCacheGb <N>  -NoSwap  -ListenHost <addr>  -SessionDir <dir>
     -Quiet
@@ -191,11 +197,18 @@ bin\serverz.exe --help)
   --attn-f32                     f32 attention (tests)   --budget <GB>       keep decoded weights resident up to GB
   --slots <N>                    hold N conversations at once, taking turns step by step
   --npu on|off|force             the NPU next to the GPU for prompt chunks (on: 27B, Gemma 4 12B; force: all)
+  --whisper auto|<dir>|off       speech to text (Whisper large-v3; turbo when large-v3 is not cached)
+  --whisper-device gpu|npu       Whisper's encoder on the iGPU or the NPU
+  --asr auto|<file>|off          Qwen3-ASR next to Whisper, the default speech model (needs --whisper)
+  --whisper-max-minutes <N>      longest upload / chat clip (default 180; library files up to 6 hours)
+  --no-web-tools                 no web_search / web_fetch for the web UI
+  --no-terminal                  no run_command (the web UI's terminal tool)
   --webui <dir>                  web UI folder           --kernels <dir>     kernel folder (zero\kernels)
   --list-models                  the models arc-server's list shows, as JSON
   --help, -h                     every option with its default
   API: http://127.0.0.1:8090/v1 (OpenAI chat completions), web UI http://127.0.0.1:8090/,
-       /health, /props (also GPU memory by part and request stats), /tokenize, /sessions (GET size, DELETE clear)
+       /health, /props (also GPU memory by part and request stats), /tokenize, /sessions (GET size, DELETE clear),
+       with --whisper: /v1/audio/transcriptions and /translations, /v1/transcripts (the library), /v1/live
 
 FILES
   %USERPROFILE%\arcinferzero\server.log      server log: load time, context, per-request prompt / generation speed,

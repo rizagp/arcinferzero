@@ -1,8 +1,11 @@
 # Whisper native: speech to text on Level Zero, transcripts and meetings
 
-Status: plan (2026-10-25), nothing built yet. Whisper large-v3-turbo written from scratch on arcinferzero's Level Zero
-engine, like the LLMs: no OpenVINO, no CTranslate2, no Python at run time. On top of it, two functions in the web UI
-and one on the command line:
+Status: built and in use (plan of 2026-10-25, W0-W9 done 2026-10-28; numbers and what is left:
+[whisper-native-status.md](whisper-native-status.md)). Since 2026-10-28 Qwen3-ASR is the default speech model next to
+it ([qwen3-asr.md](qwen3-asr.md)); Whisper large-v3 (turbo only when large-v3 is not cached) gives words with times
+and the live text. Whisper was written from scratch on arcinferzero's Level Zero engine, like the LLMs: no OpenVINO,
+no CTranslate2, no Python at run time. The plan below, as written then: two functions in the web UI and one on the
+command line:
 
 - **Transcript** ("Transkrip"): any audio or video file in, a transcript with word timestamps out (TXT, SRT, VTT,
   JSON, Markdown, and the inputs of the Remotion video pipeline);
