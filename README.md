@@ -216,6 +216,9 @@ in the same folder as the model: download them from the same repository in the s
 
 With their `mmproj` file next to the model, Gemma 4 12B and E4B read images and audio, and Gemma 4 26B, Qwen3.5
 4B / 9B, Qwen3.8 27B and Qwen3.6 35B read images (all encoders run on the GPU).
+For speech, prefer E4B: the 12B has no audio encoder (its projector maps raw 40-ms waveform frames straight into
+the model), and on noisy recordings of mixed Indonesian and English it made up sentences or repeated a word where
+E4B's conformer transcribed them; llama.cpp's mtmd gives the 12B the same answers. Clear speech it transcribes well.
 
 Shortcuts (`pi-arc <shortcut>`, `arc-server start -Model <shortcut>`): `27b`, `35b`, `35b-s`, `35b-mtp`, `flash`,
 `9b`, `4b`, `g12`, `e4b`, `g26`. Other GGUFs of these architectures get an id from their file name (`pi-arc --pick`

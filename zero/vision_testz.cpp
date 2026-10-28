@@ -7,10 +7,20 @@
 // written here or by tools/gemma4v_ref REF_VOUT) instead of the encoder's, for the model run.
 // A Qwen3-VL mmproj (Qwen3.5 / 3.6 / 3.8): the same timing (ARC_PROF) and ARC_VIS_LM / ARC_VIS_LM_FORCE model run, the
 // image placed as the server places it (causal rows, M-RoPE positions, the rotary shift after it); no .g4v files.
+// An audio clip (.wav / .mp3 ...) with a Gemma 4 mmproj that hears (gemma4ua: 12B, gemma4a: E2B / E4B): the clip
+// encoded as the server encodes it, then always the model run of ARC_VIS_LM (default <clip>.g4a.lm) on
+// "<audio> Transcribe ..." with the rows in causal pieces of max_chunk, as the server feeds them: 48 greedy steps, or
+// with ARC_AUDIO_REPLY=text that reply's tokens forced (the text printed; log-probs per step to the file). For
+// tools/ref_forward (REF_EMB, REF_ALL): <clip>.g4a.bin (header n_tok, n_out, the first row's position; f32 rows) and
+// <clip>.g4a.ids (the prompt with 0 at the audio rows, then the steps' tokens but the last). ARC_AUDIO_PREP=1 (gemma4ua,
+// whose encoder runs on the CPU): only those two files, with ARC_AUDIO_REPLY, no GPU (the reference can run first).
 // usage: vision_testz model.gguf mmproj.gguf image.(png|jpg) [max_tokens]
+//        vision_testz model.gguf mmproj.gguf clip.(wav|mp3|...)
 #include "engine.h"
+#include "audio_gemma4a.h"
 #include "vision_gemma4v.h"
 #include "vision_qwen3vl.h"
+#include "../src/audio.h"
 #include "../src/tokenizer.h"
 #include <cmath>
 #include <cstdio>
@@ -81,6 +91,90 @@ static int qwen_main(Engine& eng, const char* mmproj, const ImageRGB& im) {
   return 0;
 }
 
+// The clip's rows and the prompt around them; writes <clip>.g4a.bin and, once the steps' tokens are known, .g4a.ids.
+struct AudioCase {
+  std::vector<float> emb;
+  int n_tok = 0, n_out = 0;
+  std::vector<int> pre, post, forced;
+  AudioCase(GemmaAudioEncoder& enc, const Tokenizer& tok, const std::string& clip) {
+    const std::vector<float> s16 = audio::decode_16k_file(clip);
+    if (const char* wv = getenv("ARC_AUDIO_WAV")) {  // (the decoded clip as 16-bit 16 kHz WAV: for llama.cpp, which reads no AAC)
+      FILE* fw = fopen(wv, "wb");
+      const uint32_t n = (uint32_t)s16.size() * 2, rate = 16000, br = 32000, chunk = 36 + n, fmt_len = 16;
+      const uint16_t pcm = 1, ch = 1, align = 2, bits = 16;
+      fwrite("RIFF", 1, 4, fw); fwrite(&chunk, 4, 1, fw); fwrite("WAVEfmt ", 1, 8, fw); fwrite(&fmt_len, 4, 1, fw);
+      fwrite(&pcm, 2, 1, fw); fwrite(&ch, 2, 1, fw); fwrite(&rate, 4, 1, fw); fwrite(&br, 4, 1, fw);
+      fwrite(&align, 2, 1, fw); fwrite(&bits, 2, 1, fw); fwrite("data", 1, 4, fw); fwrite(&n, 4, 1, fw);
+      for (float v : s16) {
+        const int16_t q = (int16_t)std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f);
+        fwrite(&q, 2, 1, fw);
+      }
+      fclose(fw);
+    }
+    emb = enc.encode(s16, n_tok);
+    n_out = enc.out_dim();
+    printf("audio %.1f s -> %d tokens\n", s16.size() / 16000.0, n_tok);
+    pre = tok.encode("<bos><|turn>user\n<|audio>", true);
+    post = tok.encode(
+        "<audio|>Transcribe the speech in this audio exactly as spoken. Reply with the transcription only.<turn|>\n"
+        "<|turn>model\n", true);
+    if (const char* r = getenv("ARC_AUDIO_REPLY")) forced = tok.encode(r, false);
+    FILE* fo = fopen((clip + ".g4a.bin").c_str(), "wb");
+    int hdr[3] = {n_tok, n_out, (int)pre.size()};
+    fwrite(hdr, 4, 3, fo);
+    fwrite(emb.data(), 4, emb.size(), fo);
+    fclose(fo);
+  }
+  void write_ids(const std::string& clip, const std::vector<int>& steps) const {
+    std::vector<int> ids = pre;
+    ids.insert(ids.end(), n_tok, 0);
+    ids.insert(ids.end(), post.begin(), post.end());
+    printf("prompt %zu tokens (REF_ALL_FROM=%zu), %zu steps\n", ids.size(), ids.size() - 1, steps.size());
+    if (!steps.empty()) ids.insert(ids.end(), steps.begin(), steps.end() - 1);
+    FILE* fo = fopen((clip + ".g4a.ids").c_str(), "wb");
+    for (size_t i = 0; i < ids.size(); ++i) fprintf(fo, i ? ",%d" : "%d", ids[i]);
+    fclose(fo);
+  }
+};
+
+static int audio_main(Engine& eng, const char* mmproj, const std::string& clip) {
+  std::unique_ptr<GemmaAudioEncoder> enc;
+  if (GgufFile(mmproj).get_str("clip.audio.projector_type", "") == "gemma4a") enc = std::make_unique<AudioGemma4A>(mmproj, eng);
+  else enc = std::make_unique<AudioGemma4>(mmproj);
+  if (enc->out_dim() != eng.hp.n_embd) throw std::runtime_error("the projector does not fit this model");
+  Tokenizer tok(eng.gguf());
+  const AudioCase c(*enc, tok, clip);
+  eng.reset();
+  eng.forward(c.pre.data(), (int)c.pre.size());
+  for (int o = 0; o < c.n_tok;) {  // (causal pieces of max_chunk rows, as the server feeds audio)
+    const int k = std::min(eng.max_chunk, c.n_tok - o);
+    eng.forward_embd(c.emb.data() + (size_t)o * c.n_out, k, false, false);
+    o += k;
+  }
+  std::vector<float> l = eng.forward(c.post.data(), (int)c.post.size());
+  const char* lm = getenv("ARC_VIS_LM");
+  FILE* fl = fopen(lm ? lm : (clip + ".g4a.lm").c_str(), "wb");
+  std::vector<int> steps;
+  std::string text;
+  const int n_steps = c.forced.empty() ? 48 : (int)c.forced.size();
+  for (int step = 0; step < n_steps; ++step) {
+    const double mx = *std::max_element(l.begin(), l.end());
+    double z = 0;
+    for (float v : l) z += std::exp((double)v - mx);
+    std::vector<float> lp(l.size());
+    for (size_t i = 0; i < l.size(); ++i) lp[i] = (float)(l[i] - mx - std::log(z));
+    fwrite(lp.data(), 4, lp.size(), fl);
+    const int t = c.forced.empty() ? (int)(std::max_element(l.begin(), l.end()) - l.begin()) : c.forced[step];
+    steps.push_back(t);
+    text += tok.piece((int)(std::max_element(l.begin(), l.end()) - l.begin()));  // (its own choice, also when forced)
+    l = eng.forward(&t, 1);
+  }
+  fclose(fl);
+  printf("model: %s\n", text.c_str());
+  c.write_ids(clip, steps);
+  return 0;
+}
+
 int main(int argc, char** argv) {
   if (argc < 4) {
     fprintf(stderr, "usage: vision_testz model.gguf mmproj.gguf image.(png|jpg) [max_tokens]\n");
@@ -90,7 +184,19 @@ int main(int argc, char** argv) {
     EngineOptions eo;
     eo.ctx = 4096;
     eo.min_chunk = 2048;  // (an image in one chunk, as the server sets for Gemma with an image projector)
+    std::string ext = std::filesystem::path(argv[3]).extension().string();
+    for (char& c : ext) c = (char)tolower((unsigned char)c);
+    const bool audio = ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".webp" && ext != ".bmp" && ext != ".gif";
+    if (audio && getenv("ARC_AUDIO_PREP")) {  // (gemma4ua on the CPU: the reference's files without the GPU)
+      AudioGemma4 enc(argv[2]);
+      const GgufFile mf(argv[1]);
+      const Tokenizer tok(mf);
+      const AudioCase c(enc, tok, argv[3]);
+      c.write_ids(argv[3], c.forced);
+      return 0;
+    }
     Engine eng(argv[1], eo);
+    if (audio) return audio_main(eng, argv[2], argv[3]);
     if (VisionQwen3VL::usable(GgufFile(argv[2]))) {
       std::vector<uint8_t> b;
       FILE* f = fopen(argv[3], "rb");
