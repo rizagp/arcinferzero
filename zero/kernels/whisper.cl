@@ -156,52 +156,6 @@ __kernel void wh_self_attn(__global const float* qkv, __global const half* b, in
   for (int j = 0; j < nk; ++j) o += sc[j] * vc[base + (size_t)j * D + t];
   out[(size_t)r * D + h * 64 + t] = o * inv;
 }
-// cross-attention: q[r][D] (bias added), keys / values ckv[j][2D] = [k | v] of the window (A positions). Scores of
-// the heads with hmap[h] >= 0 are saved (q.k / 8, before the softmax) into save[hmap[h]][row0 + r][A].
-// grid (256 * nh, n), local (256, 1).
-__kernel void wh_cross_attn(__global const float* q, int D, __global const float* ckv, int A, __global float* out,
-                            __global const int* hmap, __global float* save, int row0, int rows_total) {
-  const int h = get_group_id(0), r = get_group_id(1), t = get_local_id(0);
-  __local float qv[64], sc[MAXK], red[256];
-  if (t < 64) qv[t] = q[(size_t)r * D + h * 64 + t] * 0.125f;
-  barrier(CLK_LOCAL_MEM_FENCE);
-  float mx = -1e30f;
-  for (int j = t; j < A; j += 256) {
-    __global const float* kj = ckv + (size_t)j * 2 * D + h * 64;
-    float s = 0.0f;
-    for (int d = 0; d < 64; ++d) s += qv[d] * kj[d];
-    sc[j] = s;
-    mx = fmax(mx, s);
-  }
-  const int slot = hmap[h];
-  if (slot >= 0)
-    for (int j = t; j < A; j += 256) save[((size_t)slot * rows_total + row0 + r) * A + j] = sc[j];
-  red[t] = mx;
-  barrier(CLK_LOCAL_MEM_FENCE);
-  for (int k = 128; k > 0; k >>= 1) {
-    if (t < k) red[t] = fmax(red[t], red[t + k]);
-    barrier(CLK_LOCAL_MEM_FENCE);
-  }
-  mx = red[0];
-  barrier(CLK_LOCAL_MEM_FENCE);
-  float z = 0.0f;
-  for (int j = t; j < A; j += 256) { sc[j] = exp(sc[j] - mx); z += sc[j]; }
-  red[t] = z;
-  barrier(CLK_LOCAL_MEM_FENCE);
-  for (int k = 128; k > 0; k >>= 1) {
-    if (t < k) red[t] += red[t + k];
-    barrier(CLK_LOCAL_MEM_FENCE);
-  }
-  const float inv = 1.0f / red[0];
-  barrier(CLK_LOCAL_MEM_FENCE);
-  // the weighted values: 4 groups of 64 threads, each over a quarter of the positions, then summed
-  const int d = t & 63, part = t >> 6;
-  float o = 0.0f;
-  for (int j = part; j < A; j += 4) o += sc[j] * ckv[(size_t)j * 2 * D + D + h * 64 + d];
-  red[t] = o;
-  barrier(CLK_LOCAL_MEM_FENCE);
-  if (t < 64) out[(size_t)r * D + h * 64 + t] = (red[t] + red[t + 64] + red[t + 128] + red[t + 192]) * inv;
-}
 // the window's cross-attention keys / values as f16, head-major: ckv[j][2D] (+ bias) -> ck[h][j][64], cv[h][j][64]
 // (one layer). grid (D, A).
 __kernel void wh_ckv_pack(__global const float* ckv, __global const half* b, int D, int Ap, __global half* ck,
@@ -211,70 +165,9 @@ __kernel void wh_ckv_pack(__global const float* ckv, __global const half* b, int
   vstore_half(ckv[(size_t)j * 2 * D + c] + vload_half(c, b), dst, ck);
   vstore_half(ckv[(size_t)j * 2 * D + D + c] + vload_half(D + c, b), dst, cv);
 }
-// cross-attention on the packed keys / values, RB rows per work-group sharing each key / value read:
-// q[r][D] (bias added), ck / cv [h][Ap][64] f16 of A positions; out[r][D]. Scores of heads with hmap[h] >= 0 saved
-// (q.k / 8, before the softmax) into save[hmap[h]][r][A]. grid (256 * nh, ceil(n / RB)), local (256, 1).
-// (-DRB=n: as many rows as the pass has, up to 4; greedy has 1, and 4 rows' scores and reductions for one cost time)
 #ifndef RB
 #define RB 4
 #endif
-__kernel void wh_cross_attn2(__global const float* q, int D, int n, __global const half* ck, __global const half* cv,
-                             int A, int Ap, __global float* out, __global const int* hmap, __global float* save) {
-  const int h = get_group_id(0), r0 = get_group_id(1) * RB, t = get_local_id(0);
-  const int nr = min(RB, n - r0);
-  __local float qv[RB][64], sc[RB][MAXK];
-  for (int i = t; i < RB * 64; i += 256) {
-    const int r = i / 64, d = i % 64;
-    qv[r][d] = r < nr ? q[(size_t)(r0 + r) * D + h * 64 + d] * 0.125f : 0.0f;
-  }
-  barrier(CLK_LOCAL_MEM_FENCE);
-  __global const half* kh = ck + (size_t)h * Ap * 64;
-  __global const half* vh = cv + (size_t)h * Ap * 64;
-  float mx[RB];
-  for (int r = 0; r < RB; ++r) mx[r] = -1e30f;
-  for (int j = t; j < A; j += 256) {
-    float s[RB];
-    for (int r = 0; r < RB; ++r) s[r] = 0.0f;
-    for (int d8 = 0; d8 < 8; ++d8) {
-      const float8 k = vload_half8(d8, kh + (size_t)j * 64);
-      for (int r = 0; r < RB; ++r) {
-        s[r] += k.s0 * qv[r][8 * d8] + k.s1 * qv[r][8 * d8 + 1] + k.s2 * qv[r][8 * d8 + 2] + k.s3 * qv[r][8 * d8 + 3] +
-                k.s4 * qv[r][8 * d8 + 4] + k.s5 * qv[r][8 * d8 + 5] + k.s6 * qv[r][8 * d8 + 6] + k.s7 * qv[r][8 * d8 + 7];
-      }
-    }
-    for (int r = 0; r < RB; ++r) { sc[r][j] = s[r]; mx[r] = fmax(mx[r], s[r]); }
-  }
-  for (int r = 0; r < RB; ++r) {
-    const float m = work_group_reduce_max(mx[r]);
-    mx[r] = m;
-  }
-  for (int r = 0; r < nr; ++r) {
-    const int slot = hmap[h];
-    if (slot >= 0)
-      for (int j = t; j < A; j += 256) save[((size_t)slot * n + r0 + r) * A + j] = sc[r][j];
-  }
-  float z[RB];
-  for (int r = 0; r < RB; ++r) z[r] = 0.0f;
-  for (int j = t; j < A; j += 256)
-    for (int r = 0; r < RB; ++r) { const float e = exp(sc[r][j] - mx[r]); sc[r][j] = e; z[r] += e; }
-  for (int r = 0; r < RB; ++r) z[r] = work_group_reduce_add(z[r]);
-  barrier(CLK_LOCAL_MEM_FENCE);
-  // values: work-item (d, part) sums positions part, part + 4, ... for every row, then the 4 parts are added
-  const int d = t & 63, part = t >> 6;
-  float o[RB];
-  for (int r = 0; r < RB; ++r) o[r] = 0.0f;
-  for (int j = part; j < A; j += 4) {
-    const float v = vload_half((size_t)j * 64 + d, vh);
-    for (int r = 0; r < RB; ++r) o[r] += sc[r][j] * v;
-  }
-  __local float acc[RB][256];
-  for (int r = 0; r < RB; ++r) acc[r][t] = o[r];
-  barrier(CLK_LOCAL_MEM_FENCE);
-  if (t < 64)
-    for (int r = 0; r < nr; ++r)
-      out[(size_t)(r0 + r) * D + h * 64 + t] = (acc[r][t] + acc[r][t + 64] + acc[r][t + 128] + acc[r][t + 192]) / z[r];
-}
-
 // cross-attention split over the positions (flash decoding): work-group (head, part, row group) takes positions
 // [part * P, part * P + P), RB rows; writes each row's partial max, sum and weighted values; wh_cross_comb adds the
 // parts. part buffers: pm / pl [nh][S][n], po [nh][S][n][64]. grid (256 * nh, S, ceil(n / RB)), local (256, 1, 1).
