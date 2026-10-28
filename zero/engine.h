@@ -1421,7 +1421,7 @@ class Engine {
   GgufFile f_;
   std::string path_;
   ClRt cl_;
-  std::string gemm_src_, ops_src_, dec_src_;
+  std::string gemm_src_, ops_src_, dec_src_, asr_src_;
   std::map<std::string, cl_kernel> kcache_;
   std::vector<cl_program> progs_;  // released with the engine
   std::unique_ptr<XCache> xc_;     // streamed experts (null: experts on the GPU, as in the former OpenCL engine)
@@ -1824,7 +1824,12 @@ class Engine {
     const std::string key = which + defs + "|" + name;
     auto it = kcache_.find(key);
     if (it != kcache_.end()) return it->second;
-    const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_src_ : which == "moe" ? moe_src_ : ops_src_;
+    if (which == "asr" && asr_src_.empty()) {  // (the Qwen3-ASR encoder's kernels, zero/kernels/asr.cl: read when first used)
+      asr_src_ = read_file(opt.kernel_dir + "/asr.cl");
+      if (asr_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/asr.cl");
+    }
+    const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_src_ : which == "moe" ? moe_src_
+                             : which == "asr" ? asr_src_ : ops_src_;
     auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);
@@ -2169,6 +2174,21 @@ class Engine {
     }
   }
   // Two matrices with the same K stacked by rows, requantized to Q8_0 (the tiny DeltaNet gate projections).
+  // Matrices of one quantized type and row length as one stack of rows, their GGUF blocks copied as they are (the
+  // values unchanged; a row's result does not depend on the others): one GEMV / GEMM instead of one per matrix.
+  GpuWeight load_w_stack(std::initializer_list<std::string> names) {
+    const GgufTensor& t0 = f_.get(*names.begin());
+    std::vector<uint8_t> cat;
+    int N = 0;
+    for (const std::string& n : names) {
+      const GgufTensor& t = f_.get(n);
+      if (t.type != t0.type || t.dims[0] != t0.dims[0] || t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16)
+        throw std::runtime_error("load_w_stack: matrices of different shapes or types: " + n);
+      cat.insert(cat.end(), t.data, t.data + t.nbytes);
+      N += (int)t.dims[1];
+    }
+    return make_weight(t0.type, cat.data(), cat.size(), N, (int)t0.dims[0], weight_role(*names.begin()));
+  }
   GpuWeight load_q8_concat(const std::string& a, const std::string& b) {
     const GgufTensor &ta = f_.get(a), &tb = f_.get(b);
     const int K = (int)ta.dims[0], Na = (int)ta.dims[1], Nb = (int)tb.dims[1];
@@ -2314,6 +2334,9 @@ class Engine {
       }
       if (hp.moe) {
         load_moe(L, p);
+      } else if (hp.qwen3 && f_.get(p + "ffn_gate.weight").type == f_.get(p + "ffn_up.weight").type) {
+        L.gate = load_w_stack({p + "ffn_gate.weight", p + "ffn_up.weight"});  // (rows [gate | up], L.up empty: layer_ffn)
+        L.down = load_w(p + "ffn_down.weight");
       } else {
         L.gate = load_w(p + "ffn_gate.weight");
         L.up = load_w(p + "ffn_up.weight");
@@ -2674,10 +2697,20 @@ class Engine {
 
   void load_attn(Layer& L, const std::string& p) {
     {
+      // (Qwen3 dense: q, k, v as one stack, its output rows [q | k | v] as layer_qwen3_attn lays them out; L.wk / L.wv
+      //  stay empty. Qwen3-ASR, one token at 2048 of context: q + k + v 0.166 -> 0.139 ms a layer, gate + up (load_weights)
+      //  0.437 -> 0.414; generation 23.8 -> 25.1 tok/s, the 2:34 recording's 507 tokens 19.97 -> 19.56 s (mean of 3); logits
+      //  bit-identical)
+      const bool stack = hp.qwen3 && f_.get(p + "attn_q.weight").type == f_.get(p + "attn_k.weight").type &&
+                         f_.get(p + "attn_q.weight").type == f_.get(p + "attn_v.weight").type;
       {
-        L.wq = load_w(p + "attn_q.weight");
-        L.wk = load_w(p + "attn_k.weight");
-        L.wv = load_w(p + "attn_v.weight");
+        if (stack) {
+          L.wq = load_w_stack({p + "attn_q.weight", p + "attn_k.weight", p + "attn_v.weight"});
+        } else {
+          L.wq = load_w(p + "attn_q.weight");
+          L.wk = load_w(p + "attn_k.weight");
+          L.wv = load_w(p + "attn_v.weight");
+        }
         L.wo = load_w(p + "attn_output.weight");
         L.q_norm = load_f32(p + "attn_q_norm.weight");
         L.k_norm = load_f32(p + "attn_k_norm.weight");
@@ -3339,6 +3372,8 @@ class Engine {
       // rows per sub-group: enough sub-groups for small N; very tall matrices (an lm_head of short rows) do better
       // with more sub-groups again
       const bool vk = gemv_v_ok(w);
+      // (Qwen3-ASR's Q8_0 matrices, 2026-10-28: 1 / 2 / 4 / 8 rows for the stacked gate + up (12,288 rows), qkv
+      //  (4,096), o / down (2,048) and the head all within 1 % in the model: the rule kept)
       const int grows = vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2;
       int N = w.N, K = w.K, M = Mp;
       rd_bytes += raw_bytes(w);

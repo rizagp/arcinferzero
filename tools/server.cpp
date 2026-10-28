@@ -739,7 +739,8 @@ class Server {
 #include "server_catalog.h"  // (model catalog, --ctx auto)
 
 #include "server_load.h"  // (loading a model)
-#include "server_whisper.h"  // (Whisper: /v1/audio/transcriptions)
+#include "server_whisper.h"  // (the speech service: Whisper, Qwen3-ASR, the transcript library)
+#include "server_speech.h"  // (starting it, Gemma 4 E4B for transcripts, /v1/audio/*)
 
 // The web UI's file tools for the model (it calls them as functions, the page runs them here):
 //   create_document {filename, format: docx | pdf | doc | rtf | md | xlsx, content (Markdown, tools/doc_writer.h;
@@ -1441,42 +1442,6 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
   }
 }
 
-// The chat request that has a model with an audio encoder (Gemma 4 E4B) transcribe or translate a clip (its bytes,
-// a file extension): the clip and an instruction in one user turn, no thinking, temperature 0 unless given. A cap of 8
-// tokens a second of audio (speech is ~4; max_tokens <= 0) and a mild repeat penalty unless given: greedy, Gemma 4 E4B
-// fell into a loop on a 29-s clip of mixed Indonesian and English and wrote 16,687 tokens in 489 s.
-static Json audio_chat_body(const std::string& data, const std::string& ext, const std::string& model,
-                            const std::string& language, const std::string& prompt, bool translate, double secs,
-                            double temperature = 0.0, double max_tokens = 0, double repeat_penalty = 1.1) {
-  std::string instr = translate ? "Translate the speech in this audio into English. Reply with the translation only."
-                                : "Transcribe the speech in this audio exactly as spoken" +
-                                      (language.empty() ? std::string() : " (language: " + language + ")") +
-                                      ". Reply with the transcription only.";
-  if (!prompt.empty()) instr += " Context: " + prompt;
-  Json audio = Json::object();
-  audio.set("data", apic::base64_encode(data));
-  audio.set("format", ext);
-  Json pa = Json::object();
-  pa.set("type", "input_audio");
-  pa.set("input_audio", audio);
-  Json parts = Json::array();
-  parts.push(pa);
-  parts.push(apic::text_part(instr));
-  Json msgs = Json::array();
-  msgs.push(apic::msg("user", parts));
-  Json body = Json::object();
-  body.set("model", model);
-  body.set("messages", msgs);
-  body.set("enable_thinking", false);
-  body.set("temperature", temperature);
-  body.set("max_tokens", max_tokens > 0 ? max_tokens : (double)std::clamp((int)(secs * 8) + 64, 96, 16384));
-  body.set("repeat_penalty", repeat_penalty);
-  // (the model named hears the clip, whatever model is loaded now: without it the clip went to the speech service,
-  //  which the transcript request calling here holds: "resource deadlock would occur")
-  body.set("speech", "model");
-  return body;
-}
-
 int main(int argc, char** argv) {
   full_speed_process();
   for (int i = 1; i < argc; ++i)
@@ -1688,43 +1653,13 @@ int main(int argc, char** argv) {
   if (so.webui.empty()) so.webui = find_dir("webui");
   if (alias.empty()) alias = std::filesystem::path(model).stem().string();
 
-  // Whisper before the model: --ctx auto then leaves its GPU memory free (so.whisper_bytes); the NPU's driver is
-  // initialized before the GPU runtime (which asks for GPUs only) when Whisper or the model uses the NPU
+  // the speech service before the model: --ctx auto then leaves its GPU memory free (tools/server_speech.h)
   std::unique_ptr<srvwh::Service> wh;
-  if (asr_opt == "default") asr_opt = whisper_opt == "off" ? "off" : "auto-quiet";  // (not in the cache: Whisper alone)
-  if (asr_opt != "off" && whisper_opt == "off") {
-    fprintf(stderr, "arcinferzero-server: --asr needs --whisper (the transcription service and its library)\n");
+  try {
+    wh = srvsp::start(whisper_opt, whisper_dev, asr_opt, whisper_max_min, so);
+  } catch (const std::exception& e) {
+    fprintf(stderr, "arcinferzero-server: --whisper: %s\n", e.what());
     return 1;
-  }
-  if (whisper_opt != "off") {
-    const std::string dir = whisper_opt == "auto" ? whisper::find_model() : whisper_opt;
-    try {
-      if (dir.empty()) throw std::runtime_error("no faster-whisper model in the Hugging Face cache (hf download mobiuslabsgmbh/faster-whisper-large-v3-turbo)");
-      const bool npu_wanted = whisper_dev == "npu" || so.eo.npu > 0 || (getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0);
-      if (npu_wanted && ze_load()) zeInit(0);
-      const auto t0 = std::chrono::steady_clock::now();
-      wh = std::make_unique<srvwh::Service>(dir, whisper_dev == "npu", so.eo.kernel_dir);
-      wh->max_seconds = whisper_max_min * 60;
-      if (asr_opt != "off") {  // (Qwen3-ASR: its own engine, in the service; before the model as Whisper)
-        const bool quiet = asr_opt == "auto-quiet";
-        const std::string f = asr_opt == "auto" || quiet ? q3asr::find_model() : asr_opt;
-        if (f.empty() && !quiet)
-          throw std::runtime_error("--asr auto: no Qwen3-ASR GGUF in the Hugging Face cache (hf download unsloth/Qwen3-ASR-1.7B-GGUF)");
-        if (f.empty()) {
-          fprintf(stderr, "asr: no Qwen3-ASR GGUF in the Hugging Face cache: Whisper transcribes (docs/qwen3-asr.md)\n");
-        } else {
-          wh->load_asr(f, so.eo.kernel_dir);
-          fprintf(stderr, "asr: %s (Whisper and Qwen3-ASR %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->gpu_bytes() / 1073741824.0);
-        }
-      }
-      so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
-      so.whisper_props = wh->props();
-      fprintf(stderr, "whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",
-              std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), wh->gpu_bytes() / 1073741824.0);
-    } catch (const std::exception& e) {
-      fprintf(stderr, "arcinferzero-server: --whisper: %s\n", e.what());
-      return 1;
-    }
   }
   std::unique_ptr<Loaded> cur;
   try {  // (a model that cannot load: its reason, not a silent abort)
@@ -1763,39 +1698,7 @@ int main(int argc, char** argv) {
 
   HttpServer http;
   std::function<void(const HttpRequest&, HttpResponse&)> dispatch;
-  // Gemma 4 E4B as a transcript model of the speech service (tools/server_whisper.h chat_run): a model of the catalog
-  // (or the loaded one) with "E4B" in its name and its audio encoder; each part of a clip a chat request to it, made
-  // here without a connection (the server loads it when another model is loaded)
-  if (wh) {
-    std::string e4b;
-    auto is_e4b = [](const std::string& n) { return lower_ascii(n).find("e4b") != std::string::npos; };
-    for (const ModelInfo& m : catalog)
-      if (e4b.empty() && m.supported && m.audio && m.arch == "gemma4" && (is_e4b(m.name) || is_e4b(m.file))) e4b = m.alias;
-    if (e4b.empty() && cur && cur->srv && cur->srv->has_audio() && is_e4b(cur->alias)) e4b = cur->alias;
-    if (!e4b.empty()) {
-      wh->chat_asr_id = e4b;
-      wh->chat_asr = [&dispatch, e4b](const std::string& wav, double secs, const std::string& lang, const std::string& context) {
-        HttpRequest rq;
-        rq.method = "POST";
-        rq.path = "/v1/chat/completions";
-        rq.local_peer = true;
-        rq.headers["content-type"] = "application/json";
-        rq.body = audio_chat_body(wav, "wav", e4b, lang, context, false, secs).dump();
-        HttpResponse rs(INVALID_SOCKET);
-        int status = 0;
-        std::string out;
-        rs.on_send = [&](int st, const std::string& b) { status = st; out = b; };
-        dispatch(rq, rs);
-        Json j;
-        Json::try_parse(out, j);
-        if (status != 200) throw std::runtime_error("Gemma 4 E4B: " + j["error"]["message"].str("HTTP " + std::to_string(status)));
-        return j["choices"][0]["message"]["content"].str();
-      };
-      so.whisper_props = wh->props();
-      cur_so.whisper_props = so.whisper_props;
-      if (cur && cur->srv) cur->srv->whisper_props_ = so.whisper_props;
-    }
-  }
+  if (wh) srvsp::attach_e4b(*wh, catalog, cur.get(), dispatch, so, cur_so);  // (Gemma 4 E4B as a transcript model)
   // (no model loaded: a model switch failed and loading the previous model again did too; caller holds swap_mu)
   auto no_model = [&](HttpResponse& rs) {
     Json err = Json::object(), r = Json::object();
@@ -2019,56 +1922,23 @@ int main(int argc, char** argv) {
         return rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
       return rq.path.rfind("/v1/live", 0) == 0 ? wh->live(rq, rs) : wh->transcripts(rq, rs);
     }
-    // OpenAI audio transcription / translation (multipart upload): the clip goes to a model with an audio encoder
-    if (rq.method == "POST" && (rq.path == "/v1/audio/transcriptions" || rq.path == "/v1/audio/translations")) {
-      const auto form = apic::parse_multipart(rq.header("content-type"), rq.body);
-      const auto fit = form.find("file");
-      if (fit == form.end() || fit->second.data.empty())
-        return rs.send(400, "application/json", "{\"error\":{\"message\":\"file required (multipart/form-data)\"}}");
-      Json req = Json::object();
-      auto field = [&](const char* k) { auto it = form.find(k); return it == form.end() ? std::string() : it->second.data; };
-      const bool translate = rq.path == "/v1/audio/translations";
-      {  // the speech service (--whisper: Qwen3-ASR, Gemma 4 E4B, Whisper itself) unless the request names a chat model
-        const std::string want = apic::strip_tag(field("model"));
-        bool chat_model = false;
-        if (!want.empty()) {
-          std::shared_lock<std::shared_mutex> lk(swap_mu);
-          chat_model = cur && want == cur->alias;
-          for (const ModelInfo& m : catalog) chat_model = chat_model || (m.supported && (m.alias == want || m.name == want || m.file == want));
-        }
-        if (wh && (!chat_model || wh->names_chat_asr(want))) return wh->handle(rs, form, translate);
-        // (with the speech service only its models transcribe: Gemma 4 12B, which hears audio without an encoder,
-        //  wrote a translated summary of the user's recording and garbled a clear one; the user's choice, 2026-10-28)
-        if (wh && !translate)
-          return rs.send(400, "application/json", "{\"error\":{\"message\":\"model: transcription takes qwen3-asr (the default) or Gemma 4 E4B (" +
-                                                       wh->chat_asr_id + ")\",\"type\":\"invalid_request_error\"}}");
-        if (!wh && want.find("whisper") != std::string::npos)
-          return rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
-      }
-      req.set("model", apic::strip_tag(field("model")));
-      req.set("response_format", field("response_format").empty() ? "json" : field("response_format"));
-      req.set("language", field("language"));
-      req.set("task", translate ? "translate" : "transcribe");
-      std::string model = req["model"].str();
-      if (model.empty()) {
+    // OpenAI audio transcription / translation (tools/server_speech.h)
+    {
+      srvsp::AudioRoute ar;
+      ar.wh = wh.get();
+      ar.is_chat_model = [&](const std::string& want) {
         std::shared_lock<std::shared_mutex> lk(swap_mu);
-        if (!cur) return no_model(rs);
-        model = cur->alias;
-      }
-      double secs = 30;
-      try {
-        secs = (double)audio::decode_16k(std::vector<uint8_t>(fit->second.data.begin(), fit->second.data.end()), 3600).size() / 16000;
-      } catch (const std::exception&) {}  // (the chat request says what is wrong with the audio)
-      const Json chat_body = audio_chat_body(
-          fit->second.data, fit->second.filename.substr(fit->second.filename.rfind('.') + 1), model, field("language"),
-          field("prompt"), translate, secs, field("temperature").empty() ? 0.0 : atof(field("temperature").c_str()),
-          field("max_tokens").empty() ? 0.0 : atof(field("max_tokens").c_str()),
-          field("repeat_penalty").empty() ? 1.1 : atof(field("repeat_penalty").c_str()));
-      HttpRequest rq2 = rq;
-      rq2.path = "/v1/chat/completions";
-      rq2.body = chat_body.dump();
-      apic::Adapter ad("transcription", req, rs);
-      return dispatch(rq2, rs);
+        bool r = cur && want == cur->alias;
+        for (const ModelInfo& m : catalog) r = r || (m.supported && (m.alias == want || m.name == want || m.file == want));
+        return r;
+      };
+      ar.loaded_alias = [&]() -> std::string {
+        std::shared_lock<std::shared_mutex> lk(swap_mu);
+        return cur ? cur->alias : std::string();
+      };
+      ar.no_model = [&](HttpResponse& r) { no_model(r); };
+      ar.dispatch = &dispatch;
+      if (srvsp::audio_route(rq, rs, ar)) return;
     }
     // Ollama: the model list, one model's details, the version, the loaded model
     if (rq.path == "/api/version") return rs.send(200, "application/json", "{\"version\":\"0.9.0\"}");

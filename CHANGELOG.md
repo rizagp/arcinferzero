@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-28: Qwen3-ASR GEMV / GEMM; the speech code in its own files
+
+- **Qwen3-ASR's q / k / v and gate / up each one matrix** (their Q8_0 rows stacked as they are): one token at 2048
+  of context 23.8 -> 25.1 tok/s, the 2:34 recording's text 2 % sooner; logits bit-identical. Measured and left: rows
+  per sub-group (within 1 %), the prompt GEMMs (11 % of a transcription, ~half the DP4a peak, shared by every
+  model); the GEMVs run at 58-70 GB/s of ~75. The larger remaining parts of a token are the float attention (21 %:
+  f32 K rows) and the 152K-word output head (12 %).
+- **Speech code out of tools/server.cpp**: tools/server_speech.h (starting Whisper / Qwen3-ASR, Gemma 4 E4B for
+  transcripts, `/v1/audio/*`), tools/server_whisper_asr.h (Qwen3-ASR / E4B inside the speech service); the Qwen3-ASR
+  encoder's kernels in zero/kernels/asr.cl instead of ops.cl. Behaviour unchanged (every route, the queue, the
+  encoder's error against f32, the transcript checked).
+
 ## 2026-10-28: Qwen3-ASR the default speech model; Gemma 4 E4B and Whisper large-v3 the other choices
 
 - **Transcript models: Qwen3-ASR (default), Gemma 4 E4B, Whisper large-v3** (the user's choice after comparing two

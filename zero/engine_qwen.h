@@ -191,9 +191,13 @@
     const int ldq = (nh + 2 * nkv) * hd;
     const int a_in = act32_for(false);
     rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
-    matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
-    matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, false, a_in);
-    matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, false, a_in);
+    if (!L.wk.N) {  // (q, k, v stacked: one matmul, see load_attn)
+      matmul("gemm_qkv", L.wq, Mp, big_, ldq, 0, false, a_in);
+    } else {
+      matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
+      matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, false, a_in);
+      matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, false, a_in);
+    }
     cl_kernel kp = kernel("ops", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + sb_opt(hd) + " -DRT_TABLE",
                           "attn_prep_g");
     // rows r0 .. r0 + Tq of the pass at position p0 (a batched pass: per sequence, in its slot)
@@ -346,8 +350,10 @@
     const int a_in = act32_for(false);
     rmsnorm_quant(x_, 0, L.post_norm, E, Mp, T, a_in);
     // prompt chunks: the up GEMM applies silu(gate) * up in its epilogue (no split-K for K = n_embd <= 8192)
-    const int fused = cur_T_ > 8 && E <= 8192 && !q2mm_ ? 1 : 0;  // (two passes: no fused epilogue)
-    if (fused) {
+    const int fused = cur_T_ > 8 && E <= 8192 && !q2mm_ && L.up.N ? 1 : 0;  // (two passes: no fused epilogue)
+    if (!L.up.N) {  // (gate and up stacked, rows [gate | up] as below: one matmul; Qwen3 dense, see load_weights)
+      matmul("gemm_gateup", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
+    } else if (fused) {
       matmul("gemm_gate", L.gate, Mp, big_, F, 0, 0, a_in);
       matmul("gemm_up", L.up, Mp, big_, F, 0, 2, a_in);
     } else {

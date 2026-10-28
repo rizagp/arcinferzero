@@ -5,7 +5,7 @@
 //    128 Slaney bins, log10, clamped to the maximum of the whole clip - 8, (x + 4) / 4), one frame per 10 ms; cut into
 //    chunks of 100 frames (the last one zero-padded to 100, as Hugging Face's pad_sequence does); the first 3x3
 //    stride-2 convolution (1 -> 480 channels) and its GELU;
-//  - GPU (f16 weights, f32 activations, zero/kernels/ops.cl vit_* and q3a_*): the second and third convolutions as
+//  - GPU (f16 weights, f32 activations; ops.cl vit_*, its own zero/kernels/asr.cl q3a_*): the second and third convolutions as
 //    im2col + GEMM (GELU), 13 frames per chunk of which the last chunk keeps those its real frames give; conv_out
 //    (480 channels x 16 frequencies -> 1024), the sinusoidal position of each frame within its chunk; 24 pre-LayerNorm
 //    transformer blocks (16 heads, GELU FFN) whose attention stays inside windows of 8 chunks (n_window_infer = 800
@@ -266,7 +266,7 @@ class AudioQwen3A : public GemmaAudioEncoder {
       im2col(a2_, 25, 32, 13, 16, n);
       gemm(im_, 9 * C, c3_, a3_, C, 0, false, n * 208, n * 208);
       bias_act(a3_, C, c3b_, 2, n * 208);
-      cl_kernel k = kern("q3a_gather");
+      cl_kernel k = own("q3a_gather");
       int cc = C, ff = 16;
       set_args(k, 0, a3_, cc, ff, e_.from(tmap_, (size_t)r0 * 4), e_.from(g_, (size_t)r0 * C * 16 * 4));
       size_t g[2] = {(size_t)C * 16, (size_t)wtok[w - w0]};
@@ -274,7 +274,7 @@ class AudioQwen3A : public GemmaAudioEncoder {
     }
     gemm(g_, C * 16, cout_, x_, E, 0, false, Mp, N);
     {
-      cl_kernel k = kern("q3a_pos");
+      cl_kernel k = own("q3a_pos");
       int e = E;
       set_args(k, 0, x_, e, pos_, tpos_);
       size_t g[2] = {(size_t)E, (size_t)N};
@@ -288,7 +288,7 @@ class AudioQwen3A : public GemmaAudioEncoder {
       gemm(hn_, E, l.v, h_, 3 * E, 2 * E, false, Mp, N);
       bias_act(h_, 3 * E, l.qkv_b, 0, N);
       {
-        cl_kernel k = kern("q3a_heads");
+        cl_kernel k = own("q3a_heads");
         int nh = n_head, d = hd, mp = Mp;
         float qs = 1.0f / std::sqrt((float)hd);
         set_args(k, 0, h_, nh, d, mp, qs, q_, k_, v_);
@@ -326,8 +326,9 @@ class AudioQwen3A : public GemmaAudioEncoder {
   }
 
   cl_kernel kern(const char* name, const std::string& defs = "") { return e_.kernel("ops", "-DVIT " + defs, name); }
+  cl_kernel own(const char* name) { return e_.kernel("asr", "", name); }  // (this encoder's kernels: zero/kernels/asr.cl)
   void im2col(cl_mem in, int Ti, int Fi, int To, int Fo, int chunks) {
-    cl_kernel k = kern("q3a_im2col");
+    cl_kernel k = own("q3a_im2col");
     int c = n_conv, ti = Ti, fi = Fi, to = To, fo = Fo;
     set_args(k, 0, in, c, ti, fi, to, fo, im_);
     size_t g[2] = {(size_t)n_conv * 9, (size_t)chunks * To * Fo};
