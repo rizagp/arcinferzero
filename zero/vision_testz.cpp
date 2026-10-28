@@ -14,6 +14,7 @@
 // tools/ref_forward (REF_EMB, REF_ALL): <clip>.g4a.bin (header n_tok, n_out, the first row's position; f32 rows) and
 // <clip>.g4a.ids (the prompt with 0 at the audio rows, then the steps' tokens but the last). ARC_AUDIO_PREP=1 (gemma4ua,
 // whose encoder runs on the CPU): only those two files, with ARC_AUDIO_REPLY, no GPU (the reference can run first).
+// ARC_AUDIO_EMB=file: the model run on rows from that file (same header; e.g. tools/gemma4a_ref's <clip>.g4a.ref.bin).
 // usage: vision_testz model.gguf mmproj.gguf image.(png|jpg) [max_tokens]
 //        vision_testz model.gguf mmproj.gguf clip.(wav|mp3|...)
 #include "engine.h"
@@ -119,6 +120,16 @@ struct AudioCase {
         "<audio|>Transcribe the speech in this audio exactly as spoken. Reply with the transcription only.<turn|>\n"
         "<|turn>model\n", true);
     if (const char* r = getenv("ARC_AUDIO_REPLY")) forced = tok.encode(r, false);
+    if (const char* ef = getenv("ARC_AUDIO_EMB")) {  // (rows from a file in place of the encoder's, e.g. tools/gemma4a_ref)
+      FILE* fe = fopen(ef, "rb");
+      int h[3] = {0, 0, 0};
+      if (!fe || fread(h, 4, 3, fe) != 3 || h[0] != n_tok || h[1] != n_out ||
+          fread(emb.data(), 4, emb.size(), fe) != emb.size())
+        throw std::runtime_error("ARC_AUDIO_EMB: not this clip's rows");
+      fclose(fe);
+      printf("rows from %s\n", ef);
+      return;  // (the encoder's .g4a.bin kept)
+    }
     FILE* fo = fopen((clip + ".g4a.bin").c_str(), "wb");
     int hdr[3] = {n_tok, n_out, (int)pre.size()};
     fwrite(hdr, 4, 3, fo);

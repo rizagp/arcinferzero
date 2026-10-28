@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-28: Gemma 4 E4B audio encoder checked against f32
+
+- **E4B's GPU conformer matches an f32 reference** (new `tools/gemma4a_ref.cpp`, written from llama.cpp's
+  `models/gemma4a.cpp` and `mtmd_audio_preprocessor_gemma4a`: log-mel in double, the two convolutions, 12 conformer
+  blocks with every clamp, f32 activations, the mmproj's BF16 weights as f32). Rows: cosine 1.000000, relative error
+  max 0.004 % (the 49.8-s test clip, 1,246 tokens; rec1 part_00 / part_03, 722 / 612 tokens). Rounding the weights
+  to f16 as the GPU stores them changes nothing measurable. The model's KL, 48 forced reply tokens of the test clip:
+  arcinferzero against the full f32 path (`ref_forward` REF_EMB on the reference rows) mean 0.00018, max 0.0054,
+  top-1 48 / 48; the encoder alone (the GPU model on GPU rows vs on f32 rows) 0.00019 / 0.0047 (test clip), 0.00058
+  / 0.0025 (part_00), 0.00068 / 0.0038 (part_03). Nothing to fix; E4B's noisy-clip mistakes are the model's.
+- `vision_testz`: `ARC_AUDIO_EMB=file` runs the model on audio rows from a file (as `ARC_VIS_EMB` for images).
+
 ## 2026-10-28: a live recording's language preferred, not forced; recordings kept as WAV; a cap for audio to a chat model
 
 - **English in an Indonesian live recording stays English** (src/whisper.h `prefer_language`, tools/server_whisper.h
