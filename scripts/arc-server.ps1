@@ -84,7 +84,7 @@ $log = Join-Path $stateDir "server.log"
 $stateFile = Join-Path $stateDir "server.json"
 $base = "http://127.0.0.1:$Port"
 # saved conversations (server --session-cache-gb, default 8 GB)
-$sessDir = Join-Path $stateDir "zero\sessions"
+$sessDir = if ($SessionDir) { $SessionDir } else { Join-Path $stateDir "zero\sessions" }  # (status / clear-cache: -SessionDir's folder)
 
 # The models come from `serverz.exe --list-models` (Hugging Face cache + %USERPROFILE%\arcinferzero\models): name, file,
 # alias (= the model id of the API and Pi), shortcut, the context --ctx auto chose for the current GPU memory. The
@@ -117,9 +117,12 @@ function Stop-Arc {
   try { $null = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/sessions/save" -TimeoutSec 60 } catch {}
   if (Test-Path $stateFile) {
     $st = Get-Content $stateFile -Raw | ConvertFrom-Json
-    $p = Get-Process -Id $st.pid -ErrorAction SilentlyContinue
-    if ($p -and $p.ProcessName -eq "serverz") { Stop-Process -Id $p.Id -Force; $stopped = $true }
-    Remove-Item $stateFile -Force
+    # (only the server of this port: -Port 8091 left the 8090 one, which the state file describes, running)
+    if (-not $st.port -or "$($st.port)" -eq "$Port") {
+      $p = Get-Process -Id $st.pid -ErrorAction SilentlyContinue
+      if ($p -and $p.ProcessName -eq "serverz") { Stop-Process -Id $p.Id -Force; $stopped = $true }
+      Remove-Item $stateFile -Force
+    }
   }
   # a server started by hand on the same port
   Get-CimInstance Win32_Process -Filter "Name = 'serverz.exe'" |
@@ -266,7 +269,7 @@ Options for start / restart:
 A running server is kept when the model and every option given match; otherwise it is restarted with them.
 
 A window for all of this: arc-launcher.cmd in the project folder (models with their memory and automatic
-context, every option filled in with the best value, Start / Stop, the running server's memory and speeds).
+context, the main options filled in with the best value, Start / Stop, the running server's memory and speeds).
 
 The server is started as bin\serverz.exe with --ctx, --mtp (when the model has
 an MTP block or a Gemma drafter), --draft for the -nodf / -df variants, --think-budget 8192 and the options above;

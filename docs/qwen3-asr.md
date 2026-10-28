@@ -34,10 +34,19 @@ The GGUF conversion of [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-A
   `<|audio_end|><|im_end|>\n<|im_start|>assistant\n`; greedy decoding; the answer `language Indonesian<asr_text>...`
   (`language None` for no speech); repetitions collapsed as `detect_and_fix_repetitions` does (a pattern of up to 20
   characters repeated 20 times or more is kept once). One part up to 20 minutes in Qwen's code; the server's
-  engine holds 6,144 tokens of context, so it cuts audio into parts of up to 6 minutes at the quietest 100 ms near
-  each cut. Added here: decoding stops once the text ends in a pattern repeated 40 times (the model looping over
-  background sound; Qwen's fix would keep one copy anyway, 40 leaves real repetition such as "tes tes tes ..."
-  untouched).
+  engine holds 6,144 tokens of context, so it cuts audio into parts of up to 4 minutes at the quietest 100 ms near
+  each cut: a part's audio (13 tokens a second), the glossary and prompt (cut to their first 512 tokens), the
+  template and the text (speech is 4.5-6 tokens a second; 7 kept free) fit together. (Parts of 6 minutes left about
+  1,400 tokens for 6 minutes of text, so their ends were lost.) A part whose decoding still runs out of room is
+  logged (`no room left to decode`). Added here: decoding stops once the text ends in a pattern repeated 40 times
+  (the model looping over background sound; Qwen's fix would keep one copy anyway, 40 leaves real repetition such
+  as "tes tes tes ..." untouched).
+- **In the server** the engine is held one part at a time: a voice clip from a chat or a `/v1/audio/*` request
+  waiting for it goes before the next part of a Transcripts job. A part that fails is tried once more; if it fails
+  again the job is `failed` with the error, and the transcript of the parts before it is saved. A meeting recorded
+  with two tracks is cut at pauses into parts of about 25 s per track (a segment each), so the two speakers' turns
+  interleave by time instead of coming out as one long monologue per track (Gemma 4 E4B still takes 2-minute
+  parts there).
 
 ## Accuracy against f32 references
 
@@ -152,7 +161,13 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
 - `POST /v1/audio/transcriptions`: no `model`, OpenAI's `whisper-1` or `qwen3-asr` -> Qwen3-ASR; `gemma4-e4b` /
   `e4b` -> Gemma 4 E4B (in parts of up to 2 minutes cut at quiet points, a segment each; the server loads E4B as its
   chat model when another one is loaded); `whisper` or its id -> Whisper large-v3 (word times); any other chat model:
-  400. Every response format; `prompt` and `terms` become the context; translations stay Whisper's.
+  400. A tag is ignored (`gemma4-e4b:latest`). Every response format; `prompt` and `terms` become the context;
+  translations (`/v1/audio/translations`) stay Whisper's (Qwen3-ASR, E4B or another chat model named: 400). With
+  `--whisper off` there is no speech service: naming `whisper` or `qwen3-asr` gives 400, a chat model that hears
+  audio transcribes.
+- `--asr auto` takes the Q8_0 file when the cache has several; the mmproj whose output width matches the text model
+  (1.7B: 2048, 0.6B: 1024). In the default (`--asr` not given) a Qwen3-ASR that cannot be loaded is logged and the
+  server goes on with Whisper alone.
 - Voice messages and audio files in a chat: written by Qwen3-ASR (unless the setting "The model hears it" is on and
   the chat's model hears audio).
 - Transcripts tab: a model choice per file or recording (Qwen3-ASR / Gemma 4 E4B / Whisper large-v3), changeable any

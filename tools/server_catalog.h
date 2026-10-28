@@ -103,6 +103,28 @@ static int folder_reachable(const std::filesystem::path& d) {
   return r;
 }
 
+// The entries of a folder (recursive: of its whole tree). A folder that cannot be read gives none; an error partway
+// ends the list (a range-for over a directory_iterator throws from ++ even when it was opened with an error_code);
+// a name the ANSI code page cannot spell is left out (path::string(), used on every entry here, throws for it).
+static std::vector<std::filesystem::directory_entry> dir_list(const std::filesystem::path& dir, bool recursive = false) {
+  namespace fs = std::filesystem;
+  std::vector<fs::directory_entry> v;
+  std::error_code ec;
+  auto add = [&](const fs::directory_entry& e) {
+    try {
+      (void)e.path().string();
+    } catch (const std::exception&) {
+      return;
+    }
+    v.push_back(e);
+  };
+  if (recursive)
+    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) add(*it);
+  else
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) add(*it);
+  return v;
+}
+
 static std::vector<ModelInfo> scan_models() {
   namespace fs = std::filesystem;
   const std::string hub = hf_hub_dir();
@@ -122,7 +144,7 @@ static std::vector<ModelInfo> scan_models() {
   // a Hugging Face cache layout (models--org--repo\snapshots\<rev>\...), plain folders of .gguf files beside it (a
   // copied model); in extra folders also loose .gguf files
   auto scan_hub = [&](const fs::path& dir, int prio) {
-    for (const auto& d : fs::directory_iterator(dir, ec)) {
+    for (const auto& d : dir_list(dir)) {
       const std::string dn = d.path().filename().string();
       if (prio > 0 && is_model(d.path()) && d.is_regular_file(ec)) {
         cands.push_back({"local/" + d.path().stem().string(), dn, d.path(), d.last_write_time(ec), prio});
@@ -130,7 +152,7 @@ static std::vector<ModelInfo> scan_models() {
       }
       if (!d.is_directory(ec)) continue;
       if (dn.rfind("models--", 0) != 0) {  // a plain folder of .gguf files (a copy, a manual download): one level deep
-        for (const auto& e : fs::directory_iterator(d.path(), ec))
+        for (const auto& e : dir_list(d.path()))
           if (is_model(e.path()) && e.is_regular_file(ec))
             cands.push_back({"local/" + dn, e.path().filename().string(), e.path(), e.last_write_time(ec), prio});
         continue;
@@ -138,7 +160,7 @@ static std::vector<ModelInfo> scan_models() {
       std::string name = dn.substr(8);
       const size_t sep = name.find("--");
       if (sep != std::string::npos) name.replace(sep, 2, "/");
-      for (const auto& e : fs::recursive_directory_iterator(d.path() / "snapshots", ec))
+      for (const auto& e : dir_list(d.path() / "snapshots", true))
         if (is_model(e.path())) cands.push_back({name, e.path().filename().string(), e.path(), e.last_write_time(ec), prio});
     }
   };
@@ -152,10 +174,10 @@ static std::vector<ModelInfo> scan_models() {
       ++prio;
     }
   }
-  for (const auto& e : fs::directory_iterator(fs::path(app_dir()) / "models", ec))
+  for (const auto& e : dir_list(fs::path(app_dir()) / "models"))
     if (is_model(e.path())) cands.push_back({"arcinferzero/" + e.path().stem().string(), e.path().filename().string(), e.path(), e.last_write_time(ec)});
   // arcinferzero packages (zero/gguf_pack.h): %USERPROFILE%\arcinferzero\zero\models\<name>\<name>.gguf
-  for (const auto& d : fs::directory_iterator(zpack::packages_dir(), ec)) {
+  for (const auto& d : dir_list(zpack::packages_dir())) {
     const fs::path g = d.path() / (d.path().filename().string() + ".gguf");
     if (d.is_directory(ec) && fs::exists(g, ec))
       cands.push_back({"arcinferzero/" + d.path().filename().string(), g.filename().string(), g, fs::last_write_time(g, ec)});
@@ -243,7 +265,7 @@ static std::vector<ModelInfo> scan_models() {
     } catch (const std::exception&) {
     }
     bool mmproj = false, drafter = false, audio = false;
-    for (const auto& s : fs::directory_iterator(c.path.parent_path(), ec)) {
+    for (const auto& s : dir_list(c.path.parent_path())) {
       const std::string f = lower(s.path().filename().string());
       if (s.path().extension() != ".gguf") continue;
       if (f.find("mmproj") != std::string::npos && !mmproj) {  // images: a projector arcinferzero reads
@@ -395,10 +417,10 @@ static std::string find_dflash(const std::string& model) {
   for (const auto& dir : dirs) {
     fs::path best;
     fs::file_time_type best_t{};
-    for (const auto& d : fs::directory_iterator(fs::path(dir), ec)) {
+    for (const auto& d : dir_list(fs::path(dir))) {
       const std::string dn = lower_ascii(d.path().filename().string());
       if (!d.is_directory(ec) || dn.rfind("models--", 0) != 0 || dn.find("dflash") == std::string::npos) continue;
-      for (const auto& s : fs::directory_iterator(d.path() / "snapshots", ec)) {
+      for (const auto& s : dir_list(d.path() / "snapshots")) {
         if (!fs::exists(s.path() / "model.safetensors", ec)) continue;
         std::ifstream f(s.path() / "config.json", std::ios::binary);
         Json cfg;
@@ -497,7 +519,7 @@ static size_t encoder_reserve(const std::string& model, const std::string& mmpro
   std::string mp = mmproj_opt;
   std::error_code ec;
   if (mp.empty())
-    for (const auto& de : fs::directory_iterator(fs::path(model).parent_path(), ec))
+    for (const auto& de : dir_list(fs::path(model).parent_path()))
       if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") {
         mp = de.path().string();
         break;
@@ -668,7 +690,7 @@ static int list_models() {
       } catch (const std::exception&) {}
       if (m.vision) {
         std::error_code ec;
-        for (const auto& de : std::filesystem::directory_iterator(std::filesystem::path(m.path).parent_path(), ec))
+        for (const auto& de : dir_list(std::filesystem::path(m.path).parent_path()))
           if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") {
             try { pt = GgufFile(de.path().string()).get_str("clip.vision.projector_type", ""); } catch (const std::exception&) {}
             break;

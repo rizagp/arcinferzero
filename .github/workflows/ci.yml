@@ -41,7 +41,10 @@ jobs:
           }
           $failed = 0
           foreach ($t in $tests.Keys) {
+            # (5.1 makes a redirected stderr line a terminating error under 'Stop': each test runs under Continue)
+            $ErrorActionPreference = 'Continue'
             $o = & ".\bin\$t.exe" 2>&1 | Out-String
+            $ErrorActionPreference = 'Stop'
             if ($LASTEXITCODE -eq 0 -and $o.Contains($tests[$t])) { Write-Host "PASS $t" }
             elseif ($LASTEXITCODE -eq -1073741515) { Write-Host "SKIP $t (a system DLL missing on this image: Media Foundation)" }
             else { Write-Host "FAIL $t (exit $LASTEXITCODE)"; Write-Host $o; $failed++ }

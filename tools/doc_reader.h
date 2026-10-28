@@ -20,6 +20,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include "inflate.h"
@@ -83,8 +84,9 @@ inline std::string xml_text(const std::string& s) {  // (entities)
   std::string o;
   for (size_t i = 0; i < s.size(); ++i) {
     if (s[i] != '&') { o += s[i]; continue; }
-    const size_t e = s.find(';', i);
-    if (e == std::string::npos || e - i > 10) { o += '&'; continue; }
+    const size_t semi = std::string_view(s).substr(i + 1, 10).find(';');  // (the next 10 bytes only: no scan per '&')
+    if (semi == std::string::npos) { o += '&'; continue; }
+    const size_t e = i + 1 + semi;
     const std::string n = s.substr(i + 1, e - i - 1);
     if (n == "amp") o += '&';
     else if (n == "lt") o += '<';
@@ -331,7 +333,9 @@ struct Lexer {
         skip();
         if (i >= s.size()) return o;
         if (s[i] == ']') { ++i; return o; }
-        P v = value(nullptr, depth + 1);
+        std::string w;
+        P v = value(&w, depth + 1);
+        if (!v && (w == "endobj" || w == "stream")) return o;  // (an unclosed "[": not on through the next objects)
         if (!v) { ++i; continue; }
         o->a.push_back(v);
       }
@@ -368,8 +372,18 @@ struct Lexer {
 
 class File {
  public:
-  explicit File(const std::string& data) : s_(data) { load(); }
+  explicit File(const std::string& data) : s_(data), budget_((512u << 20) + 3 * data.size()) { load(); }
   bool encrypted = false;
+  mutable bool over_budget = false;  // (the work budget ran out: the text was read in part)
+
+  // n bytes of work (parsed, copied, decoded, run) off the document's budget: 512 MB plus three times the file, all
+  // passes together, so a damaged or hostile file (unclosed objects, a form drawn a million times) stops in bounded
+  // time. false (and the budget gone) when it runs out
+  bool spend(size_t n) const {
+    if (n >= budget_) { budget_ = 0; over_budget = true; return false; }
+    budget_ -= n;
+    return true;
+  }
 
   P resolve(P o, int depth = 0) const {
     while (o && o->t == Obj::Ref && depth++ < 32) {
@@ -403,7 +417,7 @@ class File {
   // a stream's decoded bytes (FlateDecode; no filter); "" for others. With image_filter: an image's last filter
   // (DCTDecode, CCITTFaxDecode, JBIG2Decode, JPXDecode) is left on, its name put there
   std::string decode(const P& o, std::string* image_filter = nullptr) const {
-    if (!o || !o->has_stream) return "";
+    if (!o || !o->has_stream || !spend(o->stream.size())) return "";  // (the copy counts too: an unfiltered stream decoded again and again)
     const std::vector<std::string> fs = filters(o);
     std::string cur = o->stream;
     for (size_t k = 0; k < fs.size(); ++k) {
@@ -411,7 +425,7 @@ class File {
       if (name == "FlateDecode") {
         std::string out;
         infl::zlib(cur, out, std::min<size_t>(128u << 20, budget_));  // (a damaged stream: what decoded)
-        budget_ -= std::min(budget_, out.size());  // (all streams of one file together: 512 MB at most)
+        spend(out.size());  // (at the budget's end: what decoded, kept)
         const P pa = parms(o, k);
         const P pr = get(pa, "Predictor"), cols = get(pa, "Columns"), colors = get(pa, "Colors"), bpc = get(pa, "BitsPerComponent");
         auto num = [](const P& v, int d) { return v && v->t == Obj::Num ? (int)std::clamp(v->n, 1.0, 1e6) : d; };
@@ -540,7 +554,7 @@ class File {
  private:
   const std::string& s_;
   std::map<int, P> objs_;
-  mutable size_t budget_ = 512u << 20;
+  mutable size_t budget_;
 
   // PNG row filters undone: rows of cols samples of `colors` components of bpc bits, each row after its filter byte
   static std::string png_unpredict(const std::string& in, int cols, int colors = 1, int bpc = 8) {
@@ -579,6 +593,8 @@ class File {
   // inside object streams. The cross-reference table is not needed (and often wrong in damaged files).
   void load() {
     std::vector<P> objstms;
+    size_t eo = 0;         // (the next "endobj" at or after the object being read)
+    bool no_eo = false;    // (none further in the file)
     for (size_t i = 0; (i = s_.find(" obj", i)) != std::string::npos; i += 4) {
       // back over "n g"
       size_t b = i;
@@ -588,8 +604,10 @@ class File {
       while (a > 0 && isdigit((unsigned char)s_[a - 1])) --a;
       if (a == b - 1 || (a > 0 && !Lexer::ws(s_[a - 1]) && s_[a - 1] != '>')) continue;
       const int num = atoi(s_.c_str() + a);
-      Lexer lx{s_, i + 4};
+      const size_t start = i + 4;
+      Lexer lx{s_, start};
       P o = lx.value();
+      if (!spend(lx.i - start)) break;  // (an unclosed "(" runs to the file's end: each one charged)
       if (!o) continue;
       lx.skip();
       if (o->t == Obj::Dict && s_.compare(lx.i, 6, "stream") == 0) {
@@ -603,10 +621,14 @@ class File {
           n = (e == std::string::npos ? s_.size() : e) - st;
           while (n > 0 && (s_[st + n - 1] == '\n' || s_[st + n - 1] == '\r')) --n;
         }
+        if (!spend(n)) break;
         o->stream = s_.substr(st, n);
         o->has_stream = true;
         i = st + n;
         if (P t = o->get("Type"); t && t->t == Obj::Name && t->s == "ObjStm") objstms.push_back(o);
+      } else {  // (on past the object, not 4 bytes: up to its "endobj" at most, where a damaged one ran on)
+        if (!no_eo && eo < start) { eo = s_.find("endobj", start); no_eo = eo == std::string::npos; }
+        i = (no_eo ? lx.i : std::min(lx.i, eo)) - 4;
       }
       objs_[num] = o;
     }
@@ -621,10 +643,14 @@ class File {
         if (!a || !b) break;
         idx.push_back({(int)a->n, (size_t)b->n});
       }
+      if (!spend(hx.i)) break;
       for (const auto& [num, off] : idx) {
         if (objs_.count(num) && !objs_[num]->has_stream && objs_[num]->t != Obj::Null) continue;
-        Lexer lx{body, (size_t)fp->n + off};
-        if (P o = lx.value()) objs_[num] = o;
+        const size_t at = (size_t)fp->n + off;
+        Lexer lx{body, at};
+        P o = lx.value();
+        if (!spend(lx.i > at ? lx.i - at : 0)) break;
+        if (o) objs_[num] = o;
       }
     }
     for (const auto& [num, o] : objs_)
@@ -708,27 +734,30 @@ inline void parse_cmap(const std::string& cm, Font& f) {
     for (unsigned char b : s) c = c << 8 | b;
     return c;
   };
-  while (lx.i < cm.size()) {
+  const size_t max_map = 1u << 20;  // (codes per font: a CMap of 10,000 full ranges must not build 655 M entries)
+  while (lx.i < cm.size() && f.map.size() < max_map) {
     std::string op;
     P v = lx.value(&op);
     if (v) { ops.push_back(v); continue; }
     if (op.empty()) { if (lx.i >= cm.size()) break; continue; }
     if (op == "endcodespacerange" && ops.size() >= 1 && ops[0]->t == Obj::Str) f.bytes = std::clamp((int)ops[0]->s.size(), 1, 4);
     else if (op == "endbfchar")
-      for (size_t k = 0; k + 1 < ops.size(); k += 2) {
+      for (size_t k = 0; k + 1 < ops.size() && f.map.size() < max_map; k += 2) {
         if (ops[k]->t == Obj::Str && ops[k + 1]->t == Obj::Str) f.map[code(ops[k]->s)] = u16(ops[k + 1]->s);
       }
     else if (op == "endbfrange")
-      for (size_t k = 0; k + 2 < ops.size(); k += 3) {
+      for (size_t k = 0; k + 2 < ops.size() && f.map.size() < max_map; k += 3) {
         if (ops[k]->t != Obj::Str || ops[k + 1]->t != Obj::Str) continue;
         const uint32_t lo = code(ops[k]->s), hi = code(ops[k + 1]->s);
         if (hi < lo || hi - lo > 65535) continue;
+        // (64-bit counters: hi 0xFFFFFFFF must not wrap a 32-bit one back to 0 forever)
         if (ops[k + 2]->t == Obj::Arr) {
-          for (uint32_t c = lo; c <= hi && c - lo < ops[k + 2]->a.size(); ++c) f.map[c] = u16(ops[k + 2]->a[c - lo]->s);
+          for (uint64_t c = lo; c <= hi && c - lo < ops[k + 2]->a.size() && f.map.size() < max_map; ++c)
+            f.map[(uint32_t)c] = u16(ops[k + 2]->a[(size_t)(c - lo)]->s);
         } else if (ops[k + 2]->t == Obj::Str) {
           std::string dst = ops[k + 2]->s;
-          for (uint32_t c = lo; c <= hi; ++c) {
-            f.map[c] = u16(dst);
+          for (uint64_t c = lo; c <= hi && f.map.size() < max_map; ++c) {
+            f.map[(uint32_t)c] = u16(dst);
             if (!dst.empty()) {  // (the last byte counts up)
               size_t j = dst.size() - 1;
               while (true) {
@@ -764,7 +793,9 @@ class Reader {
     std::string content;
     P c = f_.get(pg, "Contents");
     if (c && c->t == Obj::Arr) {
-      for (auto& x : c->a) content += f_.decode(f_.resolve(x)) + "\n";
+      std::set<const Obj*> seen;  // (each stream once: "[5 0 R 5 0 R ...]" a million times is not a million copies)
+      for (auto& x : c->a)
+        if (P s = f_.resolve(x); s && seen.insert(s.get()).second) content += f_.decode(s) + "\n";
     } else content = f_.decode(c);
     run(content, res, 0, {1, 0, 0, 1, 0, 0});
     flush();
@@ -780,6 +811,8 @@ class Reader {
   size_t bold_chars_ = 0, chars_ = 0;
   bool columns_ = false;
   int steps_ = 0;  // (operators run on this document: a cap against pathological files)
+  std::map<const Obj*, std::string> forms_;  // (form XObjects' content, decoded once)
+  std::set<const Obj*> drawing_;             // (the forms being run: one drawn inside itself is skipped)
 
   static M mul(const M& a, const M& b) {
     return {a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3], a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3],
@@ -807,7 +840,7 @@ class Reader {
         P cid = f_.resolve(desc->a[0]);
         if (P dw = f_.get(cid, "DW"); dw && dw->t == Obj::Num) f.dw = dw->n;
         if (P W = f_.get(cid, "W"); W && W->t == Obj::Arr)  // ([c [w1 w2 ...]] or [c1 c2 w])
-          for (size_t k = 0; k + 1 < W->a.size();) {
+          for (size_t k = 0; k + 1 < W->a.size() && f.w.size() < (1u << 20);) {  // (as the CMap: 1 M codes at most)
             P c0 = f_.resolve(W->a[k]), n1 = f_.resolve(W->a[k + 1]);
             if (!c0 || !n1) break;
             if (n1->t == Obj::Arr) {
@@ -856,7 +889,7 @@ class Reader {
     return fonts_[fo.get()] = f;
   }
   void run(const std::string& cs, const P& res, int depth, M ctm) {
-    if (depth > 4) return;
+    if (depth > 4 || !f_.spend(cs.size())) return;  // (each run charged: a form drawn over and over ends at the budget)
     Lexer lx{cs, 0};
     std::vector<P> st;
     std::vector<M> stack;
@@ -887,7 +920,7 @@ class Reader {
       last_x_ = mul(tm, ctm)[4];
     };
     while (lx.i < cs.size()) {
-      if (++steps_ > 20000000) return;
+      if (++steps_ > 20000000) { f_.over_budget = true; return; }  // (read in part: the note says so)
       std::string op;
       P v = lx.value(&op);
       if (v) {
@@ -935,7 +968,7 @@ class Reader {
         }
       } else if (op == "Do" && !st.empty() && st[0]->t == Obj::Name) {
         P xo = f_.get(xobj, st[0]->s);
-        if (P sub = f_.get(xo, "Subtype"); sub && sub->s == "Form") {
+        if (P sub = f_.get(xo, "Subtype"); sub && sub->s == "Form" && !drawing_.count(xo.get())) {
           M m = ctm;
           if (P mx = f_.get(xo, "Matrix"); mx && mx->t == Obj::Arr && mx->a.size() == 6) {
             M fm;
@@ -943,7 +976,11 @@ class Reader {
             m = mul(fm, ctm);
           }
           P r2 = f_.get(xo, "Resources");
-          run(f_.decode(xo), r2 ? r2 : res, depth + 1, m);
+          auto it = forms_.find(xo.get());
+          if (it == forms_.end()) it = forms_.emplace(xo.get(), f_.decode(xo)).first;
+          drawing_.insert(xo.get());
+          run(it->second, r2 ? r2 : res, depth + 1, m);
+          drawing_.erase(xo.get());
         }
       }
       st.clear();
@@ -1187,6 +1224,11 @@ inline Doc read_pdf(const std::string& data) {
     }
     for (Para& p : d.paras) p.level = std::max(0, p.level);
   }
+  if (f.over_budget) {  // (the work budget ran out: what was read so far)
+    d.note = "the PDF is too large or too complex to read whole: only " + std::to_string(d.chars()) +
+             " characters were read (it may be damaged)";
+    return d;
+  }
   if (d.paras.empty()) d.note = d.pages ? "the PDF has no text layer (a scan or images: it needs OCR)" : "no pages found in the PDF";
   else if (d.pages >= 3 && d.chars() < (size_t)d.pages * 80) {  // (a few words on most pages: scanned pages)
     int with_text = 0;
@@ -1424,21 +1466,23 @@ class Index {
       };
       for (size_t k = s.first; k < end; ++k) {
         const Para& p = doc.paras[k];
-        std::string t = p.level ? std::string((size_t)p.level, '#') + " " + p.text : p.text;
+        const std::string whole = p.level ? std::string((size_t)p.level, '#') + " " + p.text : p.text;
+        std::string_view t(whole);  // (what is left of it: a view moved on, not the front erased once per piece)
         if (!c.text.empty() && c.text.size() + t.size() > chunk_chars) emit();
         while (t.size() > chunk_chars * 3 / 2) {  // (a very long paragraph: pieces at a sentence end)
           size_t cut = t.rfind(". ", chunk_chars);
           if (cut == std::string::npos || cut < chunk_chars / 2) cut = t.rfind(' ', chunk_chars);
           if (cut == std::string::npos || cut == 0) cut = chunk_chars;
           if (c.text.empty()) { c.first = k; c.page_from = p.page; }
-          c.text = t.substr(0, cut + 1);
+          c.text = std::string(t.substr(0, cut + 1));
           c.last = k + 1;
           c.page_to = p.page;
           emit();
-          t.erase(0, cut + 1);
+          t.remove_prefix(cut + 1);
         }
         if (c.text.empty()) { c.first = k; c.page_from = p.page; }
-        c.text += (c.text.empty() ? "" : "\n\n") + t;
+        else c.text += "\n\n";
+        c.text += t;
         c.last = k + 1;
         c.page_to = p.page;
       }

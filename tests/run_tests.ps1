@@ -20,8 +20,9 @@
 #   -ListModels                print the models every check would use and exit (runs nothing)
 #   -Port <n>                  server smoke-test port (default 8091)
 #
-# Models that are not given are searched in %USERPROFILE%\.cache\huggingface\hub\models--*\snapshots and in the
-# folders listed one per line in %USERPROFILE%\arcinferzero\model-dirs.txt (# starts a comment; missing folders, e.g.
+# Models that are not given are searched in the Hugging Face cache (HF_HUB_CACHE, HF_HOME\hub or
+# %USERPROFILE%\.cache\huggingface\hub: models--*\snapshots), in %USERPROFILE%\arcinferzero\zero\models (MoE packages)
+# and \models (setup's converted 35B), and in the folders listed one per line in %USERPROFILE%\arcinferzero\model-dirs.txt (# starts a comment; missing folders, e.g.
 # an unplugged drive, are ignored). A check whose model is missing prints [SKIP] and does not fail.
 #
 # Checks: model-free unit tests (HTTP parser, API compatibility, expert-cache pools, tool-call streaming, chat
@@ -97,7 +98,8 @@ function Make-Ref([string]$model, [string]$ids, [string]$ref) {
 # ---------------------------------------------------------------------------------------------------------------
 # model discovery
 $searchRoots = @()
-$hub = Join-Path $env:USERPROFILE ".cache\huggingface\hub"
+# (as setup: HF_HUB_CACHE, then HF_HOME\hub, then the default)
+$hub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } elseif ($env:HF_HOME) { Join-Path $env:HF_HOME "hub" } else { Join-Path $env:USERPROFILE ".cache\huggingface\hub" }
 if (Test-Path -LiteralPath $hub) {
   $searchRoots += @(Get-ChildItem -LiteralPath $hub -Directory -Filter "models--*" -ErrorAction SilentlyContinue |
     ForEach-Object { Join-Path $_.FullName "snapshots" } | Where-Object { Test-Path -LiteralPath $_ })
@@ -105,6 +107,8 @@ if (Test-Path -LiteralPath $hub) {
 . (Join-Path $root "scripts\app-dir.ps1")
 $pkgs = Join-Path (Get-AppDir) "zero\models"  # (MoE packages: Gemma 4 26B, Qwen3.6 35B, Flash Next)
 if (Test-Path -LiteralPath $pkgs) { $searchRoots += $pkgs }
+$conv = Join-Path (Get-AppDir) "models"  # (setup's converted 35B)
+if (Test-Path -LiteralPath $conv) { $searchRoots += $conv }
 $dirsFile = Join-Path (Get-AppDir) "model-dirs.txt"
 if (Test-Path -LiteralPath $dirsFile) {
   foreach ($line in Get-Content -LiteralPath $dirsFile) {

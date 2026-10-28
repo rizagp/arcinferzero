@@ -927,6 +927,7 @@ inline Doc read_csv(const std::string& data, char delim) {
   xlsx::Grid g;
   int row = 1, col = 1;
   std::string f;
+  size_t blank = 0;  // (f's first bytes known to be spaces)
   bool q = false;
   auto put = [&] {
     const std::string v = tidy(f);
@@ -940,7 +941,13 @@ inline Doc read_csv(const std::string& data, char delim) {
       }
     }
     f.clear();
+    blank = 0;
     ++col;
+  };
+  // (tidy(f).empty() without a copy of f per '"': its leading spaces counted once; f only grows until cleared)
+  auto only_spaces = [&] {
+    while (blank < f.size() && (f[blank] == ' ' || f[blank] == '\t' || f[blank] == '\r' || f[blank] == '\n')) ++blank;
+    return blank == f.size();
   };
   for (size_t i = 0; i < t.size() && !g.cut; ++i) {
     const char c = t[i];
@@ -948,7 +955,7 @@ inline Doc read_csv(const std::string& data, char delim) {
       if (c == '"' && i + 1 < t.size() && t[i + 1] == '"') { f += '"'; ++i; }
       else if (c == '"') q = false;
       else f += c;
-    } else if (c == '"' && tidy(f).empty()) { q = true; f.clear(); }
+    } else if (c == '"' && only_spaces()) { q = true; f.clear(); blank = 0; }
     else if (c == delim) put();
     else if (c == '\n' || c == '\r') {
       if (c == '\r' && i + 1 < t.size() && t[i + 1] == '\n') ++i;

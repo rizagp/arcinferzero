@@ -171,6 +171,7 @@ struct XCache {
   uint64_t stage_rec = 0;
   std::vector<int> stage_e[2];
   int stage_layer[2] = {-1, -1};
+  char* verify_buf_[2] = {};  // (ARC_XVERIFY: one record from the GPU, one from the file; stage_rec bytes each)
   uint64_t cache_bytes = 0, stage_bytes = 0;
   // statistics (generation / verification lookups; prompt lookups separately)
   uint64_t hits = 0, misses = 0, p_hits = 0, p_reads = 0, pf_reads = 0, rounds = 0;
@@ -196,6 +197,8 @@ struct XCache {
     for (cl_mem m : xtab) clReleaseMemObject(m);
     xtab.clear();
     for (char*& s : stage)
+      if (s) { zeMemFree(zrt::ctx, s); s = nullptr; }
+    for (char*& s : verify_buf_)
       if (s) { zeMemFree(zrt::ctx, s); s = nullptr; }
     if (xaddr) { zeMemFree(zrt::ctx, xaddr); xaddr = nullptr; }
   }
@@ -685,6 +688,11 @@ struct XCache {
     if (prompt) p_reads += miss.size(); else misses += miss.size();
     // slots for the misses: never-used ones, then from the back of the list
     std::vector<int> slot(miss.size());
+    size_t taken = 0;    // (slots taken for the misses so far)
+    bool keyed = false;  // (the misses are entered as cached)
+    size_t i0 = 0;
+    std::vector<int> pre(NE, -1);  // expert -> staging record (prefetched)
+    try {
     for (size_t i = 0; i < miss.size(); ++i) {
       int s;
       if (P.used < P.n) {
@@ -708,6 +716,7 @@ struct XCache {
         if (P.key[s] >= 0) where[P.key[s]] = -1, fresh_[P.key[s]] = 0;
       }
       slot[i] = s;
+      taken = i + 1;
     }
     for (size_t i = 0; i < miss.size(); ++i) {
       const int e = miss[i], s = slot[i];
@@ -717,10 +726,9 @@ struct XCache {
       if (prompt) push_back(P, s); else push_front(P, s);
       xa[e] = (uint64_t)P.addr[s];
     }
+    keyed = true;
     // records: the prefetched ones are in stage[h] already; the rest are read in rounds of up to S records (a round
     // after the first waits for the GPU to finish copying the previous one out of the staging half)
-    size_t i0 = 0;
-    std::vector<int> pre(NE, -1);  // expert -> staging record (prefetched)
     if (stage_layer[h] == l)
       for (size_t r = 0; r < stage_e[h].size(); ++r) pre[stage_e[h][r]] = (int)r;
     bool first = true;
@@ -775,6 +783,22 @@ struct XCache {
       }
       first = false;
     }
+    } catch (...) {
+      // (a failed read, sync or copy: the misses whose copies are not queued yet leave the cache, as drop_prefetch
+      // does, else they would stay cached with whatever their slots held; their xaddr entries keep pointing at
+      // valid slots. Slots taken but not entered yet go back to the list, free)
+      if (!keyed) {
+        for (size_t j = 0; j < taken; ++j) P.key[slot[j]] = -1, push_back(P, slot[j]);
+      } else {
+        for (size_t j = i0; j < miss.size(); ++j) {
+          if (pre[miss[j]] == -2) continue;  // (copied in the first round)
+          const size_t key = (size_t)l * NE + miss[j];
+          where[key] = -1, fresh_[key] = 0, P.key[slot[j]] = -1;
+        }
+      }
+      stage_layer[h] = -1;
+      throw;
+    }
     stage_layer[h] = -1;  // (its records are queued for copying; the half is free after the next sync)
     if (dummy_rest) {
       const uint64_t any = (uint64_t)P.addr[0];
@@ -783,8 +807,11 @@ struct XCache {
     static const bool verify = getenv("ARC_XVERIFY") != nullptr;  // (debug: every used slot against the file)
     if (verify) {
       zrt::sync();
-      static char* a = (char*)zrt::host_alloc(stage_rec);
-      static char* b = (char*)zrt::host_alloc(stage_rec);
+      // (this cache's buffers: a process-wide static one of the first model's record size was too small for a larger
+      // model loaded after it)
+      for (char*& v : verify_buf_) if (!v) v = (char*)zrt::host_alloc(stage_rec);
+      char* a = verify_buf_[0];
+      char* b = verify_buf_[1];
       int bad = 0, first_bad = -1;
       for (int e = 0; e < NE; ++e) {
         if (!seen[e]) continue;

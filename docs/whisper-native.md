@@ -11,7 +11,7 @@ command line:
   JSON, Markdown, and the inputs of the Remotion video pipeline);
 - **Meeting** ("Rapat"): recording a meeting (Meet, Zoom, Teams, ... and the microphone), the live transcript, then
   an accurate pass, a summary, decisions and tasks;
-- **`arc-transcribe`**: the same transcription from the command line, for scripted workflows (record -> transcribe
+- **`bin\transcribez.exe`** (planned as `arc-transcribe`): the same transcription from the command line, for scripted workflows (record -> transcribe
   -> Remotion input, in one line).
 
 Both web UI functions open only once the encoder, the decoder and the timestamps are done and checked (phases 0-4).
@@ -20,9 +20,9 @@ Both web UI functions open only once the encoder, the decoder and the timestamps
 
 | # | Function | Where | What it does |
 |---|---|---|---|
-| 1 | **Realtime transcript** | web UI (Transcript and Meeting tabs), `arc-transcribe --live` | text ~1 s after each sentence from the microphone and / or an app's sound (system / process loopback), recorded to `sound-recordings\` at the same time |
-| 2 | **Accurate transcript after recording** | button after a realtime session, `arc-transcribe <recording>` | the whole recording again: full 30-s windows, beam 5, word timestamps; replaces the live draft (marks and edits kept) |
-| 3 | **Audio upload** | drop / choose files, `arc-transcribe <file>` | wav, mp3, m4a / aac, flac, wma, ogg / opus, ... |
+| 1 | **Realtime transcript** | web UI (Transcript and Meeting tabs), `arc-server record` (planned: `arc-transcribe --live`) | text ~1 s after each sentence from the microphone and / or an app's sound (system / process loopback), recorded to `sound-recordings\` at the same time |
+| 2 | **Accurate transcript after recording** | button after a realtime session, `bin\transcribez.exe <recording>` | the whole recording again: full 30-s windows, beam 5, word timestamps; replaces the live draft (marks and edits kept) |
+| 3 | **Audio upload** | drop / choose files, `bin\transcribez.exe <file>` | wav, mp3, m4a / aac, flac, wma, ogg / opus, ... |
 | 4 | **Video upload** | the same | mp4, mov, mkv, webm, wmv, avi, ...: the audio track is read, the video itself is not touched; timestamps match the video's timeline |
 | 5 | **Output formats, chosen per export** | checkboxes in the web UI, `--format a,b,c` | Remotion, subtitles (SRT, VTT, YouTube), standard formats: table below |
 
@@ -178,37 +178,36 @@ transcript: greedy (speed matters there, the accurate pass fixes it afterwards).
 Both are in arcinferzero's data folder (`C:\Users\<name>\arcinferzero\`, since 2026-10-25; visible in Explorer), next
 to its caches and model packages. Both can be changed in the settings (and with `--out`).
 
-## Command line: `arc-transcribe`
+## Command line: `bin\transcribez.exe`
 
-`bin\transcribez.exe`, installed as the `arc-transcribe` command next to `arc-server` and `pi-arc`. If the
-arcinferzero server is running it sends the work there (the Whisper already loaded, no second copy in GPU memory);
-otherwise it loads Whisper itself and exits when done.
+Whisper on its own, in-process (it loads the model itself; for the server's models, Qwen3-ASR included, use the
+server's `/v1/audio/transcriptions` or the Transcripts tab). Its usage text (`bin\transcribez.exe` without
+arguments):
 
 ```
-arc-transcribe <file | folder | wildcard> ... [options]
-  --lang auto|id|en|id,en     language (default auto, per 30-s window); a list: speech that mixes them, each
-                              utterance's language checked (~3x slower; docs/whisper-native-status.md, W2)
-  --beam 1|5                  greedy or beam 5 (default 5)
+transcribez <file | folder | wildcard> ... [options]
+  --model <folder>            a faster-whisper model folder (default: large-v3 from the HF cache, else turbo)
+  --device gpu|npu            the Arc iGPU (default), or the encoder on the NPU and the decoder on the iGPU
+  --lang auto|id|en|id,en     language: detected per 30-s window (auto), fixed, or a list for speech that mixes
+                              them (each utterance's language; ~3x slower)
+  --beam 1|5                  greedy or beam search (default 5)
   --words / --no-words        word timestamps (default on)
-  --terms "<list>"            a glossary kept before every window ("GPU, kernel, deploy", ~150 tokens at most);
-                              --terms-file <file>. A bare list makes the text formal; terms inside a casual
-                              sentence keep the casual spelling
-  --prompt "<text>"           the first window's previous text (a sample sentence);  --prompt-file <file>
-  --dual-language P           auto: a window whose likeliest language is below P (0.8) is split by language
-  --previous-text             each window with the text before it as its prompt (off: it carried errors over
-                              and dropped whole windows in the tests)
-  --vad                       skip silence (meetings; off by default for exact timestamps)
+  --terms "<list>"            a glossary kept before every window (~150 tokens at most); --terms-file <file>
+  --prompt "<text>"           the first window's previous text (a sample sentence); --prompt-file <f>
+  --dual-language P           auto: a window whose likeliest language is below P (default 0.8) is split by language
   --translate                 to English instead of transcribing
+  --previous-text             each window with the text before it as its prompt (off by default)
   --from <s> --to <s>         only part of the file
-  --format <list>             json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv, tsv, captions (Remotion
-                              Caption[]), fw (the Remotion pipeline's JSON); default json,srt,txt
-  --max-chars N --max-lines N --max-cue-s S   subtitle cue shape (default 42, 2, 7); --word-cues: one word per cue
-  --out <folder | file>       default %USERPROFILE%\arcinferzero\transcripts\
-  --live [--app chrome|zoom|...] [--mic]   realtime from the microphone / an app's sound, recorded to
-                              sound-recordings\; Ctrl+C stops, then the accurate pass runs unless --no-accurate
+  --format <list>             json, fw, captions, verbose_json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv, tsv
+                              (default json,srt,txt)
+  --max-chars N --max-lines N --max-cue-s S   subtitle cues (42, 2, 7); --word-cues: one word per cue
+  --out <folder | file>       default %USERPROFILE%\arcinferzero\transcripts
   --progress                  progress and segments as JSON lines on stdout (default: a bar on stderr)
-  --local / --server <url>    force the in-process engine or a server
+  --dump-encoder <f> --dump-logits <f>   the first window's encoder output / greedy logits (checks)
 ```
+
+Not built (planned here before): skipping silence (`--vad`), live recording from the command line (the web UI's
+Live and `arc-server record` do it), handing the work to a running server.
 
 The two Remotion formats (the full list is under "Output formats" above):
 - `fw`: the JSON the Remotion channel pipeline reads today (`tools/audio/transcribe.py`'s output:
@@ -222,12 +221,12 @@ Exit code 0 when every file was transcribed, 1 otherwise (each failure named on 
 narration workflow without Python's faster-whisper:
 
 ```
-arc-transcribe work\audio\02-clean.wav --lang id --prompt-file tools\audio\prompt.txt --format fw --out work\audio\transcript.json
-arc-transcribe work\audio\03-edited.wav --lang id --format fw,captions --out work\audio\transcript-edited.json
+bin\transcribez.exe work\audio\02-clean.wav --lang id --prompt-file tools\audio\prompt.txt --format fw --out work\audio\transcript.json
+bin\transcribez.exe work\audio\03-edited.wav --lang id --format fw,captions --out work\audio\transcript-edited.json
 ```
 
 Recording from the command line too: `arc-server record start [--app chrome] [--title "..."]` / `record stop`
-(through `arc-recorder.exe`, below) writes into `sound-recordings\`; `arc-transcribe` on that folder then makes the
+(through `arc-recorder.exe`, below) writes into `sound-recordings\`; `bin\transcribez.exe` on that folder then makes the
 transcript. A Pi skill / tool can call the same command.
 
 ## Server API
@@ -346,7 +345,7 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 | 6 | Meeting tab with files and the browser microphone / screen audio: live transcript, accurate pass, summary | text ~1 s after a sentence |
 | 7 | `arc-recorder.exe`: WASAPI process loopback + microphone, Me / Others, `arc-server record` | a 3-hour test recording without a gap |
 | 8 | Summaries per segment while recording, questions over the transcript (search + cached prefix) | |
-| later | Whisper large-v3 (full 32-layer decoder, slower, a little more accurate), diarization of the "Others" track, Meet captions for names (Chrome extension), the NPU (measured first: resident encoder weights gained nothing for the LLMs) | |
+| later | Diarization of the "Others" track, Meet captions for names (Chrome extension), the NPU (measured first: resident encoder weights gained nothing for the LLMs) | |
 
 ## Decided (the user, 2026-10-25)
 

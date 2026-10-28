@@ -17,7 +17,7 @@ existed (built on the branch npu-experiment, merged into `main` on 2026-10-25).
 The setting belongs to the server, not to a model: a request for another model (Pi's `/model`, an OpenAI client's
 `model` field) loads it with the same setting, and so does `pi-arc` / `arc-server start` on another model while the
 server runs. Models where the NPU gains nothing (below) say so in the log and run without it; switching back to the
-27B uses it again. Only a restart (or a stop) of the server turns it off.
+27B uses it again. `arc-server restart` keeps it; only a stop turns it off.
 
 ## Result
 

@@ -61,7 +61,7 @@ WORKING IN PI
   going back to an old session   (pi-arc -c, pi-arc -r, /resume) right after closing it: only the new message.
                                  After other sessions (or the web UI): loaded from disk in seconds (session
                                  cache, on by default; --session-cache 0: the whole conversation again). After a server restart:
-                                 the whole conversation again (the one held when the server stops is not saved).
+                                 loaded from disk too (arc-server saves the held one before it stops).
 
 MODEL
   --pick, -Pick                  numbered list of every supported GGUF model in the Hugging Face cache
@@ -129,7 +129,7 @@ LAUNCHER OPTIONS
                                  tokens, 35B: 2 x 65,536, g26: 2 x 32,768)
   --npu on|off, -Npu             the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %; other models stay off). Kept when you switch
-                                 models (/model, pi-arc on another model) until the server is restarted
+                                 models (/model, pi-arc on another model) and on a restart; off after arc-server stop
   --help, -h, -?, /?, help       the short help;  --help-all: this text
 
   A launcher option that differs from what the running server uses restarts the server (loading takes
@@ -175,7 +175,7 @@ SERVER COMMANDS (arc-server)
     -BudgetGb <GB>  -AttnF32  -NoPrefixCache  -PrefixCacheGb <N>  -NoSwap  -ListenHost <addr>  -SessionDir <dir>
     -Quiet
   arc-launcher.cmd (project folder)  a window: every model and variant with its memory and automatic context, a
-                                 field for every option, Start / Stop, and the running server's GPU memory,
+                                 field for the main options, Start / Stop, and the running server's GPU memory,
                                  requests and speeds (the server keeps running when it is closed)
 
 SERVER DIRECTLY (bin\serverz.exe; arc-server passes these for you; details:

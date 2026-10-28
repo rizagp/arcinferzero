@@ -593,9 +593,9 @@ function fillThinking() {
   $("thinkhelp").textContent = eff.length ? "How long the model reasons before it answers (more: better answers, more time)"
     : "The model reasons before it answers: better answers, more time";
 }
-function thinkingNow() {
+function thinkingNow(spoken = voice.on) {
   const v = $("thinkmode").value;
-  const on = caps.thinking && v && v !== "off" && !voice.on;  // (a spoken answer starts at once)
+  const on = caps.thinking && v && v !== "off" && !spoken;  // (a spoken answer starts at once)
   return { on, effort: on && caps.efforts.length ? v : on ? "" : "none" };
 }
 
@@ -1009,8 +1009,8 @@ function compactable() {
   const lead = history.length && history[0].role === "user" && textOf(history[0].content).startsWith(SUMMARY_HEAD) ? 2 : 0;
   return history.length - 2 - lead;
 }
-function sysMessages(id = convId) {
-  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && toolsOn(id) ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
+function sysMessages(id = convId, spoken = voice.on) {  // (spoken: the job's own Talk state, not the one on screen now)
+  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", spoken ? VOICE_SYSTEM : "", spoken && toolsOn(id) ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -1752,10 +1752,10 @@ async function streamTurn(el, st, onOverflow, job) {
   const thinkBox = el.querySelector(".think"), thinkText = thinkBox.querySelector("div"), content = el.querySelector(".content");
   const bar = el.querySelector(".progress > div"), stats = el.querySelector(".stats");
   stats.textContent = job.model !== loadedId ? "loading the model…" : "processing prompt…";
-  const think = thinkingNow();
+  const think = thinkingNow(job.voice);
   let res;
   for (let attempt = 0; ; attempt++) {
-    const body = { model: job.model, messages: wire([...sysMessages(job.id), ...trimTools(job.history)]), stream: true, stream_options: { include_usage: true },
+    const body = { model: job.model, messages: wire([...sysMessages(job.id, job.voice), ...trimTools(job.history)]), stream: true, stream_options: { include_usage: true },
       chat_template_kwargs: { enable_thinking: think.on } };
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
@@ -1765,6 +1765,7 @@ async function streamTurn(el, st, onOverflow, job) {
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
     if (res.ok) break;
     const t = await res.text();
+    clearTimeout(idle);  // (a compaction takes its own time; a thrown error leaves no watchdog to stop a later answer)
     if (attempt === 0 && overflow(t) && onOverflow && await onOverflow(stats)) { stats.textContent = "processing prompt…"; continue; }
     if (overflow(t)) throw new Error("the conversation does not fit this model's context even after compacting" +
       (caps.slots > 1 ? " (each of the " + caps.slots + " conversations at once has a part of it: fewer in Settings give more)" : "") +
@@ -1821,7 +1822,8 @@ async function streamTurn(el, st, onOverflow, job) {
       if (!delta) continue;
       if ((delta.reasoning_content || delta.content || delta.tool_calls) && first) { first = false; el.querySelector(".progress")?.remove(); }
       if (delta.reasoning_content) st.reasoning += delta.reasoning_content;
-      if (delta.content) { st.answer += delta.content; if (voice.on) voice.feed(delta.content); }
+      // (spoken: an answer asked by voice, while its chat is on screen; not another chat's in the background)
+      if (delta.content) { st.answer += delta.content; if (job.voice && voice.on && onScreen(job)) voice.feed(delta.content); }
       for (const tc of delta.tool_calls || []) {  // streamed in pieces: the arguments of a call are concatenated by index
         const k = tc.index ?? st.toolCalls.length;
         const c = st.toolCalls[k] ??= { id: "", type: "function", function: { name: "", arguments: "" } };
@@ -1930,7 +1932,7 @@ async function send() {
   if (shown) userMsg.voice = { id: shown.id, url: shown.url, name: shown.name };  // (kept with the chat, not sent)
   userEl._h = userMsg;
   const job = { id: ensureConv(), history, controller: new AbortController(), nodes: [userEl], user: userMsg, made: [],
-                used: used || estTokens(history), slot: false, waiting: false, model: modelId };
+                used: used || estTokens(history), slot: false, waiting: false, model: modelId, voice: voice.on };  // (voice: asked in Talk)
   if (!convs.some((c) => c.id === job.id))  // (in the list at once, also while it waits for a slot)
     convs.unshift({ id: job.id, title: titleOf([userMsg]), at, model: modelId, snippet: "" });
   jobs.set(job.id, job);
@@ -2173,12 +2175,14 @@ async function deleteConv(c) {
 $("search").addEventListener("input", renderConvs);
 $("stopall").addEventListener("click", () => { for (const j of jobs.values()) j.controller.abort(); });
 let openSeq = 0;  // (the latest chat opened or started: an older openConv's fetch that ends later is dropped)
+let compacting = null;  // (the controller of a Compact by hand: another chat opened stops it)
 function resetChat() {
   epoch++;
   openSeq++;
   controller = null;  // (an answer still running goes on as its chat's job: opening the chat again shows it)
-  if (voice.on) voice.stop();
-  if (rec.on) rec.stop(false);
+  if (voice.on || voice.starting) voice.stop();
+  if (rec.on || rec.starting) rec.stop(false);
+  compacting?.abort();  // (a Compact by hand of the chat that was on screen)
   history = []; used = 0; pending = []; renderAtts();
   bg.ctl.abort(); bg.ctl = new AbortController(); bg.ready = [];
 }
@@ -2284,7 +2288,8 @@ async function openConv(id) {
     used = job.used;
   } else used = history.length ? estTokens(history) : 0;  // (an estimate until the next answer: compaction before it if needed)
   if (!history.length && !job) showEmpty("New conversation");
-  if (c.model && models.some((x) => x.id === c.model)) modelId = c.model;
+  if (job) modelId = job.model;  // (an answer running: the model it answers with)
+  else if (c.model && models.some((x) => x.id === c.model)) modelId = c.model;
   showModel();
   renderConvs();
   app.classList.add("chatting");
@@ -2451,13 +2456,22 @@ async function transcribe(url, signal) {
 }
 function note(t, ms) { voice.status(t); setTimeout(() => { if (!voice.on && $("vstat").textContent === t) voice.status(""); }, ms || 5000); }
 const rec = {
-  on: false, stream: null, ctx: null, node: null, src: null, frames: [], rate: 48000, t0: 0, timer: 0,
+  on: false, starting: false, gen: 0, stream: null, ctx: null, node: null, src: null, frames: [], rate: 48000, t0: 0, timer: 0,
   async start() {
+    if (this.on || this.starting) return;  // (a second click while the first one asks for the microphone)
     if (!canHear()) { note(NEED_STT); return; }
-    if (voice.on) voice.stop();
+    if (voice.on || voice.starting) voice.stop();
+    const gen = this.gen;
+    let stream;
+    this.starting = true;
+    $("rec").disabled = true;
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (e) { note("no microphone: " + (e.message || e)); return; }
+    finally { this.starting = false; $("rec").disabled = false; }
+    // (cancelled meanwhile (another chat, Talk) or already recording: this capture let go, not left on)
+    if (this.on || gen !== this.gen) { stream.getTracks().forEach((t) => t.stop()); return; }
+    this.stream = stream;
     try {  // (the audio graph failed: the microphone let go, not left on until the tab closes)
       this.ctx = new AudioContext();
       this.rate = this.ctx.sampleRate;
@@ -2478,6 +2492,7 @@ const rec = {
   },
   // stops; keep: the recorded samples (else discarded)
   stop(keep) {
+    this.gen++;  // (a start still asking for the microphone: cancelled)
     this.node?.disconnect(); this.src?.disconnect(); this.ctx?.close();
     this.stream?.getTracks().forEach((t) => t.stop());
     clearInterval(this.timer);
@@ -2543,16 +2558,25 @@ const VOICE_END_MS = 1000, VOICE_MIN_MS = 300, VOICE_MAX_MS = 30000, VOICE_PRE_M
 const hasTts = () => !!(window.speechSynthesis && window.SpeechSynthesisUtterance);  // (the browser can speak)
 let hasAudio = false;
 const voice = {
-  on: false, stream: null, ctx: null, node: null, src: null,
+  on: false, starting: false, stream: null, ctx: null, node: null, src: null,
   floor: 0.003, speaking: false, heard: 0, quiet: 0, chunks: [], pre: [], rate: 48000,
   pend: "", talking: false, spoke: false, last: null, merge: null, gen: 0,
   status(t) { $("vstat").textContent = t; $("vstat").hidden = !t; },
   async start() {
+    if (this.on || this.starting) return;  // (a second click while the first one asks for the microphone)
     if (!canHear()) { note(NEED_STT); return; }
-    if (rec.on) rec.stop(false);
+    if (rec.on || rec.starting) rec.stop(false);
+    const gen = this.gen;
+    let stream;
+    this.starting = true;
+    $("talk").disabled = true;
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch (e) { this.status("no microphone: " + (e.message || e)); return; }
+    finally { this.starting = false; $("talk").disabled = false; }
+    // (cancelled meanwhile (another chat, a voice message, Live) or already talking: this capture let go, not left on)
+    if (this.on || gen !== this.gen) { stream.getTracks().forEach((t) => t.stop()); return; }
+    this.stream = stream;
     try {  // (the audio graph failed: the microphone let go, not left on until the tab closes)
       this.ctx = new AudioContext();
       this.rate = this.ctx.sampleRate;
@@ -2938,16 +2962,17 @@ $("stop").addEventListener("click", () => controller && controller.abort());
 input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.defaultPrevented) { e.preventDefault(); send(); } });
 $("compact").addEventListener("click", async () => {
   if (controller || compactable() < 2) return;
-  controller = new AbortController();
+  const ctl = controller = compacting = new AbortController();
   showUse();
   const note = document.createElement("div");
   note.className = "note";
   note.textContent = "compacting the earlier conversation…";
   thread.appendChild(note);
   scroll(true);
-  try { await compact(2, controller.signal); note.remove(); }
+  try { await compact(2, ctl.signal); note.remove(); }
   catch (e) { note.textContent = e.name === "AbortError" ? "compacting stopped" : "compacting failed: " + (e.message || e); }
-  controller = null;
+  if (compacting === ctl) compacting = null;
+  if (controller === ctl) controller = null;  // (another chat opened meanwhile: its running answer's Stop stays)
   showUse();
 });
 
@@ -3238,7 +3263,7 @@ async function trOpen(id) {
   let m;
   try { m = await (await fetch("/v1/transcripts/" + id)).json(); } catch (e) { m = null; }
   if (tr.want !== id) return;  // (another one chosen meanwhile)
-  if (!m || m.error) { trNote("could not open the transcript"); return; }
+  if (!m || m.error) { tr.want = tr.sel; trNote("could not open the transcript"); return; }  // (trPoll opens the shown one again)
   // (the one shown, opened again while its text is edited or saved: its record only, the text kept; a re-render took
   //  the edit away, and the copy fetched before the save landed came back over it)
   if (tr.sel === id && tr.data && (trEditing() || tr.saveFn || tr.inflight)) {
@@ -3538,16 +3563,18 @@ $("trdel").addEventListener("click", async () => {
 // the server writes the recording, cuts it into utterances and returns their text (~2 s behind) and the text of the
 // one still being said. Stop: the whole recording transcribed again accurately, then kept as MP3.
 const live = {
-  on: false, starting: false, id: "", finishing: "", ctx: null, node: null, streams: [], chunks: [], sending: false, since: 0,
+  on: false, starting: false, stopping: false, id: "", finishing: "", ctx: null, node: null, streams: [], chunks: [], sending: false, since: 0,
   draft: [], partial: [], marks: [], heard: 0, n: 1, t0: 0, timer: 0, clock: 0, sent: 0, fails: 0, retryAt: 0, behind: false,
   async start() {
-    if (this.on || this.starting) return;  // (a second click while the first one asks for the microphone)
+    // (a second click while the first one asks for the microphone; or the last one still sending its rest: its id,
+    //  sound and track count would mix with the new one's)
+    if (this.on || this.starting || this.stopping) return;
     this.starting = true;
     liveButtons();
     try { await this.begin(); } finally { this.starting = false; liveButtons(); }
   },
   async begin() {
-    if (voice.on) voice.stop();  // (Talk's spoken answers would go into the meeting and its recording)
+    if (voice.on || voice.starting) voice.stop();  // (Talk's spoken answers would go into the meeting and its recording)
     const src = $("trsrc").value, want = src === "both" ? ["mic", "tab"] : [src], streams = [];
     try {
       for (const w of want) {
@@ -3699,6 +3726,10 @@ const live = {
   async stop() {
     if (!this.on) return;
     this.on = false;
+    this.stopping = true;  // (no new recording until this one's rest is sent: up to half a minute)
+    try { await this.finish(); } finally { this.stopping = false; liveButtons(); }
+  },
+  async finish() {
     this.finishing = this.id;  // (its Stop and Mark go at once, its state says "Finishing the recording…")
     liveButtons();
     if (tr.meta && tr.meta.id === this.id) trHeader(tr.meta);
@@ -3740,9 +3771,9 @@ const live = {
 };
 function liveButtons() {
   $("trlive").classList.toggle("on", live.on);
-  $("trlive").disabled = live.starting;
-  $("trlivetxt").textContent = live.on ? "Stop" : live.starting ? "Starting…" : tr.kind === "meeting" ? "Start a meeting" : "Live";
-  $("trsrc").disabled = live.on || live.starting;
+  $("trlive").disabled = live.starting || live.stopping;
+  $("trlivetxt").textContent = live.on ? "Stop" : live.starting ? "Starting…" : live.stopping ? "Finishing…" : tr.kind === "meeting" ? "Start a meeting" : "Live";
+  $("trsrc").disabled = live.on || live.starting || live.stopping;
 }
 $("trlive").addEventListener("click", () => live.on ? live.stop() : live.start());
 // (Stop on a recording of another page, or of one that closed: the server ends it, its accurate pass follows)

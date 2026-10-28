@@ -7,11 +7,20 @@
 namespace gemma4 {
 
 constexpr const char* kQ = "<|\"|>";  // Gemma 4 string delimiter token
+// objects and arrays nested deeper than this are read as one raw string (each level is a recursion: a call of
+// thousands of '[' would overflow the stack of the connection's thread)
+constexpr int kMaxNest = 256;
+struct Nest {  // one level deeper while it lives
+  int& d;
+  explicit Nest(int& x) : d(++x) {}
+  ~Nest() { --d; }
+};
 
 // Parser for the argument syntax: {key:value,...}, [v,...], <|"|>text<|"|>, numbers, true / false / null.
 struct ArgParser {
   const std::string& s;
   size_t i = 0;
+  int nest_ = 0;  // (objects and arrays open now)
   void ws() { while (i < s.size() && (s[i] == ' ' || s[i] == '\n' || s[i] == '\t' || s[i] == '\r')) ++i; }
   bool at(const char* t) const { return s.compare(i, strlen(t), t) == 0; }
   std::string str() {  // after the opening <|"|>
@@ -37,8 +46,10 @@ struct ArgParser {
     ws();
     if (i >= s.size()) return Json();
     if (at(kQ)) { i += strlen(kQ); return Json(str()); }
-    if (s[i] == '{') return object();
-    if (s[i] == '[') {
+    const bool deep = nest_ >= kMaxNest;  // (then the raw text below)
+    if (s[i] == '{' && !deep) return object();
+    if (s[i] == '[' && !deep) {
+      Nest nest(nest_);
       ++i;
       Json a = Json::array();
       for (;;) {
@@ -71,10 +82,11 @@ struct ArgParser {
     const std::string raw = chat::trim(s.substr(st, i - st));
     Json j;
     if (raw == "None") return Json();
-    if (Json::try_parse(raw, j)) return j;
+    if (!deep && Json::try_parse(raw, j)) return j;
     return Json(raw);
   }
   Json object() {  // at '{'
+    Nest nest(nest_);
     ++i;
     Json o = Json::object();
     for (;;) {
@@ -158,6 +170,7 @@ struct ArgStreamer {
   bool final;
   size_t i = 0;
   std::string out;
+  int nest_ = 0;  // (objects and arrays open now; past kMaxNest the raw text, as ArgParser)
   void ws() { while (i < s.size() && (s[i] == ' ' || s[i] == '\n' || s[i] == '\t' || s[i] == '\r')) ++i; }
   bool at(const char* t) const { return s.compare(i, strlen(t), t) == 0; }
   bool undecided() const {  // the text ends where a <|"|> may begin
@@ -209,8 +222,10 @@ struct ArgStreamer {
       i = e == std::string::npos ? s.size() : e + strlen(kQ);
       return true;
     }
-    if (s[i] == '{') return object();
-    if (s[i] == '[') {
+    const bool deep = nest_ >= kMaxNest;
+    if (s[i] == '{' && !deep) return object();
+    if (s[i] == '[' && !deep) {
+      Nest nest(nest_);
       ++i;
       out += '[';
       for (bool first = true;; first = false) {
@@ -251,11 +266,12 @@ struct ArgStreamer {
     const std::string raw = chat::trim(s.substr(st, i - st));
     Json j;
     if (raw == "None") j = Json();
-    else if (!Json::try_parse(raw, j)) j = Json(raw);
+    else if (deep || !Json::try_parse(raw, j)) j = Json(raw);
     out += j.dump();
     return true;
   }
   bool object() {  // at '{'
+    Nest nest(nest_);
     ++i;
     out += '{';
     for (bool first = true;; first = false) {

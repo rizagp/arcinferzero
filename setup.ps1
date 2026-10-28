@@ -194,9 +194,9 @@ $catalog = @(
   [pscustomobject]@{ key = "g12"; name = "Gemma 4 12B (reads images; drafter)"; repo = "google/gemma-4-12B-it-qat-q4_0-gguf"; gb = 7.4
     files = @("gemma-4-12b-it-qat-q4_0.gguf", "mmproj-gemma-4-12b-it-qat-q4_0.gguf", "mtp-gemma-4-12B-it.gguf")
     drafter = @{ repo = "unsloth/gemma-4-12B-it-qat-GGUF"; file = "mtp-gemma-4-12B-it.gguf" } },
-  # (its image projector, gemma4v, is not supported yet: not downloaded)
-  [pscustomobject]@{ key = "e4b"; name = "Gemma 4 E4B (drafter)"; repo = "google/gemma-4-E4B-it-qat-q4_0-gguf"; gb = 5.2
-    files = @("gemma-4-E4B_q4_0-it.gguf", "mtp-gemma-4-E4B-it.gguf")
+  # (its projector: images and audio, also for transcripts with -Whisper)
+  [pscustomobject]@{ key = "e4b"; name = "Gemma 4 E4B (images, audio; drafter)"; repo = "google/gemma-4-E4B-it-qat-q4_0-gguf"; gb = 6.2
+    files = @("gemma-4-E4B_q4_0-it.gguf", "gemma-4-E4B-it-mmproj.gguf", "mtp-gemma-4-E4B-it.gguf")
     drafter = @{ repo = "unsloth/gemma-4-E4B-it-qat-GGUF"; file = "mtp-gemma-4-E4B-it.gguf" } }
 )
 function Present($m) {

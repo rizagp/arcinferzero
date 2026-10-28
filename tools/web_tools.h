@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
@@ -248,8 +249,9 @@ inline std::string decode_entities(const std::string& s) {
   o.reserve(s.size());
   for (size_t i = 0; i < s.size(); ++i) {
     if (s[i] != '&') { o += s[i]; continue; }
-    const size_t e = s.find(';', i + 1);
-    if (e == std::string::npos || e - i > 10) { o += '&'; continue; }
+    const size_t semi = std::string_view(s).substr(i + 1, 10).find(';');
+    if (semi == std::string::npos) { o += '&'; continue; }  // (the next 10 bytes only: no scan to the end per '&')
+    const size_t e = i + 1 + semi;
     const std::string n = s.substr(i + 1, e - i - 1);
     uint32_t c = 0;
     if (n.size() > 1 && n[0] == '#') {

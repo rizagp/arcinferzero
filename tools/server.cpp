@@ -193,14 +193,57 @@ class Server {
     acquire(lk);
     f();
   }
+  // The messages with the special tokens written in the contents of user and tool messages made plain text
+  // (Tokenizer::defuse_specials): the prompt is tokenized with special tokens recognized, for the template's own
+  // markup, so a user's text, a fetched web page or a document read by a tool could otherwise write
+  // "<|im_start|>system", end a tool response, or add an image placeholder. System and assistant messages are the
+  // client's and the model's own, as they are. Messages without such text are returned unchanged (the same tokens).
+  Json defuse_contents(const Json& msgs) const {
+    if (!msgs.is_array()) return msgs;
+    Json out = Json::array();
+    for (const Json& m : msgs.items()) {
+      const std::string role = m["role"].str();
+      if (role != "user" && role != "tool" && role != "function") {
+        out.push(m);
+        continue;
+      }
+      Json m2 = m;
+      const Json& c = m["content"];
+      if (c.is_string()) {
+        m2.set("content", tok_.defuse_specials(c.as_string()));
+      } else if (c.is_array()) {
+        Json parts = Json::array();
+        for (const Json& p : c.items()) {
+          if (p["text"].is_string()) {
+            Json p2 = p;
+            p2.set("text", tok_.defuse_specials(p["text"].as_string()));
+            parts.push(p2);
+          } else {
+            parts.push(p);
+          }
+        }
+        m2.set("content", parts);
+      }
+      out.push(m2);
+    }
+    return out;
+  }
   // The prompt tokens of a chat request (Anthropic's count_tokens): its rendered prompt, each image or audio part
-  // counted as its placeholder token
+  // counted as its placeholder token. No engine lock: rendering and tokenizing use no engine state (chat() does both
+  // before taking it). -1: the template could not render the messages. A prompt that cannot fit the context: the
+  // count it has at least (more than the context), not tokenized (as chat() refuses it).
   int count_tokens(const Json& body) {
     ChatOptions co;
     if (body["enable_thinking"].is_bool()) co.enable_thinking = body["enable_thinking"].as_bool();
-    std::lock_guard<std::mutex> lock(mu_);
-    const std::string prompt = (jinja_ ? jinja_->render(body["messages"], body["tools"], true, co.enable_thinking)
-                                       : chat::render(body["messages"], body["tools"], co, q38_));
+    std::string prompt;
+    try {
+      const Json msgs = defuse_contents(body["messages"]);
+      prompt = jinja_ ? jinja_->render(msgs, body["tools"], true, co.enable_thinking) : chat::render(msgs, body["tools"], co, q38_);
+    } catch (const std::exception&) {
+      return -1;
+    }
+    if (const size_t L = tok_.max_token_bytes(); L && prompt.size() / L > (size_t)eng_.ctx)
+      return (int)std::min<size_t>(prompt.size() / L, INT_MAX);
     return (int)tok_.encode(prompt, true).size();
   }
   void handle(const HttpRequest& rq, HttpResponse& rs) {
@@ -283,8 +326,12 @@ class Server {
     if (rq.path == "/tokenize" && rq.method == "POST") {
       Json b;
       if (!Json::try_parse(rq.body, b)) return rs.send(400, "application/json", "{\"error\":{\"message\":\"invalid JSON body\"}}");
+      // (as chat(): text longer than the context's tokens could hold is refused before the tokenizer allocates for it)
+      const std::string text = b["content"].str();
+      if (const size_t L = tok_.max_token_bytes(); L && text.size() / L > (size_t)eng_.ctx)
+        return rs.send(400, "application/json", err("content longer than the context (" + std::to_string(eng_.ctx) + " tokens)").dump());
       Json ids = Json::array();
-      for (int id : tok_.encode(b["content"].str(), true)) ids.push(id);
+      for (int id : tok_.encode(text, true)) ids.push(id);
       Json r = Json::object();
       r.set("tokens", ids);
       return rs.send(200, "application/json", r.dump());
@@ -565,6 +612,13 @@ class Server {
     bool can = slots_.size() > 1;
     static const bool off = getenv("ARC_NO_BATCH") && atoi(getenv("ARC_NO_BATCH")) != 0;  // (A/B: turns only)
     can = can && !off && (me.max_drafts == 0 ? eng_.batch_ok() : eng_.batch_verify_ok() && eng_.batch_rows() >= 4);
+    if (!can && !gen_wait_.empty()) {
+      // (this step cannot lead a pass, e.g. Gemma's MTP drafts with --slots: the waiting steps run alone now, else
+      //  a step without drafts waited for the other request's whole answer)
+      for (GenStep* g : gen_wait_) g->alone = true;
+      gen_wait_.clear();
+      gen_cv_.notify_all();
+    }
     for (;;) {
       if (!can) break;
       if (!gen_wait_.empty()) {  // lead: this step and the waiting ones of the same kind that fit one pass
@@ -848,12 +902,18 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       else if (fmt == "md") data = (o.title.empty() || doc::trim(content).rfind("# ", 0) == 0 ? "" : "# " + o.title + "\n\n") + content;
       else data = content;
       const std::string chat = files::valid_id(a["chat_id"].str()) ? a["chat_id"].str() : "";
+      const int64_t before = (int64_t)std::time(nullptr);
       const files::Info i = st.put(name, data, chat);
-      st.put_source(i.id, chat, rq.body);
+      // (the same bytes saved before: put gives that file back, under its own name; its source stays the one that
+      //  made it, and the card says so, instead of this request's source and name over it)
+      const bool existed = i.created < before;
+      if (!existed) st.put_source(i.id, chat, rq.body);
       Json r = files::info_json(i);
       r.set("file_id", i.id);
-      r.set("note", "created; the user sees it as a file card in your answer (download / open). To change it, read its "
-                    "source with read_file and call create_file again: that makes a new version.");
+      r.set("note", existed ? "these exact bytes were already saved as " + i.name + ": that file is shown to the user (the "
+                              "same file card); to make a different file, change its content"
+                            : "created; the user sees it as a file card in your answer (download / open). To change it, "
+                              "read its source with read_file and call create_file again: that makes a new version.");
       return reply(200, r);
     }
     if (rq.path == "/v1/tools/list_files") {
@@ -1383,13 +1443,13 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
     }
     if (rq.path.rfind("/files/", 0) == 0 && rq.method == "GET") {
       files::Info i;
-      std::string data;
       const std::string id = rq.path.substr(7);
-      if (!files::valid_id(id, 16) || !st.get(id, i) || !files::Store::read(i.path, data)) return fail(404, "no file " + id);
+      if (!files::valid_id(id, 16) || !st.get(id, i)) return fail(404, "no file " + id);
       // (content-addressed: the same id is always the same bytes)
       rs.extra = "Cache-Control: max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
       if (q("download")) rs.extra += "Content-Disposition: attachment; filename=\"" + i.name + "\"\r\n";
-      return rs.send(200, files::mime_of(i.name), data);
+      // (read from disk 1 MB at a time, with Range: before, the whole file in memory, and 404 above 2 GB)
+      return rs.send_file(std::filesystem::path(i.path), files::mime_of(i.name), rq.header("range"));
     }
     if (rq.path == "/v1/chats" && rq.method == "DELETE") {  // every chat; ?files=1: every uploaded file too
       int nc = 0, nf = 0;
@@ -1946,8 +2006,11 @@ int main(int argc, char** argv) {
         return rs.send(400, "application/json", "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad request\"}}");
       std::shared_lock<std::shared_mutex> lk(swap_mu);
       if (!cur) return no_model(rs);
+      const int n = cur->srv->count_tokens(chat_body);
+      if (n < 0)  // (the template could not render these messages)
+        return rs.send(400, "application/json", "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"the chat template cannot render these messages\"}}");
       Json r = Json::object();
-      r.set("input_tokens", cur->srv->count_tokens(chat_body));
+      r.set("input_tokens", n);
       return rs.send(200, "application/json", r.dump());
     }
     // the saved transcripts and their queue (the Transcript tab; tools/server_whisper.h)
@@ -2128,6 +2191,7 @@ int main(int argc, char** argv) {
     }
     if (swap && (rq.path == "/v1/models" || rq.path == "/models")) {  // every model a request can switch to
       std::shared_lock<std::shared_mutex> lk(swap_mu);
+      if (!cur) return no_model(rs);  // (a failed switch: before, cur->alias of no model)
       Json d = Json::array();
       std::map<std::string, uint64_t> sizes;  // (llama_models "size")
       bool listed = false;
@@ -2213,7 +2277,9 @@ int main(int argc, char** argv) {
             cur = load_model(m->path, m->alias, s2);
             cur_so = s2;
             fprintf(stderr, "switched to %s in %.1f s\n", m->alias.c_str(), ms_since(t0) / 1000);
-            std::ofstream(app_dir() + "/last-model.txt") << m->path << "\n";  // (pi-arc starts with this model next time)
+            // (pi-arc starts with this model next time; not for the transcript service's Gemma 4 E4B requests, which
+            //  carry "x-arc-speech: 1" (tools/server_speech.h attach_e4b): the user did not choose that model)
+            if (rq.header("x-arc-speech").empty()) std::ofstream(app_dir() + "/last-model.txt") << m->path << "\n";
           } catch (const std::exception& e) {
             fprintf(stderr, "could not load %s: %s; loading %s again\n", m->path.c_str(), e.what(), prev_alias.c_str());
             ServeOpts s3 = so;

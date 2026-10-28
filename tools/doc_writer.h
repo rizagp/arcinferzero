@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace doc {
@@ -160,8 +161,9 @@ inline std::vector<Run> inlines(const std::string& src) {
       if (open || close) { flush(); cur.i = !cur.i; continue; }
     }
     if (c == '<') {
-      const size_t e = s.find('>', k);
-      if (e != std::string::npos && e - k < 300) {
+      const size_t gt = std::string_view(s).substr(k, 300).find('>');  // (the next 300 bytes only: no scan per '<')
+      const size_t e = gt == std::string::npos ? gt : k + gt;
+      if (e != std::string::npos) {
         std::string tag = s.substr(k + 1, e - k - 1);
         const bool closing = !tag.empty() && tag[0] == '/';
         if (closing) tag = tag.substr(1);
@@ -990,14 +992,27 @@ struct Pdf {
           continue;
         }
         if (ww > room() && !lines.back().empty()) { lines.emplace_back(); lw.push_back(0); x = 0; }
-        while (ww > width && word.size() > 1) {  // (a word wider than the line: cut by characters)
-          size_t n = word.size();
-          while (n > 1 && text_w(word.substr(0, n), font, sz) > width - x) --n;
-          lines.back().push_back(Seg{word.substr(0, n), font, sz, text_w(word.substr(0, n), font, sz), r.st, false});
-          lines.emplace_back();
-          lw.push_back(0);
-          x = 0;
-          word = word.substr(n);
+        if (ww > width && word.size() > 1) {  // (a word wider than the line: cut by characters, each one's width summed once)
+          size_t at = 0;
+          double left = 0;  // (the rest's width, in 1/1000 em)
+          for (unsigned char ch : word) left += char_w(ch, font);
+          while (left * sz / 1000.0 > width && word.size() - at > 1) {
+            size_t n = 0;
+            double u = 0;
+            for (; at + n < word.size(); ++n) {
+              const double cu = char_w((unsigned char)word[at + n], font);
+              if ((u + cu) * sz / 1000.0 > width - x) break;
+              u += cu;
+            }
+            if (n == 0) u = char_w((unsigned char)word[at], font), n = 1;  // (one character at least)
+            lines.back().push_back(Seg{word.substr(at, n), font, sz, u * sz / 1000.0, r.st, false});
+            lines.emplace_back();
+            lw.push_back(0);
+            x = 0;
+            at += n;
+            left -= u;
+          }
+          word.erase(0, at);
           ww = text_w(word, font, sz);
         }
         lines.back().push_back(Seg{word, font, sz, ww, r.st, sp});

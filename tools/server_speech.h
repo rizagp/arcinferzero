@@ -72,8 +72,13 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt, con
     if (f.empty()) {
       fprintf(stderr, "asr: no Qwen3-ASR GGUF in the Hugging Face cache: Whisper transcribes (docs/qwen3-asr.md)\n");
     } else {
-      wh->load_asr(f, so.eo.kernel_dir);
-      fprintf(stderr, "asr: %s (Whisper and Qwen3-ASR %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->gpu_bytes() / 1073741824.0);
+      try {
+        wh->load_asr(f, so.eo.kernel_dir);
+        fprintf(stderr, "asr: %s (Whisper and Qwen3-ASR %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->gpu_bytes() / 1073741824.0);
+      } catch (const std::exception& e) {
+        if (!quiet) throw;  // (asked for: the server says why and stops)
+        fprintf(stderr, "asr: %s could not be loaded (%s): Whisper transcribes (docs/qwen3-asr.md)\n", f.c_str(), e.what());
+      }
     }
   }
   so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
@@ -102,6 +107,9 @@ inline void attach_e4b(srvwh::Service& wh, const std::vector<ModelInfo>& catalog
     rq.path = "/v1/chat/completions";
     rq.local_peer = true;
     rq.headers["content-type"] = "application/json";
+    // (the speech service's own request: a model switch for it is not the user's choice, server.cpp leaves
+    //  last-model.txt as it is)
+    rq.headers["x-arc-speech"] = "1";
     rq.body = audio_chat_body(wav, "wav", e4b, lang, context, false, secs).dump();
     HttpResponse rs(INVALID_SOCKET);
     int status = 0;
@@ -127,8 +135,9 @@ struct AudioRoute {
   std::function<void(const HttpRequest&, HttpResponse&)>* dispatch = nullptr;
 };
 // POST /v1/audio/transcriptions and /translations (multipart upload): the speech service (Qwen3-ASR, Gemma 4 E4B,
-// Whisper itself) unless the request names a chat model; without the service, the clip goes to a chat model with an
-// audio encoder. False when the request is not one of them.
+// Whisper itself; translations Whisper's) unless the request names another chat model (400 then); without the
+// service, the clip goes to a chat model with an audio encoder (the speech service's models named: 400). False when
+// the request is not one of them.
 inline bool audio_route(const HttpRequest& rq, HttpResponse& rs, const AudioRoute& a) {
   if (!(rq.method == "POST" && (rq.path == "/v1/audio/transcriptions" || rq.path == "/v1/audio/translations"))) return false;
   const auto form = apic::parse_multipart(rq.header("content-type"), rq.body);
@@ -145,15 +154,22 @@ inline bool audio_route(const HttpRequest& rq, HttpResponse& rs, const AudioRout
     a.wh->handle(rs, form, translate);
     return true;
   }
-  // (with the speech service only its models transcribe: Gemma 4 12B, which hears audio without an encoder, wrote a
-  //  translated summary of the user's recording and garbled a clear one; the user's choice, 2026-10-28)
-  if (a.wh && !translate) {
-    rs.send(400, "application/json", "{\"error\":{\"message\":\"model: transcription takes qwen3-asr (the default) or Gemma 4 E4B (" +
-                                         a.wh->chat_asr_id + ")\",\"type\":\"invalid_request_error\"}}");
+  // (with the speech service only its models transcribe, and Whisper translates: Gemma 4 12B, which hears audio
+  //  without an encoder, wrote a translated summary of the user's recording and garbled a clear one; the user's
+  //  choice, 2026-10-28)
+  if (a.wh) {
+    rs.send(400, "application/json",
+            std::string("{\"error\":{\"message\":\"model: ") +
+                (translate ? "translations take Whisper (no model, whisper-1 or whisper)"
+                           : "transcription takes qwen3-asr (the default), whisper or Gemma 4 E4B (" + a.wh->chat_asr_id + ")") +
+                "\",\"type\":\"invalid_request_error\"}}");
     return true;
   }
-  if (!a.wh && want.find("whisper") != std::string::npos) {
-    rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
+  std::string lw = want;
+  for (char& c : lw) c = (char)tolower((unsigned char)c);
+  if (lw.find("whisper") != std::string::npos || lw.find("qwen3-asr") != std::string::npos) {
+    rs.send(400, "application/json", "{\"error\":{\"message\":\"" + std::string(lw.find("whisper") != std::string::npos ? "Whisper" : "Qwen3-ASR") +
+                                         " is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
     return true;
   }
   Json req = Json::object();

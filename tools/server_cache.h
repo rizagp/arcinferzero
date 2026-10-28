@@ -4,7 +4,8 @@
 
  public:
   bool save_held() {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_, std::defer_lock);
+    acquire(lock);  // (counted as a request's: take_turns lets it in between two steps)
     bool any = false;
     struct Back {  // (the slot bound before: a request between two steps finds the engine as it left it)
       Server& s;
@@ -30,7 +31,8 @@
       r.set("saved", save_held());
       return rs.send(200, "application/json", r.dump());
     }
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_, std::defer_lock);
+    acquire(lock);
     uint64_t total = 0;
     for (auto& s : saved_) total += s.bytes;
     Json r = Json::object();
@@ -156,9 +158,12 @@
       return true;
     };
     std::vector<std::pair<fs::file_time_type, fs::path>> mine;
-    for (const auto& de : fs::directory_iterator(dir, e)) {
-      const std::string name = de.path().filename().string();
+    // (increment(ec): a range-for's ++ throws on an error even when the iterator was opened with an error_code)
+    std::error_code ei;
+    for (fs::directory_iterator it(dir, ei), end; !ei && it != end; it.increment(ei)) {
+      const fs::directory_entry& de = *it;
       if (de.path().extension() != ".arcp") continue;
+      const std::string name = de.path().filename().string();
       if (group.empty() ? is_plain(name) : name.rfind(group, 0) == 0) mine.push_back({de.last_write_time(e), de.path()});
     }
     std::sort(mine.begin(), mine.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -166,8 +171,9 @@
     if (!cap) return;
     std::vector<std::tuple<fs::file_time_type, fs::path, uint64_t>> all;  // every model's folder
     uint64_t total = 0;
-    for (const auto& de : fs::recursive_directory_iterator(fs::path(dir).parent_path(), e))
-      if (de.path().extension() == ".arcp") {
+    ei.clear();
+    for (fs::recursive_directory_iterator it(fs::path(dir).parent_path(), ei), end; !ei && it != end; it.increment(ei))
+      if (const fs::directory_entry& de = *it; de.path().extension() == ".arcp") {
         const uint64_t sz = de.file_size(e);
         total += sz;
         all.push_back({de.last_write_time(e), de.path(), sz});
@@ -225,7 +231,11 @@
         fprintf(stderr, "system-prompt cache: could not write %s\n", file.c_str());
         return;
       }
-      prune_prefix(dir, group, file, cap);
+      try {  // (runs on the writer thread: an exception there would end the server)
+        prune_prefix(dir, group, file, cap);
+      } catch (const std::exception& x) {
+        fprintf(stderr, "system-prompt cache: pruning %s: %s\n", dir.c_str(), x.what());
+      }
       fprintf(stderr, "system-prompt cache: saved %zu tokens%s%s (%.0f MB) in %.2f s\n", n, folder.empty() ? "" : " for ",
               folder.c_str(), std::filesystem::file_size(file, e) / 1048576.0, ms_since(t0) / 1000);
     };
@@ -264,8 +274,9 @@
   void open_prefix_cache(const std::string& dir, double cap_gb) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    for (const auto& e : std::filesystem::directory_iterator(dir, ec))  // writes the server did not finish
-      if (e.path().extension() == ".tmp") std::filesystem::remove(e.path(), ec);
+    std::error_code ei;  // writes the server did not finish
+    for (std::filesystem::directory_iterator it(dir, ei), end; !ei && it != end; it.increment(ei))
+      if (it->path().extension() == ".tmp") std::filesystem::remove(it->path(), ec);
     prefix_dir_ = dir;
     prefix_cap_ = (uint64_t)(cap_gb * 1073741824.0);
   }
@@ -275,7 +286,9 @@
     sess_dir_ = dir;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
-    for (const auto& de : std::filesystem::directory_iterator(dir, ec)) {
+    std::error_code ei;
+    for (std::filesystem::directory_iterator it(dir, ei), end; !ei && it != end; it.increment(ei)) {
+      const std::filesystem::directory_entry& de = *it;
       if (de.path().extension() == ".tmp") {  // a write the server did not finish (it was stopped)
         std::error_code ec2;
         std::filesystem::remove(de.path(), ec2);

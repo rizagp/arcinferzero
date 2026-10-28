@@ -111,8 +111,8 @@ Once the graphics driver, Visual Studio Build Tools (C++), Python and optionally
 .\setup.cmd -Tests             # also build the test tools and run the regression tests (needs the 4B)
 ```
 
-It checks the requirements (and says where to get what is missing), builds `bin\serverz.exe`, `runz.exe` and
-`clinfo.exe` when they are missing or older than the sources, checks the GPU (OpenCL 3.0, DP4a, sub-groups, GPU
+It checks the requirements (and says where to get what is missing), builds `bin\serverz.exe`, `runz.exe`,
+`clinfo.exe`, `transcribez.exe` and `arc_recorder.exe` when they are missing or older than the sources, checks the GPU (OpenCL 3.0, DP4a, sub-groups, GPU
 memory), downloads the chosen models into the Hugging Face cache (Gemma with its drafter and image projector; the
 35B is downloaded and converted), installs `huggingface_hub` / `numpy` with pip when needed (it asks first), and
 connects Pi (`pi-arc`, `arc-server`, Pi's model list with each model's context). Running it again only does what
@@ -154,7 +154,7 @@ already contains everything it needs to build (`third_party\` holds minja and nl
 ### 5. Build
 
 ```powershell
-.\build.ps1 zero\serverz.cpp zero\runz.cpp tools\clinfo.cpp
+.\build.ps1 zero\serverz.cpp zero\runz.cpp tools\clinfo.cpp zero\transcribez.cpp tools\arc_recorder.cpp
 ```
 
 This takes a few minutes and writes `bin\serverz.exe` / `bin\runz.exe` (arcinferzero: the HTTP server and the
@@ -207,7 +207,7 @@ in the same folder as the model: download them from the same repository in the s
 | `9b` | Qwen3.5 9B (with MTP head) | `hf download unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-UD-Q4_K_XL.gguf` | 6.1 GB |
 | `4b` | Qwen3.5 4B (with MTP head) | `hf download unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-UD-Q4_K_XL.gguf` | 3.0 GB |
 | `g12` | Gemma 4 12B QAT (Google, Q4_0) + image projector; drafter from Unsloth, copied into the model's snapshot folder | `hf download google/gemma-4-12B-it-qat-q4_0-gguf` and `hf download unsloth/gemma-4-12B-it-qat-GGUF mtp-gemma-4-12B-it.gguf` | 7.0 + 0.2 + 0.3 GB |
-| `e4b` | Gemma 4 E4B QAT (Google, Q4_0); drafter from Unsloth, copied into the model's snapshot folder | `hf download google/gemma-4-E4B-it-qat-q4_0-gguf gemma-4-E4B_q4_0-it.gguf` and `hf download unsloth/gemma-4-E4B-it-qat-GGUF mtp-gemma-4-E4B-it.gguf` | 5.2 + 0.1 GB |
+| `e4b` | Gemma 4 E4B QAT (Google, Q4_0); drafter from Unsloth, copied into the model's snapshot folder | `hf download google/gemma-4-E4B-it-qat-q4_0-gguf gemma-4-E4B_q4_0-it.gguf gemma-4-E4B-it-mmproj.gguf` (images, audio) and `hf download unsloth/gemma-4-E4B-it-qat-GGUF mtp-gemma-4-E4B-it.gguf` | 5.2 + 0.1 GB |
 | `g26` | Gemma 4 26B-A4B QAT (Google, Q4_0) + image projector; drafter `mtp-gemma-4-26B-A4B-it.gguf` from Unsloth's Gemma 4 26B-A4B QAT GGUF repository, copied next to the model (optional: ~25 tok/s with it) | `hf download google/gemma-4-26B-A4B-it-qat-q4_0-gguf` | 14.4 + 1.2 GB |
 | `35b` | Qwen3.6 35B-A3B UD-IQ4_XS (Unsloth's MTP repository: MTP block + image projector) | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-BF16.gguf` | 18.2 GB + projector |
 | `35b-mtp` | Qwen3.6 35B-A3B UD-Q3_K_M of the same repository | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q3_K_M.gguf mmproj-BF16.gguf` | |
@@ -687,8 +687,9 @@ setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1
   divergence of the engine's next-token distributions against it (averaged over the prompt positions), and
   `--kl-decode` does the same through the token-by-token generation path.
 - `tests/run_tests.ps1` runs all of the above plus chat-template rendering against the GGUF Jinja templates and an
-  OpenAI API test (streaming tool calls, prefix reuse); with `-ModelGemma` / `-Model35B` also the Gemma 4 and
-  35B-A3B paths (KL vs the f32 reference, greedy equal to llama.cpp, drafter output identical). Every model found also
+  OpenAI API test (streaming tool calls, prefix reuse); the Gemma 4 models found (or given with `-ModelGemma`)
+  get a KL check against the f32 reference and drafter output identical to plain decoding; the 35B-A3B its greedy,
+  MTP and DFlash2 checks, and a KL check only with `-Ref35B`. Every model found also
   runs `runz --slots-check` (two conversations alone, interleaved and batched: bit-identical; misuse refused; a
   slot's memory counted exactly), and `tests/fail_inject.ps1` makes a generation pass fail on purpose
   (`ARC_FAIL_PASS=N`): the requests of that pass get an error (a streamed one an error event), the server stays up,

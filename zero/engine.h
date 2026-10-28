@@ -297,6 +297,8 @@ class Engine {
     struct SegN { int& v; ~SegN() { v = 0; } } seg_n{seg_n_};  // (the experts' deep prefetch, see stream_layer)
     seg_n_ = n;
     cl_mem x_saved = x_;
+    // (any exception, not only a cancel: x_ is the engine's own buffer again, not a chunk's view)
+    struct XBack { cl_mem& p; cl_mem s; ~XBack() { p = s; } } x_back{x_, x_saved};
     auto chunk_T = [&](int c) { return std::min(max_chunk, n - c * max_chunk); };
     auto chunk_Mp = [&](int c) {
       const int T = chunk_T(c);

@@ -160,7 +160,7 @@ class Service {
     opt.task = translate ? "translate" : "transcribe";
     // the speech model: Qwen3-ASR unless the request names another one (Gemma 4 E4B, or Whisper itself); Whisper
     // when Qwen3-ASR is not loaded and for translations
-    const std::string mdl = field("model");
+    const std::string mdl = apic::strip_tag(field("model"));  // (gemma4-e4b:latest, as audio_route)
     if (names_chat_asr(mdl)) {
       if (chat_asr_id.empty() || !chat_asr) {
         bad = "model: no Gemma 4 E4B with its audio encoder among this server's models";
@@ -1624,7 +1624,8 @@ class Service {
     opt.word_timestamps = true;
     opt.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
     // a live recording of several tracks (the microphone, the other side): each track transcribed alone, its segments
-    // marked with its speaker, all of them merged by time
+    // marked with its speaker, all of them merged by time (Qwen3-ASR: each track cut at pauses into ~25-s parts, a
+    // segment each, so the turns interleave; Gemma 4 E4B still in parts of up to 2 minutes)
     const int tracks = std::max(1, (int)meta["tracks"].as_number(1));
     const fs::path src = dir / ("source." + meta["ext"].str());
     std::vector<std::vector<float>> audio;
@@ -1641,11 +1642,12 @@ class Service {
     auto last_save = t0;
     whisper::Result r;
     bool stopped = false;
+    std::string part_err;  // (a part of Qwen3-ASR / E4B failed twice: the text so far is saved, the job failed)
     try {
       LockedBackend be(*eng_, gpu_turn);
       whisper::Transcriber tr(*m_, be);
       double before = 0;  // (the tracks done)
-      for (size_t k = 0; k < audio.size() && !stopped; ++k) {
+      for (size_t k = 0; k < audio.size() && !stopped && part_err.empty(); ++k) {
         const whisper::Progress cb = [&](double done, double, const std::vector<whisper::Segment>& segs) {
           std::lock_guard<std::mutex> lk(lib_mu_);
           const double el = std::chrono::duration<double>(clk::now() - t0).count();
@@ -1662,8 +1664,10 @@ class Service {
           stopped = cancel_running_ || stop_;
           return !stopped;
         };
-        whisper::Result rk = opt.engine.empty() ? tr.run(audio[k], opt, cb)
-                             : opt.engine == "e4b" ? chat_run(audio[k], opt, cb) : asr_run(audio[k], opt, cb);
+        whisper::Result rk = opt.engine.empty()   ? tr.run(audio[k], opt, cb)
+                             : opt.engine == "e4b" ? chat_run(audio[k], opt, cb, &part_err)
+                                                   : asr_run(audio[k], opt, cb, true, &part_err,
+                                                             audio.size() > 1 ? kAsrTrackPartSeconds : 0);
         const std::string who = audio.size() > 1 ? meta["speakers"][(int)k].str("Track " + std::to_string(k + 1)) : "";
         for (whisper::Segment& g : rk.segments) g.speaker = who;
         r.segments.insert(r.segments.end(), rk.segments.begin(), rk.segments.end());
@@ -1707,17 +1711,22 @@ class Service {
       }
     }
     const double el = std::chrono::duration<double>(clk::now() - t0).count();
-    m.set("status", stopped ? "cancelled" : "done");
-    if (!stopped) m.set("progress", 1.0);
+    if (!part_err.empty()) {  // (the transcript so far is kept: transcript.json above)
+      m.set("status", "failed");
+      m.set("error", "transcription failed " + part_err + " (the text before it is kept)");
+    } else {
+      m.set("status", stopped ? "cancelled" : "done");
+    }
+    if (!stopped && part_err.empty()) m.set("progress", 1.0);
     m.set("duration", r.duration);
     m.set("languages", langs);
     m.set("segments", (double)r.segments.size());
     m.set("words", (double)words);
     m.set("elapsed_s", el);
-    m.set("x_realtime", el > 0 ? (stopped ? m["done_s"].as_number() : all_s) / el : 0.0);
+    m.set("x_realtime", el > 0 ? (stopped || !part_err.empty() ? m["done_s"].as_number() : all_s) / el : 0.0);
     save_meta(tid);
     // a live recording kept as MP3 once transcribed (the WAV it was written as is ~10x larger), unless mp3_kbps is 0
-    if (stopped || m["ext"].str() != "wav" || !m["recording"].as_bool()) return;
+    if (stopped || !part_err.empty() || m["ext"].str() != "wav" || !m["recording"].as_bool()) return;
     const int kbps = (int)m["mp3_kbps"].as_number(192);
     if (kbps <= 0) return;
     lk.unlock();

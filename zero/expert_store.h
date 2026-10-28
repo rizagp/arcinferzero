@@ -157,21 +157,34 @@ struct ExpertStore {
       ++busy;
       bytes_read += L.rec;
     };
-    for (int s = 0; s < kQD && next < reqs.size(); ++s) issue(s);
-    while (done < reqs.size()) {
-      HANDLE evs[kQD];
-      int map[kQD], n = 0;
-      for (int s = 0; s < kQD; ++s) if (slots[s].busy) evs[n] = slots[s].ev, map[n++] = s;
-      const DWORD w = WaitForMultipleObjects((DWORD)n, evs, FALSE, INFINITE);
-      if (w >= WAIT_OBJECT_0 + (DWORD)n)
-        throw std::runtime_error("expert read: wait failed (" + std::to_string(GetLastError()) + ")");
-      const int s = map[w - WAIT_OBJECT_0];
-      DWORD got = 0;
-      if (!GetOverlappedResult(h_, &slots[s].ov, &got, FALSE)) throw std::runtime_error("expert read failed");
-      slots[s].busy = false;
-      --busy;
-      ++done;
-      if (next < reqs.size()) issue(s);
+    try {
+      for (int s = 0; s < kQD && next < reqs.size(); ++s) issue(s);
+      while (done < reqs.size()) {
+        HANDLE evs[kQD];
+        int map[kQD], n = 0;
+        for (int s = 0; s < kQD; ++s) if (slots[s].busy) evs[n] = slots[s].ev, map[n++] = s;
+        const DWORD w = WaitForMultipleObjects((DWORD)n, evs, FALSE, INFINITE);
+        if (w >= WAIT_OBJECT_0 + (DWORD)n)
+          throw std::runtime_error("expert read: wait failed (" + std::to_string(GetLastError()) + ")");
+        const int s = map[w - WAIT_OBJECT_0];
+        DWORD got = 0;
+        if (!GetOverlappedResult(h_, &slots[s].ov, &got, FALSE)) throw std::runtime_error("expert read failed");
+        slots[s].busy = false;
+        --busy;
+        ++done;
+        if (next < reqs.size()) issue(s);
+      }
+    } catch (...) {
+      // (a failed read: the reads still in flight are cancelled and waited for, so no late read writes into the
+      // staging and the next read() finds its slots free)
+      for (int s = 0; s < kQD; ++s) {
+        if (!slots[s].busy) continue;
+        CancelIoEx(h_, &slots[s].ov);
+        DWORD got = 0;
+        GetOverlappedResult(h_, &slots[s].ov, &got, TRUE);
+        slots[s].busy = false;
+      }
+      throw;
     }
     reads += reqs.size();
   }

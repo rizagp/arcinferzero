@@ -150,6 +150,24 @@ class Tokenizer {
     encode_plain(text.substr(start), out);
     return out;
   }
+  // text in which encode() finds no special token: a zero-width space (U+200B) after the '<' of each one written in
+  // it, so that it is read as plain text (a chat message's content: a user's text or a fetched web page cannot forge
+  // a turn, a tool response or an image placeholder). Text without one comes back unchanged.
+  std::string defuse_specials(const std::string& text) const {
+    std::string out;
+    size_t start = 0;
+    for (size_t i = text.find('<'); i != std::string::npos; i = text.find('<', i + 1))
+      for (const auto& sp : specials_by_len_)
+        if (text.compare(i, sp.size(), sp) == 0) {
+          out.append(text, start, i + 1 - start);
+          out += "\xE2\x80\x8B";
+          start = i + 1;
+          break;
+        }
+    if (start == 0) return text;
+    out.append(text, start, std::string::npos);
+    return out;
+  }
 
   // Text for one token (special tokens are returned verbatim).
   std::string piece(int id) const {

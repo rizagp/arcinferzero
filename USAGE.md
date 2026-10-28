@@ -17,7 +17,7 @@ The setup is safe to run again (steps that are already done are skipped). It:
 
 - checks the requirements: 64-bit Windows, an Intel Arc GPU, Visual Studio Build Tools (C++), Python and Pi, and
   says how to install whatever is missing;
-- builds `bin\serverz.exe`, `runz.exe` and `clinfo.exe` when they are missing or older than their sources, then
+- builds `bin\serverz.exe`, `runz.exe`, `clinfo.exe`, `transcribez.exe` and `arc_recorder.exe` when they are missing or older than their sources, then
   checks the GPU (OpenCL 3.0, DP4a, GPU memory);
 - asks which models to download into the Hugging Face cache (`.\setup.cmd -Models 27b,4b` without asking; Gemma
   comes with its drafter and image projector; the 35B is downloaded and then converted). `huggingface_hub` /
@@ -189,7 +189,7 @@ processed again).
 the Intel AI Boost NPU compute part of every prompt chunk while the GPU computes the rest: Qwen3.8 27B prompts
 +15-20 %, about 0.4 GB more RAM, generation unchanged. The setting stays with the server: Pi's `/model`, another
 client's model, or `pi-arc` on another model keep it (models it does not help, such as the 4B or the 35B, run
-without it and say so in the log); `arc-server restart` or a stop turns it off. The first prompt of a new length
+without it and say so in the log); `arc-server restart` keeps it, a stop turns it off. The first prompt of a new length
 class compiles the NPU's graphs once (10-30 s; cached in `%USERPROFILE%\arcinferzero\npu`).
 [docs/npu-experiment.md](docs/npu-experiment.md).
 
@@ -295,8 +295,8 @@ While the server is running:
     whatever the browser or the server do meanwhile; `arc-server record-stop` ends it, and it appears in the
     Meetings tab, transcribed as Me / Others.
   - **Audio in a chat**: an attached audio file or a voice message reaches every model as text written by
-    Whisper (long recordings as a document the model reads by parts). Settings > Voice > **Speech**: "Whisper
-    writes it" (every model), or "The model hears it" (Gemma 4 E4B / 12B get the sound itself; ~0.2 s quicker in
+    Qwen3-ASR (Whisper when Qwen3-ASR is off; long recordings as a document the model reads by parts). Settings >
+    Voice > **Speech**: written by the speech model (every model), or "The model hears it" (Gemma 4 E4B / 12B get the sound itself; ~0.2 s quicker in
     Talk).
 - **Web UI: web search.** Turn on **Web search** in the settings and the model can search the web (`web_search`) and
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
@@ -381,9 +381,10 @@ While the server is running:
   - **Anthropic**: `http://127.0.0.1:8090/v1/messages` (Claude format, including tool_use and thinking).
   - **OpenAI Responses**: `/v1/responses` (used e.g. by Codex CLI); the old **Completions**: `/v1/completions`
     (raw prompt, for code autocomplete).
-  - **Audio transcription**: `/v1/audio/transcriptions` (upload an audio file, the result is text; needs Gemma 4
-    12B / E4B, which hear audio; E4B is the better listener: the 12B, without an audio encoder, may make up text
-    for a noisy recording).
+  - **Audio transcription**: `/v1/audio/transcriptions` (upload an audio file, the result is text). With
+    `--whisper auto` (arc-server `-Whisper auto`): Qwen3-ASR by default, `model=whisper` (Whisper large-v3, words
+    with times) or `model=gemma4-e4b`; Gemma 4 12B is refused for transcripts. Without it: the loaded model, when it
+    hears audio (Gemma 4 E4B).
 - Embeddings (`/v1/embeddings`) are not available yet: they need an embedding model with an architecture the engine
   does not support yet.
 - **Web UI: automatic compaction.** The top right shows the context use ("context 12.3K / 40.9K"). If the next

@@ -93,8 +93,8 @@ foreach ($c in @(
 # selected model; a field you change turns yellow and is passed on (the others are left to the server)
 $portBox = New-Num 1024 65535 $Port 0 70
 $ctxBox = New-Text 80
-$chunkBox = New-Combo @("512", "1024", "2048", "4096")
-$draftBox = New-Combo @("1", "2", "3") 60
+$chunkBox = New-Combo @("512", "1024", "2048", "4096", "8192")
+$draftBox = New-Combo @("1", "2", "3", "4", "5", "6", "7") 60
 $thinkBox = New-Num 0 262144 8192 0 80
 $imgMinBox = New-Num 0 16384 0 0 70
 $imgMaxBox = New-Num 0 16384 0 0 70

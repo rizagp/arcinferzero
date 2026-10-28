@@ -3,7 +3,9 @@
 //     chat.json                     the conversation (the web UI's JSON: title, times, model, messages); messages refer
 //                                   to their files as "/files/<id>" (or "file_id": "<id>")
 //     <name>                        every file of the chat under its own name: uploads, recordings, documents the
-//                                   model wrote; a file from another chat (@) is a hard link, so its bytes are kept once
+//                                   model wrote; a file from another chat (@) is a copy, not a hard link: the chat's
+//                                   terminal runs in this folder, and a command that rewrote data.csv in place would
+//                                   change the other chat's file too
 //     .files.json                   file id -> name and time (a file put into the folder by hand gets an id at the
 //                                   next listing)
 //     .src\<id>.json                a document the model wrote: its Markdown and options (read_file gives them back,
@@ -59,6 +61,19 @@ inline bool read_shared(const fs::path& p, std::string& out) {
   }
   CloseHandle(h);
   return ok;
+}
+// a file's first max bytes at most (any size: an image's header, not the whole file), opened as read_shared does
+inline bool read_head(const fs::path& p, size_t max, std::string& out) {
+  HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  out.resize(std::min<size_t>(max, 1u << 30));
+  size_t at = 0;
+  DWORD got = 0;
+  while (at < out.size() && ReadFile(h, out.data() + at, (DWORD)(out.size() - at), &got, nullptr) && got) at += got;
+  out.resize(at);
+  CloseHandle(h);
+  return true;
 }
 // written whole or not at all: a temporary file of its own (two writers never share one), closed and checked, then
 // moved over the old one (retried for a few seconds while another program holds the old one without sharing it)
@@ -129,7 +144,16 @@ inline std::string mime_of(const std::string& name) {
   auto it = m.find(e);
   return it == m.end() ? "application/octet-stream" : it->second;  // (html / svg as text: never run as a page)
 }
-// a file name that is safe on disk and in a header: ASCII letters, digits and . _ - ( ) space; at most 80 characters
+// Windows' device names are no file names: "chats\CON.json" is the console (s: a name's part before its first dot)
+inline bool device_name(const std::string& s) {
+  std::string u;
+  for (unsigned char c : s) u += (char)toupper(c);
+  while (!u.empty() && u.back() == ' ') u.pop_back();  // ("NUL .txt" is NUL too)
+  if (u == "CON" || u == "PRN" || u == "AUX" || u == "NUL" || u == "CONIN$" || u == "CONOUT$") return true;
+  return u.size() == 4 && (u.rfind("COM", 0) == 0 || u.rfind("LPT", 0) == 0) && u[3] >= '0' && u[3] <= '9';
+}
+// a file name that is safe on disk and in a header: ASCII letters, digits and . _ - ( ) space; at most 80 characters;
+// a device name ("CON.txt", "nul", "COM1.csv") gets a "_" in front
 inline std::string safe_name(const std::string& in) {
   std::string base = in.substr(in.find_last_of("/\\") == std::string::npos ? 0 : in.find_last_of("/\\") + 1), out;
   for (unsigned char c : base) out += (isalnum(c) || strchr("._-() ", c)) && c < 128 ? (char)c : '_';
@@ -138,18 +162,14 @@ inline std::string safe_name(const std::string& in) {
     const std::string e = ext_of(out);
     out = out.substr(0, 80 - (e.empty() ? 0 : e.size() + 1)) + (e.empty() ? "" : "." + e);
   }
+  if (device_name(out.substr(0, out.find('.')))) out = "_" + out;
   return out.empty() ? "file" : out;
 }
 inline bool valid_id(const std::string& id, size_t max = 64) {
   if (id.empty() || id.size() > max) return false;
   for (unsigned char c : id)
     if (!isalnum(c) && c != '-' && c != '_') return false;
-  // (Windows' device names are no file names: "chats\CON.json" is the console)
-  std::string u;
-  for (unsigned char c : id) u += (char)toupper(c);
-  if (u == "CON" || u == "PRN" || u == "AUX" || u == "NUL" || u == "CONIN$" || u == "CONOUT$") return false;
-  if (u.size() == 4 && (u.rfind("COM", 0) == 0 || u.rfind("LPT", 0) == 0) && u[3] >= '0' && u[3] <= '9') return false;
-  return true;
+  return !device_name(id);
 }
 inline std::string hex64(uint64_t h) {
   char b[17];
@@ -188,16 +208,13 @@ class Store {
     const fs::path dir = folder(chat, "");
     const std::string name = free_name(dir, safe_name(name_in));
     const fs::path pth = dir / name;
-    bool linked = false;
-    for (const Info& i : copies(id))  // (the bytes are in another chat's folder: a hard link to them)
-      if (fs::create_hard_link(i.path, pth, ec), !ec) { linked = true; break; }
-    if (!linked) write(pth, data);
+    write(pth, data);  // (in another chat's folder too: a copy of its own, see the top)
     Info i{id, name, kind_of(name), pth.string(), (uint64_t)data.size(), (int64_t)now, chat};
     by_id_[id].push_back(i);
     save_index(dir, chat);
     return i;
   }
-  // a saved file into chat's folder as well (a hard link; a copy if linking fails); false: no such file
+  // a saved file into chat's folder as well (a copy: no hard link, see the top); false: no such file
   bool link(const std::string& id, const std::string& chat) {
     std::lock_guard<std::recursive_mutex> g(mu_);
     scan();
@@ -208,12 +225,8 @@ class Store {
     const fs::path dir = folder(chat, "");
     const std::string name = free_name(dir, v[0].name);
     std::error_code ec;
-    fs::create_hard_link(v[0].path, dir / name, ec);
-    if (ec) {
-      ec.clear();
-      fs::copy_file(v[0].path, dir / name, ec);
-      if (ec) return false;
-    }
+    fs::copy_file(v[0].path, dir / name, ec);
+    if (ec) return false;
     Info i = v[0];
     i.name = name;
     i.path = (dir / name).string();
@@ -668,12 +681,31 @@ inline std::map<int, std::string> page_texts(const std::string& json) {
   return m;
 }
 
-// A document's text, outline and search index (tools/doc_reader.h), kept for the last 8 files read (a 227-page PDF
+// A document's text, outline and search index (tools/doc_reader.h), kept for the last 8 files read, ~256 MB of
+// indexes at most (a 227-page PDF
 // reads in 0.25 s; a question about it often comes in several tool calls). A PDF's scanned pages: the text a vision
 // model transcribed from them so far (tools/pdf_images.h)
 struct DocCache {
   std::mutex mu;
   std::list<std::pair<std::string, std::shared_ptr<const rdoc::Index>>> lru;
+  size_t bytes = 0;  // (lru's indexes together, about: size_of)
+  static constexpr size_t kMaxBytes = 256u << 20;  // (8 indexes of 512-MB files: GBs of RAM; by bytes too)
+  // an index's RAM, about: its paragraphs' and chunks' text, twice (the BM25 tables, the strings' own overhead)
+  static size_t size_of(const rdoc::Index& ix) {
+    size_t n = 0;
+    for (const rdoc::Para& p : ix.doc.paras) n += p.text.size() + 32;
+    for (const rdoc::Chunk& c : ix.chunks) n += c.text.size() + 64;
+    return n * 2;
+  }
+  // (mu held) ix in front; the oldest out past max entries or kMaxBytes, the newest always kept
+  void add(const std::string& key, const std::shared_ptr<const rdoc::Index>& ix, size_t max) {
+    lru.push_front({key, ix});
+    bytes += size_of(*ix);
+    while (lru.size() > 1 && (lru.size() > max || bytes > kMaxBytes)) {
+      bytes -= std::min(bytes, size_of(*lru.back().second));
+      lru.pop_back();
+    }
+  }
 };
 inline DocCache& doc_cache() {
   static DocCache c;
@@ -686,7 +718,11 @@ inline DocCache& virtual_doc_cache() {  // (chats and transcripts: search_chats 
 inline void doc_index_forget(const std::string& id) {
   DocCache& c = doc_cache();
   std::lock_guard<std::mutex> g(c.mu);
-  c.lru.remove_if([&](const auto& e) { return e.first == id; });
+  c.lru.remove_if([&](const auto& e) {
+    if (e.first != id) return false;
+    c.bytes -= std::min(c.bytes, DocCache::size_of(*e.second));
+    return true;
+  });
 }
 inline constexpr uint64_t kMaxReadBytes = 512ull << 20;
 inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
@@ -715,8 +751,7 @@ inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
   }
   auto ix = std::make_shared<const rdoc::Index>(std::move(d));
   std::lock_guard<std::mutex> g(c.mu);
-  c.lru.push_front({i.id, ix});
-  if (c.lru.size() > 8) c.lru.pop_back();
+  c.add(i.id, ix, 8);
   return ix;
 }
 
@@ -915,8 +950,7 @@ inline bool virtual_doc(const std::string& fid, VirtualDoc& v) {
   }
   v.ix = std::make_shared<const rdoc::Index>(rdoc::read_text(md, true));
   std::lock_guard<std::mutex> g(c.mu);
-  c.lru.push_front({key, v.ix});
-  while (c.lru.size() > 64) c.lru.pop_back();
+  c.add(key, v.ix, 64);
   return true;
 }
 
@@ -1068,7 +1102,9 @@ inline Json expand_files(const Json& messages, bool tools = false, int ctx = 0) 
         parts.push(t);
         continue;
       }
-      if (!valid_id(id, 16) || !store().get(id, i) || !Store::read(i.path, data)) {
+      // (not the whole file on every turn: an image's first MB for its size; audio and video measured from the file
+      //  itself, of any size; a document read once, by doc_index, and kept in its cache)
+      if (!valid_id(id, 16) || !store().get(id, i) || (i.kind == "image" && !read_head(fs::path(i.path), 1u << 20, data))) {
         t.set("type", "text");
         t.set("text", "[a file that is no longer there: " + id + "]");
         parts.push(t);

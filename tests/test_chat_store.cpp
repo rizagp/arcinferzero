@@ -63,10 +63,11 @@ int main() {
     check("a name taken: notes (2).txt", fs::path(b.path).filename() == "notes (2).txt", b.path);
     // the same bytes again in the same chat: the same file
     check("the same bytes: the same file", st.put("x.txt", "hello", "c1").path == (fs::path(d1) / "notes.txt").string());
-    // another chat refers to the file (@): a hard link into its folder
+    // another chat refers to the file (@): a copy in its folder (not a hard link: a command run in one chat that
+    // rewrote the file changed the other chat's too)
     st.chat_put("c2", "{\"title\":\"Second\",\"history\":[{\"content\":[{\"type\":\"file\",\"file\":{\"file_id\":\"" + a.id + "\"}}]}]}");
     const fs::path l2 = fs::path(st.chat_dir("c2")) / "notes.txt";
-    check("linked into the other chat", fs::exists(l2, ec) && fs::hard_link_count(l2, ec) == 2, l2.string());
+    check("copied into the other chat", fs::exists(l2, ec) && fs::hard_link_count(l2, ec) == 1, l2.string());
     check("two holders", st.holders(a.id).size() == 2);
     // a document's source goes along with the link
     const files::Info doc = st.put("report.docx", "PK-fake", "c1");

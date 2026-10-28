@@ -13,6 +13,8 @@
       for (const Json& t : body["tools"].items()) tools = tools || t["function"]["name"].str() == "read_file";
       if (any) body.set("messages", files::expand_files(body["messages"], tools, eng_.ctx));
     }
+    // (special tokens written in user and tool contents, the files' text included: plain text, see defuse_contents)
+    if (!body["__raw_prompt"].is_string()) body.set("messages", defuse_contents(body["messages"]));
     const Json& messages = body["messages"];
     if (!messages.is_array() || messages.size() == 0) return rs.send(400, "application/json", err("messages required").dump());
     const std::string folder = prompt_folder(messages);  // Pi: the project folder (its system-prompt cache)

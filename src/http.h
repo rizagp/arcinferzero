@@ -171,8 +171,9 @@ class HttpResponse {
   static const char* reason(int s) {
     switch (s) {
       case 200: return "OK"; case 204: return "No Content"; case 400: return "Bad Request"; case 403: return "Forbidden";
-      case 404: return "Not Found"; case 409: return "Conflict"; case 413: return "Payload Too Large";
-      case 416: return "Range Not Satisfiable"; case 429: return "Too Many Requests"; case 500: return "Internal Server Error";
+      case 404: return "Not Found"; case 405: return "Method Not Allowed"; case 409: return "Conflict";
+      case 413: return "Payload Too Large"; case 415: return "Unsupported Media Type"; case 416: return "Range Not Satisfiable";
+      case 429: return "Too Many Requests"; case 500: return "Internal Server Error"; case 502: return "Bad Gateway";
       case 507: return "Insufficient Storage";
       case 503: return "Service Unavailable"; default: return "OK";
     }
@@ -225,7 +226,10 @@ class HttpServer {
   void run() {
     while (true) {
       SOCKET c = accept(ls_, nullptr, nullptr);
-      if (c == INVALID_SOCKET) continue;
+      if (c == INVALID_SOCKET) {  // (out of sockets or memory, a network change: tried again shortly, not in a busy loop)
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        continue;
+      }
       if (conns_.fetch_add(1) >= kMaxConns) {  // (each connection may hold a body of up to 256 MiB)
         conns_.fetch_sub(1);
         closesocket(c);
@@ -310,6 +314,31 @@ class HttpServer {
     for (std::string* x : {&o, &h})
       std::transform(x->begin(), x->end(), x->begin(), [](unsigned char c) { return (char)std::tolower(c); });
     return o == h;
+  }
+  // What a page served by another local server (http://localhost:<another port>: another tool's web UI, any page a
+  // local program serves) may ask of this one: the model API (reads, and generation: chat, completions, messages,
+  // responses, Ollama's, tokenize, audio transcription). Never the server's tools (run_command runs PowerShell, the
+  // file tools write), its settings (slots, the session cache) or the user's chats, files and transcripts: those
+  // only from the server's own page (Origin = http://<Host>) or a client that sends no Origin (Pi, curl, scripts).
+  // An OPTIONS preflight is judged by the method it announces.
+  static bool foreign_ok(const HttpRequest& rq) {
+    const std::string& p = rq.path;
+    auto under = [&](const char* pre) {
+      const size_t n = strlen(pre);
+      return p.compare(0, n, pre) == 0 && (p.size() == n || p[n] == '/');
+    };
+    for (const char* pre : {"/v1/files", "/files", "/v1/chats", "/v1/transcripts", "/v1/live", "/v1/tools", "/v1/server", "/sessions"})
+      if (under(pre)) return false;
+    const std::string m = rq.method == "OPTIONS" ? rq.header("access-control-request-method") : rq.method;
+    if (m == "GET" || m == "HEAD") return true;
+    if (m != "POST") return false;
+    static const char* const gen[] = {"/v1/chat/completions", "/chat/completions", "/v1/completions", "/completions",
+                                      "/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens",
+                                      "/v1/responses", "/responses", "/api/chat", "/api/generate", "/api/show",
+                                      "/tokenize", "/v1/audio/transcriptions", "/v1/audio/translations"};
+    for (const char* g : gen)
+      if (p == g) return true;
+    return false;
   }
 
   // A non-negative integer (decimal, or hex for chunk sizes, which may carry ";extensions"), else false.
@@ -434,7 +463,13 @@ class HttpServer {
       // (both framings: refused, as RFC 9112 advises, instead of taking one and reading the rest as another request)
       if (rq.headers.count("transfer-encoding") && rq.headers.count("content-length"))
         return reply_close(c, 400, "Transfer-Encoding and Content-Length together");
-      if (rq.header("transfer-encoding").find("chunked") != std::string::npos) {
+      std::string coding = rq.header("transfer-encoding");  // (case-insensitive: "Chunked" is the same coding)
+      std::transform(coding.begin(), coding.end(), coding.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+      while (!coding.empty() && (coding.back() == ' ' || coding.back() == '\t')) coding.pop_back();
+      // (another coding: a body this server cannot decode, or whose length it does not know; refused, as RFC 9112 says)
+      if (rq.headers.count("transfer-encoding") && coding != "chunked")
+        return reply_close(c, 400, "unsupported Transfer-Encoding (chunked only)");
+      if (!coding.empty()) {
         while (true) {
           size_t le;
           while ((le = buf.find("\r\n")) == std::string::npos) {
@@ -490,8 +525,14 @@ class HttpServer {
         return reply_close(c, 403, "this server answers requests for localhost / 127.0.0.1 only");
       if (!loopback_ && !rq.header("host").empty() && !address_host(rq.header("host")))
         return reply_close(c, 403, "open this server by its address (http://<IP>:<port>/), not by a name (DNS rebinding)");
-      if (!origin.empty() && !local_origin(origin) && !same_origin(origin, rq.header("host")))
-        return reply_close(c, 403, "cross-origin requests are only allowed from this machine");
+      // (a page of another local server, http://localhost:<other port>: the model API only, see foreign_ok; before,
+      //  any local page could post to run_command, the slots, the chats and files)
+      if (!origin.empty() && !same_origin(origin, rq.header("host"))) {
+        if (!local_origin(origin)) return reply_close(c, 403, "cross-origin requests are only allowed from this machine");
+        if (!foreign_ok(rq))
+          return reply_close(c, 403, "this is only for the server's own page (or a client without an Origin), not for "
+                                     "pages of other local servers");
+      }
       rs.cors_origin = origin;
       if (rq.method == "OPTIONS") rs.send(204, "text/plain", "");
       else {

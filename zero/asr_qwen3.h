@@ -110,6 +110,7 @@ struct Part {
   double start = 0, end = 0;  // seconds in the clip
   std::string language, text, raw;
   int audio_tokens = 0, tokens = 0;
+  bool cut = false;  // (decoding stopped for want of room, max_new or the context: the text's end lost)
 };
 struct Result {
   std::vector<Part> parts;
@@ -268,12 +269,15 @@ inline Result transcribe(Engine& eng, AudioQwen3A& enc, const Tokenizer& tok, co
     if ((size_t)n_tok + pre.size() + post_ids.size() + 16 > (size_t)eng.ctx)
       throw std::runtime_error("the audio needs " + std::to_string(n_tok + pre.size() + post_ids.size()) +
                                " tokens of context, the model has " + std::to_string(eng.ctx));
+    const int E = enc.out_dim();
+    if (E != eng.hp.n_embd)
+      throw std::runtime_error("the audio encoder gives rows of " + std::to_string(E) + ", the text model takes " +
+                               std::to_string(eng.hp.n_embd) + " (an mmproj of another Qwen3-ASR size)");
     t0 = clk::now();
     std::vector<float> l;
     gpu([&] {
       eng.reset();
       eng.forward(pre.data(), (int)pre.size());
-      const int E = enc.out_dim();
       for (int r0 = 0; r0 < n_tok; r0 += eng.max_chunk) {
         const int n = std::min(eng.max_chunk, n_tok - r0);
         eng.forward_embd(emb.data() + (size_t)r0 * E, n, false, false);
@@ -284,20 +288,28 @@ inline Result transcribe(Engine& eng, AudioQwen3A& enc, const Tokenizer& tok, co
     t0 = clk::now();
     std::vector<int> out;
     const int room = std::min(o.max_new, eng.ctx - eng.pos - 1);
+    bool ended = false;  // (<|im_end|>, the loop stop or a cancel: else the room ran out)
     for (int i = 0; i < room; ++i) {
       if (o.cancelled && o.cancelled()) {
-        r.cancelled = true;
+        r.cancelled = ended = true;
         break;
       }
       const int t = (int)(std::max_element(l.begin(), l.end()) - l.begin());
-      if (t == im_end || t == eot) break;
+      if (t == im_end || t == eot) {
+        ended = true;
+        break;
+      }
       out.push_back(t);
       const std::string so_far = tok.decode(out);
       if (o.on_text) o.on_text(so_far);
-      if (looping(so_far)) break;
+      if (looping(so_far)) {
+        ended = true;
+        break;
+      }
       gpu([&] { l = eng.forward(&t, 1); });
     }
     r.decode_ms += ms(t0);
+    p.cut = !ended;
     p.audio_tokens = n_tok;
     p.tokens = (int)out.size();
     p.raw = tok.decode(out);
@@ -336,14 +348,15 @@ inline Result transcribe(Engine& eng, AudioQwen3A& enc, const Tokenizer& tok, co
 }
 
 // A Qwen3-ASR GGUF in the Hugging Face cache (unsloth's or ggml-org's conversion: the model and an mmproj-*.gguf next
-// to it), the largest first; "" when there is none.
+// to it), the largest first, its Q8_0 file first (the one measured: docs/qwen3-asr.md); "" when there is none.
 inline std::string find_model() {
   namespace fs = std::filesystem;
   std::vector<fs::path> roots;
   if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
   if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
   if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
-  for (const char* size : {"1.7B", "0.6B"})
+  for (const char* size : {"1.7B", "0.6B"}) {
+    std::string first;
     for (const fs::path& r : roots) {
       std::error_code ec;
       for (const auto& repo : fs::directory_iterator(r, ec)) {
@@ -351,26 +364,36 @@ inline std::string find_model() {
         if (n.find("Qwen3-ASR-" + std::string(size)) == std::string::npos || n.find("GGUF") == std::string::npos) continue;
         for (const auto& snap : fs::directory_iterator(repo.path() / "snapshots", ec))
           for (const auto& f : fs::directory_iterator(snap.path(), ec)) {
-            const std::string fn = f.path().filename().string();
-            if (f.path().extension() == ".gguf" && fn.rfind("mmproj", 0) != 0) return f.path().string();
+            std::string fn = f.path().filename().string();
+            if (f.path().extension() != ".gguf" || fn.rfind("mmproj", 0) == 0) continue;
+            for (char& c : fn) c = (char)tolower((unsigned char)c);
+            if (fn.find("q8_0") != std::string::npos) return f.path().string();
+            if (first.empty()) first = f.path().string();
           }
       }
     }
+    if (!first.empty()) return first;
+  }
   return "";
 }
-// The mmproj next to a model file (an mmproj*.gguf whose projector is qwen3a); "" when there is none.
-inline std::string find_mmproj(const std::string& model) {
+// The mmproj next to a model file (an mmproj*.gguf whose projector is qwen3a; given the text model's width n_embd,
+// one whose audio rows are that wide first); "" when there is none.
+inline std::string find_mmproj(const std::string& model, int n_embd = 0) {
   namespace fs = std::filesystem;
   std::error_code ec;
+  std::string first;
   for (const auto& f : fs::directory_iterator(fs::path(model).parent_path(), ec)) {
     const std::string fn = f.path().filename().string();
     if (fn.rfind("mmproj", 0) != 0 || f.path().extension() != ".gguf") continue;
     try {
-      if (GgufFile(f.path().string()).get_str("clip.audio.projector_type", "") == "qwen3a") return f.path().string();
+      const GgufFile g(f.path().string());
+      if (g.get_str("clip.audio.projector_type", "") != "qwen3a") continue;
+      if (n_embd <= 0 || (int)g.get("mm.a.mlp.2.weight").dims[1] == n_embd) return f.path().string();
+      if (first.empty()) first = f.path().string();
     } catch (const std::exception&) {
     }
   }
-  return "";
+  return first;
 }
 
 }  // namespace q3asr
