@@ -1,4 +1,4 @@
-// Documents the model writes (the web UI's create_document tool): Markdown in, a .docx or .pdf file out, written here
+// Documents the model writes (the web UI's create_file tool): Markdown in, a .docx or .pdf file out, written here
 // with no library.
 //
 // The Markdown: # .. #### headings, paragraphs, **bold**, *italic*, `code`, ~~strike~~, ==highlight==, - / * / 1.

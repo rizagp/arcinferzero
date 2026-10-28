@@ -120,7 +120,7 @@ inline std::string mime_of(const std::string& name) {
       {"doc", "application/msword"}, {"rtf", "application/rtf"}, {"tsv", "text/tab-separated-values; charset=utf-8"},
       {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}, {"xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"},
       {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"}, {"html", "text/plain; charset=utf-8"}, {"svg", "text/plain; charset=utf-8"}};
-  // (source and markup the model may write with create_document: shown as text, never run as a page or script)
+  // (source and markup the model may write with create_file: shown as text, never run as a page or script)
   static const std::set<std::string> text = {"htm", "xhtml", "xml", "css", "js", "mjs", "ts", "jsx", "tsx", "py", "ps1",
       "sh", "bat", "cmd", "c", "cpp", "h", "hpp", "cs", "java", "go", "rs", "kt", "swift", "php", "rb", "lua", "sql",
       "yaml", "yml", "toml", "ini", "cfg", "conf", "log", "tex", "bib", "srt", "vtt", "ics", "vcf", "jsonl", "r", "m"};
@@ -286,7 +286,7 @@ class Store {
       }
     return false;
   }
-  // a document's source (the create_document arguments), in its chat's .src folder
+  // a document's source (the create_file arguments), in its chat's .src folder
   void put_source(const std::string& id, const std::string& chat, const std::string& json) {
     std::lock_guard<std::recursive_mutex> g(mu_);
     const fs::path dir = (chat.empty() || !valid_id(chat) ? up_ : folder(chat, "")) / ".src";
@@ -679,7 +679,7 @@ inline DocCache& doc_cache() {
   static DocCache c;
   return c;
 }
-inline DocCache& virtual_doc_cache() {  // (chats and transcripts: list_chats / search_chats index them all)
+inline DocCache& virtual_doc_cache() {  // (chats and transcripts: search_chats indexes them all)
   static DocCache c;
   return c;
 }

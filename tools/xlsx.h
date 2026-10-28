@@ -1,5 +1,5 @@
 // Excel workbooks with no library: uploaded .xlsx / .xlsm (and .csv / .tsv) read as an rdoc::Doc for the web UI's
-// file tools (tools/doc_reader.h calls read_xlsx / read_csv by the file's extension), and create_document's "xlsx"
+// file tools (tools/doc_reader.h calls read_xlsx / read_csv by the file's extension), and create_file's "xlsx"
 // written from the Markdown the model already writes (write()).
 //
 // Reading: xl/workbook.xml (the sheets in their order, with names; xl/_rels/workbook.xml.rels for each sheet's part),

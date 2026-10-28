@@ -304,7 +304,7 @@ While the server is running:
 - **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
   (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, Excel XLSX / XLSM, PowerPoint
   PPTX (one heading per slide, with its speaker notes), text, Markdown, CSV; "read all the files I uploaded today" works; a spreadsheet reads as one heading per sheet and one
-  line per row, "Nama: Budi | Nilai: 80" when it has a header row, dates as yyyy-mm-dd, formulas as their values) and write files (`create_document`: DOCX, PDF, DOC, RTF and XLSX made from Markdown; any
+  line per row, "Nama: Budi | Nilai: 80" when it has a header row, dates as yyyy-mm-dd, formulas as their values) and write files (`create_file`: DOCX, PDF, DOC, RTF and XLSX made from Markdown; any
   text format, such as HTML, SVG, CSS, JS, Python, JSON, CSV or TXT, saved as written; a saved HTML / SVG file's card
   opens the page sandboxed; binary formats such as PPTX, PNG or ZIP are refused). A **long document** (more
   than ~6K tokens, e.g. a report of 100+ pages) is not put into the prompt whole, which would take minutes: the model

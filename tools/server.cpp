@@ -742,8 +742,9 @@ class Server {
 #include "server_whisper.h"  // (Whisper: /v1/audio/transcriptions)
 
 // The web UI's file tools for the model (it calls them as functions, the page runs them here):
-//   create_document {filename, format: docx | pdf | doc | rtf | md | xlsx, content (Markdown, tools/doc_writer.h;
-//                    xlsx: each table a sheet, tools/xlsx.h; number_format auto | id | us), title,
+//   create_file {filename, format: docx | pdf | doc | rtf | xlsx,
+//                    made from Markdown content (tools/doc_writer.h; xlsx: each table a sheet, tools/xlsx.h;
+//                    number_format auto | id | us), or any text extension (md, html, py...: saved as written), title,
 //                    subtitle, author, date, page, orientation, margins_mm, font, font_size, line_spacing,
 //                    heading_color, accent_color, text_color, header, footer, page_numbers, chat_id}: writes the file
 //                    into the chat's folder (and its source next to it), returns it as a file
@@ -758,8 +759,8 @@ class Server {
 //                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
 //   read_file / search_file also take "chat:<id>" (another chat: a section per exchange) and "transcript:<id>"
 //                    (a recording or meeting of the Whisper library: its summary, then 5-minute sections) as file_id
-//   list_chats {query, limit, chat_id}: the other chats, newest first (query: in their text)
-//   search_chats {query, top_k, chat_id}: their exchanges that fit the query best (BM25)
+//   search_chats {query, limit, chat_id}: the other chats; no query: newest first (limit 1-100, 20); a query: their
+//                    exchanges that fit it best (BM25, limit 1-10, 5)
 //   run_command {command, chat_id, timeout_s}: one PowerShell command in the chat's folder (tools/server_terminal.h),
 //                    sent by the page only after the user allowed it; refused (403) to any computer but this one.
 //                    session: true: in the chat's terminal (folder and environment kept for the next command; the
@@ -799,7 +800,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
     return std::string(b);
   };
   try {
-    if (rq.path == "/v1/tools/create_document") {
+    if (rq.path == "/v1/tools/create_file") {
       const std::string content = a["content"].str();
       if (content.empty()) return fail(400, "content required");
       // docx, pdf, doc, rtf, xlsx are made from Markdown; md and every other text format (html, svg, css, js, py,
@@ -833,14 +834,17 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       o.header = a["header"].str();
       o.footer = a["footer"].str();
       if (a["page_numbers"].is_bool()) o.page_numbers = a["page_numbers"].as_bool();
-      std::string name = files::safe_name(a["filename"].str(o.title.empty() ? "document" : o.title));
+      // (an empty filename too: the title, else "document"; before, "" made "file.docx")
+      const std::string fname = doc::trim(a["filename"].str());
+      std::string name = files::safe_name(!fname.empty() ? fname : o.title.empty() ? "document" : o.title);
       if (files::ext_of(name) != fmt) name += "." + fmt;
       std::string data;
       if (fmt == "docx") data = doc::docx(content, o);
       else if (fmt == "pdf") data = doc::pdf(content, o);
       else if (fmt == "doc" || fmt == "rtf") data = doc::rtf(content, o);
       else if (fmt == "xlsx") data = xlsx::write(content, o, a["number_format"].str("auto"));
-      else if (fmt == "md") data = (o.title.empty() ? "" : "# " + o.title + "\n\n") + content;
+      // (md: the title as its heading, unless the content starts with a heading of its own: else it came twice)
+      else if (fmt == "md") data = (o.title.empty() || doc::trim(content).rfind("# ", 0) == 0 ? "" : "# " + o.title + "\n\n") + content;
       else data = content;
       const std::string chat = files::valid_id(a["chat_id"].str()) ? a["chat_id"].str() : "";
       const files::Info i = st.put(name, data, chat);
@@ -848,7 +852,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       Json r = files::info_json(i);
       r.set("file_id", i.id);
       r.set("note", "created; the user sees it as a file card in your answer (download / open). To change it, read its "
-                    "source with read_file and call create_document again: that makes a new version.");
+                    "source with read_file and call create_file again: that makes a new version.");
       return reply(200, r);
     }
     if (rq.path == "/v1/tools/list_files") {
@@ -918,7 +922,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       std::vector<std::shared_ptr<const rdoc::Index>> ixs;
       if (files::is_virtual(a["file_id"].str())) {  // (another chat, or a transcript)
         files::VirtualDoc v;
-        if (!files::virtual_doc(a["file_id"].str(), v)) return fail(404, "no " + a["file_id"].str() + " (list_chats shows the chats)");
+        if (!files::virtual_doc(a["file_id"].str(), v)) return fail(404, "no " + a["file_id"].str() + " (search_chats without a query lists the chats)");
         files::Info i;
         i.id = a["file_id"].str();
         i.name = v.title;
@@ -977,7 +981,14 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
           unread += (unread.empty() ? "" : "; ") + targets[f].name + ": pages " + rdoc::pdfimg::ranges(ixs[f]->doc.unread);
       if (!unread.empty())
         r.set("not_searched", "scanned pages not transcribed yet (" + unread + "): read_file with pages has a vision model read them");
-      if (res.size() == 0)
+      // (nothing to search is not "no passage has these words": that sent the model off retrying with other words)
+      const size_t searchable = (size_t)std::count_if(ixs.begin(), ixs.end(), [](const auto& x) { return x != nullptr; });
+      if (targets.empty())
+        r.set("note", "this chat has no documents to search: list_files shows the saved files (then search_file with file_id)");
+      else if (searchable == 0)
+        r.set("note", targets.size() == 1 ? targets[0].name + " has no text to search (" + targets[0].kind + "): read_file gives what it holds"
+                                          : "none of these files has text to search");
+      else if (res.size() == 0)
         r.set("note", "no passage has these words: try other words (the document's own terms, synonyms), or read the outline (read_file)");
       else if (left_out)
         r.set("note", std::to_string(left_out) + " more passages left out to keep within the model's context: search with more "
@@ -986,24 +997,19 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
     }
     // the other chats (the web UI's, one reads another): listed newest first (a query: in their text), or searched
     // by their exchanges (BM25); each is read with read_file {"file_id": "chat:<id>"} (an outline per exchange)
-    if (rq.path == "/v1/tools/list_chats" || rq.path == "/v1/tools/search_chats") {
-      const std::string q = a["query"].str(), ql = files::lower(q), self = a["chat_id"].str();
+    // (one tool for both since 2026-10-28, list_chats before: no query lists them, a query searches their exchanges)
+    if (rq.path == "/v1/tools/search_chats") {
+      const std::string q = a["query"].str(), self = a["chat_id"].str();
       struct C { std::string id, title, model, snippet; int64_t at; };
       std::vector<C> cs;
       for (const auto& [cid, text] : st.chats_all()) {
         if (cid == self) continue;
         Json c;
         if (!Json::try_parse(text, c)) continue;
-        if (rq.path == "/v1/tools/list_chats" && !ql.empty()) {  // (in what read_file shows of it: no reasoning, tool
-          std::string seen = c["title"].str() + "\n" + c["snippet"].str();  // output or attached data)
-          for (const Json& m : c["history"].items())
-            if (m["role"].str() == "user" || m["role"].str() == "assistant") seen += "\n" + files::message_text(m["content"]);
-          if (files::lower(seen).find(ql) == std::string::npos) continue;
-        }
         cs.push_back({cid, c["title"].str("chat"), c["model"].str(), c["snippet"].str(), (int64_t)(c["at"].as_number(0) / 1000)});
       }
       std::sort(cs.begin(), cs.end(), [](const C& x, const C& y) { return x.at > y.at; });
-      if (rq.path == "/v1/tools/list_chats") {
+      if (doc::trim(q).empty()) {
         const size_t limit = (size_t)std::clamp(a["limit"].as_number(20), 1.0, 100.0);
         Json d = Json::array();
         for (const C& c : cs) {
@@ -1022,11 +1028,10 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         r.set("chats", d);
         r.set("count", (double)d.size());
         r.set("note", "read one with read_file {\"file_id\": \"chat:<id>\"} (long ones: their outline, one section per exchange), "
-                      "or find passages in all of them with search_chats");
+                      "or find passages in all of them with search_chats and a query");
         return reply(200, r);
       }
-      if (q.empty()) return fail(400, "query required");
-      const size_t top = (size_t)std::clamp(a["top_k"].as_number(5), 1.0, 10.0);
+      const size_t top = (size_t)std::clamp(a["limit"].as_number(5), 1.0, 10.0);
       struct Hit { double score; size_t chat, chunk; };
       std::vector<Hit> hits;
       std::vector<std::shared_ptr<const rdoc::Index>> ixs(cs.size());
@@ -1058,7 +1063,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       Json r = Json::object();
       r.set("results", res);
       r.set("chats_searched", (double)cs.size());
-      if (res.size() == 0) r.set("note", "no exchange has these words: try other words, or list_chats");
+      if (res.size() == 0) r.set("note", "no exchange has these words: try other words, or search_chats without a query (the chats, newest first)");
       return reply(200, r);
     }
     if (rq.path == "/v1/tools/read_file") {
@@ -1067,7 +1072,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       std::shared_ptr<const rdoc::Index> ix;
       if (files::is_virtual(a["file_id"].str())) {  // (another chat, or a transcript: read as a document)
         files::VirtualDoc v;
-        if (!files::virtual_doc(a["file_id"].str(), v)) return fail(404, "no " + a["file_id"].str() + " (list_chats shows the chats)");
+        if (!files::virtual_doc(a["file_id"].str(), v)) return fail(404, "no " + a["file_id"].str() + " (search_chats without a query lists the chats)");
         i.id = a["file_id"].str();
         i.name = v.title;
         i.kind = "document";
@@ -1087,8 +1092,28 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         std::string src;
         if (st.source(i.id, src)) {  // (the model's own document: its source)
           Json sj;
-          if (Json::try_parse(src, sj)) r.set("source", sj);
-          r.set("note", "a document written with create_document: 'source' holds its arguments; to correct it, change them and call create_document again");
+          std::string note = "a file written with create_file: 'source' holds its arguments; to correct it, change them and call create_file again";
+          if (Json::try_parse(src, sj)) {
+            // (its content within the model's read budget too, in parts by offset: a 60 KB page read whole overflowed
+            //  a small context)
+            const std::string body = sj["content"].str();
+            const size_t mx = files::read_budget(ctx), off = std::min(body.size(), (size_t)std::max(0.0, a["offset"].as_number(0)));
+            if (off > 0 || body.size() > mx) {
+              size_t b = off, end = std::min(body.size(), off + mx);
+              while (b < body.size() && ((unsigned char)body[b] & 0xC0) == 0x80) ++b;
+              while (end < body.size() && end > b && ((unsigned char)body[end] & 0xC0) == 0x80) --end;
+              sj.set("content", body.substr(b, end - b));
+              r.set("offset", (double)b);
+              r.set("total_chars", (double)body.size());
+              if (end < body.size()) {
+                r.set("next_offset", (double)end);
+                note += "; content is a part (as much as the model's context takes at once): read_file with offset: " +
+                        std::to_string(end) + " for the rest; a corrected version needs the whole content again";
+              }
+            }
+            r.set("source", sj);
+          }
+          r.set("note", note);
           return reply(200, r);
         }
         if (i.kind != "document") {
@@ -1718,9 +1743,9 @@ int main(int argc, char** argv) {
     if (rq.path == "/v1/files" || rq.path.rfind("/v1/files/", 0) == 0 || rq.path.rfind("/files/", 0) == 0 ||
         rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)
       return files_api(rq, rs);
-    if (rq.method == "POST" && (rq.path == "/v1/tools/create_document" || rq.path == "/v1/tools/list_files" ||
+    if (rq.method == "POST" && (rq.path == "/v1/tools/create_file" || rq.path == "/v1/tools/list_files" ||
                                 rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/search_file" ||
-                                rq.path == "/v1/tools/list_chats" || rq.path == "/v1/tools/search_chats" ||
+                                rq.path == "/v1/tools/search_chats" ||
                                 rq.path == "/v1/tools/run_command")) {
       int ctx = 0;  // (the loaded model's context; not waited for during a model switch: then the usual limits)
       {
@@ -1816,8 +1841,15 @@ int main(int argc, char** argv) {
       if (ct.find("html") != std::string::npos || ct.empty()) text = webt::html_to_text(pg.body, &title);
       else if (ct.rfind("text/", 0) == 0 || ct.find("json") != std::string::npos || ct.find("xml") != std::string::npos) text = pg.body;
       else return fail(415, "unsupported content type " + pg.content_type + " (text and HTML pages only)");
-      // a window of the text: offset, max_chars (cut on a UTF-8 character boundary)
-      const size_t total = text.size(), max_chars = (size_t)std::clamp<int64_t>(in["max_chars"].as_int(12000), 500, 100000);
+      // a window of the text: offset, max_chars, never more than the model's context takes in one read (as read_file;
+      // before, 12,000 characters a fetch whatever the context) (cut on a UTF-8 character boundary)
+      int ctx = 0;
+      {
+        std::shared_lock<std::shared_mutex> lk(swap_mu, std::try_to_lock);
+        if (lk.owns_lock() && cur) ctx = cur->eng->ctx;
+      }
+      const size_t total = text.size(),
+                   max_chars = std::min((size_t)std::clamp<int64_t>(in["max_chars"].as_int(12000), 500, 100000), files::read_budget(ctx));
       size_t off = (size_t)std::clamp<int64_t>(in["offset"].as_int(0), 0, (int64_t)total), end = std::min(total, off + max_chars);
       while (off < total && ((unsigned char)text[off] & 0xc0) == 0x80) ++off;
       while (end < total && ((unsigned char)text[end] & 0xc0) == 0x80) --end;

@@ -18,6 +18,31 @@
   kept, but a whole made-up paragraph over a nearly silent piece), Gemma 4 12B: its audio does not reach the model
   ("the audio is not provided"), to be looked into.
 
+## 2026-10-28: the model's tools audited; create_document is create_file
+
+- **create_file** replaces create_document (it writes any text file now, not only documents): the tool, its texts,
+  `/v1/tools/create_file` and the minutes' DOCX / PDF. The old name is gone, from the server too (one tool, one
+  name); older chats still show their create_document cards and files.
+- **search_chats** replaces list_chats and search_chats (the same job, two tools in every prompt): no query lists
+  the other chats newest first, a query finds their exchanges (BM25); `limit` for both. `/v1/tools/list_chats` is
+  gone. The six file tools are five.
+- **Talk mode**: every tool runs in the background there, but only the web tools' calls were explained, and only
+  with Web on: with Files alone a model did not know its read_file results come later, and could say a file was
+  written before create_file ran. The text now covers every tool whenever tools are on; a result's label names its
+  file ("[Results of #3: read_file laporan.pdf]", before "read_file " alone).
+- **The 8-round limit**: calls in the 8th round were dropped without a word, the answer often empty. Now they get
+  a "not run" result and their card says so, and the model answers once more without tools from what it has.
+- **read_file of a file the model wrote** returns its source within the model's read budget, in parts by offset
+  (a 60 KB page overflowed a small context). **web_fetch** keeps to the same budget (12,000 characters a fetch
+  whatever the context before).
+- **search_file** with nothing to search (an image or audio file, a chat without documents) says so, instead of
+  "no passage has these words: try other words", which sent the model off retrying.
+- create_file: an empty filename takes the title (it made `file.docx`); md with a title and content that starts
+  with its own `# ` heading no longer has the heading twice.
+- Earlier exchanges' long call arguments (a file's whole content, a long script) are shortened in what is sent, as
+  long results already were; search_chats results too. The card labels: "PDF" / ".html" formats, search_file
+  "searching…", read_file without file_id.
+
 ## 2026-10-28: a pipe inside a table cell
 
 - **`\|` and a `|` inside a code span stay in their table cell** (webui/index.html `mdCells`, tools/doc_writer.h

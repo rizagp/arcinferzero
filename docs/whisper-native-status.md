@@ -178,7 +178,7 @@ dropped there goes the same way. Done: "Summarize" asks the loaded chat model fo
 items and open questions with their [m:ss], in the meeting's language named (a 4B model answered an Indonesian
 meeting in English when only told "the transcript's language"); a transcript longer than the context goes in
 parts (one context's worth of characters each), then the parts' summaries together; kept as `summary.md`, shown
-above the transcript. "Minutes DOCX / PDF": the summary and the transcript through `create_document` (in the Files
+above the transcript. "Minutes DOCX / PDF": the summary and the transcript through `create_file` (in the Files
 panel too). Checked with the browser's capture fed from two test files: Me / Others in the draft and the accurate
 pass, a mark, the MP3, an Indonesian summary, a 15-KB DOCX; a 56-minute meeting summarized in 3 parts with the 4B
 model (16K context) in ~6 minutes (each part's summary now at most 700 tokens).
