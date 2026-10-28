@@ -121,19 +121,33 @@ Notes from the runs:
 
 ## Using it
 
-Server (needs `--whisper`: the transcription service and the library are Whisper's):
+Since 2026-10-28 (the user's choice after the comparisons above) the server's transcript models are **Qwen3-ASR
+(the default), Gemma 4 E4B and Whisper large-v3**; Whisper turbo is no longer used when large-v3 is in the cache, and
+Gemma 4 12B does not transcribe.
 
 ```
-serverz -m <chat model> --whisper auto --asr auto
+serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
 ```
 
-`--asr auto` takes a Qwen3-ASR 1.7B (else 0.6B) GGUF from the Hugging Face cache, `--asr <file.gguf>` a given one;
-the mmproj (projector `qwen3a`) is found next to it. `/props` then shows `"whisper": {..., "asr": "qwen3-asr-1.7b"}`.
+- `--whisper auto` loads faster-whisper large-v3 (turbo only when large-v3 is not in the cache) and, next to it,
+  Qwen3-ASR 1.7B (else 0.6B) GGUF from the Hugging Face cache (`--asr auto` is the default with `--whisper`;
+  `--asr <file.gguf>` a given one, `--asr off` none; the mmproj with projector `qwen3a` is found next to it). Gemma 4
+  E4B is offered when the model list has it with its audio encoder. `/props` shows
+  `"whisper": {"model": "whisper-large-v3", "asr": "qwen3-asr-1.7b", "chat_asr": "gemma4-e4b", ...}`.
+  GPU memory: large-v3 and Qwen3-ASR 8.11 GiB together (turbo and Qwen3-ASR: 5.31).
+- `POST /v1/audio/transcriptions`: no `model`, OpenAI's `whisper-1` or `qwen3-asr` -> Qwen3-ASR; `gemma4-e4b` /
+  `e4b` -> Gemma 4 E4B (in parts of up to 2 minutes cut at quiet points, a segment each; the server loads E4B as its
+  chat model when another one is loaded); `whisper` or its id -> Whisper large-v3 (word times); any other chat model:
+  400. Every response format; `prompt` and `terms` become the context; translations stay Whisper's.
+- Voice messages and audio files in a chat: written by Qwen3-ASR (unless the setting "The model hears it" is on and
+  the chat's model hears audio).
+- Transcripts tab: a model choice per file or recording (Qwen3-ASR / Gemma 4 E4B / Whisper large-v3), changeable any
+  time; each file keeps the model it was added with. A live recording's text as it is spoken is Whisper's; the chosen
+  model does the pass after Stop.
 
-- `POST /v1/audio/transcriptions` with `model=qwen3-asr` (any name containing it, or the id): every response format;
-  `prompt` and `terms` become the model's context (names, terms); translations stay Whisper's.
-- Transcripts tab: "Model: Qwen3-ASR" (shown when the server has it). For a live recording the text as it is spoken
-  stays Whisper's; Qwen3-ASR does the pass after Stop.
+Measured through the server (2026-10-28): every route on a 14-s clip (default, `whisper-1`, `whisper`, `gemma4-e4b`,
+`gemma4-12b` refused), the queue with each model; Gemma 4 E4B on the second recording in two parts 25.9 s, the same
+text as in one piece (36.7 s).
 
 Command line ([zero/asr_testz.cpp](../zero/asr_testz.cpp)):
 

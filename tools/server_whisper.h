@@ -149,6 +149,7 @@ class Service {
     p.set("device", npu ? "npu" : "gpu");
     p.set("max_minutes", max_seconds / 60);
     if (!asr_id.empty()) p.set("asr", asr_id);
+    if (!chat_asr_id.empty()) p.set("chat_asr", chat_asr_id);  // (Gemma 4 E4B as a transcript model)
     return p;
   }
 
@@ -185,21 +186,50 @@ class Service {
     for (char& c : m) c = (char)tolower((unsigned char)c);
     return m.find("qwen3-asr") != std::string::npos || (!asr_id.empty() && m == asr_id);
   }
+  // a "model" field naming Whisper itself ("whisper", its id); OpenAI's generic "whisper-1" is not: it takes the default
+  bool names_whisper(std::string m) const {
+    for (char& c : m) c = (char)tolower((unsigned char)c);
+    return m == "whisper" || m == id || m.rfind("whisper-large", 0) == 0 || m.rfind("faster-whisper", 0) == 0;
+  }
+
+  // ---------------------------------------------------------------- Gemma 4 E4B as a transcript model
+  // The server's chat model that hears audio (tools/server.cpp sets chat_asr: a chat request to it with the clip, as
+  // /v1/audio/transcriptions with a chat model does; the server loads that model if another one is loaded). The clip
+  // goes in parts of up to kChatPartSeconds, cut at the quietest point near each; one segment per part.
+  static constexpr double kChatPartSeconds = 120;
+  std::string chat_asr_id;  // its model id ("gemma-4-e4b..."); empty: none
+  std::function<std::string(const std::string& wav, double secs, const std::string& language, const std::string& context)>
+      chat_asr;
+  bool names_chat_asr(std::string m) const {
+    for (char& c : m) c = (char)tolower((unsigned char)c);
+    return !m.empty() && (m == chat_asr_id || m == "e4b" || m == "gemma-4-e4b" || m == "gemma4-e4b");
+  }
 
   // a request's transcription options from its fields (multipart or JSON, as text); false and the message when one
   // is wrong
   bool read_options(const std::function<std::string(const char*)>& field, bool translate, whisper::Options& opt,
                     std::string& bad) const {
     opt.task = translate ? "translate" : "transcribe";
-    if (names_asr(field("model"))) {
-      if (asr_id.empty()) {
-        bad = "model: Qwen3-ASR is not loaded (start the server with --asr auto)";
+    // the speech model: Qwen3-ASR unless the request names another one (Gemma 4 E4B, or Whisper itself); Whisper
+    // when Qwen3-ASR is not loaded and for translations
+    const std::string mdl = field("model");
+    if (names_chat_asr(mdl)) {
+      if (chat_asr_id.empty() || !chat_asr) {
+        bad = "model: no Gemma 4 E4B with its audio encoder among this server's models";
         return false;
       }
       if (translate) {
-        bad = "model: Qwen3-ASR transcribes only (translations: Whisper)";
+        bad = "model: Gemma 4 E4B transcribes here (translations: Whisper)";
         return false;
       }
+      opt.engine = "e4b";
+    } else if (names_asr(mdl) && asr_id.empty()) {
+      bad = "model: Qwen3-ASR is not loaded (start the server with --asr auto)";
+      return false;
+    } else if (names_asr(mdl) && translate) {
+      bad = "model: Qwen3-ASR transcribes only (translations: Whisper)";
+      return false;
+    } else if (!asr_id.empty() && !translate && !names_whisper(mdl)) {
       opt.engine = "qwen3-asr";
     }
     std::string lang = field("language");
@@ -303,7 +333,7 @@ class Service {
       LockedBackend be(*eng_, gpu_turn);
       whisper::Transcriber tr(*m_, be);
       auto run = [&](const std::vector<float>& a, const whisper::Options& o, const whisper::Progress& cb) {
-        return o.engine.empty() ? tr.run(a, o, cb) : asr_run(a, o, cb);
+        return o.engine.empty() ? tr.run(a, o, cb) : o.engine == "e4b" ? chat_run(a, o, cb) : asr_run(a, o, cb);
       };
       r = run(audio, opt, [&](double done, double total, const std::vector<whisper::Segment>& segs) {
         if (!stream) return !rs.client_gone();
@@ -370,6 +400,7 @@ class Service {
   // text file in the chat's folder, given as that file: the chat reads it as a document (with the file tools, its
   // outline and the parts it needs). False and the reason when a clip cannot be read.
   static constexpr size_t kInlineChars = 12000;
+  std::string clip_model() const { return asr_id.empty() ? "Whisper" : "Qwen3-ASR"; }  // (what writes chat audio)
   static bool has_audio_parts(const Json& body) {
     for (const Json& m : body["messages"].items())
       for (const Json& p : m["content"].items()) {
@@ -444,7 +475,7 @@ class Service {
           std::string stem = name;
           const size_t dot = stem.rfind('.');
           if (dot != std::string::npos && dot > 0) stem.resize(dot);
-          const files::Info f = files::store().put(stem + " (transcript).txt", "Transcript of " + name + " (" + len + ", Whisper):\n\n" + text, chat);
+          const files::Info f = files::store().put(stem + " (transcript).txt", "Transcript of " + name + " (" + len + ", " + clip_model() + "):\n\n" + text, chat);
           Json fr = Json::object();
           fr.set("file_id", f.id);
           fr.set("filename", f.name);
@@ -454,7 +485,7 @@ class Service {
           t.set("type", "text");
           // (ended by a blank line: the template joins a message's text parts as they are, and the question after it
           //  ran into the transcript's last word)
-          t.set("text", "[audio: " + name + ", " + len + ", written by Whisper]\n" +
+          t.set("text", "[audio: " + name + ", " + len + ", written by " + clip_model() + "]\n" +
                             (text.empty() ? std::string("(no speech)") : text) + "\n[end of the audio]\n\n");
         }
         parts.push(t);
@@ -1160,13 +1191,15 @@ class Service {
     const std::vector<float> a = audio::decode_16k(std::vector<uint8_t>(data.begin(), data.end()), max_seconds);
     whisper::Options o;
     o.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
+    if (!asr_id.empty()) o.engine = "qwen3-asr";  // (the default speech model: Qwen3-ASR when loaded)
     LockedBackend be(*eng_, gpu_turn);
     whisper::Transcriber tr(*m_, be);
     bool left = false;
-    const whisper::Result r = tr.run(a, o, [&](double, double, const std::vector<whisper::Segment>&) {
+    const whisper::Progress cb = [&](double, double, const std::vector<whisper::Segment>&) {
       left = gone && gone();
       return !left;
-    });
+    };
+    const whisper::Result r = o.engine.empty() ? tr.run(a, o, cb) : asr_run(a, o, cb);
     if (left) throw std::runtime_error("the client left");
     for (const whisper::Segment& g : r.segments) text += g.text;
     text = whisper::trim_copy(text);
@@ -1681,7 +1714,8 @@ class Service {
           stopped = cancel_running_ || stop_;
           return !stopped;
         };
-        whisper::Result rk = opt.engine.empty() ? tr.run(audio[k], opt, cb) : asr_run(audio[k], opt, cb);
+        whisper::Result rk = opt.engine.empty() ? tr.run(audio[k], opt, cb)
+                             : opt.engine == "e4b" ? chat_run(audio[k], opt, cb) : asr_run(audio[k], opt, cb);
         const std::string who = audio.size() > 1 ? meta["speakers"][(int)k].str("Track " + std::to_string(k + 1)) : "";
         for (whisper::Segment& g : rk.segments) g.speaker = who;
         r.segments.insert(r.segments.end(), rk.segments.begin(), rk.segments.end());
@@ -1847,6 +1881,38 @@ class Service {
     const q3asr::Result q = q3asr::transcribe(*asr_eng_, *asr_enc_, *asr_tok_, audio, o);
     fprintf(stderr, "asr: %.1f s of audio, %d parts: encoder %.0f ms, prompt %.0f ms (%d audio tokens), %d tokens in %.0f ms\n",
             r.duration, (int)q.parts.size(), q.encode_ms, q.prefill_ms, q.audio_tokens, q.tokens, q.decode_ms);
+    return r;
+  }
+
+  // Gemma 4 E4B on 16 kHz samples (chat_asr) as a whisper::Result: parts of up to kChatPartSeconds, a segment each
+  // (language: the request's when it names one); the progress callback after each part (false stops before the next)
+  whisper::Result chat_run(const std::vector<float>& audio, const whisper::Options& opt, const whisper::Progress& cb) {
+    whisper::Result r;
+    r.duration = (double)audio.size() / 16000;
+    const std::string lang = opt.language == "auto" || opt.language.find(',') != std::string::npos ? "" : opt.language;
+    std::string context = opt.terms;
+    if (!opt.initial_prompt.empty()) context += (context.empty() ? "" : "\n") + opt.initial_prompt;
+    for (const auto& [a, b] : q3asr::split(audio, kChatPartSeconds)) {
+      std::string wav = "RIFF0000WAVEfmt ";  // (16 kHz 16-bit mono PCM)
+      auto u32 = [&](uint32_t v) { wav.append((const char*)&v, 4); };
+      auto u16 = [&](uint16_t v) { wav.append((const char*)&v, 2); };
+      u32(16); u16(1); u16(1); u32(16000); u32(32000); u16(2); u16(16);
+      wav += "data";
+      u32((uint32_t)((b - a) * 2));
+      for (size_t i = a; i < b; ++i) u16((uint16_t)(int16_t)std::lround(std::clamp(audio[i], -1.0f, 1.0f) * 32767));
+      const uint32_t riff = (uint32_t)wav.size() - 8;
+      memcpy(&wav[4], &riff, 4);
+      whisper::Segment g;
+      g.start = a / 16000.0;
+      g.end = b / 16000.0;
+      g.text = whisper::trim_copy(chat_asr(wav, g.end - g.start, lang, context));
+      g.lang = lang;
+      if (!g.text.empty()) {
+        g.text = " " + g.text;
+        r.segments.push_back(std::move(g));
+      }
+      if (cb && !cb(b / 16000.0, r.duration, r.segments)) break;
+    }
     return r;
   }
 

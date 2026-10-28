@@ -386,8 +386,9 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <option value="id,en">Indonesian + English mixed</option>
         </select>
         <select id="trmodel" aria-label="Speech model" hidden
-          title="Whisper: segments with every word's time. Qwen3-ASR: often better on mixed Indonesian and English and on noise, but one text without timestamps (per part of up to 6 minutes). A live recording's text as it is spoken is always Whisper's; this model does the pass after Stop">
-          <option value="">Model: Whisper</option><option value="qwen3-asr">Model: Qwen3-ASR</option>
+          title="Qwen3-ASR: the most complete on noisy, mixed Indonesian and English; one text per part of up to 6 minutes, no timestamps; a glossary helps it most. Gemma 4 E4B: the most readable on clear speech, but it can add sentences over noise or silence; the server switches its chat model to E4B. Whisper large-v3: segments with every word's time. A live recording's text as it is spoken is Whisper's; the model chosen here does the pass after Stop">
+          <option value="qwen3-asr">Model: Qwen3-ASR</option><option value="e4b">Model: Gemma 4 E4B</option>
+          <option value="whisper">Model: Whisper</option>
         </select>
         <select id="trbeam" aria-label="Accuracy" title="Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy">
           <option value="5">Accurate (beam 5)</option><option value="1">Fast (greedy)</option>
@@ -422,7 +423,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <div class="sec">
           <h3>Voice (Talk)</h3>
           <div class="opt"><div class="lab">Speech<small id="speechhelp">How voice messages, Talk and audio files reach the model</small></div>
-            <select id="speech" aria-label="Speech"><option value="whisper">Whisper writes it (every model)</option><option value="model">The model hears it (Gemma 4 E4B / 12B)</option></select></div>
+            <select id="speech" aria-label="Speech"><option value="whisper">Speech to text writes it (every model)</option><option value="model">The model hears it (Gemma 4 E4B / 12B)</option></select></div>
           <div class="opt"><div class="lab">Voice<small>Reads the answers aloud in Talk mode (Windows: Settings &gt; Time &amp; language &gt; Speech adds voices; Edge has natural online voices)</small></div></div>
           <div class="opt"><select id="tts" aria-label="Voice" style="max-width:100%;flex:1"></select></div>
           <div class="opt"><div class="lab">Speaking rate<small>1 = normal</small></div><input type="number" id="ttsrate" step="0.1" min="0.5" max="2" value="1.1" aria-label="Speaking rate"></div>
@@ -635,7 +636,8 @@ async function refreshModel() {
     const stt = p.speech_to_text || p.whisper;  // (the server reports it as "whisper": {model, device, max_minutes})
     caps = { thinking: p.thinking !== false, efforts: Array.isArray(p.reasoning_effort) ? p.reasoning_effort : [], sampling: p.sampling || null,
       stt: stt ? (typeof stt === "object" && stt.model ? String(stt.model) : "whisper") : "", slots: p.stats?.slots || 1,
-      asr: stt && typeof stt === "object" && stt.asr ? String(stt.asr) : "" };  // (Qwen3-ASR next to Whisper, --asr)
+      asr: stt && typeof stt === "object" && stt.asr ? String(stt.asr) : "",  // (Qwen3-ASR next to Whisper, --asr)
+      chatAsr: stt && typeof stt === "object" && stt.chat_asr ? String(stt.chat_asr) : "" };  // (Gemma 4 E4B)
     $("slots").value = String(caps.slots);
     $("slothelp").textContent = slotHelp();
   } catch (e) {}
@@ -1898,7 +1900,7 @@ async function send() {
   if (media.some((m) => m.shown)) {
     const n = document.createElement("span");
     n.className = "voice";
-    n.textContent = "voice message, written by Whisper";
+    n.textContent = "voice message, written by " + (caps.asr ? "Qwen3-ASR" : "Whisper");
     userEl.insertBefore(n, userEl.querySelector(".time"));
   }
   const part = (m) => m.id ? { type: "file", file: { file_id: m.id, filename: m.name } }
@@ -2205,7 +2207,7 @@ async function openConv(id) {
       } else if (m.voice) {
         const n = document.createElement("span");
         n.className = "voice";
-        n.textContent = "voice message, written by Whisper";
+        n.textContent = "voice message, written by " + (caps.asr ? "Qwen3-ASR" : "Whisper");
         u.insertBefore(n, u.querySelector(".time"));
       }
       el = null;
@@ -2402,7 +2404,7 @@ function sttOn(model) {
 async function transcribe(url, signal) {
   const fd = new FormData();
   fd.append("file", await (await fetch(url)).blob(), "speech.wav");
-  fd.append("model", caps.stt);
+  fd.append("model", caps.asr || caps.stt);  // (Qwen3-ASR when the server has it)
   fd.append("response_format", "json");
   const res = await fetch("/v1/audio/transcriptions", { method: "POST", body: fd, signal });
   const j = await res.json().catch(() => ({}));
@@ -2945,13 +2947,18 @@ function trCaps() {
     : "Transcripts need Whisper on the server (start it with --whisper auto)";
   $("mtbtn").title = caps.stt ? "Meetings: recorded with your microphone and the meeting's sound, transcribed as Me / Others, summarized"
     : "Meetings need Whisper on the server (start it with --whisper auto)";
-  $("trmodel").hidden = !caps.asr;
-  if (!caps.asr) $("trmodel").value = "";
+  // (the transcript models this server has: Qwen3-ASR, Gemma 4 E4B, Whisper under its own name; the first the default)
+  const sel = $("trmodel");
+  sel.querySelector('[value="qwen3-asr"]').hidden = !caps.asr;
+  sel.querySelector('[value="e4b"]').hidden = !caps.chatAsr;
+  sel.querySelector('[value="whisper"]').textContent = "Model: " + (/large-v3$/.test(caps.stt) ? "Whisper large-v3" : caps.stt || "Whisper");
+  sel.hidden = !caps.asr && !caps.chatAsr;
+  if (sel.selectedOptions[0]?.hidden || !sel.value) sel.value = caps.asr ? "qwen3-asr" : "whisper";
 }
 (function trLoadPrefs() {
   const p = prefs.tr || {};
   if (p.lang) $("trlang").value = p.lang;
-  if (p.model) $("trmodel").value = p.model;
+  if (p.model) $("trmodel").value = p.model;  // (an earlier "" was Whisper's: the default model now, set by trCaps)
   if (p.beam) $("trbeam").value = p.beam;
   $("trkeep").value = p.keep === "mp3" ? "mp3" : "wav";
   if (p.terms) $("trterms").value = p.terms;
@@ -3131,7 +3138,7 @@ let trUploading = Promise.resolve();
 function trUpload(files) {
   // (the options and the tab as they are now: a file waiting its turn is not added with what was chosen later)
   const opts = { language: $("trlang").value, beam_size: +$("trbeam").value, terms: $("trterms").value.trim(), kind: tr.kind,
-    ...($("trmodel").value ? { model: $("trmodel").value } : {}) };
+    ...(!$("trmodel").hidden ? { model: $("trmodel").value } : {}) };
   trUploading = trUploading.then(async () => {
     for (const f of files) {
       let rec;
@@ -3547,7 +3554,7 @@ const live = {
       const r = await fetch("/v1/live", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: (meeting ? "Meeting " : "Recording ") + when, language: $("trlang").value, beam_size: +$("trbeam").value,
           terms: $("trterms").value.trim(), tracks: this.n, rate: this.ctx.sampleRate, kind: tr.kind,
-          ...($("trmodel").value ? { model: $("trmodel").value } : {}),
+          ...(!$("trmodel").hidden ? { model: $("trmodel").value } : {}),
           mp3_kbps: $("trkeep").value === "mp3" ? 192 : 0,
           speakers: this.n === 2 ? ["Me", "Others"] : [""] }) });
       rec = await r.json().catch(() => ({}));

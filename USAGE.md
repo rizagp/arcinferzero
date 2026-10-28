@@ -275,9 +275,10 @@ While the server is running:
     WMV) or choose them; they upload and wait their turn, each with its progress. Pick the **language** (detect,
     Indonesian, English, or **Indonesian + English mixed**, about 3x slower), **Accurate** (beam 5) or **Fast**, and
     a **Glossary** of names and terms the speech uses (written inside a casual sentence, the text keeps a casual
-    spelling). With the server also started with `--asr auto`, **Model: Qwen3-ASR** writes it instead of Whisper:
-    often better on noisy mixed Indonesian and English, but one text without word times
-    ([docs/qwen3-asr.md](docs/qwen3-asr.md)). Open a transcript: it plays with its media and lights the word being said; click a word or a time to
+    spelling). **Model**: Qwen3-ASR (the default: the most complete on noisy mixed Indonesian and English, one text
+    without word times; the glossary helps it most), Gemma 4 E4B (the most readable on clear speech, but it can add
+    sentences over noise; the server switches its chat model to E4B) or Whisper large-v3 (every word's time); it can
+    be changed any time, each file keeps the one it was added with ([docs/qwen3-asr.md](docs/qwen3-asr.md)). Open a transcript: it plays with its media and lights the word being said; click a word or a time to
     play from there; double-click a line to correct it; **Find / Replace all** changes a term everywhere; tick the
     formats (SRT, WebVTT, YouTube SBV / SRV3, ASS, TTML, text, Markdown, CSV, Remotion captions / pipeline, JSON) and
     the subtitle shape, then **Export**. Everything is kept in `%USERPROFILE%\arcinferzero\transcripts\`.

@@ -1407,8 +1407,10 @@ inline std::string find_model() {
   if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
   if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
   if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
-  for (const char* name : {"models--mobiuslabsgmbh--faster-whisper-large-v3-turbo", "models--deepdml--faster-whisper-large-v3-turbo-ct2",
-                           "models--Systran--faster-whisper-large-v3"}) {
+  // (large-v3 first since 2026-10-28: the user's choice of transcript models is Qwen3-ASR, Gemma 4 E4B and
+  //  large-v3; turbo when it is the only one)
+  for (const char* name : {"models--Systran--faster-whisper-large-v3", "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo",
+                           "models--deepdml--faster-whisper-large-v3-turbo-ct2"}) {
     for (const fs::path& r : roots) {
       std::error_code ec;
       const fs::path snaps = r / name / "snapshots";

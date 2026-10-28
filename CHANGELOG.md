@@ -1,6 +1,15 @@
 # Changelog
 
-## 2026-10-28: Qwen3-ASR next to Whisper
+## 2026-10-28: Qwen3-ASR the default speech model; Gemma 4 E4B and Whisper large-v3 the other choices
+
+- **Transcript models: Qwen3-ASR (default), Gemma 4 E4B, Whisper large-v3** (the user's choice after comparing two
+  recordings, [docs/qwen3-asr.md](docs/qwen3-asr.md)): `--whisper auto` loads large-v3 (turbo only without it) and
+  Qwen3-ASR with it (`--asr auto` is the default); the Transcripts tab picks the model per file, changeable any
+  time; `/v1/audio/transcriptions` without a model (or OpenAI's `whisper-1`) and the chat's voice messages / audio
+  go to Qwen3-ASR; `gemma4-e4b` transcribes through the chat model in 2-minute parts; Gemma 4 12B is refused for
+  transcription (it garbled a clear recording and summarized a noisy one). Live text while speaking stays Whisper's.
+- **Fixed**: a transcription request naming an audio chat model other than the loaded one sent its clip to the
+  speech service instead of that model (now `"speech": "model"` in its chat request).
 
 - **Qwen3-ASR 1.7B** ([docs/qwen3-asr.md](docs/qwen3-asr.md)): `serverz --whisper auto --asr auto`, then
   `/v1/audio/transcriptions` with `model=qwen3-asr` or "Model: Qwen3-ASR" in the Transcripts tab (a live

@@ -228,9 +228,10 @@ Options for start / restart:
   -Npu on|off                    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
                                  the model changes (pi-arc, Pi's /model) and on a restart; off again after stop
-  -Whisper auto|off|<folder>     speech to text at /v1/audio/transcriptions (OpenAI's API) with Whisper
-                                 large-v3-turbo from the Hugging Face cache (auto) or a faster-whisper folder;
-                                 its GPU memory (iGPU 1.4 GB, NPU mode 0.7 GB) comes off the context. Kept like -Npu
+  -Whisper auto|off|<folder>     speech to text at /v1/audio/transcriptions (OpenAI's API) and the Transcripts tab:
+                                 Qwen3-ASR (default), Gemma 4 E4B or Whisper large-v3 (turbo when large-v3 is not
+                                 in the Hugging Face cache; <folder>: a faster-whisper folder); Whisper and Qwen3-ASR
+                                 take ~8 GB of GPU memory off the context (docs/qwen3-asr.md). Kept like -Npu
   -WhisperDevice gpu|npu         Whisper's encoder on the iGPU (default) or the NPU
   -NoStream                      every expert on the GPU: no expert file, no SSD reads; MoE models then get a
                                  smaller context. Without it, MoE models (35B, Flash Next, Gemma 4 26B) keep their
