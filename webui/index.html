@@ -1202,14 +1202,15 @@ const FILE_TOOLS = [
     parameters: { type: "object", properties: {
       query: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
   { type: "function", function: { name: "create_document",
-    description: "Write a file, shown as a card in your answer: docx, pdf, doc (Word 97-2003), rtf, md, xlsx. content is " +
-      "Markdown: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, ==highlight==, <span style=\"color:#C00000; " +
+    description: "Write a file, shown as a card in your answer (the only way to save one: a code block in your answer is " +
+      "not a file). Any text format is saved exactly as written: html, svg, css, js, py, json, csv, txt, md, xml... " +
+      "(html / svg open as a page). docx, pdf, doc (Word 97-2003), rtf, xlsx are made from Markdown content: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, ==highlight==, <span style=\"color:#C00000; " +
       "background:#FFF2CC; font-size:14pt\">..</span>, lists, tables (alignment row :--- / :---: / ---:), ``` code, --- " +
       "rule, '::: center' (right, justify) ... ':::' blocks, \\pagebreak. xlsx: each table is a sheet named by the ## " +
       "heading before it; numbers (1.234,5), Rp amounts, percentages, dates (2026-10-27) become values; other text goes " +
       "to a first Notes sheet.",
     parameters: { type: "object", properties: {
-      filename: { type: "string" }, format: { type: "string", enum: ["docx", "pdf", "doc", "rtf", "md", "xlsx"] },
+      filename: { type: "string" }, format: { type: "string", description: "the extension: docx, pdf, xlsx, html, py..." },
       content: { type: "string" },
       title: { type: "string" }, subtitle: { type: "string" }, author: { type: "string" }, date: { type: "string" },
       page: { type: "string", enum: ["A4", "Letter", "Legal", "A5"] }, orientation: { type: "string", enum: ["portrait", "landscape"] },

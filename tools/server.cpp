@@ -801,9 +801,20 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
   try {
     if (rq.path == "/v1/tools/create_document") {
       const std::string content = a["content"].str();
-      if (content.empty()) return fail(400, "content (Markdown) required");
-      std::string fmt = files::lower(a["format"].str("docx"));
-      if (fmt != "docx" && fmt != "pdf" && fmt != "doc" && fmt != "rtf" && fmt != "md" && fmt != "xlsx") return fail(400, "format: docx, pdf, doc, rtf, md or xlsx");
+      if (content.empty()) return fail(400, "content required");
+      // docx, pdf, doc, rtf, xlsx are made from Markdown; md and every other text format (html, svg, css, js, py,
+      // csv, json, txt...) are saved as written. No format: the file name's extension, else docx
+      std::string fmt = files::lower(a["format"].str(files::ext_of(a["filename"].str()).empty() ? "docx" : files::ext_of(a["filename"].str())));
+      if (!fmt.empty() && fmt[0] == '.') fmt.erase(0, 1);
+      bool fmt_ok = !fmt.empty() && fmt.size() <= 10;
+      for (unsigned char c : fmt) fmt_ok = fmt_ok && c < 128 && isalnum(c);
+      if (!fmt_ok) return fail(400, "format: an extension such as docx, pdf, xlsx, md, html, svg, csv, json, py, txt");
+      // (binary formats cannot be written from text: images, audio, video, archives, programs, other Office files)
+      static const std::set<std::string> binary = {"pptx", "ppt", "xls", "xlsm", "odt", "ods", "odp", "zip", "7z", "rar",
+          "gz", "tar", "exe", "dll", "msi", "bin", "gguf", "ico", "tif", "tiff", "heic", "woff", "woff2", "ttf", "otf"};
+      if (files::kind_of("x." + fmt) != "document" || binary.count(fmt))
+        return fail(400, "format " + fmt + " is binary and cannot be written from text; for an image write svg, for a "
+                         "presentation docx or pdf, for anything else a script with run_command if the terminal is offered");
       doc::Options o;
       o.title = a["title"].str();
       o.subtitle = a["subtitle"].str();
@@ -829,7 +840,8 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       else if (fmt == "pdf") data = doc::pdf(content, o);
       else if (fmt == "doc" || fmt == "rtf") data = doc::rtf(content, o);
       else if (fmt == "xlsx") data = xlsx::write(content, o, a["number_format"].str("auto"));
-      else data = (o.title.empty() ? "" : "# " + o.title + "\n\n") + content;
+      else if (fmt == "md") data = (o.title.empty() ? "" : "# " + o.title + "\n\n") + content;
+      else data = content;
       const std::string chat = files::valid_id(a["chat_id"].str()) ? a["chat_id"].str() : "";
       const files::Info i = st.put(name, data, chat);
       st.put_source(i.id, chat, rq.body);

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-28: create_document writes any text file
+
+- **The model can save HTML, SVG, code and other text files** (tools/server.cpp `create_document`, webui/index.html
+  `FILE_TOOLS`): before, the format had to be docx, pdf, doc, rtf, md or xlsx, so a page the model wrote stayed a code
+  block in its answer (Open / Download only) and never became a saved file. Now every other text extension (html,
+  svg, css, js, py, json, csv, txt, xml...) is saved exactly as written; no format: the file name's extension.
+  Binary formats (images, audio, video, pptx, zip, exe...) are refused with a note. The tool's text says a code
+  block is not a file. Source and markup files are served as text/plain with nosniff (never run as this origin);
+  an .html / .svg card opens sandboxed (`openPage`).
+
 ## 2026-10-28: the prompt cache kept with the terminal; terminal_panel; HTML pages open sandboxed
 
 - **Opening or closing the terminal no longer recomputes the whole chat** (webui/index.html `TERM_SYSTEM`): the

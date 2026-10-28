@@ -120,7 +120,13 @@ inline std::string mime_of(const std::string& name) {
       {"doc", "application/msword"}, {"rtf", "application/rtf"}, {"tsv", "text/tab-separated-values; charset=utf-8"},
       {"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}, {"xlsm", "application/vnd.ms-excel.sheet.macroEnabled.12"},
       {"pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"}, {"html", "text/plain; charset=utf-8"}, {"svg", "text/plain; charset=utf-8"}};
-  auto it = m.find(ext_of(name));
+  // (source and markup the model may write with create_document: shown as text, never run as a page or script)
+  static const std::set<std::string> text = {"htm", "xhtml", "xml", "css", "js", "mjs", "ts", "jsx", "tsx", "py", "ps1",
+      "sh", "bat", "cmd", "c", "cpp", "h", "hpp", "cs", "java", "go", "rs", "kt", "swift", "php", "rb", "lua", "sql",
+      "yaml", "yml", "toml", "ini", "cfg", "conf", "log", "tex", "bib", "srt", "vtt", "ics", "vcf", "jsonl", "r", "m"};
+  const std::string e = ext_of(name);
+  if (text.count(e)) return "text/plain; charset=utf-8";
+  auto it = m.find(e);
   return it == m.end() ? "application/octet-stream" : it->second;  // (html / svg as text: never run as a page)
 }
 // a file name that is safe on disk and in a header: ASCII letters, digits and . _ - ( ) space; at most 80 characters
