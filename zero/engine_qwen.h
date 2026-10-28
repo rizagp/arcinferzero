@@ -183,7 +183,82 @@
     }
   }
 
+  // Qwen3 dense attention (qwen3 / qwen3vl), in float: q / k RMS norms, NEOX RoPE over the whole 128-dim head, the f32
+  // query and the f32 K / f16 V rows through Gemma 4's attn_prep_g (V as projected, has_v = 2; q scaled by 1/sqrt(d);
+  // no int8 copy), then attn_fa_gh for prompt chunks and the split attn_fa_g for up to 8 rows; no output gate.
+  void layer_qwen3_attn(Layer& L, int T, int Mp) {
+    const int E = hp.n_embd, nh = hp.n_head, nkv = hp.n_head_kv, hd = hp.head_dim, hpg = nh / nkv;
+    const int ldq = (nh + 2 * nkv) * hd;
+    const int a_in = act32_for(false);
+    rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
+    matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
+    matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, false, a_in);
+    matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, false, a_in);
+    cl_kernel kp = kernel("ops", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + sb_opt(hd) + " -DRT_TABLE",
+                          "attn_prep_g");
+    // rows r0 .. r0 + Tq of the pass at position p0 (a batched pass: per sequence, in its slot)
+    auto prep = [&](int r0, int Tq, int p0) {
+      float eps = hp.eps, base = hp.rope_base, qscale = 1.0f / std::sqrt((float)hd);
+      int pp = p0, hv = 2, uff = 0, cap = ctx, nn = nh, nk = nkv, ld = ldq, TT = Tq, f16 = 3;  // (float rows only)
+      const int saved = pos;
+      pos = p0;  // (rope_table: the rows of this sequence)
+      cl_mem rt = rope_table(1, hd, base, nullptr, Tq);
+      pos = saved;
+      set_args(kp, 0, from(big_, (size_t)r0 * ldq * 4), ld, nn, nk, hv, L.q_norm, L.k_norm, TT, pp, eps, base, L.q_norm,
+               uff, qscale, qi_, qsc_, L.kq, L.ksc, L.vq, L.vsc, cap, rt);
+      set_args(kp, 22, f16, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc);
+      size_t gws[2] = {(size_t)(nh + nkv) * 16, (size_t)Tq}, lws[2] = {16, 1};
+      run("attn_prep", kp, 2, gws, lws);
+    };
+    // float attention of rows r0 .. r0 + n at position p0 (as layer_gemma_attn's fa_g, full causal)
+    auto fa = [&](int r0, int n, int p0) {
+      int cp = ctx, nn = nh, nk = nkv, pp = p0, MM = n, w = 0, nlo = -1, nhi = -1;
+      if (n <= 8) {  // (flash-decoding: the keys in splits, then combined)
+        const int gq = std::min(hpg, 4);
+        const std::string fd = "-cl-intel-256-GRF-per-thread -DFA_G -DFA_SPLIT -DHD=" + std::to_string(hd) + " -DGQ=" + std::to_string(gq);
+        cl_kernel k = kernel("ops", fd, "attn_fa_g");
+        const int nb = (p0 + n - 1) / 16 + 1;
+        int ns = std::min(64, (nb + 7) / 8);
+        if (!fa_part_) fa_part_ = buf((size_t)8 * hp.n_head * 64 * (hp.head_dim + 2) * 4);
+        set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM, from(o_, (size_t)r0 * nh * hd * 4),
+                 w, nlo, nhi, ns, fa_part_);
+        size_t gws[3] = {16, (size_t)(nh / gq), (size_t)n * ns}, lws[3] = {16, 1, 1};
+        run("attention", k, 3, gws, lws);
+        cl_kernel kc2 = kernel("ops", fd, "attn_fa_gc");
+        set_args(kc2, 0, fa_part_, nn, pp, MM, from(o_, (size_t)r0 * nh * hd * 4), w, nlo, nhi);
+        size_t g2[3] = {(size_t)hd, (size_t)nh, (size_t)n};
+        run("attention", kc2, 3, g2, nullptr);
+        return;
+      }
+      // (attn_fa_gh: each key row read once for the q heads of its kv head; 2 sub-groups of 4 dims per lane, up to 4
+      //  query rows per work-group, 2 key blocks per step, as layer_gemma_attn picks them for head 128)
+      const int fs = 2, gr = std::clamp(64 / (hpg * (hd / fs / 16)), 1, 4), kb = hpg * gr <= 8 ? 2 : 1;
+      cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH -DHD=" + std::to_string(hd) + " -DHPG=" +
+                                      std::to_string(hpg) + " -DFS=" + std::to_string(fs) + " -DGR=" + std::to_string(gr) +
+                                      " -DKB=" + std::to_string(kb), "attn_fa_gh");
+      set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM, from(o_, (size_t)r0 * nh * hd * 4),
+               w, nlo, nhi);
+      size_t gws[3] = {(size_t)16 * fs, (size_t)nkv, (size_t)(n + gr - 1) / gr}, lws[3] = {(size_t)16 * fs, 1, 1};
+      run("attention", k, 3, gws, lws);
+    };
+    if (!batch_.empty()) {  // a batched pass: each sequence's rows with its slot's caches and position (T <= 8)
+      for (const BatchSeq& q : batch_) {
+        point_to(q.slot);
+        prep(q.row, q.n, q.pos);
+        fa(q.row, q.n, q.pos);
+      }
+      rt_pos_[1] = -1;  // (the table holds the last sequence's rows)
+    } else {
+      prep(0, T, pos);
+      fa(0, T, pos);
+    }
+    const int a_out = act32_for(true);
+    quant_rows(o_, nh * hd, Mp, T, a_out);
+    matmul("gemm_o", L.wo, Mp, x_, E, 0, 1, a_out);
+  }
+
   void layer_attn(Layer& L, int T, int Mp) {
+    if (hp.qwen3) return layer_qwen3_attn(L, T, Mp);
     const int E = hp.n_embd, nh = hp.n_head, nkv = hp.n_head_kv, hd = hp.head_dim;
     const int ldq = nh * hd * 2 + 2 * nkv * hd;
     const int a_in = act32_for(false);

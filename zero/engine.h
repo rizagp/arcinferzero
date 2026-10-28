@@ -33,6 +33,8 @@ struct GpuWeight {
 struct Hparams {
   std::string arch = "qwen35";
   bool gemma = false;  // Gemma 4: sliding-window + global attention layers, GeGLU, sandwich norms
+  bool qwen3 = false;  // Qwen3 dense (qwen3 / qwen3vl, Qwen3-ASR's text model): full attention in every layer, no
+                       // output gate, 128-dim heads with RoPE over all dims, SwiGLU FFN
   bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4): no recurrent state, a cached
                           // prefix is reused by rewind() while the rings still hold it, per-layer KV geometry (kv_layers)
   int n_layer = 0, n_embd = 0, n_ff = 0, n_head = 0, n_head_kv = 0, head_dim = 0, n_rot = 0, n_vocab = 0;
@@ -99,6 +101,7 @@ class Engine {
   friend class VisionQwen3VL;
   friend class VisionGemma4V;
   friend class AudioGemma4A;  // the vision encoders use the engine's OpenCL context, kernels and GEMM
+  friend class AudioQwen3A;
 
  public:
   Hparams hp;
@@ -544,6 +547,7 @@ class Engine {
   // Qwen KV bytes per position and kv head: K and V int8 + their scales
   size_t kv_pos_bytes() const {
     if (!opt.attn_int8) return 4 * (size_t)hp.head_dim;  // (--attn-f32: f16 K and V rows, load_attn's kc / vc)
+    if (hp.qwen3) return 6 * (size_t)hp.head_dim;       // (Qwen3 dense: f32 K and f16 V rows only)
     return 2 * (size_t)hp.head_dim + 8;
   }
   size_t mtp_kv_bytes(int c) const {
@@ -1549,6 +1553,7 @@ class Engine {
     const std::string a = f_.get_str("general.architecture");
     hp.arch = a;
     if (a == "gemma4") return load_hparams_gemma4();
+    if (a == "qwen3" || a == "qwen3vl") return load_hparams_qwen3();
     if (a != "qwen35" && a != "qwen35moe" && a != "qwen4exp") throw std::runtime_error("unsupported architecture: " + a);
     hp.moe = a == "qwen35moe" || a == "qwen4exp";
     hp.hc = a == "qwen4exp";
@@ -1650,6 +1655,38 @@ class Engine {
     if (hp.hc && (hp.hc_n < 1 || hp.hc_n > 16 || hp.hc_lr <= 0 || hp.hc_lr + hp.hc_n > 512 ||
                   (hp.ple_layer >= 0 && !hp.recurrent(hp.ple_layer))))
       throw std::runtime_error("unsupported hyper-connection shape");
+  }
+
+  // Qwen3 dense. qwen3vl (Qwen3-VL / Qwen3-ASR) has M-RoPE sections, but its text and audio rows take one position
+  // for all three components, which is plain NEOX RoPE over the head: no image rows go to this path.
+  void load_hparams_qwen3() {
+    const std::string a = hp.arch;
+    auto I = [&](const std::string& k, int64_t def = -1) {
+      int64_t v = f_.get_int(a + "." + k, def);
+      if (v < 0) throw std::runtime_error("missing hparam " + k);
+      return (int)v;
+    };
+    hp.qwen3 = true;
+    hp.n_layer = I("block_count");
+    if (hp.n_layer <= 0 || hp.n_layer > 4096) throw std::runtime_error("invalid block_count in the GGUF");
+    hp.n_embd = I("embedding_length");
+    hp.n_ff = I("feed_forward_length");
+    hp.n_head = I("attention.head_count");
+    hp.n_head_kv = I("attention.head_count_kv");
+    hp.head_dim = I("attention.key_length");
+    hp.n_rot = I("rope.dimension_count", hp.head_dim);
+    hp.full_attn_interval = 1;  // (recurrent() is false for every layer)
+    hp.eps = (float)f_.get_float(a + ".attention.layer_norm_rms_epsilon", 1e-6);
+    hp.rope_base = (float)f_.get_float(a + ".rope.freq_base", 1e6);
+    tok_embd_ = &f_.get("token_embd.weight");
+    if (tok_embd_->dims.size() < 2 || tok_embd_->dims[1] <= 0 || hp.n_head <= 0 || hp.n_head_kv <= 0)
+      throw std::runtime_error("invalid model dimensions in the GGUF");
+    hp.n_vocab = (int)tok_embd_->dims[1];
+    if (hp.head_dim != 128 || hp.n_rot != hp.head_dim || I("attention.value_length", 128) != 128 || hp.n_embd % 256 ||
+        hp.n_ff % 256 || hp.n_head % hp.n_head_kv || (hp.n_head * hp.head_dim) % 256 ||
+        f_.get_int(a + ".n_deepstack_layers", 0) > 0)
+      throw std::runtime_error("unsupported Qwen3 dimensions");
+    if (!opt.attn_int8) throw std::runtime_error("f32 attention (--attn-f32) does not support Qwen3 dense models");
   }
 
   void load_hparams_gemma4() {
@@ -1944,7 +1981,8 @@ class Engine {
     k_attn_ = kernel("ops", big, "attn_fa");
     k_gdn_recur_ = kernel("ops", big, "gdn_recur");
     const std::string att = "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hp.n_head / hp.n_head_kv) +
-                            " -DHS=" + std::to_string(attn_hs()) + " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256);
+                            " -DHS=" + std::to_string(attn_hs()) + " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256) +
+                            (hp.qwen3 ? " -DHD=" + std::to_string(hp.head_dim) : std::string());
     k_attn_q8_ = kernel("ops", att, "attn_q8");
     k_attn_comb_ = kernel("ops", "", "attn_combine");
     k_mtp_concat_ = kernel("ops", "", "mtp_concat");
@@ -1961,6 +1999,14 @@ class Engine {
   // releases a buffer of buf() before the engine ends (an encoder growing its buffers; no sub-buffers of it)
   void free_buf(cl_mem& m) {
     if (!m) return;
+    // (its views made by from() go with it: a later buffer at the same address must not find them)
+    for (auto v = views_.begin(); v != views_.end();) {
+      if (v->first.first != m) { ++v; continue; }
+      auto vi = std::find(mems_.begin(), mems_.end(), v->second);
+      if (vi != mems_.end()) mems_.erase(vi);
+      clReleaseMemObject(v->second);
+      v = views_.erase(v);
+    }
     auto it = std::find(mems_.begin(), mems_.end(), m);
     if (it != mems_.end()) mems_.erase(it);
     gpu_bytes -= std::min<size_t>(gpu_bytes, m->size);
@@ -2243,7 +2289,7 @@ class Engine {
         }
       } else {
         L.attn_norm = load_f32(p + "attn_norm.weight");
-        L.post_norm = load_f32(p + "post_attention_norm.weight");
+        L.post_norm = load_f32(p + (hp.qwen3 ? "ffn_norm.weight" : "post_attention_norm.weight"));
       }
       if (hp.recurrent(il)) {
         load_gdn_in(L, p);
@@ -2635,6 +2681,22 @@ class Engine {
         L.wo = load_w(p + "attn_output.weight");
         L.q_norm = load_f32(p + "attn_q_norm.weight");
         L.k_norm = load_f32(p + "attn_k_norm.weight");
+        if (hp.qwen3) {  // (float attention: f32 K / f16 V rows [kv head][ctx][hd], no int8 copy; see q2_init)
+          const size_t kvb = (size_t)hp.n_head_kv * ctx * hp.head_dim;
+          L.nkv = hp.n_head_kv;
+          L.hd = hp.head_dim;
+          L.cap = ctx;
+          L.i8 = false;
+          L.kq = buf(64);
+          L.vq = buf(64);
+          L.ksc = buf(64);
+          L.vsc = buf(64);
+          L.kc = buf(kvb * 4);
+          L.vc = buf(kvb * 2);
+          fill(L.kc, kvb * 4);
+          fill(L.vc, kvb * 2);
+          return;
+        }
         const size_t kvb = (size_t)hp.n_head_kv * ctx * hp.head_dim * 2;
         // int8 attention: K/V int8 in 16-key blocks + per-row scales (Qwen: SB = 1, sb_opt); f32 attention: f16 K/V rows
         const size_t kvi = opt.attn_int8 ? kvb : 64, scb = opt.attn_int8 ? (size_t)hp.n_head_kv * ctx * 4 : 64;
@@ -2984,6 +3046,7 @@ class Engine {
       rope_tab_[0] = buf(M * (hp.hd_swa / 2) * 8);
       rope_tab_[1] = buf(M * (hp.hd_full / 2) * 8);
     }
+    if (hp.qwen3) rope_tab_[1] = buf(M * (hp.head_dim / 2) * 8);  // (Qwen3 dense: attn_prep_g with the table)
     // decode key-split partials: up to 4 rows x splits (small splits only while splits * sub-groups < 512)
     apart_ = buf((size_t)4 * std::max(ctx / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4);
     // rows of a speculative verification pass or a batched pass over the slots
@@ -3215,12 +3278,17 @@ class Engine {
   void q2_init() {
     q2_ = hp.gemma;  // (Gemma 4's only mode since 2026-10-22: KL < 0.01 against f32, the one-pass mode removed)
     if (hp.hc && fn_precise()) q2_ = true;  // (Flash Next's precise mode: two passes, the experts too)
-    frows_ = q2_ && hp.gemma;
+    // (Qwen3 dense: float attention as well, the int8 one is far off: f32 reference, 72-token prompt, q / K / V rounded
+    //  to int8 per row KL 0.159, per 32 values 0.123; f16 K / V 0.0066 with the int8 matmul inputs)
+    frows_ = (q2_ && hp.gemma) || hp.qwen3;
     // (Gemma 4 E2B / E4B (per-layer embeddings): one int8 pass for the matmuls, the float attention kept; the
     //  user's limit is KL 0.015 and the one-pass E4B measured 0.0010 with int8 attention as well (2026-10-23).
     //  ARC_G4_Q2MM=1: two passes there too, as before)
     const bool g4_one = hp.gemma && hp.n_ple > 0 && !(getenv("ARC_G4_Q2MM") && atoi(getenv("ARC_G4_Q2MM")) != 0);
-    q2mm_ = (q2_ && !g4_one) || (hp.hc && getenv("ARC_FN_Q2") && atoi(getenv("ARC_FN_Q2")) > 0);
+    // (Qwen3 dense, Qwen3-ASR: two passes too. 72-token prompt against f32: one pass KL 0.0064 prompt / 0.0093 decode,
+    //  two passes < 0.00001; 2048-token prompt 1376 -> 901 tok/s, generation 24.5 -> 22.2 tok/s. ARC_Q3_Q2=0: one pass)
+    const bool q3_one = getenv("ARC_Q3_Q2") && atoi(getenv("ARC_Q3_Q2")) == 0;
+    q2mm_ = (q2_ && !g4_one) || (hp.hc && getenv("ARC_FN_Q2") && atoi(getenv("ARC_FN_Q2")) > 0) || (hp.qwen3 && !q3_one);
     g4_att8_ = q2_ && hp.gemma && hp.n_ple > 0 && !(getenv("ARC_G4_ATT8") && atoi(getenv("ARC_G4_ATT8")) == 0);
     if (!q2mm_) return;
     const size_t M = max_chunk;

@@ -358,10 +358,12 @@ inline std::vector<float> mel_filters(int n_mels) {
   return w;
 }
 
-// mel[n_mels][n_frames] of samples + 30 s of zeros; content_frames: the frames of the samples themselves
-inline std::vector<float> log_mel(const std::vector<float>& x, int n_mels, int& n_frames, int& content_frames) {
+// mel[n_mels][n_frames] of samples + 30 s of zeros (pad: other zeros; Qwen3-ASR, Hugging Face's
+// WhisperFeatureExtractor without padding: none); content_frames: the frames of the samples themselves
+inline std::vector<float> log_mel(const std::vector<float>& x, int n_mels, int& n_frames, int& content_frames,
+                                  int64_t pad = kWindowSamples) {
   const int nb = kFft / 2 + 1;
-  const int64_t L = (int64_t)x.size() + kWindowSamples;  // (the padded length)
+  const int64_t L = (int64_t)x.size() + pad;  // (the padded length)
   n_frames = (int)(L / kHop);
   content_frames = (int)((int64_t)x.size() / kHop);
   auto sample = [&](int64_t i) -> float {  // the padded signal with reflect padding of kFft / 2 at both ends
