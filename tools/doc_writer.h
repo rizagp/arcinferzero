@@ -236,18 +236,23 @@ inline std::vector<Block> parse(const std::string& md) {
     add(b);
     para.clear();
   };
+  // a row's cells: \| and a pipe inside a code span stay in the cell ("a \| b", "`ls | sort`": before, they split it;
+  // an odd number of backticks: no code spans, or one would take the rest of the row)
   auto cells = [](const std::string& l) {
     std::vector<std::string> c;
-    std::string t = trim(l);
-    if (!t.empty() && t[0] == '|') t = t.substr(1);
-    if (!t.empty() && t.back() == '|') t.pop_back();
-    size_t a = 0;
-    while (true) {
-      const size_t e = t.find('|', a);
-      c.push_back(trim(t.substr(a, e == std::string::npos ? std::string::npos : e - a)));
-      if (e == std::string::npos) break;
-      a = e + 1;
+    const std::string t = trim(l);
+    const bool spans = std::count(t.begin(), t.end(), '`') % 2 == 0;
+    std::string cur;
+    bool code = false;
+    for (size_t k = 0; k < t.size(); ++k) {
+      if (t[k] == '\\' && k + 1 < t.size() && t[k + 1] == '|') { cur += '|'; ++k; continue; }
+      if (t[k] == '`' && spans) code = !code;
+      if (t[k] == '|' && !code) { c.push_back(trim(cur)); cur.clear(); continue; }
+      cur += t[k];
     }
+    c.push_back(trim(cur));
+    if (c.size() > 1 && c.front().empty() && !t.empty() && t[0] == '|') c.erase(c.begin());  // (the leading and trailing pipes)
+    if (c.size() > 1 && c.back().empty() && t.size() > 1 && t.back() == '|' && t[t.size() - 2] != '\\') c.pop_back();
     return c;
   };
   for (size_t li = 0; li < lines.size(); ++li) {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-28: a pipe inside a table cell
+
+- **`\|` and a `|` inside a code span stay in their table cell** (webui/index.html `mdCells`, tools/doc_writer.h
+  `cells`): "`` `ls | sort` ``" or "a \| b" split the cell in two and moved the row's later cells one column right,
+  in the chat and in the docx / pdf / rtf / xlsx files create_document writes. A row with an odd number of backticks
+  has no code spans (one would take the rest of the row). Checked: the chat's table in the browser; a docx and an
+  xlsx read back cell by cell.
+
 ## 2026-10-28: create_document writes any text file
 
 - **The model can save HTML, SVG, code and other text files** (tools/server.cpp `create_document`, webui/index.html

@@ -691,8 +691,23 @@ function inline(s) {
   for (let k = 0; k < 3 && s.includes("\u0000"); k++) s = s.replace(/\u0000(\d+)\u0000/g, (m, i) => keep[+i]);  // (a link's text may hold a code span)
   return s;
 }
-// a table row's cells: the text between its pipes
-const mdCells = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+// a table row's cells: the text between its pipes; \| and a pipe inside a code span stay in the cell
+// ("a \| b", "`ls | sort`": before, they split it in two)
+function mdCells(line) {
+  const cells = [], spans = (line.match(/`/g) || []).length % 2 === 0;
+  let cur = "", code = false;
+  for (let k = 0; k < line.length; k++) {
+    const c = line[k];
+    if (c === "\\" && line[k + 1] === "|") { cur += "|"; k++; continue; }
+    if (c === "`" && spans) code = !code;  // (an odd number of backticks: no code spans, or one would take the row)
+    if (c === "|" && !code) { cells.push(cur); cur = ""; continue; }
+    cur += c;
+  }
+  cells.push(cur);
+  if (cells.length > 1 && cells[0].trim() === "") cells.shift();  // (the leading and trailing pipes)
+  if (cells.length > 1 && cells[cells.length - 1].trim() === "") cells.pop();
+  return cells.map((c) => c.trim());
+}
 const mdSep = (line) => line.includes("-") && mdCells(line).every((c) => /^:?-+:?$/.test(c));
 const MD_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 // Markdown blocks of escaped lines: headings, lists (nested by their indent, numbered from their first number, task
