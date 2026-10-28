@@ -592,8 +592,14 @@ class WhisperEngine : public whisper::Backend {
     const int D = hp_.d, L = hp_.dec_layers, ctx = hp_.n_text_ctx, F = F_, V = hp_.n_vocab;
     const int A = part_ ? part_a_ : hp_.n_audio_ctx;  // (the encoder positions the cross-attention reads)
     const int Mp = (n + 15) / 16 * 16;
-    for (int i = 0; i < n; ++i)
+    for (int i = 0; i < n; ++i) {
       if (pos[i] >= ctx) throw std::runtime_error("whisper: more than " + std::to_string(ctx) + " text positions");
+      if (tok[i] < 0 || tok[i] >= V)  // (the embedding's rows: a token outside them reads past the GPU buffer)
+        throw std::runtime_error("whisper: token " + std::to_string(tok[i]) + " outside the vocabulary");
+    }
+    if (heads)  // (map below has n_head entries)
+      for (const auto& [hl, hh] : *heads)
+        if (hl < 0 || hl >= L || hh < 0 || hh >= hp_.n_head) throw std::runtime_error("whisper: alignment head out of range");
     clEnqueueWriteBuffer(cl_.queue, rtok_, CL_FALSE, 0, (size_t)n * 4, tok, 0, nullptr, nullptr);
     clEnqueueWriteBuffer(cl_.queue, rseq_, CL_FALSE, 0, (size_t)n * 4, seq, 0, nullptr, nullptr);
     clEnqueueWriteBuffer(cl_.queue, rpos_, CL_FALSE, 0, (size_t)n * 4, pos, 0, nullptr, nullptr);

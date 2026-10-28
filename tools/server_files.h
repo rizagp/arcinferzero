@@ -106,6 +106,7 @@ struct Info {
   uint64_t bytes = 0;
   int64_t created = 0;  // (unix seconds)
   std::string chat;     // (the chat whose folder holds this copy; "" : the old uploads folder)
+  int64_t stamp = 0;    // (the file's write time when its id was taken, unix microseconds: a change keeping the size)
 };
 
 inline std::string lower(std::string s) {
@@ -158,8 +159,8 @@ inline std::string safe_name(const std::string& in) {
   std::string base = in.substr(in.find_last_of("/\\") == std::string::npos ? 0 : in.find_last_of("/\\") + 1), out;
   for (unsigned char c : base) out += (isalnum(c) || strchr("._-() ", c)) && c < 128 ? (char)c : '_';
   while (!out.empty() && (out[0] == '.' || out[0] == ' ')) out.erase(0, 1);
-  if (out.size() > 80) {
-    const std::string e = ext_of(out);
+  if (out.size() > 80) {  // (an "extension" over 16 characters is none: 80 - its size would underflow)
+    const std::string e = ext_of(out).size() <= 16 ? ext_of(out) : "";
     out = out.substr(0, 80 - (e.empty() ? 0 : e.size() + 1)) + (e.empty() ? "" : "." + e);
   }
   if (device_name(out.substr(0, out.find('.')))) out = "_" + out;
@@ -188,7 +189,21 @@ class Store {
     const std::string id = hash(data);
     const std::time_t now = std::time(nullptr);
     std::error_code ec;
-    if (chat.empty() || !valid_id(chat)) {  // (the old layout: uploads\<yyyy-mm>\<id>-<name>)
+    // (the id is a 64-bit FNV-1a, no cryptographic hash: a copy is reused only when its bytes on disk are these. One
+    //  that differs, changed by hand since the last scan, is hashed again by a rescan; a different file still under
+    //  this id, a collision, is refused: never served for this one, and never a second content under one id)
+    const bool old_layout = chat.empty() || !valid_id(chat);
+    for (int pass = 0; pass < 2; ++pass) {
+      const auto v = copies(id);
+      if (v.empty()) break;
+      const Info* c = &v[0];
+      for (const Info& i : v)
+        if (old_layout ? i.chat.empty() : i.chat == chat) c = &i;
+      if (same_bytes(*c, data)) break;
+      if (pass == 1) throw std::runtime_error("another file already has this file's id " + id + ": not saved");
+      rescan();
+    }
+    if (old_layout) {  // (the old layout: uploads\<yyyy-mm>\<id>-<name>)
       for (const Info& i : copies(id))
         if (i.chat.empty()) return i;
       char month[16];
@@ -199,7 +214,7 @@ class Store {
       const std::string name = safe_name(name_in);
       const fs::path pth = up_ / month / (id + "-" + name);
       write(pth, data);
-      Info i{id, name, kind_of(name), pth.string(), (uint64_t)data.size(), (int64_t)now, ""};
+      Info i{id, name, kind_of(name), pth.string(), (uint64_t)data.size(), (int64_t)now, "", stamp(pth)};
       by_id_[id].push_back(i);
       return i;
     }
@@ -209,7 +224,7 @@ class Store {
     const std::string name = free_name(dir, safe_name(name_in));
     const fs::path pth = dir / name;
     write(pth, data);  // (in another chat's folder too: a copy of its own, see the top)
-    Info i{id, name, kind_of(name), pth.string(), (uint64_t)data.size(), (int64_t)now, chat};
+    Info i{id, name, kind_of(name), pth.string(), (uint64_t)data.size(), (int64_t)now, chat, stamp(pth)};
     by_id_[id].push_back(i);
     save_index(dir, chat);
     return i;
@@ -231,6 +246,7 @@ class Store {
     i.name = name;
     i.path = (dir / name).string();
     i.chat = chat;
+    i.stamp = stamp(dir / name);
     by_id_[id].push_back(i);
     std::string src;  // (a document the model wrote: its source goes along; a scan: its transcribed pages)
     if (source(id, src)) put_source(id, chat, src);
@@ -514,10 +530,44 @@ class Store {
     for (unsigned char b : data) h = (h ^ b) * 1099511628211ull;
     return hex64(h);
   }
+  // written whole or not at all: a hidden temporary file of its own beside p (".<name>.<pid>-<n>.tmp": scan() takes no
+  // dot name, so a crash or a full disk leaves no part of a file under the id of the whole), closed, checked, renamed
   static void write(const fs::path& p, const std::string& data) {
-    std::ofstream o(p, std::ios::binary);
-    o.write(data.data(), (std::streamsize)data.size());
-    if (!o) throw std::runtime_error("cannot write " + p.string());
+    static std::atomic<uint64_t> seq{0};
+    const fs::path tmp = p.parent_path() / (L"." + p.filename().wstring() + L"." + std::to_wstring(GetCurrentProcessId()) +
+                                            L"-" + std::to_wstring(++seq) + L".tmp");
+    std::error_code ec;
+    {
+      std::ofstream o(tmp, std::ios::binary);
+      o.write(data.data(), (std::streamsize)data.size());
+      o.close();
+      if (!o) {
+        fs::remove(tmp, ec);
+        throw std::runtime_error("cannot write " + p.string());
+      }
+    }
+    if (!MoveFileExW(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+      const DWORD e = GetLastError();
+      fs::remove(tmp, ec);
+      throw std::runtime_error("cannot write " + p.string() + " (error " + std::to_string(e) + ")");
+    }
+  }
+  // the file's bytes are data (a reused copy checked, not only its id)
+  static bool same_bytes(const Info& i, const std::string& data) {
+    std::error_code ec;
+    const uintmax_t n = fs::file_size(i.path, ec);
+    std::string t;
+    return !ec && n == data.size() && read(i.path, t) && t == data;
+  }
+  // a file's write time in unix microseconds (exact in a JSON number: under 2^53 until the year 2255); 0: unknown
+  static int64_t stamp(fs::file_time_type ft) {
+    return (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::clock_cast<std::chrono::system_clock>(ft).time_since_epoch()).count();
+  }
+  static int64_t stamp(const fs::path& p) {
+    std::error_code ec;
+    const auto ft = fs::last_write_time(p, ec);
+    return ec ? 0 : stamp(ft);
   }
   std::vector<Info> copies(const std::string& id) const {
     auto it = by_id_.find(id);
@@ -572,6 +622,7 @@ class Store {
           e.set("name", i.name);
           e.set("created", (double)i.created);
           e.set("bytes", (double)i.bytes);
+          e.set("stamp", (double)i.stamp);
           j.set(id, e);
         }
     try { write(dir / ".files.json", j.dump()); } catch (const std::exception&) {}
@@ -643,11 +694,19 @@ class Store {
         const std::string fn = f.path().filename().string();
         if (!f.is_regular_file() || fn.rfind(".", 0) == 0 || fn == "chat.json" || fn == "chat.json.tmp") continue;
         const uint64_t bytes = (uint64_t)f.file_size(ec2);
-        Info i{"", fn, kind_of(fn), f.path().string(), bytes, mtime(f), chat};
+        std::error_code ec3;
+        const auto ft = f.last_write_time(ec3);
+        Info i{"", fn, kind_of(fn), f.path().string(), bytes, mtime(f), chat, ec3 ? 0 : stamp(ft)};
         auto b = by_name.find(fn);
-        if (b != by_name.end() && (uint64_t)b->second.second["bytes"].as_number(-1) == bytes && valid_id(b->second.first, 16)) {
+        // (the indexed id kept while the size and the write time are the ones it was taken at: a file edited to the
+        //  same size is hashed again. An index from before "stamp": its id kept once, the time recorded now)
+        const Json& e = b != by_name.end() ? b->second.second : Json();
+        const bool unstamped = b != by_name.end() && e["stamp"].is_null();
+        if (b != by_name.end() && (uint64_t)e["bytes"].as_number(-1) == bytes && valid_id(b->second.first, 16) &&
+            (unstamped || e["stamp"].as_int(-1) == i.stamp)) {
           i.id = b->second.first;
-          i.created = (int64_t)b->second.second["created"].as_number((double)i.created);
+          i.created = (int64_t)e["created"].as_number((double)i.created);
+          if (unstamped) changed = true;
         } else {  // (new or changed by hand: hashed now, in parts)
           if (!hash_file(i.path, i.id)) continue;
           changed = true;

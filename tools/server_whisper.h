@@ -620,7 +620,10 @@ class Service {
       m.set("progress", 0.0);
       m.set("options", o);
       if (in["kind"].str() == "meeting") m.set("kind", "meeting");
-      std::ofstream(lib_ / nid / ("source." + ext), std::ios::binary);  // (an empty file to append to)
+      if (!std::ofstream(lib_ / nid / ("source." + ext), std::ios::binary)) {  // (an empty file to append to)
+        fs::remove_all(lib_ / nid, ec);
+        return fail(500, "cannot create the transcript's source file");
+      }
       {
         std::lock_guard<std::mutex> lk(lib_mu_);
         // (seconds with milliseconds, always later than the last one: the queue's order, files added in one second)
@@ -652,7 +655,9 @@ class Service {
     }
     const fs::path dir = lib_ / tid, src = dir / ("source." + m["ext"].str());
     if (what == "source" && rq.method == "PUT") {
-      const double off = atof(query_param(rq.query, "offset").c_str());
+      // (a whole number of bytes or nothing: atof's 1e300 or nan cast to uint64_t below was undefined behaviour)
+      const long long off_ll = strtoll(query_param(rq.query, "offset").c_str(), nullptr, 10);
+      const double off = (double)std::max(0LL, off_ll);
       double got = 0;
       {
         std::lock_guard<std::mutex> lk(lib_mu_);
@@ -877,9 +882,11 @@ class Service {
       whisper::Options opt;
       std::string bad;
       if (!read_options(field, false, opt, bad)) return fail(400, bad);
-      const int rate = (int)in["rate"].as_number(48000), tracks = (int)in["tracks"].as_number(1);
-      if (rate < 8000 || rate > 96000) return fail(400, "rate: 8000..96000");
-      if (tracks < 1 || tracks > 2) return fail(400, "tracks: 1 or 2");
+      // (checked as the doubles they are, then cast: a huge JSON number cast to int first is undefined)
+      const double rate_d = in["rate"].as_number(48000), tracks_d = in["tracks"].as_number(1);
+      if (!(rate_d >= 8000 && rate_d < 96001)) return fail(400, "rate: 8000..96000");
+      if (!(tracks_d >= 1 && tracks_d < 3)) return fail(400, "tracks: 1 or 2");
+      const int rate = (int)rate_d, tracks = (int)tracks_d;
       auto s = std::make_shared<Live>();
       s->rate = rate;
       s->tracks = tracks;
@@ -924,8 +931,8 @@ class Service {
       m.set("recording", true);
       if (in["kind"].str() == "meeting") m.set("kind", "meeting");
       // (0: kept as the WAV it is written as: lossless for a later pass by another model, ~5.5 MB a minute a track)
-      const int kbps = (int)in["mp3_kbps"].as_number(192);
-      m.set("mp3_kbps", kbps <= 0 ? 0.0 : (double)std::clamp(kbps, 96, 320));
+      const double kbps = in["mp3_kbps"].as_number(192);  // (below 1: what the int cast made 0)
+      m.set("mp3_kbps", kbps < 1 ? 0.0 : (double)(int)std::clamp(kbps, 96.0, 320.0));
       m.set("marks", Json::array());
       {
         std::lock_guard<std::mutex> lk(lib_mu_);
@@ -968,7 +975,8 @@ class Service {
         size_t skip = 0;
         const std::string offs = query_param(rq.query, "offset");
         if (!offs.empty()) {
-          const uint64_t o = (uint64_t)std::max(0.0, atof(offs.c_str()));
+          // (strtoll: out of range saturates instead of an undefined cast; the page sends whole frames)
+          const uint64_t o = (uint64_t)std::max(0LL, strtoll(offs.c_str(), nullptr, 10));
           if (o < s->frames) skip = (size_t)std::min<uint64_t>(s->frames - o, rq.body.size() / frame) * frame;
         }
         s->wav.write(rq.body.data() + skip, (std::streamsize)(rq.body.size() - skip));
@@ -1010,7 +1018,7 @@ class Service {
           s->skipped = true;
         }
         for (const LiveTask& u : todo) s->pending += u.partial ? 0 : 1;
-        const size_t since = (size_t)std::max(0, atoi(query_param(rq.query, "since").c_str()));
+        const size_t since = (size_t)std::max(0LL, strtoll(query_param(rq.query, "since").c_str(), nullptr, 10));
         Json segs = Json::array();
         for (size_t i = since; i < s->draft.size(); ++i) segs.push(segment_json(s->draft[i]));
         out.set("segments", segs);
@@ -1045,12 +1053,17 @@ class Service {
     if (what == "mark") {
       Json in;
       Json::try_parse(rq.body, in);
+      double heard;  // (frames is written under live_mu_ by the audio route: read under it, not under lib_mu_)
+      {
+        std::lock_guard<std::mutex> lk(live_mu_);
+        heard = (double)s->frames / s->rate;
+      }
       std::lock_guard<std::mutex> lk(lib_mu_);
       auto it = metas_.find(tid);
       if (it == metas_.end()) return fail(404, "no transcript " + tid);
       Json marks = it->second["marks"];
       if (marks.size() >= 10000) return fail(400, "at most 10,000 marks");
-      marks.push(in["t"].as_number((double)s->frames / s->rate));
+      marks.push(in["t"].as_number(heard));
       it->second.set("marks", marks);
       save_meta(tid);
       return rs.send(200, "application/json", it->second.dump());
@@ -1420,7 +1433,7 @@ class Service {
       bad = "no recording at " + w.string();
       return "";
     }
-    const int tracks = std::clamp((int)in["tracks"].as_number(1), 1, 2);
+    const int tracks = (int)std::clamp(in["tracks"].as_number(1), 1.0, 2.0);  // (clamped before the cast)
     Json sp = Json::array();
     for (int k = 0; k < tracks; ++k) sp.push(clean_name(in["speakers"][k].str(), 40, tracks == 1 ? "" : k == 0 ? "Me" : "Others"));
     const std::string nid = new_dir();

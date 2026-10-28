@@ -316,16 +316,23 @@
 
  private:
   static constexpr int32_t kConvMagic = 0x56535241;  // "ARSV"
-  static bool read_header(FILE* f, SavedConv& s) {
+  // (positions checked against this context: resume points -1 (none) to ctx, gen_cut / floor 0 to ctx; a damaged
+  //  file is left out rather than steering prepare_prefix to a wrong snapshot)
+  bool read_header(FILE* f, SavedConv& s) const {
     int32_t h[3];
     if (fread(h, 4, 3, f) != 3 || h[0] != kConvMagic || h[1] != 1 || h[2] < 0 || h[2] > (1 << 24)) return false;
     s.tokens.resize(h[2]);
     int32_t g[3];
     if (fread(s.tokens.data(), 4, h[2], f) != (size_t)h[2] || fread(g, 4, 3, f) != 3 || g[2] < 0 || g[2] > 16) return false;
+    const int ctx = eng_.ctx;
+    if (g[0] < 0 || g[0] > ctx || g[1] < 0 || g[1] > ctx) return false;
     s.gen_cut = g[0];
     s.floor = g[1];
     s.resume.resize(g[2]);
-    return fread(s.resume.data(), 4, g[2], f) == (size_t)g[2];
+    if (fread(s.resume.data(), 4, g[2], f) != (size_t)g[2]) return false;
+    for (int r : s.resume)
+      if (r < -1 || r > ctx) return false;
+    return true;
   }
   // Saves the held conversation (replacing saved states it supersedes), then trims the cache. With enough free RAM
   // (2 GiB left over) the state is copied to host memory and written to disk in the background while the next

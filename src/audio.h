@@ -756,7 +756,7 @@ inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::
       ComPtr<IMFMediaBuffer> mb;
       mf_check(MFCreateMemoryBuffer((DWORD)got, &mb), "buffer");
       BYTE* p = nullptr;
-      mb->Lock(&p, nullptr, nullptr);
+      mf_check(mb->Lock(&p, nullptr, nullptr), "lock");
       memcpy(p, raw.data(), got);
       mb->Unlock();
       mb->SetCurrentLength((DWORD)got);

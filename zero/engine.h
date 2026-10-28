@@ -1090,7 +1090,9 @@ class Engine {
     int32_t ns = 0, hpos = -1;
     if (!get(f, &ns, 4) || ns < 0 || ns > 8) return false;
     std::vector<int> sp(ns);
-    if (!get(f, sp.data(), (size_t)ns * 4) || !get(f, &hpos, 4)) return false;
+    if (!get(f, sp.data(), (size_t)ns * 4) || !get(f, &hpos, 4) || hpos < -1 || hpos > ctx) return false;
+    for (int i = 0; i < ns; ++i)  // (snapshot positions: -1 (none) or within the context, else a damaged file)
+      if (sp[i] < -1 || sp[i] > ctx) return false;
     for (int i = 0; i < ns; ++i)
       if (sp[i] >= 0) snap_slot(i);
     bool ok = segs_in(state_segs(kl, br, sp), f);

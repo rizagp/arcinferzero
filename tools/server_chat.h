@@ -65,22 +65,29 @@
     SamplingParams sp = defaults_;
     if (body["temperature"].is_number()) sp.temperature = (float)body["temperature"].as_number();
     if (body["top_p"].is_number()) sp.top_p = (float)body["top_p"].as_number();
-    if (body["top_k"].is_number()) sp.top_k = (int)body["top_k"].as_int();
+    // (a client's top_k 0 or less: no top-k, as in llama.cpp; the GGUF default stays as it was)
+    if (body["top_k"].is_number()) {
+      const int k = (int)body["top_k"].as_clamped(0, 0, INT_MAX);
+      sp.top_k = k > 0 ? k : -1;
+    }
     if (body["min_p"].is_number()) sp.min_p = (float)body["min_p"].as_number();
     if (body["presence_penalty"].is_number()) sp.presence_penalty = (float)body["presence_penalty"].as_number();
     if (body["frequency_penalty"].is_number()) sp.frequency_penalty = (float)body["frequency_penalty"].as_number();
     if (body["repeat_penalty"].is_number()) sp.repeat_penalty = (float)body["repeat_penalty"].as_number();
-    if (body["repeat_last_n"].is_number()) sp.repeat_last_n = (int)body["repeat_last_n"].as_int();
+    if (body["repeat_last_n"].is_number()) sp.repeat_last_n = (int)body["repeat_last_n"].as_clamped(64, -1, INT_MAX);
     for (const auto& [k, v] : body["logit_bias"].entries())  // {"token id": bias}
       if (v.is_number()) {
         char* end = nullptr;
         const long t = strtol(k.c_str(), &end, 10);
         if (end && *end == 0) sp.logit_bias.push_back({(int)t, (float)v.as_number()});
       }
-    if (body["seed"].is_number()) sp.seed = (uint64_t)body["seed"].as_int();
-    int max_tokens = (int)body["max_completion_tokens"].as_int(body["max_tokens"].as_int(-1));
+    if (body["seed"].is_number()) sp.seed = (uint64_t)body["seed"].as_int(), sp.has_seed = true;
+    // (clamped before the cast to int: 1e308 or 2^32 + 5 wrapped to a small or negative count; at most 2^30, so that
+    //  the prompt's length + max_tokens below cannot overflow)
+    int max_tokens = (int)body["max_completion_tokens"].as_clamped(body["max_tokens"].as_clamped(-1, -1, 1 << 30), -1, 1 << 30);
     // reasoning budget: after this many reasoning tokens the server closes the <think> block itself
-    int think_budget = (int)body["thinking_token_budget"].as_int(body["thinking_budget_tokens"].as_int(body["reasoning_budget"].as_int(default_think_budget_)));
+    int think_budget = (int)body["thinking_token_budget"].as_clamped(body["thinking_budget_tokens"].as_clamped(
+        body["reasoning_budget"].as_clamped(default_think_budget_, INT_MIN, INT_MAX), INT_MIN, INT_MAX), INT_MIN, INT_MAX);
     std::vector<std::string> stops;
     if (body["stop"].is_string()) stops.push_back(body["stop"].as_string());
     for (const Json& s : body["stop"].items()) if (s.is_string()) stops.push_back(s.as_string());
@@ -88,7 +95,7 @@
     // logprobs: the log probability of every generated token (from the model's distribution, before penalties and
     // the logit bias) and of its top_logprobs most likely alternatives (0..20)
     const bool want_lp = body["logprobs"].as_bool(false);
-    const int top_lp = std::clamp((int)body["top_logprobs"].as_int(0), 0, 20);
+    const int top_lp = (int)body["top_logprobs"].as_clamped(0, 0, 20);
     const bool usage_in_stream = body["stream_options"]["include_usage"].as_bool(false);
 
     std::string prompt;
@@ -455,11 +462,12 @@
       };
       Json e = one(tok);
       Json tops = Json::array();
-      if (top_lp > 0) {
+      const int ntop = std::min<int>(top_lp, (int)lg.size());  // (a vocabulary under 20 tokens: all of them)
+      if (ntop > 0) {
         std::vector<int> idx(lg.size());
         for (size_t i = 0; i < idx.size(); ++i) idx[i] = (int)i;
-        std::partial_sort(idx.begin(), idx.begin() + top_lp, idx.end(), [&](int a, int b) { return lg[a] > lg[b]; });
-        for (int i = 0; i < top_lp; ++i) tops.push(one(idx[i]));
+        std::partial_sort(idx.begin(), idx.begin() + ntop, idx.end(), [&](int a, int b) { return lg[a] > lg[b]; });
+        for (int i = 0; i < ntop; ++i) tops.push(one(idx[i]));
       }
       e.set("top_logprobs", tops);
       return e;
@@ -769,6 +777,13 @@
       // (the last chunk carries usage and timings together, as llama-server's does: Unsloth Studio keeps the timings
       //  only from a chunk that has usage, and showed no token statistics)
       Json fin = chunk(id, created, Json::object(), Json(finish));
+      if (want_lp && lp_pending.size()) {  // (tokens no content delta carried: a stop token, a tool call's text)
+        Json cs = Json::array(), c0 = fin["choices"][0];
+        c0.set("logprobs", lp_json(lp_pending));
+        cs.push(c0);
+        fin.set("choices", cs);
+        lp_pending = Json::array();
+      }
       fin.set("usage", usage);
       fin.set("timings", timings);
       rs.sse_event(fin.dump());

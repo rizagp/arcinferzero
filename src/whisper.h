@@ -266,13 +266,22 @@ class Model {
     const Json& vocab = j["model"]["vocab"];
     std::vector<std::string> toks;
     std::vector<int64_t> types;
+    // (every id one of the model's n_vocab rows: a negative or huge one would size the vectors to it, and a token past
+    //  the embedding read outside it on the GPU)
+    auto checked = [&](const Json& id) {
+      const int64_t v = id.as_int();
+      if (v < 0 || v >= hp.n_vocab)
+        throw std::runtime_error("whisper: tokenizer.json id " + std::to_string(v) + " outside the model's " +
+                                 std::to_string(hp.n_vocab) + " tokens");
+      return (size_t)v;
+    };
     for (const auto& [s, id] : vocab.entries()) {
-      const size_t i = (size_t)id.as_int();
+      const size_t i = checked(id);
       if (i >= toks.size()) { toks.resize(i + 1); types.resize(i + 1, 1); }
       toks[i] = s;
     }
     for (const Json& a : j["added_tokens"].items()) {
-      const size_t i = (size_t)a["id"].as_int();
+      const size_t i = checked(a["id"]);
       if (i >= toks.size()) { toks.resize(i + 1); types.resize(i + 1, 1); }
       toks[i] = a["content"].str();
       types[i] = 3;
@@ -301,8 +310,16 @@ class Model {
   void load_config(const std::filesystem::path& p) {
     Json c = Json::object();
     if (std::filesystem::exists(p)) c = Json::parse(read_text(p));
+    // (token ids index the logits (n_vocab of them); the alignment heads, the decoder's layers and heads)
+    auto tid = [&](const Json& t, const char* k) {
+      const int64_t v = t.as_int(-1);
+      if (v < 0 || v >= hp.n_vocab)
+        throw std::runtime_error(std::string("whisper: config.json ") + k + " id " + std::to_string(v) + " outside the model's " +
+                                 std::to_string(hp.n_vocab) + " tokens");
+      return (int)v;
+    };
     for (const Json& t : c["lang_ids"].items()) {
-      const int id = (int)t.as_int();
+      const int id = tid(t, "lang_ids");
       std::string s = tok->piece(id);  // <|xx|>
       if (s.size() > 4) sp.languages.push_back({s.substr(2, s.size() - 4), id});
     }
@@ -311,18 +328,26 @@ class Model {
         const std::string s = tok->piece(id);
         if (s.size() > 4) sp.languages.push_back({s.substr(2, s.size() - 4), id});
       }
-    for (const Json& t : c["suppress_ids"].items()) sp.suppress.push_back((int)t.as_int());
+    for (const Json& t : c["suppress_ids"].items()) sp.suppress.push_back(tid(t, "suppress_ids"));
     for (int t : {sp.transcribe, sp.translate, sp.sot, sp.sot_prev, sp.sot_lm, sp.no_speech})
       if (t >= 0) sp.suppress.push_back(t);
     std::sort(sp.suppress.begin(), sp.suppress.end());
     sp.suppress.erase(std::unique(sp.suppress.begin(), sp.suppress.end()), sp.suppress.end());
-    for (const Json& t : c["suppress_ids_begin"].items()) sp.suppress_begin.push_back((int)t.as_int());
+    for (const Json& t : c["suppress_ids_begin"].items()) sp.suppress_begin.push_back(tid(t, "suppress_ids_begin"));
     if (sp.suppress_begin.empty()) {
       for (int t : tok->encode(" ", false)) sp.suppress_begin.push_back(t);
       sp.suppress_begin.push_back(sp.eot);
     }
-    for (const Json& h : c["alignment_heads"].items())
-      sp.alignment_heads.push_back({(int)h[0].as_int(), (int)h[1].as_int()});
+    for (const Json& h : c["alignment_heads"].items()) {
+      const int64_t l = h[0].as_int(-1), hh = h[1].as_int(-1);
+      if (l < 0 || l >= hp.dec_layers || hh < 0 || hh >= hp.n_head)
+        throw std::runtime_error("whisper: config.json alignment head (" + std::to_string(l) + ", " + std::to_string(hh) +
+                                 ") outside the decoder's " + std::to_string(hp.dec_layers) + " layers x " +
+                                 std::to_string(hp.n_head) + " heads");
+      for (auto& [a, b] : sp.alignment_heads)  // (each once: at most layers x heads of them, scores sized by the count)
+        if (a == l && b == hh) throw std::runtime_error("whisper: config.json alignment head listed twice");
+      sp.alignment_heads.push_back({(int)l, (int)hh});
+    }
     if (sp.alignment_heads.empty())  // (openai's default: every head of the second half of the decoder layers)
       for (int l = hp.dec_layers / 2; l < hp.dec_layers; ++l)
         for (int h = 0; h < hp.n_head; ++h) sp.alignment_heads.push_back({l, h});

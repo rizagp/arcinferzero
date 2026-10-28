@@ -116,29 +116,33 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   STARTUPINFOEXW si{};
   si.StartupInfo.cb = sizeof si;
   si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-  si.StartupInfo.hStdInput = nul;
-  si.StartupInfo.hStdOutput = wr;
+  si.StartupInfo.hStdInput = nul != INVALID_HANDLE_VALUE ? nul : nullptr;  // (no NUL: no input, not handle -1, which is
+  si.StartupInfo.hStdOutput = wr;                                          //  this process itself)
   si.StartupInfo.hStdError = wr;
   HANDLE inherit[2];
   size_t nh = 0;
   if (nul != INVALID_HANDLE_VALUE) inherit[nh++] = nul;
   inherit[nh++] = wr;
   si.lpAttributeList = (LPPROC_THREAD_ATTRIBUTE_LIST)abuf.data();
-  const bool attrs = InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &alen) &&
-                     UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
-                                               nh * sizeof(HANDLE), nullptr, nullptr);
+  const bool init = alen && InitializeProcThreadAttributeList(si.lpAttributeList, 1, 0, &alen);
+  const bool attrs = init && UpdateProcThreadAttribute(si.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
+                                                       nh * sizeof(HANDLE), nullptr, nullptr);
   PROCESS_INFORMATION pi{};
   const auto t0 = std::chrono::steady_clock::now();
-  const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
-                                 CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | (attrs ? EXTENDED_STARTUPINFO_PRESENT : 0),
-                                 nullptr, wcwd.empty() ? nullptr : wcwd.c_str(), &si.StartupInfo, &pi);
-  if (attrs) DeleteProcThreadAttributeList(si.lpAttributeList);
+  // (no handle list: no process at all. Inheriting without one hands the child every inheritable handle of the server,
+  //  another request's pipe among them)
+  const BOOL ok = attrs && CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                                          CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
+                                          nullptr, wcwd.empty() ? nullptr : wcwd.c_str(), &si.StartupInfo, &pi);
+  const DWORD err = attrs ? GetLastError() : 0;
+  if (init) DeleteProcThreadAttributeList(si.lpAttributeList);
   CloseHandle(wr);
   if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
   if (!ok) {
     CloseHandle(rd);
     if (job) CloseHandle(job);
-    throw std::runtime_error("cannot start PowerShell (error " + std::to_string(GetLastError()) + ")");
+    throw std::runtime_error(attrs ? "cannot start PowerShell (error " + std::to_string(err) + ")"
+                                   : std::string("cannot start PowerShell (no handle list for its output)"));
   }
   // (before it runs: its children are in the job too. Not in one: a timeout ends PowerShell itself only)
   const bool in_job = job && AssignProcessToJobObject(job, pi.hProcess);
@@ -155,12 +159,15 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
     DWORD n;
     while (ReadFile(rd, b, sizeof b, &n, nullptr) && n) {
       total += n;
-      const size_t room = kMaxOut * 3 / 4 > head.size() ? kMaxOut * 3 / 4 - head.size() : 0;
-      head.append(b, std::min<size_t>(room, n));
-      if (n > room) {
-        tail.append(b + room, n - room);
-        if (tail.size() > kMaxOut / 4 * 2) tail.erase(0, tail.size() - kMaxOut / 4);
-      }
+      try {  // (out of memory: this part is left out, counted in total, and the pipe still drained; an exception
+             //  leaving the thread would end the whole server)
+        const size_t room = kMaxOut * 3 / 4 > head.size() ? kMaxOut * 3 / 4 - head.size() : 0;
+        head.append(b, std::min<size_t>(room, n));
+        if (n > room) {
+          tail.append(b + room, n - room);
+          if (tail.size() > kMaxOut / 4 * 2) tail.erase(0, tail.size() - kMaxOut / 4);
+        }
+      } catch (...) {}
     }
     read_done = true;
   });

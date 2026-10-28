@@ -3,8 +3,10 @@
 #include "gguf.h"
 #include "unicode_tables.h"
 #include <algorithm>
+#include <functional>
 #include <queue>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -96,15 +98,17 @@ class Tokenizer {
   void init(const std::vector<std::string>& merges) {
     for (const std::string& t : tokens) max_tok_bytes_ = std::max(max_tok_bytes_, t.size());
     for (size_t i = 0; i < tokens.size(); ++i) {
-      if (i < types.size() && (types[i] == 3 || types[i] == 4)) {
-        special[tokens[i]] = (int)i;
-        specials_by_len_.push_back(tokens[i]);
-      } else {
-        token_id_[tokens[i]] = (int)i;
-      }
+      if (i < types.size() && (types[i] == 3 || types[i] == 4)) special[tokens[i]] = (int)i;
+      else token_id_[tokens[i]] = (int)i;
     }
-    std::sort(specials_by_len_.begin(), specials_by_len_.end(),
-              [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
+    // (the specials text can name: those starting with '<', by text, and their lengths, longest first; a lookup per
+    //  length at each '<' instead of a scan of the whole list (Gemma 4: thousands of <unusedN>), same longest match)
+    for (const auto& [s, id] : special)
+      if (!s.empty() && s[0] == '<') {
+        sp_text_.emplace(s, id);
+        if (std::find(sp_lens_.begin(), sp_lens_.end(), s.size()) == sp_lens_.end()) sp_lens_.push_back(s.size());
+      }
+    std::sort(sp_lens_.begin(), sp_lens_.end(), std::greater<size_t>());
     for (size_t r = 0; r < merges.size(); ++r) merge_rank_[merges[r]] = (int)r;
     int n = 0;
     for (int b = 0; b < 256; ++b) {
@@ -132,15 +136,12 @@ class Tokenizer {
     size_t start = 0;
     if (parse_special) {
       for (size_t i = 0; i < text.size();) {
-        const std::string* hit = nullptr;
-        if (text[i] == '<') {
-          for (const auto& sp : specials_by_len_)
-            if (text.compare(i, sp.size(), sp) == 0) { hit = &sp; break; }
-        }
-        if (hit) {
+        size_t len = 0;
+        const int id = text[i] == '<' ? special_at(text, i, len) : -1;
+        if (id >= 0) {
           encode_plain(text.substr(start, i - start), out);
-          out.push_back(special.at(*hit));
-          i += hit->size();
+          out.push_back(id);
+          i += len;
           start = i;
         } else {
           ++i;
@@ -156,14 +157,13 @@ class Tokenizer {
   std::string defuse_specials(const std::string& text) const {
     std::string out;
     size_t start = 0;
+    size_t len = 0;
     for (size_t i = text.find('<'); i != std::string::npos; i = text.find('<', i + 1))
-      for (const auto& sp : specials_by_len_)
-        if (text.compare(i, sp.size(), sp) == 0) {
-          out.append(text, start, i + 1 - start);
-          out += "\xE2\x80\x8B";
-          start = i + 1;
-          break;
-        }
+      if (special_at(text, i, len) >= 0) {
+        out.append(text, start, i + 1 - start);
+        out += "\xE2\x80\x8B";
+        start = i + 1;
+      }
     if (start == 0) return text;
     out.append(text, start, std::string::npos);
     return out;
@@ -238,7 +238,21 @@ class Tokenizer {
   std::unordered_map<std::string, int> merge_rank_;
   std::unordered_map<uint32_t, uint8_t> cp_to_byte_;
   std::string byte_to_str_[256];
-  std::vector<std::string> specials_by_len_;
+  struct SvHash {  // (lookups by string_view: no std::string built per '<' and length)
+    using is_transparent = void;
+    size_t operator()(std::string_view s) const { return std::hash<std::string_view>{}(s); }
+  };
+  std::unordered_map<std::string, int, SvHash, std::equal_to<>> sp_text_;
+  std::vector<size_t> sp_lens_;
+  // the id of the longest special token written at text[i] (its length in len), -1 when none
+  int special_at(const std::string& text, size_t i, size_t& len) const {
+    for (size_t l : sp_lens_) {
+      if (l > text.size() - i) continue;
+      auto it = sp_text_.find(std::string_view(text).substr(i, l));
+      if (it != sp_text_.end()) { len = l; return it->second; }
+    }
+    return -1;
+  }
 
   // Qwen3.5 pre-tokenizer, equivalent to the regex
   //   (?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}|

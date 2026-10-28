@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-28: an external audit checked and fixed
+
+A further static audit (23 findings) was checked finding by finding in the code; all held and are fixed:
+
+- **Model and file input checked**: a Whisper model whose tokenizer or alignment heads point outside the model is
+  refused at load (it could write past a buffer); a PDF's stream length past the file no longer overflows; JSON
+  with a lone surrogate gives U+FFFD, raw control characters (other than tab / newline) are refused; numbers from a
+  request are clamped before they are converted (slots, top_k, max_tokens, offsets, live recording rates).
+- **Files**: uploads are written to a temporary file and moved into place (a crash left a cut file under the full
+  file's id); a file edited to the same size gets a new id (its time is kept); a file reused for an upload is
+  compared byte for byte first; an extension longer than 16 characters no longer escapes the name limit.
+- **Terminal**: a command never inherits the server's other handles; its output reader cannot end the server.
+- **API**: `seed: 0` is a seed (it was taken as none); `top_k: 0` means no top-k; the last streamed token's
+  logprobs are sent; web_fetch keeps one deadline over its redirects; `http://[::1]:port` pages are recognised;
+  a chunked body with a broken chunk end gets 400; saved conversations with positions outside the context are
+  not loaded.
+
 ## 2026-10-28: an audit of every source and document
 
 Six reviews (server, file tools, speech, web UI, the GPU engine's host code, scripts and docs); what they found is

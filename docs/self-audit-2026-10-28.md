@@ -143,3 +143,25 @@ in the code, fixed in commit 99dd39a; one cycle (the user stopped it there). The
 Tests after it: the unit tests (14), the GPU tests (46 passed; skipped: the 26B and 27B, not on this laptop, and the
 opt-in checks), the transcript API script. Also removed: whisper.cl's `wh_cross_attn` / `wh_cross_attn2` (unused;
 large-v3 byte-identical) and 2.7 GB of stale kernel binaries from the cache folder.
+
+## An external audit of the sources (later on 2026-10-28)
+
+A third static audit (kept locally: `docs/deep-audit-sources-2026-10-28.md`, not in the repository) listed 2 high,
+13 medium and 8 low findings. Each was checked in the code; all held and are fixed, with these choices:
+
+- A1 (Whisper ids and alignment heads unchecked: heap / GPU reads past buffers from a broken model): checked at
+  load against n_vocab, the decoder layers and heads; the engine checks again before a pass. The cached large-v3
+  passes every check, its output unchanged.
+- A2 (PDF /Length as an unbounded double), B3 (lone surrogates), B4 (`safe_name` underflow), B5 (casts before
+  clamps: `Json::as_clamped`), B8 (live `offset` / `since`), C1 (IPv6 origins), C2 (chunk CRLF), C3, C4, C6,
+  B11: as the audit proposed.
+- A3 / B1 / B2 (file ids): the index keeps each file's write time; writes go through a temporary file; the id
+  scheme (64-bit FNV-1a) stays, since stored files and chats refer to it, but a file is reused for an upload only
+  when its bytes are the same.
+- A4 / C5 (terminal): no process without its handle list; the reader catches allocation failures.
+- B6: `seed: 0` is a seed; `top_k` 0 or less from a client means no top-k (tokens within 40 temperatures of the
+  best); without top_k the model's default as before, so clients that send none get the same samples.
+- B9 (special-token search at every `<`): looked up by length; token ids identical on four tokenizers.
+- B10 (cache positions): snapshot, gen_cut and floor positions outside [-1, ctx] reject the saved file.
+- C8 (raw control characters in JSON strings): refused, except tab, newline and carriage return, which models
+  write inside tool-call arguments.

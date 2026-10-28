@@ -40,6 +40,12 @@ class Json {
   int64_t as_int(int64_t def = 0) const {  // (out of range / not finite: def, never an undefined conversion)
     return t_ == Number && std::isfinite(n_) && std::fabs(n_) < 9.2e18 ? (int64_t)n_ : def;
   }
+  // (a number clamped into [lo, hi] before the cast: 1e308 is valid JSON and would be an undefined conversion;
+  //  not a number: def; fractions truncate)
+  int64_t as_clamped(int64_t def, int64_t lo, int64_t hi) const {
+    if (t_ != Number || std::isnan(n_)) return def;
+    return n_ <= (double)lo ? lo : n_ >= (double)hi ? hi : (int64_t)n_;
+  }
   const std::string& as_string() const { static const std::string empty; return t_ == String ? s_ : empty; }
   std::string str(const std::string& def = "") const { return t_ == String ? s_ : def; }
 
@@ -164,6 +170,9 @@ class Json {
     std::string o;
     while (i < s.size() && s[i] != '"') {
       char c = s[i++];
+      // (a raw control character is not JSON; tab / LF / CR stay accepted: models write them unescaped in tool-call
+      //  arguments, which chat.h / chat_gemma4.h parse with try_parse; dump() escapes all of them)
+      if ((unsigned char)c < 0x20 && c != '\t' && c != '\n' && c != '\r') throw std::runtime_error("json: control character in string");
       if (c != '\\') { o.push_back(c); continue; }
       if (i >= s.size()) break;
       char e = s[i++];
@@ -191,6 +200,7 @@ class Json {
             const uint32_t lo = hex4(i + 2);
             if (lo >= 0xDC00 && lo < 0xE000) { cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); i += 6; }
           }
+          if (cp >= 0xD800 && cp < 0xE000) cp = 0xFFFD;  // (a lone surrogate has no UTF-8 form: U+FFFD, as browsers do)
           put_utf8(o, cp);
           break;
         }

@@ -379,7 +379,8 @@ test uses port 8091 and needs the GPU memory.
 - Llama.cpp clients such as Unsloth Studio connect as to a llama-server: they read the context size and the token
   statistics from the fields above.
 - Sampling and output (chat): `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `frequency_penalty`,
-  `repeat_penalty` / `repeat_last_n`, `logit_bias`, `seed`, `stop`, `max_tokens`; `logprobs` / `top_logprobs`;
+  `repeat_penalty` / `repeat_last_n`, `logit_bias`, `seed` (0 is a seed too), `stop`, `max_tokens`; `logprobs` /
+  `top_logprobs`; `top_k` 0 or less: no top-k (not sent: the model's own default);
   `n` > 1 (without streaming; `/v1/completions` takes `n` too); `response_format` `json_object` / `json_schema` (sampling is constrained, so the answer
   always parses and fits the schema: types, properties / required / additionalProperties, items, enum, const,
   anyOf / oneOf, `$ref`); `tool_choice` `none` / `auto` / `required` / a named function (the answer starts with a

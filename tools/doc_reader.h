@@ -614,11 +614,13 @@ class File {
         size_t st = lx.i + 6;
         if (st < s_.size() && s_[st] == '\r') ++st;
         if (st < s_.size() && s_[st] == '\n') ++st;
-        P len = o->get("Length");
-        size_t n = len && len->t == Obj::Num ? (size_t)len->n : std::string::npos;
-        if (n == std::string::npos || st + n > s_.size() || s_.find("endstream", st + n) > st + n + 4) {
+        P len = o->get("Length");  // (checked as a double first: a cast of -1 or 1e300 to size_t is UB)
+        const size_t room = s_.size() - st;
+        size_t n = len && len->t == Obj::Num && len->n >= 0 && len->n <= (double)room ? (size_t)len->n
+                                                                                    : std::string::npos;
+        if (n == std::string::npos || n > room || s_.find("endstream", st + n) > st + n + 4) {
           const size_t e = s_.find("endstream", st);  // (an indirect or wrong /Length)
-          n = (e == std::string::npos ? s_.size() : e) - st;
+          n = e == std::string::npos ? room : e - st;
           while (n > 0 && (s_[st + n - 1] == '\n' || s_[st + n - 1] == '\r')) --n;
         }
         if (!spend(n)) break;

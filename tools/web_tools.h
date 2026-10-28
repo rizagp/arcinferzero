@@ -144,9 +144,25 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
   DWORD h2 = WINHTTP_PROTOCOL_FLAG_HTTP2;
   WinHttpSetOption(ses, WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL, &h2, sizeof h2);
   WinHttpSetTimeouts(ses, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+  // (WinHTTP's timeouts are per operation: each step gets only what is left of timeout_ms, over every redirect. 0 is no
+  //  timeout to WinHTTP, so at least 1 ms)
+  const auto deadline = t0 + std::chrono::milliseconds(timeout_ms);
+  auto left = [&] {
+    return (int)std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+  };
+  auto receive_within = [&](HINTERNET rq) {
+    DWORD ms = (DWORD)std::max(1, left());
+    WinHttpSetOption(rq, WINHTTP_OPTION_RECEIVE_TIMEOUT, &ms, sizeof ms);
+    WinHttpSetOption(rq, WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT, &ms, sizeof ms);
+  };
   for (int hop = 0; hop < 6; ++hop) {
+    const int ms = left();
     p = Page{};
     p.url = url;
+    if (ms <= 0) {
+      p.error = "timed out";
+      break;
+    }
     const std::wstring wu = widen(url);
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof uc;
@@ -173,7 +189,13 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
     DWORD noredir = WINHTTP_DISABLE_REDIRECTS;
     WinHttpSetOption(rq, WINHTTP_OPTION_DISABLE_FEATURE, &noredir, sizeof noredir);
     const std::wstring hdr = widen("Accept: text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8\r\nAccept-Language: " + accept_lang + "\r\n");
-    bool ok = WinHttpSendRequest(rq, hdr.c_str(), (DWORD)hdr.size(), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(rq, nullptr);
+    const int third = std::max(1, ms / 3);  // (resolve, connect and send: a third of what is left each)
+    WinHttpSetTimeouts(rq, third, third, third, std::max(1, ms));
+    bool ok = WinHttpSendRequest(rq, hdr.c_str(), (DWORD)hdr.size(), WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+    if (ok) {
+      receive_within(rq);
+      ok = left() > 0 && WinHttpReceiveResponse(rq, nullptr);
+    }
     if (ok) {
       // the address WinHTTP actually connected to (it resolves the host again: a name that answered with a public
       // address for check_host and a local one now, DNS rebinding, gets nothing back)
@@ -200,6 +222,8 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
         }
       }
       for (;;) {
+        if (left() <= 0) break;
+        receive_within(rq);
         DWORD avail = 0;
         if (!WinHttpQueryDataAvailable(rq, &avail) || !avail) break;
         const size_t old = p.body.size();
@@ -209,10 +233,11 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
         if (!WinHttpReadData(rq, p.body.data() + old, avail, &got)) { p.body.resize(old); break; }
         p.body.resize(old + got);
         if (p.body.size() >= max_bytes) { p.body.resize(max_bytes); break; }
-        if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(timeout_ms)) break;
       }
     } else {
-      p.error = "request to " + h8 + " failed (error " + std::to_string(GetLastError()) + ")";
+      const DWORD e = GetLastError();
+      p.error = e == ERROR_WINHTTP_TIMEOUT || left() <= 0 ? "request to " + h8 + " timed out"
+                                                          : "request to " + h8 + " failed (error " + std::to_string(e) + ")";
     }
     WinHttpCloseHandle(rq), WinHttpCloseHandle(con);
     break;

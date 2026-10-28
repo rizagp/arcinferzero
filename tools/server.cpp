@@ -1223,7 +1223,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       std::string data;  // (what this call reads: a section, pages, or the whole text)
       const size_t n = ix->doc.paras.size();
       if (a["section"].is_number()) {
-        const size_t k = (size_t)std::max(1.0, a["section"].as_number()) - 1;
+        const size_t k = (size_t)a["section"].as_clamped(1, 1, 1 << 30) - 1;  // (clamped before the cast)
         if (k >= ix->outline.size()) return fail(400, "no section " + std::to_string(k + 1) + " (the outline has " + std::to_string(ix->outline.size()) + ")");
         const rdoc::Section& s = ix->outline[k];
         data = ix->text(s.first, s.span);  // (with its subsections)
@@ -1274,7 +1274,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       }
       // (a part at a time: max_chars, and never more than the model's context takes in one read)
       const size_t asked = (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
-      const size_t off = (size_t)std::max(0.0, a["offset"].as_number(0)), mx = std::min(asked, files::read_budget(ctx));
+      const size_t off = (size_t)a["offset"].as_clamped(0, 0, (int64_t)data.size()), mx = std::min(asked, files::read_budget(ctx));
       size_t end = std::min(data.size(), off + mx);
       if (end < data.size()) {  // (cut at a paragraph's end, else a line's or a space, when one is in the last third)
         size_t at = data.rfind("\n\n", end);
@@ -1933,7 +1933,7 @@ int main(int argc, char** argv) {
       if (!rq.local_peer) return fail(403, "changing the slots is only for this computer");
       Json in;
       if (!Json::try_parse(rq.body, in) || !in["slots"].is_number()) return fail(400, "expected {\"slots\": 1-8}");
-      const int n = std::clamp((int)in["slots"].as_number(), 1, 8);
+      const int n = (int)in["slots"].as_clamped(1, 1, 8);  // (clamped before the cast: 1e308 is valid JSON)
       std::unique_lock<std::shared_mutex> lk(swap_mu);
       if (!cur) return no_model(rs);
       auto reply = [&] {

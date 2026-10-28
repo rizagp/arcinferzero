@@ -263,7 +263,13 @@ class HttpServer {
     std::transform(o.begin(), o.end(), o.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if (o.compare(0, 7, "http://") != 0) return false;  // (https on a local port is not served here)
     o.erase(0, 7);
-    const size_t e = o.find_first_of(":/");
+    // (an IPv6 literal: up to its ']', the ':' inside it is not the port's; then only a port or a path may follow)
+    size_t e = o.find_first_of(":/");
+    if (!o.empty() && o[0] == '[') {
+      e = o.find(']');
+      if (e == std::string::npos || (e + 1 < o.size() && o[e + 1] != ':' && o[e + 1] != '/')) return false;
+      ++e;
+    }
     const std::string h = o.substr(0, e);
     return h == "127.0.0.1" || h == "localhost" || h == "[::1]" || h == "::1";
   }
@@ -498,6 +504,7 @@ class HttpServer {
             if (n <= 0) { closesocket(c); return; }
             buf.append(tmp, n);
           }
+          if (buf.compare(le + 2 + len, 2, "\r\n") != 0) return reply_close(c, 400, "malformed chunk (no CRLF after its data)");
           rq.body.append(buf, le + 2, len);
           buf.erase(0, le + 2 + len + 2);
         }

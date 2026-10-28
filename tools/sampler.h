@@ -19,8 +19,11 @@ struct SamplingParams {
   // negative one multiplied, for tokens among the last repeat_last_n generated (-1: all of them, 0: none)
   float frequency_penalty = 0.0f, repeat_penalty = 1.0f;
   int repeat_last_n = 64;
+  // (0: 256 candidates in sample(), 40 in sample_allowed(), the server's default when a GGUF says 0; -1: no top-k,
+  //  every token within 40 temperatures of the best (the rest is < e^-40 each), what a client's top_k: 0 asks for)
   int top_k = 20;
   uint64_t seed = 0;
+  bool has_seed = false;  // (seed 0 is a seed too when set: OpenAI's seed: 0 is reproducible; else 0 = random)
   // OpenAI logit_bias: token id -> added to its logit; -100 or less bans the token (never drawn, greedy included)
   std::vector<std::pair<int, float>> logit_bias;
 };
@@ -30,7 +33,7 @@ class Sampler {
   // the logit of a banned token (logit_bias <= -100), set after every penalty; sample() and sample_allowed() never
   // pick it while any other token is left
   static constexpr float kBanned = -1e30f;
-  explicit Sampler(const SamplingParams& p) : p_(p), rng_(p.seed ? p.seed : std::random_device{}()) {
+  explicit Sampler(const SamplingParams& p) : p_(p), rng_(p.has_seed || p.seed ? p.seed : std::random_device{}()) {
     for (const auto& [t, b] : p_.logit_bias) bans_ = bans_ || b <= -100.0f;
   }
   int sample(const std::vector<float>& raw, const std::vector<int>& recent) {
@@ -46,6 +49,7 @@ class Sampler {
     const float best = *std::max_element(logits.begin(), logits.end()), thr = best - 40.0f * p_.temperature;
     for (int i = 0; i < V; ++i)
       if (logits[i] >= thr) c.push_back({logits[i], i});
+    if (p_.top_k < 0) k = (int)c.size();  // (no top-k: all the candidates, never fewer than one: the best is there)
     if ((int)c.size() < k) {  // not enough: the whole vocabulary
       c.clear();
       c.reserve(V);
@@ -84,7 +88,7 @@ class Sampler {
     const std::vector<float>& logits = adjusted(raw, recent);
     const int V = (int)logits.size();
     if (V == 0) return -1;
-    const int need = p_.temperature <= 0.0f ? 1 : (p_.top_k > 0 ? std::min(p_.top_k, V) : 40);
+    const int need = p_.temperature <= 0.0f ? 1 : (p_.top_k > 0 ? std::min(p_.top_k, V) : p_.top_k < 0 ? V : 40);
     auto gt = [&](int a, int b) { return logits[a] > logits[b]; };
     // The `head` most likely tokens from one pass over the logits, without an index array of the whole vocabulary.
     // The order (ties included) and so the predicate's calls are those of std::partial_sort over such an array
@@ -116,6 +120,8 @@ class Sampler {
         std::sort(idx_.begin() + head, idx_.end(), gt);
       }
       const int t = r < head ? heap_[r] : idx_[r];
+      // (no top-k: down to 40 temperatures below the first allowed, as sample(); the rest is sorted lower still)
+      if (p_.top_k < 0 && !c.empty() && (logits[c[0]] - logits[t]) / p_.temperature > 40.0f) break;
       if (bans_ && logits[t] <= kBanned) continue;
       if (ok(t)) c.push_back(t);
     }
