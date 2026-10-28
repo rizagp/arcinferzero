@@ -739,7 +739,8 @@ class Server {
 #include "server_catalog.h"  // (model catalog, --ctx auto)
 
 #include "server_load.h"  // (loading a model)
-#include "server_whisper.h"  // (Whisper: /v1/audio/transcriptions)
+#include "server_whisper.h"  // (the speech service: Whisper, Qwen3-ASR, the transcript library)
+#include "server_speech.h"  // (starting it, Gemma 4 E4B for transcripts, /v1/audio/*)
 
 // The web UI's file tools for the model (it calls them as functions, the page runs them here):
 //   create_file {filename, format: docx | pdf | doc | rtf | xlsx,
@@ -1473,7 +1474,7 @@ int main(int argc, char** argv) {
   std::string model, host = "127.0.0.1", alias;
   int port = 8080;
   bool swap = true, help = false, web_tools = true, terminal = true;
-  std::string whisper_opt = "off", whisper_dev = "gpu";
+  std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "default";  // (default: auto when Whisper is on)
   double whisper_max_min = 180;
   ServeOpts so;
   so.eo.ctx = 40960;
@@ -1559,6 +1560,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-swap") swap = false;
     else if (a == "--no-web-tools") web_tools = false;
     else if (a == "--whisper") whisper_opt = next();
+    else if (a == "--asr") asr_opt = next();
     else if (a == "--whisper-device") {
       whisper_dev = next();
       if (whisper_dev != "gpu" && whisper_dev != "npu") throw std::runtime_error("--whisper-device: gpu or npu");
@@ -1655,7 +1657,11 @@ int main(int argc, char** argv) {
             "                        asks the loaded model, if it hears audio); --ctx auto keeps its GPU memory free\n"
             "  --whisper-device gpu|npu  Whisper's encoder on the iGPU (default) or the NPU (the decoder: the iGPU)\n"
             "  --whisper-max-minutes N  longest upload (default 180)\n"
-            "  --no-terminal         no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell in the\n"
+            "  --asr auto|FILE|off   Qwen3-ASR next to Whisper (needs --whisper), the default speech model: requests,\n"
+            "                        transcripts and chat audio go to it unless they name Whisper (docs/qwen3-asr.md);\n"
+            "                        auto = Qwen3-ASR-1.7B GGUF from the Hugging Face cache (its mmproj next to it);\n"
+            "                        default: auto with --whisper when the cache has it, else Whisper alone\n"
+            "  --no-terminal       no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell in the\n"
             "                        chat's folder after the user allows it; default: on, this computer only)\n"
             "  A client that closes its connection (Pi: Esc) cancels its request: prompt processing stops within a\n"
             "  layer, generation before the next token.\n");
@@ -1672,26 +1678,13 @@ int main(int argc, char** argv) {
   if (so.webui.empty()) so.webui = find_dir("webui");
   if (alias.empty()) alias = std::filesystem::path(model).stem().string();
 
-  // Whisper before the model: --ctx auto then leaves its GPU memory free (so.whisper_bytes); the NPU's driver is
-  // initialized before the GPU runtime (which asks for GPUs only) when Whisper or the model uses the NPU
+  // the speech service before the model: --ctx auto then leaves its GPU memory free (tools/server_speech.h)
   std::unique_ptr<srvwh::Service> wh;
-  if (whisper_opt != "off") {
-    const std::string dir = whisper_opt == "auto" ? whisper::find_model() : whisper_opt;
-    try {
-      if (dir.empty()) throw std::runtime_error("no faster-whisper model in the Hugging Face cache (hf download mobiuslabsgmbh/faster-whisper-large-v3-turbo)");
-      const bool npu_wanted = whisper_dev == "npu" || so.eo.npu > 0 || (getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0);
-      if (npu_wanted && ze_load()) zeInit(0);
-      const auto t0 = std::chrono::steady_clock::now();
-      wh = std::make_unique<srvwh::Service>(dir, whisper_dev == "npu", so.eo.kernel_dir);
-      wh->max_seconds = whisper_max_min * 60;
-      so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
-      so.whisper_props = wh->props();
-      fprintf(stderr, "whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",
-              std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), wh->gpu_bytes() / 1073741824.0);
-    } catch (const std::exception& e) {
-      fprintf(stderr, "arcinferzero-server: --whisper: %s\n", e.what());
-      return 1;
-    }
+  try {
+    wh = srvsp::start(whisper_opt, whisper_dev, asr_opt, whisper_max_min, so);
+  } catch (const std::exception& e) {
+    fprintf(stderr, "arcinferzero-server: --whisper: %s\n", e.what());
+    return 1;
   }
   std::unique_ptr<Loaded> cur;
   try {  // (a model that cannot load: its reason, not a silent abort)
@@ -1730,6 +1723,7 @@ int main(int argc, char** argv) {
 
   HttpServer http;
   std::function<void(const HttpRequest&, HttpResponse&)> dispatch;
+  if (wh) srvsp::attach_e4b(*wh, catalog, cur.get(), dispatch, so, cur_so);  // (Gemma 4 E4B as a transcript model)
   // (no model loaded: a model switch failed and loading the previous model again did too; caller holds swap_mu)
   auto no_model = [&](HttpResponse& rs) {
     Json err = Json::object(), r = Json::object();
@@ -1960,72 +1954,23 @@ int main(int argc, char** argv) {
         return rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
       return rq.path.rfind("/v1/live", 0) == 0 ? wh->live(rq, rs) : wh->transcripts(rq, rs);
     }
-    // OpenAI audio transcription / translation (multipart upload): the clip goes to a model with an audio encoder
-    if (rq.method == "POST" && (rq.path == "/v1/audio/transcriptions" || rq.path == "/v1/audio/translations")) {
-      const auto form = apic::parse_multipart(rq.header("content-type"), rq.body);
-      const auto fit = form.find("file");
-      if (fit == form.end() || fit->second.data.empty())
-        return rs.send(400, "application/json", "{\"error\":{\"message\":\"file required (multipart/form-data)\"}}");
-      Json req = Json::object();
-      auto field = [&](const char* k) { auto it = form.find(k); return it == form.end() ? std::string() : it->second.data; };
-      const bool translate = rq.path == "/v1/audio/translations";
-      {  // Whisper (--whisper) unless the request names a chat model (the loaded one or one of the catalog)
-        const std::string want = apic::strip_tag(field("model"));
-        bool chat_model = false;
-        if (!want.empty()) {
-          std::shared_lock<std::shared_mutex> lk(swap_mu);
-          chat_model = cur && want == cur->alias;
-          for (const ModelInfo& m : catalog) chat_model = chat_model || (m.supported && (m.alias == want || m.name == want || m.file == want));
-        }
-        if (wh && !chat_model) return wh->handle(rs, form, translate);
-        if (!wh && want.find("whisper") != std::string::npos)
-          return rs.send(400, "application/json", "{\"error\":{\"message\":\"Whisper is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
-      }
-      req.set("model", apic::strip_tag(field("model")));
-      req.set("response_format", field("response_format").empty() ? "json" : field("response_format"));
-      req.set("language", field("language"));
-      req.set("task", translate ? "translate" : "transcribe");
-      std::string ext = fit->second.filename.substr(fit->second.filename.rfind('.') + 1);
-      std::string instr = translate ? "Translate the speech in this audio into English. Reply with the translation only."
-                                    : "Transcribe the speech in this audio exactly as spoken" +
-                                          (field("language").empty() ? std::string() : " (language: " + field("language") + ")") +
-                                          ". Reply with the transcription only.";
-      if (!field("prompt").empty()) instr += " Context: " + field("prompt");
-      Json audio = Json::object();
-      audio.set("data", apic::base64_encode(fit->second.data));
-      audio.set("format", ext);
-      Json pa = Json::object();
-      pa.set("type", "input_audio");
-      pa.set("input_audio", audio);
-      Json parts = Json::array();
-      parts.push(pa);
-      parts.push(apic::text_part(instr));
-      Json msgs = Json::array();
-      msgs.push(apic::msg("user", parts));
-      Json chat_body = Json::object();
-      chat_body.set("model", req["model"].str());
-      if (chat_body["model"].str().empty()) {
+    // OpenAI audio transcription / translation (tools/server_speech.h)
+    {
+      srvsp::AudioRoute ar;
+      ar.wh = wh.get();
+      ar.is_chat_model = [&](const std::string& want) {
         std::shared_lock<std::shared_mutex> lk(swap_mu);
-        if (!cur) return no_model(rs);
-        chat_body.set("model", cur->alias);
-      }
-      chat_body.set("messages", msgs);
-      chat_body.set("enable_thinking", false);
-      chat_body.set("temperature", field("temperature").empty() ? 0.0 : atof(field("temperature").c_str()));
-      // a cap of 8 tokens a second of audio (speech is ~4) and a mild repeat penalty: greedy, Gemma 4 E4B fell into a
-      // loop on a 29-s clip of mixed Indonesian and English and wrote 16,687 tokens in 489 s, until its client went
-      double secs = 30;
-      try {
-        secs = (double)audio::decode_16k(std::vector<uint8_t>(fit->second.data.begin(), fit->second.data.end()), 3600).size() / 16000;
-      } catch (const std::exception&) {}  // (the chat request says what is wrong with the audio)
-      chat_body.set("max_tokens", field("max_tokens").empty() ? (double)std::clamp((int)(secs * 8) + 64, 96, 16384)
-                                                              : atof(field("max_tokens").c_str()));
-      chat_body.set("repeat_penalty", field("repeat_penalty").empty() ? 1.1 : atof(field("repeat_penalty").c_str()));
-      HttpRequest rq2 = rq;
-      rq2.path = "/v1/chat/completions";
-      rq2.body = chat_body.dump();
-      apic::Adapter ad("transcription", req, rs);
-      return dispatch(rq2, rs);
+        bool r = cur && want == cur->alias;
+        for (const ModelInfo& m : catalog) r = r || (m.supported && (m.alias == want || m.name == want || m.file == want));
+        return r;
+      };
+      ar.loaded_alias = [&]() -> std::string {
+        std::shared_lock<std::shared_mutex> lk(swap_mu);
+        return cur ? cur->alias : std::string();
+      };
+      ar.no_model = [&](HttpResponse& r) { no_model(r); };
+      ar.dispatch = &dispatch;
+      if (srvsp::audio_route(rq, rs, ar)) return;
     }
     // Ollama: the model list, one model's details, the version, the loaded model
     if (rq.path == "/api/version") return rs.send(200, "application/json", "{\"version\":\"0.9.0\"}");

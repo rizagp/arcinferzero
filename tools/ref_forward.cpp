@@ -993,8 +993,13 @@ int main(int argc, char** argv) {
   const int T = (int)toks.size();
   const int nl = hp("block_count") - hp("nextn_predict_layers", 0), E = hp("embedding_length");
   const int nh = hp("attention.head_count"), nkv = hp("attention.head_count_kv"), hd = hp("attention.key_length");
-  const int nrot = hp("rope.dimension_count"), ds = hp("ssm.state_size"), nk = hp("ssm.group_count"), nv = hp("ssm.time_step_rank");
-  const int Di = hp("ssm.inner_size"), interval = hp("full_attention_interval", 4);
+  // (Qwen3 dense, qwen3 / qwen3vl (Qwen3-ASR's text model): every layer full attention without the output gate, RoPE
+  //  over the whole head, ffn_norm; M-RoPE with text positions only is plain RoPE)
+  const bool q3 = A == "qwen3" || A == "qwen3vl";
+  const int nrot = hp("rope.dimension_count", q3 ? hd : -1), ds = hp("ssm.state_size", 0), nk = hp("ssm.group_count", 0),
+            nv = hp("ssm.time_step_rank", 0);
+  const int Di = hp("ssm.inner_size", 0), interval = q3 ? 1 : hp("full_attention_interval", 4);
+  const int qs = q3 ? nh * hd : nh * hd * 2;  // (q row stride: Qwen3.5 interleaves each head's q and gate)
   const float eps = (float)f.get_float(A + ".attention.layer_norm_rms_epsilon", 1e-6);
   const float base = (float)f.get_float(A + ".rope.freq_base", 1e7);
   const int Cd = 2 * nk * ds + Di;
@@ -1082,7 +1087,7 @@ int main(int argc, char** argv) {
       for (int t = 0; t < T; ++t) {
         for (int hh = 0; hh < nh; ++hh) {
           float* d = &q[((size_t)t * nh + hh) * hd];
-          memcpy(d, &qg[(size_t)t * nh * hd * 2 + hh * hd * 2], hd * 4);
+          memcpy(d, &qg[(size_t)t * qs + hh * (qs / nh)], hd * 4);
           rmsnorm(d, hd, qn.data(), eps);
           rope(d, t);
           fq_row(d, hd);  // (REF_ATTQ: rounded as the engine's attention stores q / K / V)
@@ -1116,14 +1121,15 @@ int main(int argc, char** argv) {
           for (int i = 0; i < hd; ++i) {
             double acc = 0;
             for (int u = 0; u <= t; ++u) acc += sc[u] * vv[(size_t)u * nkv * hd + g * hd + i];
-            const float gate = qg[(size_t)t * nh * hd * 2 + hh * hd * 2 + hd + i];
+            if (q3) { att[((size_t)t * nh + hh) * hd + i] = (float)(acc / z); continue; }
+            const float gate = qg[(size_t)t * qs + hh * hd * 2 + hd + i];
             att[((size_t)t * nh + hh) * hd + i] = (float)(acc / z) / (1.0f + std::exp(-gate));
           }
         }
       matmul(p + "attn_output.weight", att, T, out);
     }
     for (size_t i = 0; i < x.size(); ++i) x[i] += out[i];
-    auto pn = vecf(p + "post_attention_norm.weight");
+    auto pn = vecf(p + (q3 ? "ffn_norm.weight" : "post_attention_norm.weight"));
     h = x;
     for (int t = 0; t < T; ++t) rmsnorm(&h[(size_t)t * E], E, pn.data(), eps);
     std::vector<float> g, u, d;

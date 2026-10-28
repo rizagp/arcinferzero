@@ -3,7 +3,7 @@
 //   transcribez <file | folder | wildcard> ... [options]       (docs/whisper-native.md, "Command line")
 //
 // The model: --model <folder> (a faster-whisper folder: model.bin, tokenizer.json, config.json), else
-// faster-whisper-large-v3-turbo found in the Hugging Face cache. Outputs go to %USERPROFILE%\arcinferzero\transcripts
+// faster-whisper-large-v3 (else large-v3-turbo) found in the Hugging Face cache. Outputs go to %USERPROFILE%\arcinferzero\transcripts
 // (--out), one file per format: <name>.json, .srt, .txt by default.
 #include "../src/app_dir.h"
 #include "../src/whisper.h"
@@ -68,7 +68,7 @@ std::string mmss(double s) {
 void usage() {
   fprintf(stderr,
           "usage: transcribez <file | folder | wildcard> ... [options]\n"
-          "  --model <folder>            a faster-whisper model folder (default: large-v3-turbo from the HF cache)\n"
+          "  --model <folder>            a faster-whisper model folder (default: large-v3 from the HF cache, else turbo)\n"
           "  --device gpu|npu            the Arc iGPU (default), or the encoder on the NPU and the decoder on the iGPU\n"
           "  --lang auto|id|en|id,en     language: detected per 30-s window (auto), fixed, or a list for speech that\n"
           "                              mixes them (each utterance's language; ~3x slower)\n"
@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
     opt.word_timestamps = words;
     if (model_dir.empty()) model_dir = find_model();
     if (model_dir.empty())
-      throw std::runtime_error("no Whisper model: download one (hf download mobiuslabsgmbh/faster-whisper-large-v3-turbo) or pass --model");
+      throw std::runtime_error("no Whisper model: download one (hf download Systran/faster-whisper-large-v3) or pass --model");
     std::vector<fs::path> files;
     for (const std::string& a : inputs)
       for (const fs::path& p : expand(a)) files.push_back(p);

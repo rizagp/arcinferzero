@@ -358,10 +358,12 @@ inline std::vector<float> mel_filters(int n_mels) {
   return w;
 }
 
-// mel[n_mels][n_frames] of samples + 30 s of zeros; content_frames: the frames of the samples themselves
-inline std::vector<float> log_mel(const std::vector<float>& x, int n_mels, int& n_frames, int& content_frames) {
+// mel[n_mels][n_frames] of samples + 30 s of zeros (pad: other zeros; Qwen3-ASR, Hugging Face's
+// WhisperFeatureExtractor without padding: none); content_frames: the frames of the samples themselves
+inline std::vector<float> log_mel(const std::vector<float>& x, int n_mels, int& n_frames, int& content_frames,
+                                  int64_t pad = kWindowSamples) {
   const int nb = kFft / 2 + 1;
-  const int64_t L = (int64_t)x.size() + kWindowSamples;  // (the padded length)
+  const int64_t L = (int64_t)x.size() + pad;  // (the padded length)
   n_frames = (int)(L / kHop);
   content_frames = (int)((int64_t)x.size() / kHop);
   auto sample = [&](int64_t i) -> float {  // the padded signal with reflect padding of kFft / 2 at both ends
@@ -438,6 +440,7 @@ class Backend {
 
 // ---------------------------------------------------------------- transcription options and results
 struct Options {
+  std::string engine;  // (the server: "qwen3-asr" = this request goes to Qwen3-ASR instead, tools/server_whisper.h)
   std::string language = "auto";  // "auto": detected per window; a code ("id") fixes it; "id,en": detected among them
   bool detect_once = false;       // with auto: detect in the first window only (openai's default)
   std::string task = "transcribe";  // or "translate" (to English)
@@ -1404,8 +1407,10 @@ inline std::string find_model() {
   if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
   if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
   if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
-  for (const char* name : {"models--mobiuslabsgmbh--faster-whisper-large-v3-turbo", "models--deepdml--faster-whisper-large-v3-turbo-ct2",
-                           "models--Systran--faster-whisper-large-v3"}) {
+  // (large-v3 first since 2026-10-28: the user's choice of transcript models is Qwen3-ASR, Gemma 4 E4B and
+  //  large-v3; turbo when it is the only one)
+  for (const char* name : {"models--Systran--faster-whisper-large-v3", "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo",
+                           "models--deepdml--faster-whisper-large-v3-turbo-ct2"}) {
     for (const fs::path& r : roots) {
       std::error_code ec;
       const fs::path snaps = r / name / "snapshots";

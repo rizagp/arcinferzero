@@ -16,6 +16,7 @@
 #include "../src/whisper.h"
 #include "../src/whisper_formats.h"
 #include "../zero/whisper_engine.h"
+#include "../zero/asr_qwen3.h"
 #include "api_compat.h"
 #include "server_files.h"
 #include "../src/app_dir.h"
@@ -141,12 +142,14 @@ class Service {
     if (name.size() > 4 && name.compare(name.size() - 4, 4, "-ct2") == 0) name.resize(name.size() - 4);
     id = name;
   }
-  size_t gpu_bytes() const { return eng_->gpu_bytes; }
+  size_t gpu_bytes() const { return eng_->gpu_bytes + asr_bytes_; }
   Json props() const {
     Json p = Json::object();
     p.set("model", id);
     p.set("device", npu ? "npu" : "gpu");
     p.set("max_minutes", max_seconds / 60);
+    if (!asr_id.empty()) p.set("asr", asr_id);
+    if (!chat_asr_id.empty()) p.set("chat_asr", chat_asr_id);  // (Gemma 4 E4B as a transcript model)
     return p;
   }
 
@@ -155,6 +158,28 @@ class Service {
   bool read_options(const std::function<std::string(const char*)>& field, bool translate, whisper::Options& opt,
                     std::string& bad) const {
     opt.task = translate ? "translate" : "transcribe";
+    // the speech model: Qwen3-ASR unless the request names another one (Gemma 4 E4B, or Whisper itself); Whisper
+    // when Qwen3-ASR is not loaded and for translations
+    const std::string mdl = field("model");
+    if (names_chat_asr(mdl)) {
+      if (chat_asr_id.empty() || !chat_asr) {
+        bad = "model: no Gemma 4 E4B with its audio encoder among this server's models";
+        return false;
+      }
+      if (translate) {
+        bad = "model: Gemma 4 E4B transcribes here (translations: Whisper)";
+        return false;
+      }
+      opt.engine = "e4b";
+    } else if (names_asr(mdl) && asr_id.empty()) {
+      bad = "model: Qwen3-ASR is not loaded (start the server with --asr auto)";
+      return false;
+    } else if (names_asr(mdl) && translate) {
+      bad = "model: Qwen3-ASR transcribes only (translations: Whisper)";
+      return false;
+    } else if (!asr_id.empty() && !translate && !names_whisper(mdl)) {
+      opt.engine = "qwen3-asr";
+    }
     std::string lang = field("language");
     for (char& c : lang) c = (char)tolower((unsigned char)c);
     if (!lang.empty()) {
@@ -255,7 +280,10 @@ class Service {
     try {
       LockedBackend be(*eng_, gpu_turn);
       whisper::Transcriber tr(*m_, be);
-      r = tr.run(audio, opt, [&](double done, double total, const std::vector<whisper::Segment>& segs) {
+      auto run = [&](const std::vector<float>& a, const whisper::Options& o, const whisper::Progress& cb) {
+        return o.engine.empty() ? tr.run(a, o, cb) : o.engine == "e4b" ? chat_run(a, o, cb) : asr_run(a, o, cb);
+      };
+      r = run(audio, opt, [&](double done, double total, const std::vector<whisper::Segment>& segs) {
         if (!stream) return !rs.client_gone();
         for (; sent < segs.size(); ++sent) {
           Json e = Json::object();
@@ -320,6 +348,7 @@ class Service {
   // text file in the chat's folder, given as that file: the chat reads it as a document (with the file tools, its
   // outline and the parts it needs). False and the reason when a clip cannot be read.
   static constexpr size_t kInlineChars = 12000;
+  std::string clip_model() const { return asr_id.empty() ? "Whisper" : "Qwen3-ASR"; }  // (what writes chat audio)
   static bool has_audio_parts(const Json& body) {
     for (const Json& m : body["messages"].items())
       for (const Json& p : m["content"].items()) {
@@ -394,7 +423,7 @@ class Service {
           std::string stem = name;
           const size_t dot = stem.rfind('.');
           if (dot != std::string::npos && dot > 0) stem.resize(dot);
-          const files::Info f = files::store().put(stem + " (transcript).txt", "Transcript of " + name + " (" + len + ", Whisper):\n\n" + text, chat);
+          const files::Info f = files::store().put(stem + " (transcript).txt", "Transcript of " + name + " (" + len + ", " + clip_model() + "):\n\n" + text, chat);
           Json fr = Json::object();
           fr.set("file_id", f.id);
           fr.set("filename", f.name);
@@ -404,7 +433,7 @@ class Service {
           t.set("type", "text");
           // (ended by a blank line: the template joins a message's text parts as they are, and the question after it
           //  ran into the transcript's last word)
-          t.set("text", "[audio: " + name + ", " + len + ", written by Whisper]\n" +
+          t.set("text", "[audio: " + name + ", " + len + ", written by " + clip_model() + "]\n" +
                             (text.empty() ? std::string("(no speech)") : text) + "\n[end of the audio]\n\n");
         }
         parts.push(t);
@@ -577,7 +606,7 @@ class Service {
       if (ext.empty() || ext.size() > 5 || ext.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789") != std::string::npos)
         ext = "bin";
       Json o = Json::object();
-      for (const char* k : {"language", "beam_size", "terms", "prompt", "dual_language", "condition_on_previous_text"})
+      for (const char* k : {"model", "language", "beam_size", "terms", "prompt", "dual_language", "condition_on_previous_text"})
         if (!field(k).empty()) o.set(k, field(k));
       Json m = Json::object();
       const std::string nid = new_dir();
@@ -863,11 +892,12 @@ class Service {
         sp.push(w);
       }
       s->opt = opt;
+      s->opt.engine.clear();  // (the draft: Whisper; the accurate pass the model asked for)
       s->opt.beam = 1;  // (the draft: greedy; the accurate pass has the options as given)
       s->opt.word_timestamps = true;
       s->opt.window_turn = [this](const std::function<void()>& f) { turn_.run(true, f); };
       Json o = Json::object();
-      for (const char* k : {"language", "beam_size", "terms", "prompt", "dual_language"})
+      for (const char* k : {"model", "language", "beam_size", "terms", "prompt", "dual_language"})
         if (!field(k).empty()) o.set(k, field(k));
       const std::string clean = clean_name(in["name"].str("recording"), 200, "recording");
       const std::string nid = new_dir();
@@ -1109,13 +1139,15 @@ class Service {
     const std::vector<float> a = audio::decode_16k(std::vector<uint8_t>(data.begin(), data.end()), max_seconds);
     whisper::Options o;
     o.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
+    if (!asr_id.empty()) o.engine = "qwen3-asr";  // (the default speech model: Qwen3-ASR when loaded)
     LockedBackend be(*eng_, gpu_turn);
     whisper::Transcriber tr(*m_, be);
     bool left = false;
-    const whisper::Result r = tr.run(a, o, [&](double, double, const std::vector<whisper::Segment>&) {
+    const whisper::Progress cb = [&](double, double, const std::vector<whisper::Segment>&) {
       left = gone && gone();
       return !left;
-    });
+    };
+    const whisper::Result r = o.engine.empty() ? tr.run(a, o, cb) : asr_run(a, o, cb);
     if (left) throw std::runtime_error("the client left");
     for (const whisper::Segment& g : r.segments) text += g.text;
     text = whisper::trim_copy(text);
@@ -1614,7 +1646,7 @@ class Service {
       whisper::Transcriber tr(*m_, be);
       double before = 0;  // (the tracks done)
       for (size_t k = 0; k < audio.size() && !stopped; ++k) {
-        whisper::Result rk = tr.run(audio[k], opt, [&](double done, double, const std::vector<whisper::Segment>& segs) {
+        const whisper::Progress cb = [&](double done, double, const std::vector<whisper::Segment>& segs) {
           std::lock_guard<std::mutex> lk(lib_mu_);
           const double el = std::chrono::duration<double>(clk::now() - t0).count();
           Json& m = metas_[tid];
@@ -1629,7 +1661,9 @@ class Service {
           }
           stopped = cancel_running_ || stop_;
           return !stopped;
-        });
+        };
+        whisper::Result rk = opt.engine.empty() ? tr.run(audio[k], opt, cb)
+                             : opt.engine == "e4b" ? chat_run(audio[k], opt, cb) : asr_run(audio[k], opt, cb);
         const std::string who = audio.size() > 1 ? meta["speakers"][(int)k].str("Track " + std::to_string(k + 1)) : "";
         for (whisper::Segment& g : rk.segments) g.speaker = who;
         r.segments.insert(r.segments.end(), rk.segments.begin(), rk.segments.end());
@@ -1661,7 +1695,12 @@ class Service {
     std::vector<std::string> seen;
     size_t words = 0;
     for (const whisper::Segment& g : r.segments) {
-      words += g.words.size();
+      if (!g.words.empty()) {
+        words += g.words.size();
+      } else {  // (Qwen3-ASR: no word times, the words of its text)
+        std::istringstream in(g.text);
+        for (std::string w; in >> w;) ++words;
+      }
       if (!g.lang.empty() && std::find(seen.begin(), seen.end(), g.lang) == seen.end()) {
         seen.push_back(g.lang);
         langs.push(g.lang);
@@ -1744,6 +1783,8 @@ class Service {
     bool busy_ = false;
     int live_waiting_ = 0, demand_ = 0;
   };
+
+#include "server_whisper_asr.h"  // (Qwen3-ASR and Gemma 4 E4B: their public and private part)
 
   std::unique_ptr<whisper::Model> m_;
   std::unique_ptr<WhisperEngine> eng_;

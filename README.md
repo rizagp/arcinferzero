@@ -392,10 +392,13 @@ test uses port 8091 and needs the GPU memory.
   - Ollama `POST /api/chat`, `POST /api/generate` (NDJSON streams, `images`, `tools`, `think`, `format`, `options`),
     `GET /api/tags`, `POST /api/show`, `GET /api/ps`, `GET /api/version`: apps with an Ollama setting connect to
     `http://127.0.0.1:8090`.
-  - OpenAI audio: `POST /v1/audio/transcriptions` and `/v1/audio/translations` (multipart upload): Whisper
-    large-v3-turbo with `--whisper auto` (iGPU, or its encoder on the NPU with `--whisper-device npu`; json, text,
-    srt, vtt, verbose_json with words, streaming, and subtitle / Remotion formats; [docs/whisper-native.md](docs/whisper-native.md)),
-    else a model with an audio encoder (Gemma 4 12B / E4B). Saved transcripts: `/v1/transcripts` (audio and video
+  - OpenAI audio: `POST /v1/audio/transcriptions` and `/v1/audio/translations` (multipart upload) with
+    `--whisper auto`: **Qwen3-ASR 1.7B by default** (the closest to what was said on a noisy mixed Indonesian /
+    English recording, no timestamps; [docs/qwen3-asr.md](docs/qwen3-asr.md)), `model=gemma4-e4b` (Gemma 4 E4B, the
+    most readable on clear speech) or `model=whisper` (Whisper large-v3 on the iGPU, or its encoder on the NPU with
+    `--whisper-device npu`; words with times; translations; [docs/whisper-native.md](docs/whisper-native.md)); json,
+    text, srt, vtt, verbose_json, streaming, and subtitle / Remotion formats. Without `--whisper`: a model with an
+    audio encoder (Gemma 4 E4B). Saved transcripts: `/v1/transcripts` (audio and video
     files of any size uploaded in pieces, a queue with progress and cancel, exports, edits).
 - Model switching: a request whose `model` is another model of `--list-models` (its id, `org/repo` name or file)
   makes the server unload the current model and load that one (context auto, same options); `--no-swap` keeps the

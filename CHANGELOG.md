@@ -12,6 +12,51 @@
   / 0.0025 (part_00), 0.00068 / 0.0038 (part_03). Nothing to fix; E4B's noisy-clip mistakes are the model's.
 - `vision_testz`: `ARC_AUDIO_EMB=file` runs the model on audio rows from a file (as `ARC_VIS_EMB` for images).
 
+## 2026-10-28: Qwen3-ASR's attention with f16 K
+
+- **f16 K rows in Qwen3's float attention** (Gemma 4 keeps f32): attention -10 %, generation +4 %, the two
+  recordings' text 2-3 % sooner, the KV cache a third smaller (server -0.32 GiB); KL < 0.00001, the transcripts
+  identical, Gemma 4 E4B / 12B and Qwen3.5 4B bit-identical. `ARC_Q3_KF32=1`: f32 K.
+
+## 2026-10-28: Qwen3-ASR GEMV / GEMM; the speech code in its own files
+
+- **Qwen3-ASR's q / k / v and gate / up each one matrix** (their Q8_0 rows stacked as they are): one token at 2048
+  of context 23.8 -> 25.1 tok/s, the 2:34 recording's text 2 % sooner; logits bit-identical. Measured and left: rows
+  per sub-group (within 1 %), the prompt GEMMs (11 % of a transcription, ~half the DP4a peak, shared by every
+  model); the GEMVs run at 58-70 GB/s of ~75. The larger remaining parts of a token are the float attention (21 %:
+  f32 K rows) and the 152K-word output head (12 %).
+- **Speech code out of tools/server.cpp**: tools/server_speech.h (starting Whisper / Qwen3-ASR, Gemma 4 E4B for
+  transcripts, `/v1/audio/*`), tools/server_whisper_asr.h (Qwen3-ASR / E4B inside the speech service); the Qwen3-ASR
+  encoder's kernels in zero/kernels/asr.cl instead of ops.cl. Behaviour unchanged (every route, the queue, the
+  encoder's error against f32, the transcript checked).
+
+## 2026-10-28: Qwen3-ASR the default speech model; Gemma 4 E4B and Whisper large-v3 the other choices
+
+- **Transcript models: Qwen3-ASR (default), Gemma 4 E4B, Whisper large-v3** (the user's choice after comparing two
+  recordings, [docs/qwen3-asr.md](docs/qwen3-asr.md)): `--whisper auto` loads large-v3 (turbo only without it) and
+  Qwen3-ASR with it (`--asr auto` is the default); the Transcripts tab picks the model per file, changeable any
+  time; `/v1/audio/transcriptions` without a model (or OpenAI's `whisper-1`) and the chat's voice messages / audio
+  go to Qwen3-ASR; `gemma4-e4b` transcribes through the chat model in 2-minute parts; Gemma 4 12B is refused for
+  transcription (it garbled a clear recording and summarized a noisy one). Live text while speaking stays Whisper's.
+- **Fixed**: a transcription request naming an audio chat model other than the loaded one sent its clip to the
+  speech service instead of that model (now `"speech": "model"` in its chat request).
+
+- **Qwen3-ASR 1.7B** ([docs/qwen3-asr.md](docs/qwen3-asr.md)): `serverz --whisper auto --asr auto`, then
+  `/v1/audio/transcriptions` with `model=qwen3-asr` or "Model: Qwen3-ASR" in the Transcripts tab (a live
+  recording's pass after Stop; its text while spoken stays Whisper's). On the user's 2:34 recording of noisy mixed
+  Indonesian and English: every utterance, English kept, punctuation, 3 invented words over the last 40 s of
+  background sound (Whisper turbo lost two sentences and wrote Japanese there, large-v3 Thai, Gemma 4 E4B a
+  paragraph); 23-25 s for the 2:34. No timestamps (one segment per part of up to 6 minutes); the model calls this
+  Indonesian "Malay" (reported as `id` when the request's languages have `id`).
+- **Qwen3 dense on the engine** (GGUF arch `qwen3` / `qwen3vl`): float attention and two int8 passes, KL < 0.00001
+  against the f32 reference; the int8 attention of the Qwen3.5 path gave 0.236 on it. `tools/ref_forward` takes
+  these models; `ARC_Q3_Q2=0`: one pass (KL 0.0064 / 0.0093, prompt +50 %).
+- **The qwen3a audio encoder on the GPU** (zero/audio_qwen3a.h; f32 CPU reference tools/ref_qwen3a.cpp: 0.08 %);
+  zero/asr_testz.cpp runs and checks it from the command line.
+- **1.37 GiB less GPU memory for Qwen3-ASR**: its weights' GEMM form decoded just in time per 512-token chunk
+  instead of kept (3.72 GiB with the encoder; the server with Whisper 5.31 instead of 6.68). The same transcript and
+  KL, the 2:34 recording 23.2 s either way. The server logs each Qwen3-ASR transcription's times.
+
 ## 2026-10-28: a live recording's language preferred, not forced; recordings kept as WAV; a cap for audio to a chat model
 
 - **English in an Indonesian live recording stays English** (src/whisper.h `prefer_language`, tools/server_whisper.h
