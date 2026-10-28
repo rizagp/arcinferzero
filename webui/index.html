@@ -407,7 +407,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
             <select id="slots" aria-label="Conversations at once"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
           <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown, Excel XLSX) that appear in its answer</small></div>
             <label class="switch"><input type="checkbox" id="ftools"><span></span></label></div>
-          <div class="opt"><div class="lab">Terminal<small>While a chat's terminal is open (the Terminal button above the chat), the model may run PowerShell commands in it: ask each time, run without asking, or never</small></div>
+          <div class="opt"><div class="lab">Terminal<small>The model may run PowerShell commands in the chat's terminal (the Terminal button above the chat), opening it itself when closed: ask each time, run without asking (the first command of a terminal still asks), or never</small></div>
             <select id="term" aria-label="Terminal"><option value="ask">Ask each time</option><option value="auto">Run without asking</option><option value="off">Model never</option></select></div>
           <div class="opt"><div class="lab">Web search<small>The model may search the web and read pages (web_search / web_fetch on this server)</small></div>
             <label class="switch"><input type="checkbox" id="web"><span></span></label></div>
@@ -970,7 +970,7 @@ function compactable() {
   return history.length - 2 - lead;
 }
 function sysMessages(id = convId) {
-  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termUsable(id) ? TERM_SYSTEM(terms.get(id).shell) : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
+  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM(terms.get(id)?.shell, termUsable(id)) : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -1133,114 +1133,104 @@ function compactedNote(n, summary) {
 // conversation goes on with their results until the model answers without a call (at most MAX_ROUNDS turns)
 const WEB_TOOLS = [
   { type: "function", function: { name: "web_search",
-    description: "Search the web. Returns the top results: title, URL and a short snippet each. Use it for current " +
-      "events, recent versions or prices, and facts you are not sure of.",
-    parameters: { type: "object", properties: { query: { type: "string", description: "the search query" } }, required: ["query"] } } },
+    description: "Search the web: top results with title, URL, snippet. For current events, recent versions or prices, " +
+      "facts you are unsure of.",
+    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
   { type: "function", function: { name: "web_fetch",
-    description: "Read a web page (HTML or text) as plain text. A long page comes in parts: the result says the offset " +
-      "to pass to read the next part.",
-    parameters: { type: "object", properties: { url: { type: "string", description: "the page's http(s) URL" },
-      offset: { type: "integer", description: "where to continue reading (from the previous part's result)" } }, required: ["url"] } } }];
-const WEB_SYSTEM = () => "You can look things up on the internet with the web_search and web_fetch tools. Today is " +
-  new Date().toDateString() + ". When a question needs current or specific information, search, read the most relevant " +
-  "pages, and answer from them, citing the URLs you used.";
+    description: "Read a web page as plain text. A long page comes in parts; each result gives the offset of the next.",
+    parameters: { type: "object", properties: { url: { type: "string", description: "http(s)" },
+      offset: { type: "integer" } }, required: ["url"] } } }];
+// (the tools' and these texts' words are the prompt of every chat with tools: kept short, 2026-10-28; each rule and
+//  parameter kept, what the system text and a tool's description both said is said once)
+const WEB_SYSTEM = () => "Today is " + new Date().toDateString() + ". For current or specific information, web_search, " +
+  "read the most relevant pages with web_fetch, answer from them and cite the URLs used.";
 // ---- file tools (Files on): the saved files (uploads) for the model, run on the server (/v1/tools/list_files,
 // read_file, create_document; tools/server.cpp); a document it writes shows as a file card in its answer
 const FILE_TOOLS = [
   { type: "function", function: { name: "list_files",
-    description: "List the user's saved files (uploaded in chats, or written with create_document): id, name, kind, size, " +
-      "upload time. Use it to find files the user refers to (e.g. 'the files I uploaded today').",
+    description: "List the user's saved files (uploads, documents you wrote): id, name, kind, size, upload time. To find " +
+      "files the user means ('the files I uploaded today').",
     parameters: { type: "object", properties: {
-      scope: { type: "string", enum: ["all", "chat"], description: "chat: only the files of this conversation" },
+      scope: { type: "string", enum: ["all", "chat"], description: "chat: this conversation's only" },
       kind: { type: "string", enum: ["image", "audio", "video", "document"] },
       name_contains: { type: "string" },
-      within_hours: { type: "number", description: "only files uploaded in the last N hours" },
+      within_hours: { type: "number", description: "uploaded in the last N hours" },
       limit: { type: "integer" } } } } },
   { type: "function", function: { name: "read_file",
-    description: "Read a saved file (DOCX, PDF, XLSX, PPTX, text, Markdown, CSV ...) by its id. A spreadsheet reads as one heading per " +
-      "sheet and one line per row (\"Column: value | ...\" when it has a header row); a presentation as one heading per " +
-      "slide (its pages are the slides) with its speaker notes. A long document first gives its outline " +
-      "(numbered sections with pages and sizes): then read only the sections or pages the question needs. Text comes in " +
-      "parts of up to 12,000 characters (next_offset reads on). A document you wrote returns its source (the " +
-      "create_document arguments). Images and audio: metadata only. Scanned PDF pages (images without text) read by " +
-      "pages are transcribed by the loaded vision model first (up to 4 pages a call, 10-60 s a page). It also reads the user's " +
-      "other chats (file_id \"chat:<id>\" from list_chats / search_chats: a section per exchange) and their recordings / meetings " +
-      "(\"transcript:<id>\", attached with @: a summary, then 5-minute sections with times and speakers).",
+    description: "Read a saved file: DOCX, PDF, XLSX, PPTX, text, Markdown, CSV... Spreadsheet: a heading per sheet, a line " +
+      "per row (\"Column: value | ...\" with a header row). Presentation: a heading per slide (pages = slides) with its " +
+      "notes. A long document returns its outline first (numbered sections, pages, sizes). Text in parts of up to 12,000 " +
+      "characters (next_offset continues). A document you wrote returns its create_document arguments. Images, audio: " +
+      "metadata only. Scanned PDF pages, read by pages, are transcribed by the vision model (up to 4 a call, 10-60 s " +
+      "each). Also other chats (\"chat:<id>\": a section per exchange) and recordings / meetings (\"transcript:<id>\", " +
+      "attached with @: a summary, then 5-minute sections with times and speakers).",
     parameters: { type: "object", properties: {
-      file_id: { type: "string", description: "the id from list_files, or the file's name; chat:<id>, transcript:<id>" },
-      section: { type: "integer", description: "a section number from the outline" },
-      pages: { type: "string", description: "e.g. \"12\" or \"12-15\"" },
-      offset: { type: "integer", description: "0 reads the whole text from the start, in parts" } }, required: ["file_id"] } } },
+      file_id: { type: "string", description: "id or name from list_files; chat:<id>; transcript:<id>" },
+      section: { type: "integer", description: "from the outline" },
+      pages: { type: "string", description: "\"12\" or \"12-15\"" },
+      offset: { type: "integer", description: "0: the whole text from the start, in parts" } }, required: ["file_id"] } } },
   { type: "function", function: { name: "search_file",
-    description: "Find the passages of a long document that answer a question (word search, BM25): the best passages with " +
-      "their section and pages. Without file_id it searches every document of this chat. Use the document's own words " +
-      "(names, terms, numbers); search again with other words when nothing fits.",
+    description: "Passages of a long document that answer a question (BM25 word search), with section and pages; without " +
+      "file_id, every document of this chat. Use the document's own words (names, terms, numbers); retry with others.",
     parameters: { type: "object", properties: {
       query: { type: "string", description: "keywords, e.g. \"anggaran pemasaran 2026\"" },
       file_id: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
   { type: "function", function: { name: "list_chats",
-    description: "List the user's other chats with you, newest first: their file_id (chat:<id>), title, last change, number " +
-      "of exchanges. With query: only those whose text has it. Use it when the user refers to an earlier conversation " +
-      "(\"what did we decide yesterday\", \"the chat about X\"); then read_file one, or search_chats.",
-    parameters: { type: "object", properties: {
-      query: { type: "string", description: "words the chat contains" }, limit: { type: "integer" } } } } },
+    description: "The user's other chats, newest first: file_id (chat:<id>), title, last change, exchanges; query: only " +
+      "those containing it. For an earlier conversation (\"what did we decide yesterday\").",
+    parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer" } } } } },
   { type: "function", function: { name: "search_chats",
-    description: "Find the exchanges of the user's other chats that fit a question (word search, BM25): each with its chat, " +
-      "its exchange (number, time, question) and its text. Use the chats' own words.",
+    description: "Exchanges of the user's other chats that fit a question (BM25): chat, exchange (number, time, question), " +
+      "text. Use the chats' own words.",
     parameters: { type: "object", properties: {
       query: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
   { type: "function", function: { name: "create_document",
-    description: "Write a document file for the user: docx (Word), pdf, doc (Word 97-2003 compatible), rtf, md or xlsx (Excel). It appears " +
-      "as a file card in your answer. content is Markdown: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, " +
-      "==highlight==, <span style=\"color:#C00000; background:#FFF2CC; font-size:14pt\">..</span>, lists, tables " +
-      "(an alignment row :--- / :---: / ---:), ``` code, --- rule, '::: center' (or right, justify) ... ':::' blocks, " +
-      "\\pagebreak. xlsx: each Markdown table becomes a sheet named by the ## heading before it; numbers (1.234,5), " +
-      "Rp amounts, percentages and dates (2026-10-27) become real values; the other text goes to a first Notes sheet. " +
-      "To correct a document, read_file it and call this again with the changes (a new version).",
+    description: "Write a file, shown as a card in your answer: docx, pdf, doc (Word 97-2003), rtf, md, xlsx. content is " +
+      "Markdown: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, ==highlight==, <span style=\"color:#C00000; " +
+      "background:#FFF2CC; font-size:14pt\">..</span>, lists, tables (alignment row :--- / :---: / ---:), ``` code, --- " +
+      "rule, '::: center' (right, justify) ... ':::' blocks, \\pagebreak. xlsx: each table is a sheet named by the ## " +
+      "heading before it; numbers (1.234,5), Rp amounts, percentages, dates (2026-10-27) become values; other text goes " +
+      "to a first Notes sheet.",
     parameters: { type: "object", properties: {
       filename: { type: "string" }, format: { type: "string", enum: ["docx", "pdf", "doc", "rtf", "md", "xlsx"] },
-      content: { type: "string", description: "the document body in Markdown" },
+      content: { type: "string" },
       title: { type: "string" }, subtitle: { type: "string" }, author: { type: "string" }, date: { type: "string" },
       page: { type: "string", enum: ["A4", "Letter", "Legal", "A5"] }, orientation: { type: "string", enum: ["portrait", "landscape"] },
       margins_mm: { type: "number" }, font: { type: "string", description: "e.g. Calibri, Arial, Times New Roman, Georgia" },
-      font_size: { type: "number" }, line_spacing: { type: "number", description: "1.0 - 2.0" },
-      heading_color: { type: "string", description: "#RRGGBB" }, accent_color: { type: "string", description: "table header fill, #RRGGBB" },
+      font_size: { type: "number" }, line_spacing: { type: "number", description: "1.0-2.0" },
+      heading_color: { type: "string", description: "#RRGGBB" }, accent_color: { type: "string", description: "table header fill" },
       text_color: { type: "string" }, header: { type: "string" }, footer: { type: "string" }, page_numbers: { type: "boolean" },
-      number_format: { type: "string", enum: ["auto", "id", "us"], description: "xlsx: how the tables write numbers: " +
-        "id 1.234,5 (1.500 = 1500), us 1,234.5 (1,500 = 1500); auto (default) tells from the tables. Write one style in a table." } },
+      number_format: { type: "string", enum: ["auto", "id", "us"], description: "xlsx: id 1.234,5 (1.500 = 1500), us " +
+        "1,234.5 (1,500 = 1500), auto (default) detects. One style per table." } },
       required: ["format", "content"] } } }];
-const FILE_SYSTEM = "You can work with the user's saved files: list_files (what is saved, with upload times), read_file (one " +
-  "file; a long document gives its outline, then read the sections or pages you need), search_file (the passages of a " +
-  "long document that fit a question: facts, names, numbers), create_document (write a DOCX / PDF / DOC / RTF / MD / XLSX file the user downloads from " +
-  "your answer). For a fact in a long document, search_file; to summarize or explain a chapter or section, read_file it by " +
-  "its section number from the outline (it comes with its subsections). Do not read a long document all " +
-  "unless the user asks for the whole of it (a summary of everything: section by section). Say which section or page an " +
-  "answer comes from. To read several or all files the user means, call list_files, then read_file for each. To change a " +
-  "document you wrote, read_file it (you get its source) and call create_document again with the corrections. Never say " +
-  "a file was written or changed without calling the tool, and never make up what a document says. The user's other " +
-  "chats with you: list_chats / search_chats, then read_file with their chat:<id> (only the questions and answers).";
+const FILE_SYSTEM = "Files: for a fact in a long document, search_file; to summarize or explain a chapter or section, " +
+  "read_file its section number from the outline (subsections included). Read a long document whole only when the user " +
+  "asks for all of it (then section by section). Say which section or page an answer comes from. For several or all " +
+  "files the user means: list_files, then read_file each. To change a document you wrote: read_file it (its source), " +
+  "then create_document again with the corrections (a new version). Never say a file was written or changed without " +
+  "calling the tool; never make up what a document says. Earlier chats: list_chats / search_chats, then read_file " +
+  "chat:<id> (questions and answers only).";
 // ---- terminal: the chat's terminal (the right panel), on this computer only (/v1/tools/run_command,
 // tools/server_terminal.h); while the user has it open the model may run commands in it too (Settings > Terminal:
 // "ask": the command waits in its card for Run / Don't run; "off": the model never does)
 const TERM_TOOLS = [
   { type: "function", function: { name: "run_command",
-    description: "Run one PowerShell command on the user's Windows computer, in this chat's terminal. It starts in the " +
-      "chat's folder (the chat's uploaded files and the documents you wrote are there under their names); the folder " +
-      "(cd) and environment variables (an activated .venv, $env:X) carry over to the next command, PowerShell variables " +
-      "and functions do not, and the programs a command starts end with it (except ones Windows starts for it: COM " +
-      "objects such as Excel.Application, WMI, scheduled tasks; close those yourself, e.g. $xl.Quit()). For what the other tools cannot do: " +
-      "inspect or convert files, count, compute, run programs such as python or the arcinferzero tools (runz, serverz). " +
-      "The user may have to allow each command. Output (stdout and stderr) up to 64 KB, less for a small context (then its start and end); timeout 120 s unless timeout_s " +
-      "(up to 600). The result says the folder (cwd) and the active venv after the command.",
+    description: "Run PowerShell in this chat's terminal on the user's computer, starting in the chat's folder (its " +
+      "uploads and your documents, by name). cd and environment variables (an activated .venv, $env:X) carry over; " +
+      "PowerShell variables and functions do not. Programs a command starts end with it, except those Windows starts " +
+      "(COM objects such as Excel.Application, WMI, scheduled tasks: close them yourself, e.g. $xl.Quit()). For what the " +
+      "other tools cannot do: inspect or convert files, count, compute, run programs (python, runz, serverz). The user " +
+      "may have to allow each command. Output (stdout and stderr) up to 64 KB, less for a small context (start and end " +
+      "kept); timeout 120 s, timeout_s up to 600. The result gives the cwd and the active venv.",
     parameters: { type: "object", properties: {
-      command: { type: "string", description: "PowerShell; several lines are fine" },
+      command: { type: "string", description: "several lines are fine" },
       timeout_s: { type: "integer" } }, required: ["command"] } } }];
-const TERM_SYSTEM = (shell) => "The user has opened this chat's terminal: you can run PowerShell commands on their " +
-  "Windows computer with run_command, as in one terminal session (cd and an activated .venv stay; the user may run " +
-  "commands in it too). " + termShellNote(shell) +
-  "Use the file tools to read and write documents, the terminal for the rest. Before a command that changes or deletes " +
-  "anything, say what it will do. Never touch anything outside the chat's folder unless the user asked for it. If the " +
-  "user does not allow a command, do not try it again in another form: ask what they want.";
+const TERM_SYSTEM = (shell, open) => (open ? "This chat's terminal is open: run_command" :
+  "run_command opens this chat's terminal (the user allows its first command), then") + " works as one session (cd " +
+  "and an activated .venv stay; the user may type in it too). " + termShellNote(shell) +
+  "Use the file tools for documents, the terminal for the rest. Before a command that changes or deletes anything, say " +
+  "what it does. Stay in the chat's folder unless the user asked otherwise. If the user does not allow a command, do " +
+  "not retry it in another form: ask what they want.";
 // what the terminal is (asked once when it opens: PowerShell's version and edition, Windows' name and build), with the
 // syntax that trips models up in it: commands written for bash or for PowerShell 7 fail in Windows PowerShell 5.1
 function termShellNote(shell) {
@@ -1254,7 +1244,7 @@ function termShellNote(shell) {
     (v5 ? "This is 5.1: no && or || between commands (use ; or if ($?) { ... }), no ternary ?: and no ?? or ?., " +
       "Set-Content / Out-File write UTF-16 or ANSI unless -Encoding utf8 (which adds a BOM). " : "");
 }
-const toolsOn = (id) => $("web").checked || $("ftools").checked || termUsable(id);
+const toolsOn = (id) => $("web").checked || $("ftools").checked || termOffered(id);
 const MAX_ROUNDS = 8;
 // While talking (F24.5), the tools run in the background: a call gets an immediate answer ("search #n started"), the
 // AI says it is looking, and the conversation goes on; when results arrive they come as a message of their own and
@@ -1391,13 +1381,14 @@ async function runTermTool(args, card, signal, job) {
   if (!cmd) { card.status.textContent = "· no command"; return "error: command is empty"; }
   termCmd(card.el, cmd);
   const chat = job?.id || convId;
-  if (!termUsable(chat)) {
-    card.status.textContent = "· terminal is closed";
-    return "error: this chat's terminal is closed" + ($("term").value === "off" ? " to the model (Settings > Terminal: off)" : " (the user opens it with the Terminal button)");
+  if (!termOffered(chat)) {
+    card.status.textContent = "· terminal is off";
+    return "error: the terminal is off to the model (Settings > Terminal: off)";
   }
-  // (its own controller, from before the Run question on: ended by the answer's Stop, also one that came first, or by
-  //  closing the terminal, while it waits for Run or while it runs; see termClose)
-  const t = terms.get(chat), ac = new AbortController(), stop = () => ac.abort();
+  // (a closed terminal: the model opens it, after the user's Run on this first command; like Claude Code's own
+  //  terminal, every session starts with one approval, so a command never runs on this computer unasked)
+  const t = termOf(chat), opening = !t.open, ac = new AbortController(), stop = () => ac.abort();
+  if (opening) card.status.textContent = "· opens the terminal";
   if (signal?.aborted) ac.abort();
   else signal?.addEventListener("abort", stop);
   (t.running ||= new Set()).add(ac);
@@ -1407,16 +1398,20 @@ async function runTermTool(args, card, signal, job) {
   };
   let j, e = null;
   try {
-    if ($("term").value !== "auto") {
-      card.status.textContent = "· waiting for you";
+    if ($("term").value !== "auto" || opening || !t.allowed) {
+      card.status.textContent = opening ? "· opens the terminal: waiting for you" : "· waiting for you";
       if (job) { job.asking = true; renderConvs(); }
       let ok;
       try { ok = await askRun(card.el, ac.signal); } finally { if (job) { job.asking = false; renderConvs(); } }
       if (!ok) {
         card.status.textContent = "· not run";
-        return "error: the user did not allow this command";
+        return "error: the user did not allow this command" + (opening ? " (the terminal stays closed)" : "");
       }
-      if (!termUsable(chat)) return closed();
+      if (opening ? !t.open && !(await termOpen(chat, false)) : !termUsable(chat)) {
+        if (opening) { card.status.textContent = "· the terminal did not open"; return "error: the terminal could not be opened"; }
+        return closed();
+      }
+      t.allowed = true;
     }
     card.status.textContent = "· running…";
     e = termAdd(chat, { by: "ai", cmd });
@@ -1445,6 +1440,8 @@ const terms = new Map();  // chat id -> { open, hidden, log: [{ by: "you" | "ai"
 const TERM_LOG = 200, TERM_OUT = 16000;
 const termOf = (id) => { if (!terms.has(id)) terms.set(id, { open: false, log: [] }); return terms.get(id); };
 function termUsable(id) { return $("term").value !== "off" && !!id && !!terms.get(id)?.open; }
+// run_command for the model: in every chat unless Settings > Terminal is off (a closed terminal it opens, see runTermTool)
+const termOffered = (id) => $("term").value !== "off" && !!id;
 async function termRun(id, command, timeout_s, signal) {
   const res = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" }, signal,
     body: JSON.stringify({ command, chat_id: id, session: true, timeout_s }) });
@@ -1506,11 +1503,14 @@ async function termProbe(id) {
     if (m) termOf(id).shell = JSON.parse(m[0]);
   } catch (e) {}  // (unknown: the prompt says PowerShell on Windows)
 }
-async function termOpen() {
-  const id = ensureConv(), t = termOf(id);
+// (the Terminal button: the chat on screen, its input focused; the model's first run_command: its chat, maybe one
+//  answering in the background, without the focus); whether it is open
+async function termOpen(id = ensureConv(), focus = true) {
+  const t = termOf(id);
   t.hidden = false;
   if (!t.open) {
     t.open = true;
+    t.allowed = false;  // (a new session: the model's first command in it waits for Run, Settings > Terminal "auto" too)
     t.cwd = t.venv = "";
     if (t.log.length) t.log.push({ by: "sep", out: "new terminal · " + hhmm(Date.now()) });
     renderTerm();
@@ -1526,12 +1526,13 @@ async function termOpen() {
       t.log.pop();
       renderTerm();
       note("the terminal cannot open: " + (e.message || e));
-      return;
+      return false;
     }
     saveTerm(id);
   }
   renderTerm();
-  $("termin").focus();
+  if (focus && id === convId) $("termin").focus();
+  return true;
 }
 function termClose() {
   const id = convId, t = id && terms.get(id);
@@ -1649,7 +1650,7 @@ async function streamTurn(el, st, onOverflow, job) {
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
     if (caps.stt) body.speech = sttOn(job.model) ? "whisper" : "model";  // (audio attached: the server's Whisper writes it, or the model hears it)
-    if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termUsable(job.id) ? TERM_TOOLS : [])];
+    if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termOffered(job.id) ? TERM_TOOLS : [])];
     kick();
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
     if (res.ok) break;

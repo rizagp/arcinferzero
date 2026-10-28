@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-28: the model opens the chat's terminal itself; shorter tool texts
+
+- **The model opens a closed terminal itself** (webui/index.html `runTermTool`, `termOffered`): before, `run_command`
+  was there only while the user had opened the chat's terminal, so a model that had to make a `.venv` could not.
+  Now it is offered in every chat unless Settings > Terminal is "Model never"; a call in a closed terminal waits for
+  Run / Don't run, and the terminal opens once allowed. The first command of every terminal session asks, with
+  "Run without asking" too (like Claude Code's approval), so nothing runs on the computer unasked.
+- **The tools' texts are shorter, each rule and parameter kept**: what the system text and a tool's description both
+  said is said once, the wording is tighter. Measured with the server's tokenizer: all tools 2,320 -> 1,884 tokens
+  (-19 %), Files alone with the time 1,732 -> 1,421. The rest is mostly the parameters' JSON (create_document: 20).
+
 ## 2026-10-28: Whisper over silence, a live recording's language, replay after the MP3, the Transcripts tab
 
 - **No more text over silence and noise** (src/whisper.h `drop_unvoiced`): a live recording in Indonesian came out

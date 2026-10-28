@@ -335,12 +335,14 @@ While the server is running:
   The folder and the environment carry over from one command to the next: `cd`, `$env:X = ...` and an activated
   `.venv` (`.\.venv\Scripts\Activate.ps1`, later `deactivate`) stay; PowerShell variables and functions do not, and no
   program keeps running after its command. The terminal belongs to the chat: it is still there when the chat is opened
-  again. **While it is open the model may use it too** (`run_command`, shown in the panel as AI); **Settings >
-  Terminal**: **Ask each time** (every command waits in its card with **Run** / **Don't run**), **Run without asking**,
-  or **Model never**. The model is told the shell and Windows version (asked when the terminal opens), so it writes
-  commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: a command still running
-  (yours or the model's, also one waiting for Run) is stopped, the model can no longer use it, and the next one starts
-  again in the chat's folder; **×** only hides the panel. A command stops after 2 minutes (the model may ask for up to
+  again. **The model may use it too** (`run_command`, shown in the panel as AI), and **opens it itself** when it is
+  closed (to make a `.venv` and install a package, say): that first command waits in its card for **Run** / **Don't
+  run**, and the panel opens once you allow it. **Settings > Terminal**: **Ask each time** (every command waits for
+  Run), **Run without asking** (only the first command of each terminal session asks), or **Model never** (the model
+  neither opens nor uses it). The model is told the shell and Windows version (asked when the terminal opens), so it
+  writes commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: a command still
+  running (yours or the model's, also one waiting for Run) is stopped, and the next session starts again in the chat's
+  folder, its first command asking again; **×** only hides the panel. A command stops after 2 minutes (the model may ask for up to
   10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
   on this computer can use it: the server refuses it to other computers (also with `--host`; such a server is opened by
   its IP address, http://192.168.x.x:port/, not by a name, against DNS rebinding), to pages of other sites,
