@@ -8,6 +8,8 @@
 //   --context T    the system turn                  --no-text     the encoder only
 //   --parts S      parts cut at pauses once S seconds long (default 0: one part up to 20 minutes, as Qwen's code)
 //   --ctx N        context (default: what the clip needs)
+//   --budget GB    keep the GEMM form of the weights resident up to GB (default 0: decoded just in time)
+//   --chunk N      prompt rows per step (default 512)
 #include "asr_qwen3.h"
 #include "../src/audio.h"
 #include <cstdio>
@@ -17,7 +19,8 @@ int main(int argc, char** argv) {
   std::string ref, enc_out, lang, context;
   double seconds = 0, start = 0, parts = 0;
   bool text = true;
-  int ctx = 0;
+  int ctx = 0, chunk = 512;
+  double budget = 0;  // (as the server: the GEMM form just in time, docs/qwen3-asr.md)
   for (int i = 4; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a.c_str()); exit(1); } return argv[++i]; };
@@ -29,11 +32,15 @@ int main(int argc, char** argv) {
     else if (a == "--lang") lang = next();
     else if (a == "--context") context = next();
     else if (a == "--ctx") ctx = atoi(next().c_str());
+    else if (a == "--budget") budget = atof(next().c_str());
+    else if (a == "--chunk") chunk = atoi(next().c_str());
     else if (a == "--no-text") text = false;
     else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 1; }
   }
   try {
+    const auto td = std::chrono::steady_clock::now();
     std::vector<float> s = audio::decode_16k_file(argv[3], 0);
+    printf("decoded in %.0f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - td).count());
     if (start > 0) s.erase(s.begin(), s.begin() + std::min(s.size(), (size_t)(start * 16000)));
     if (seconds > 0) s.resize(std::min(s.size(), (size_t)(seconds * 16000)));
     printf("audio: %.1f s\n", s.size() / 16000.0);
@@ -51,14 +58,18 @@ int main(int argc, char** argv) {
     }
     EngineOptions eo;
     eo.ctx = ctx > 0 ? ctx : std::max(1024, AudioQwen3A::tokens(s.size()) + 1024);
+    if (budget >= 0) eo.w8_budget_gb = budget;
+    if (chunk > 0) eo.chunk = chunk;
     Engine eng(argv[1], eo);
     AudioQwen3A enc(argv[2], eng);
-    printf("model loaded in %.1f s, ctx %d\n", eng.load_ms / 1000, eng.ctx);
+    printf("model loaded in %.1f s, ctx %d, chunk %d, %s, GPU %.2f GiB\n", eng.load_ms / 1000, eng.ctx, eng.max_chunk,
+           eng.w8_resident ? "GEMM form resident" : "GEMM form just in time", eng.gpu_bytes / 1073741824.0);
     int n_tok = 0;
     std::vector<float> e = enc.encode(s, n_tok);  // (the first run builds the kernels)
     eng.profile = getenv("ARC_PROF") != nullptr;
     e = enc.encode(s, n_tok);
-    printf("encoder: %d tokens, %.1f ms (%.1fx real time)\n", n_tok, enc.encode_ms, s.size() / 16.0 / enc.encode_ms);
+    printf("encoder: %d tokens, %.1f ms (%.1fx real time); GPU with the encoder %.2f GiB\n", n_tok, enc.encode_ms,
+           s.size() / 16.0 / enc.encode_ms, eng.gpu_bytes / 1073741824.0);
     if (eng.profile) {
       std::vector<std::pair<double, std::string>> rows;
       double total = 0;

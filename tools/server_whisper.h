@@ -165,6 +165,10 @@ class Service {
     EngineOptions eo;
     eo.ctx = kAsrCtx;
     eo.kernel_dir = kernel_dir;
+    // (the GEMM form decoded just in time per 512-token chunk, not kept: 1.37 GiB less, the prompt as fast (2048
+    //  tokens 927 vs 938 tok/s), KL unchanged; the 2:34 recording 24.0 s vs 29.3 s, the same text)
+    eo.w8_budget_gb = 0;
+    eo.chunk = 512;
     asr_eng_ = std::make_unique<Engine>(gguf, eo);
     if (!asr_eng_->hp.qwen3) throw std::runtime_error(gguf + ": not a Qwen3-ASR text model");
     asr_enc_ = std::make_unique<AudioQwen3A>(mm, *asr_eng_);
@@ -1840,7 +1844,9 @@ class Service {
       }
       return stop;
     };
-    q3asr::transcribe(*asr_eng_, *asr_enc_, *asr_tok_, audio, o);
+    const q3asr::Result q = q3asr::transcribe(*asr_eng_, *asr_enc_, *asr_tok_, audio, o);
+    fprintf(stderr, "asr: %.1f s of audio, %d parts: encoder %.0f ms, prompt %.0f ms (%d audio tokens), %d tokens in %.0f ms\n",
+            r.duration, (int)q.parts.size(), q.encode_ms, q.prefill_ms, q.audio_tokens, q.tokens, q.decode_ms);
     return r;
   }
 

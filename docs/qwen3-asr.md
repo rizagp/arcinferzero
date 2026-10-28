@@ -59,9 +59,15 @@ under it by little, so two passes are the default.
 |---|---|
 | Text model, `runz --bench-pp 2048` (best of two) | prompt 901 tok/s, generation 22.2 tok/s (one pass: 1,376 / 24.5) |
 | Encoder | 1.45 s for 153.6 s of audio (1,997 tokens) |
-| The 2:34 recording end to end, `asr_testz` | 30 s (encoder 2.3 s, prompt 3.3 s, 387 tokens), ~5x real time |
-| ... through the server (`/v1/audio/transcriptions`, the Transcripts tab) | 28.5-38 s |
-| GPU memory in the server (`--asr`) | with Whisper turbo 6.7 GiB together (Qwen3-ASR ~5 GiB: weights in both forms, the 6,144-token float KV cache, the encoder) |
+| The 2:34 recording end to end, `asr_testz` (best of two) | 23.2 s (encoder 1.4 s, prompt 2.6 s, 507 tokens 19.2 s), ~6.6x real time |
+| ... through the server (`/v1/audio/transcriptions`, curl's time) | 25.2 s (the server's log: encoder 1.6 s, prompt 2.6 s, tokens 19.8 s) |
+| GPU memory of Qwen3-ASR (6,144-token context, with the encoder) | 3.72 GiB (raw Q8_0 rows 2.1, float KV cache 1.0, encoder 0.6 + buffers); with Whisper turbo in the server 5.31 GiB together |
+
+The GEMM form of the weights is decoded just in time for each 512-token prompt chunk (`w8_budget_gb` 0, `chunk`
+512) instead of being kept next to the raw rows: 5.09 -> 3.72 GiB (server with Whisper 6.68 -> 5.31 GiB). The prompt
+costs about 0.2 s more (2048 tokens 927 vs 938 tok/s), generation reads the raw rows either way (25.5 vs 25.9
+tok/s), the recording took 23.2 s both ways, the text is the same and the KL unchanged (< 0.00001). Chunks of 4,096
+(the engine's default without resident weights) need larger buffers (4.06 GiB) and are no faster.
 
 ## Comparison on a real recording
 
@@ -74,7 +80,7 @@ maybe a few words near 141 s.
 | Whisper large-v3-turbo (beam 5, `transcribez`) | 10.3 s | English kept, but "Hello, I'm talking in English. Saya nggak ngomong buah, bukan" and the second "How come..." lost; "best-best-best" | "hai hai hai ..." (perhaps said), "Terima kasih.", "ありがとうございました。" |
 | Whisper large-v3 | 39.5 s | lowercase fragments, "Indonesia Indonesia How come you Translate...", "Hai tetap kaitan antar ini ini tetap kaitan" | Thai gibberish twice |
 | Gemma 4 E4B (`/v1/audio/transcriptions` with the chat model) | 50 s | readable, English kept, but sentences added ("Sudah tahu sudah paham gua", "Ya itu dia masalahnya", "Saya enggak setuju nih") | a made-up paragraph ("Kita ada nama ya ... Itu lima orang jadi satu voice") |
-| **Qwen3-ASR 1.7B** (one part) | 30 s | every utterance there, English in English, punctuation; a few misheard words ("Ijin prinsipnya supaya tembuh nanti", "secercahitan") | "Keterkaitan dulu. Keterkaitan" (3 words; it looped on that word until the loop stop) |
+| **Qwen3-ASR 1.7B** (one part) | 23-30 s | every utterance there, English in English, punctuation; a few misheard words ("Ijin prinsipnya supaya tembuh nanti", "secercahitan") | "Keterkaitan dulu. Keterkaitan" (3 words; it looped on that word until the loop stop) |
 
 Notes from the runs:
 
@@ -119,6 +125,6 @@ Checks: `ref_qwen3a mmproj.gguf audio out.ref [seconds]` writes the f32 encoder 
 ## Left to do
 
 - Timestamps (Qwen3-ForcedAligner-0.6B, or cutting at pauses done better than here).
-- Memory: the Q8_0 weights are kept in two forms (raw rows for the GEMVs, the repacked GEMM form); with a just-in-time
-  GEMM form the server would need ~2 GiB less.
+- Memory: f16 K rows would save ~0.35 GiB more (the float-attention kernels take f32 K, `KC_T`, shared with Gemma 4);
+  the encoder's f16 weights (0.6 GiB) could be int8 as the vision encoders' two-pass path has them.
 - Streaming (the user's friend runs it in vLLM for voice calls; Qwen's package feeds 2-s chunks).

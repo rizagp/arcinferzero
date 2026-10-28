@@ -7,13 +7,16 @@
   recording's pass after Stop; its text while spoken stays Whisper's). On the user's 2:34 recording of noisy mixed
   Indonesian and English: every utterance, English kept, punctuation, 3 invented words over the last 40 s of
   background sound (Whisper turbo lost two sentences and wrote Japanese there, large-v3 Thai, Gemma 4 E4B a
-  paragraph); ~30 s for the 2:34. No timestamps (one segment per part of up to 6 minutes); the model calls this
+  paragraph); 23-25 s for the 2:34. No timestamps (one segment per part of up to 6 minutes); the model calls this
   Indonesian "Malay" (reported as `id` when the request's languages have `id`).
 - **Qwen3 dense on the engine** (GGUF arch `qwen3` / `qwen3vl`): float attention and two int8 passes, KL < 0.00001
   against the f32 reference; the int8 attention of the Qwen3.5 path gave 0.236 on it. `tools/ref_forward` takes
   these models; `ARC_Q3_Q2=0`: one pass (KL 0.0064 / 0.0093, prompt +50 %).
 - **The qwen3a audio encoder on the GPU** (zero/audio_qwen3a.h; f32 CPU reference tools/ref_qwen3a.cpp: 0.08 %);
   zero/asr_testz.cpp runs and checks it from the command line.
+- **1.37 GiB less GPU memory for Qwen3-ASR**: its weights' GEMM form decoded just in time per 512-token chunk
+  instead of kept (3.72 GiB with the encoder; the server with Whisper 5.31 instead of 6.68). The same transcript and
+  KL, the 2:34 recording 23.2 s either way. The server logs each Qwen3-ASR transcription's times.
 
 ## 2026-10-28: a live recording's language preferred, not forced; recordings kept as WAV; a cap for audio to a chat model
 
