@@ -339,10 +339,15 @@ While the server is running:
   closed (to make a `.venv` and install a package, say): that first command waits in its card for **Run** / **Don't
   run**, and the panel opens once you allow it. **Settings > Terminal**: **Ask each time** (every command waits for
   Run), **Run without asking** (only the first command of each terminal session asks), or **Model never** (the model
-  neither opens nor uses it). The model is told the shell and Windows version (asked when the terminal opens), so it
-  writes commands for Windows PowerShell 5.1 rather than bash. **Close** (the power button) ends it: a command still
-  running (yours or the model's, also one waiting for Run) is stopped, and the next session starts again in the chat's
-  folder, its first command asking again; **×** only hides the panel. A command stops after 2 minutes (the model may ask for up to
+  neither opens nor uses it). Asked only to open, hide or exit the terminal, the model does that alone
+  (`terminal_panel`; "close" hides it, the session goes on). The model is told the shell and Windows version in the
+  session's first result, so it writes commands for Windows PowerShell 5.1 rather than bash. **Exit** (the power
+  button) ends it: a command still running (yours or the model's, also one waiting for Run) is stopped, and the next
+  session starts again in the chat's folder, its first command asking again; **×** only hides the panel.
+- **Web UI: pages.** A code block of HTML or SVG in an answer has **Open** next to Copy and Download, and a saved
+  `.html` / `.svg` file's chip opens the page (Ctrl+click: its source). It opens in a new tab inside a sandbox: its
+  scripts run and it may load from `https:` sites (a CDN's chart library, images, fonts), but it cannot reach this
+  server (no commands, chats or files), the web UI's storage or its window. A command stops after 2 minutes (the model may ask for up to
   10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
   on this computer can use it: the server refuses it to other computers (also with `--host`; such a server is opened by
   its IP address, http://192.168.x.x:port/, not by a name, against DNS rebinding), to pages of other sites,

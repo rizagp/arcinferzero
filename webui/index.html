@@ -510,7 +510,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
   <aside class="termpane" id="termpane" hidden aria-label="Terminal">
     <div class="termhead">
       <div class="who"><b>Terminal</b><div id="termwhere"></div></div>
-      <button class="iconbtn" id="termclose" title="Close the terminal: the model can no longer use it; the next one starts again in the chat's folder" aria-label="Close the terminal"><svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.8 2.2-1.4 1.4A6.9 6.9 0 0 1 19 12a7 7 0 1 1-11.4-5.4L6.2 5.2A8.9 8.9 0 0 0 3 12a9 9 0 0 0 18 0c0-2.7-1.2-5.2-3.2-6.8z"/></svg></button>
+      <button class="iconbtn" id="termclose" title="Exit the terminal: its session ends (cd, venv) and a running command stops; the next one starts again in the chat's folder" aria-label="Exit the terminal"><svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.8 2.2-1.4 1.4A6.9 6.9 0 0 1 19 12a7 7 0 1 1-11.4-5.4L6.2 5.2A8.9 8.9 0 0 0 3 12a9 9 0 0 0 18 0c0-2.7-1.2-5.2-3.2-6.8z"/></svg></button>
       <button class="iconbtn" id="termhide" title="Hide (the terminal stays open)" aria-label="Hide the terminal"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6z"/></svg></button>
     </div>
     <div class="termlog" id="termlog"></div>
@@ -770,7 +770,9 @@ function markdown(src) {
       const body = nl >= 0 ? p.slice(nl + 1) : p;
       const lang = (nl >= 0 ? p.slice(0, nl) : "").trim().toLowerCase().replace(/[^a-z0-9+#._-]/g, "");
       // the same buttons above and below the block, so a long one needs no scrolling either way
+      const page = ["html", "htm", "svg", "xhtml"].includes(lang);  // (a page or a drawing: Open shows it, see openPage)
       const bar = (cls) => '<div class="codebar ' + cls + '"><span>' + esc(lang || "code") + '</span><button class="cb-copy" title="Copy the code">Copy</button>' +
+        (page ? '<button class="cb-open" title="Open it in a new tab (sandboxed: it cannot reach this server or its chats)">Open</button>' : "") +
         '<button class="cb-dl" title="Save the code as a file">Download</button></div>';
       html += '<div class="codeblock">' + bar("top") + '<pre><code data-lang="' + esc(lang) + '">' +
         esc(body.replace(/\n$/, "")) + "</code></pre>" + bar("bottom") + "</div>";
@@ -811,6 +813,19 @@ function mediaEl(m, alt) {
   const virt = String(m.id || "").match(/^(chat|transcript):/);
   c.querySelector("small").textContent = virt ? (virt[1] === "chat" ? "CHAT" : "RECORDING")
     : (m.kind === "video" ? "video" : (String(m.name).split(".").pop() || "file").toUpperCase()) + (m.bytes ? " · " + kb(m.bytes) : "");
+  // (a saved page or drawing: the server sends it as text/plain, its source; a click shows it sandboxed, see openPage;
+  //  Ctrl / middle click still opens the source)
+  const ext = String(m.name || "").toLowerCase().split(".").pop();
+  if (m.url && ["html", "htm", "svg"].includes(ext)) {
+    c.title = "Open the page (sandboxed); Ctrl+click: its source";
+    c.addEventListener("click", async (e) => {
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      const w = window.open("", "_blank");
+      if (!w) { note("the browser blocked the new tab: allow pop-ups for this page"); return; }
+      try { openPage(await (await fetch(m.url)).text(), m.name, ext === "svg", w); } catch (x) { w.close(); note("the page could not be read"); }
+    });
+  }
   return c;
 }
 function showEmpty(t) {
@@ -970,7 +985,7 @@ function compactable() {
   return history.length - 2 - lead;
 }
 function sysMessages(id = convId) {
-  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM(terms.get(id)?.shell, termUsable(id)) : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
+  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", voice.on ? VOICE_SYSTEM : "", voice.on && $("web").checked ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -1043,7 +1058,9 @@ function trimTools(h) {
   });
 }
 const TIME_SYSTEM = "Each user message starts with the day, date and local time it was sent, in brackets. Use it for " +
-  "\"today\", \"now\", \"yesterday\" and how long ago something was said; do not repeat it in your answers.";
+  "\"today\", \"now\", \"yesterday\" and how long ago something was said; do not repeat it in your answers. You run " +
+  "locally on arcinferzero (one word: arc + infer + zero; LLM inference on Intel Arc through Level Zero).";
+// (the name: seen only in folder paths, a model wrote it "Arc Infra Zero")
 const textOf = (c) => typeof c === "string" ? c
   : c.map((p) => p.type === "text" ? p.text : p.type === "file" ? "[file: " + (p.file?.filename || "") + "]" : p.type === "input_audio" ? "[audio]" : "[image]").join("\n");
 const SUMMARY_HEAD = "[Summary of the earlier part of this conversation]\n";
@@ -1224,13 +1241,25 @@ const TERM_TOOLS = [
       "kept); timeout 120 s, timeout_s up to 600. The result gives the cwd and the active venv.",
     parameters: { type: "object", properties: {
       command: { type: "string", description: "several lines are fine" },
-      timeout_s: { type: "integer" } }, required: ["command"] } } }];
-const TERM_SYSTEM = (shell, open) => (open ? "This chat's terminal is open: run_command" :
-  "run_command opens this chat's terminal (the user allows its first command), then") + " works as one session (cd " +
-  "and an activated .venv stay; the user may type in it too). " + termShellNote(shell) +
-  "Use the file tools for documents, the terminal for the rest. Before a command that changes or deletes anything, say " +
-  "what it does. Stay in the chat's folder unless the user asked otherwise. If the user does not allow a command, do " +
-  "not retry it in another form: ask what they want.";
+      timeout_s: { type: "integer" } }, required: ["command"] } } },
+  // (asked only to open the terminal, a model made up a command to open it with: Get-Location; hostname; python
+  //  --version, waiting for Run; this opens it with nothing run)
+  // (the panel's own buttons: × hides it, the session goes on; the power button exits it)
+  { type: "function", function: { name: "terminal_panel", description: "This chat's terminal panel; nothing runs. " +
+    "open; hide (the panel's ×: the session, cd and venv, goes on; for \"close\" or \"hide\"); exit (the panel's " +
+    "power button: the session ends, a running command stops; only when asked to exit or end it).",
+    parameters: { type: "object", properties: { action: { type: "string", enum: ["open", "hide", "exit"] } }, required: ["action"] } } }];
+// (one text whatever the terminal's state: the system text comes before the tools in the prompt, so a text that
+//  changed when the terminal opened or closed, or got its shell note then, made the server compute the tools and the
+//  whole conversation again (2,400 tokens and more: 20 s and more on the 27B instead of 3); the shell's version goes
+//  in the session's first result instead, see termShellNote)
+const TERM_SYSTEM = "run_command works in this chat's terminal as one session (cd and an activated .venv stay; the " +
+  "user may type in it too) and opens it when closed (the user allows the first command of each session). Write " +
+  "PowerShell, not bash or cmd; the session's first result says which. File tools for documents; run_command only " +
+  "when the task needs a command (install, run, convert, compute), not to look around; asked only to open, hide or " +
+  "exit the terminal: terminal_panel. Before a command that changes or deletes anything, say what it does. Stay in " +
+  "the chat's folder unless the user asked otherwise. If the user does not allow a command, do not retry it in " +
+  "another form: ask what they want.";
 // what the terminal is (asked once when it opens: PowerShell's version and edition, Windows' name and build), with the
 // syntax that trips models up in it: commands written for bash or for PowerShell 7 fail in Windows PowerShell 5.1
 function termShellNote(shell) {
@@ -1320,6 +1349,7 @@ async function runTool(call, card, signal, job) {
   if (!args) { card.status.textContent = "invalid arguments"; return "error: the arguments are not valid JSON"; }
   if (["list_files", "read_file", "search_file", "create_document", "list_chats", "search_chats"].includes(name)) return runFileTool(name, args, card, signal, job);
   if (name === "run_command") return runTermTool(args, card, signal, job);
+  if (name === "terminal_panel") return panelTermTool(String(args.action || ""), card, signal, job);
   if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
   const body = name === "web_search" ? { query: String(args.query ?? ""), max_results: 6 }
@@ -1376,6 +1406,33 @@ function termResult(d, j) {
   det.appendChild(out);
   d.appendChild(det);
 }
+// terminal_panel, the panel's buttons for the model; nothing runs. open: opened (shown if hidden), its first command
+// still asks (termOpen: allowed false); hide: the × (the session goes on); exit: the power button, after this round's
+// run_command (a round's calls run at once: one running or waiting for Run ends first instead of being stopped)
+async function panelTermTool(action, card, signal, job) {
+  const chat = job?.id || convId;
+  if (!termOffered(chat)) { card.status.textContent = "· terminal is off"; return "error: the terminal is off to the model (Settings > Terminal: off)"; }
+  const t = termOf(chat), was = !!t.open;
+  if (action === "open") {
+    if (was) { t.hidden = false; renderTerm(); }
+    else if (!(await termOpen(chat, false))) { card.status.textContent = "· the terminal did not open"; return "error: the terminal could not be opened"; }
+    card.status.textContent = was ? "· already open" : "· opened";
+    return JSON.stringify({ open: true, already_open: was, cwd: t.cwd || "", venv: t.venv || "", ...shellOnce(t) });
+  }
+  if (action === "hide") {
+    if (was) { t.hidden = true; renderTerm(); }
+    card.status.textContent = was ? "· hidden (still running)" : "· was not open";
+    return JSON.stringify({ hidden: was, open: was });
+  }
+  if (action === "exit") {
+    while (t.running?.size && !signal?.aborted) await new Promise((r) => setTimeout(r, 200));
+    if (t.open) termClose(chat);
+    card.status.textContent = was ? "· exited" : "· was not open";
+    return JSON.stringify({ exited: was });
+  }
+  card.status.textContent = "· unknown action";
+  return "error: action is open, hide or exit";
+}
 async function runTermTool(args, card, signal, job) {
   const cmd = String(args.command ?? "").trim();
   if (!cmd) { card.status.textContent = "· no command"; return "error: command is empty"; }
@@ -1429,7 +1486,13 @@ async function runTermTool(args, card, signal, job) {
   termResult(card.el, j);
   if ($("filespanel").classList.contains("open")) loadFiles();
   return JSON.stringify({ exit_code: j.exit_code, timed_out: j.timed_out, truncated: j.truncated, seconds: Math.round(j.seconds * 10) / 10,
-    cwd: j.cwd, venv: j.venv, output: j.output });
+    cwd: j.cwd, venv: j.venv, ...shellOnce(t), output: j.output });
+}
+// the shell note in a session's first result to the model (once: TERM_SYSTEM stays the same text)
+function shellOnce(t) {
+  if (t.shellSaid) return {};
+  t.shellSaid = true;
+  return { shell: termShellNote(t.shell).trim() };
 }
 
 // ---- the chat's terminal (the right panel): opened by the user and kept with the chat (chat.json: terminal { open,
@@ -1511,6 +1574,7 @@ async function termOpen(id = ensureConv(), focus = true) {
   if (!t.open) {
     t.open = true;
     t.allowed = false;  // (a new session: the model's first command in it waits for Run, Settings > Terminal "auto" too)
+    t.shellSaid = false;  // (and its first result to the model carries the shell note)
     t.cwd = t.venv = "";
     if (t.log.length) t.log.push({ by: "sep", out: "new terminal · " + hhmm(Date.now()) });
     renderTerm();
@@ -1534,8 +1598,8 @@ async function termOpen(id = ensureConv(), focus = true) {
   if (focus && id === convId) $("termin").focus();
   return true;
 }
-function termClose() {
-  const id = convId, t = id && terms.get(id);
+function termClose(id = convId) {
+  const t = id && terms.get(id);
   if (!t?.open) return;
   t.ctl?.abort();  // (a command still running ends with the terminal: the server stops a request that went away)
   for (const c of t.running || []) c.abort();  // (the model's too)
@@ -1550,7 +1614,7 @@ $("termbtn").addEventListener("click", () => {
   if (t?.open && !t.hidden) { t.hidden = true; renderTerm(); } else termOpen();
 });
 $("termhide").addEventListener("click", () => { const t = terms.get(convId); if (t) { t.hidden = true; renderTerm(); } });
-$("termclose").addEventListener("click", termClose);
+$("termclose").addEventListener("click", () => termClose());
 $("termin").addEventListener("input", () => { const a = $("termin"); a.style.height = "auto"; a.style.height = a.scrollHeight + "px"; });
 $("termin").addEventListener("keydown", async (e) => {
   const a = $("termin"), id = convId, t = id && terms.get(id);
@@ -1590,6 +1654,7 @@ function toolLabel(name, args) {
   if (name === "list_chats") return name + (args.query ? " \u201c" + args.query + "\u201d" : "");
   if (name === "search_chats") return name + " \u201c" + (args.query || "") + "\u201d";
   if (name === "run_command") return name;
+  if (name === "terminal_panel") return name + " " + (args.action || "");
   return name + " " + (args.query ?? args.url ?? "") + (args.offset ? " @" + args.offset : "");
 }
 async function runFileTool(name, args, card, signal, job) {
@@ -2610,11 +2675,37 @@ async function copyText(t) {
   ta.remove();
   return ok;
 }
+// A page the model wrote (or a saved .html / .svg), opened in a new tab: inside an iframe sandboxed without
+// allow-same-origin, its origin is opaque: its scripts run, but cannot use this server's API (requests with Origin
+// null get 403: run_command, the chats, the files) nor the web UI's storage; a blob: URL or the file served as
+// text/html would have run as this origin. The wrapper's CSP, inherited by the srcdoc frame, lets it load https only
+// (a CDN's Chart.js or Tailwind, images, fonts), so not even a plain GET (an <img>) reaches http://127.0.0.1.
+const PAGE_CSP = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https: blob: data:; style-src 'unsafe-inline' https: data:; " +
+  "img-src https: data: blob:; font-src https: data:; media-src https: data: blob:; connect-src https:; frame-src https: data: blob:; " +
+  "worker-src blob:; form-action https:; base-uri 'none'";
+// (win: a tab opened at the click, before an await: one opened after it is a pop-up the browser blocks)
+function openPage(text, name, svg, win) {
+  const w = win || window.open("", "_blank");
+  if (!w) { note("the browser blocked the new tab: allow pop-ups for this page"); return; }
+  const d = w.document;
+  d.open();
+  d.write('<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + esc(PAGE_CSP) +
+    '"><title>' + esc(name) + '</title><style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%;display:block}</style></head><body></body></html>');
+  d.close();
+  const f = d.createElement("iframe");
+  f.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+  f.setAttribute("referrerpolicy", "no-referrer");
+  f.srcdoc = svg && !/^\s*<!doctype|^\s*<html/i.test(text) ? '<!doctype html><meta charset="utf-8"><body style="margin:0">' + text : text;
+  d.body.appendChild(f);
+  w.opener = null;
+  return w;
+}
 const codeButtons = async (e) => {
-  const b = e.target.closest(".cb-copy, .cb-dl");
+  const b = e.target.closest(".cb-copy, .cb-dl, .cb-open");
   if (!b) return;
   const code = b.closest(".codeblock").querySelector("code");
   const text = code.textContent, lang = code.dataset.lang;
+  if (b.classList.contains("cb-open")) return openPage(text, "code." + (EXT[lang] || lang), lang === "svg");
   if (b.classList.contains("cb-copy")) {
     b.textContent = (await copyText(text)) ? "Copied" : "Copy failed";
     setTimeout(() => { b.textContent = "Copy"; }, 1500);

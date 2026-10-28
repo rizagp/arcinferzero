@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-28: the prompt cache kept with the terminal; terminal_panel; HTML pages open sandboxed
+
+- **Opening or closing the terminal no longer recomputes the whole chat** (webui/index.html `TERM_SYSTEM`): the
+  terminal's system text changed with its state (open / closed, the shell note added once it opened), and the
+  system text comes before the tools in the prompt, so each change made the server compute the tools and the whole
+  conversation again (the log: "cached 0", 20 s for 2,400 tokens on the 27B instead of 2.7 s). It is one text now;
+  the shell's version goes in the session's first result. Checked: the system text the same open and closed.
+- **terminal_panel** (open / hide / exit) for the model: asked only to open the terminal, a model made up a command
+  to open it with (Get-Location; hostname; python --version) that waited for Run. Checked with the 27B: "open
+  terminal" and "buka terminal dong" -> open, "Python versi berapa" -> run_command, "venv vs conda" -> no tool. The
+  power button is called Exit now (it was Close, and the model took "tutup" for exit).
+- The system text names the server (a model's thinking read "arcinferzero" in its paths as "Arc Infra Zero").
+- **HTML and SVG open in a new tab, sandboxed** (`openPage`): a code block's Open (next to Copy and Download) and a
+  saved .html / .svg chip. An iframe sandboxed without allow-same-origin and a CSP of https only: checked from inside
+  the page, its origin is null, fetch to /props, POST to run_command (also no-cors), an <img> of 127.0.0.1, the web
+  UI's localStorage and window are all blocked; its scripts run, an https image loads. The server still sends .html
+  as text/plain (a blob: URL or text/html would have run as the web UI's origin, with its API).
+
 ## 2026-10-28: the model opens the chat's terminal itself; shorter tool texts
 
 - **The model opens a closed terminal itself** (webui/index.html `runTermTool`, `termOffered`): before, `run_command`
