@@ -227,7 +227,7 @@ Options for start / restart:
                                  context that fits N of them (-Ctx auto; 27B: 2 x 49,152, 35B: 2 x 65,536, g26 2 x 32,768)
   -Npu on|off                    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
-                                 the model changes (pi-arc, Pi's /model); off again after restart / stop
+                                 the model changes (pi-arc, Pi's /model) and on a restart; off again after stop
   -Whisper auto|off|<folder>     speech to text at /v1/audio/transcriptions (OpenAI's API) with Whisper
                                  large-v3-turbo from the Hugging Face cache (auto) or a faster-whisper folder;
                                  its GPU memory (iGPU 1.4 GB, NPU mode 0.7 GB) comes off the context. Kept like -Npu
@@ -278,7 +278,7 @@ switch ($Action) {
       if (Test-Path $lastFile) { Say ("  " + (Get-Content $lastFile -Raw).Trim()) }  # (also after switching in Pi)
       Say ("  " + ($p | ConvertTo-Json -Compress -Depth 3))
       if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
-        Say "  NPU: on (-Npu on; kept when the model changes, off after a restart)"
+        Say "  NPU: on (-Npu on; kept when the model changes and on a restart, off after stop)"
       }
     } else { Say "arcinferzero server is not running." }
     $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
@@ -356,12 +356,14 @@ if (($Vision -eq "off" -and $m.vision) -or ($NoMtp -and $m.mtp) -or ($Vision -eq
 # another model dropped them (and the second Pi / client then waited for the only slot)
 if (-not $PSBoundParameters.ContainsKey("Slots") -and $st -and "$($st.extra)" -match "--slots (\d+)") { $Slots = [int]$Matches[1] }
 # -Npu on: the NPU next to the GPU for prompts (serverz --npu on). A start on another model (pi-arc, Pi's /model
-# inside the server) keeps a running server's setting; restart, or a start after stop, is off unless -Npu on is given
-if (-not $Npu -and $Action -eq "start" -and $st -and "$($st.extra)" -match "--npu on") { $Npu = "on" }
-# -Whisper: kept the same way (with its device)
-if (-not $Whisper -and $Action -eq "start" -and $st -and "$($st.extra)" -match '--whisper ("[^"]*"|\S+)') {
+# inside the server) and a restart keep a running server's setting (-Npu off turns it off); a start after stop is off
+# unless -Npu on is given (a restart dropped it: the 27B lost the NPU when -Whisper was added)
+if (-not $Npu -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--npu on") { $Npu = "on" }
+# -Whisper: kept the same way (with its device; -Whisper off turns it off)
+if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--whisper ("[^"]*"|[^\s|]+)') {
   $Whisper = $Matches[1].Trim('"')
-  if (-not $WhisperDevice -and "$($st.extra)" -match "--whisper-device (\S+)") { $WhisperDevice = $Matches[1] }
+  # ([^\s|]: the state's extra ends "...|think N", which "npu|think" did not match as npu: Whisper went back to the GPU)
+  if (-not $WhisperDevice -and "$($st.extra)" -match "--whisper-device ([^\s|]+)") { $WhisperDevice = $Matches[1] }
 }
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-28: `arc-server restart` keeps -Npu and -Whisper
+
+- `arc-server restart` (e.g. `restart -Model 27b -Whisper auto`) kept the slots but turned the NPU and Whisper off
+  unless they were given again: the 27B lost `--npu on` when Whisper was added. Both are now kept like the slots;
+  `-Npu off` / `-Whisper off` turn them off, a start after `stop` still begins with both off (scripts/arc-server.ps1).
+- A kept `-WhisperDevice npu` read as "npu|think" (the state's options end in "|think N"), so a switch to another
+  model moved Whisper's encoder back to the iGPU; the option is now read up to the "|".
+
 ## 2026-10-28: Transcripts and Meetings in the web UI
 
 - **A self audit of all of it, and its fixes** ([docs/self-audit-2026-10-28.md](docs/self-audit-2026-10-28.md)):

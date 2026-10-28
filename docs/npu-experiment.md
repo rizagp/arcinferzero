@@ -10,7 +10,7 @@ existed (built on the branch npu-experiment, merged into `main` on 2026-10-25).
 | Where | On | Off |
 |---|---|---|
 | `bin\serverz.exe`, `bin\runz.exe` | `--npu on` (`--npu force`: also on models where it does not pay off) | `--npu off` or nothing |
-| `arc-server start` | `-Npu on` | `-Npu off`, `arc-server restart`, or a start after `stop` |
+| `arc-server start` | `-Npu on` | `-Npu off`, or a start after `stop` (a restart keeps it) |
 | `pi-arc` | `--npu on` | `--npu off` |
 | environment (tests) | `ARC_NPU=1` (`2`: force), used when no `--npu` is given | |
 
