@@ -145,9 +145,10 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
   `--asr <file.gguf>` a given one, `--asr off` none; the mmproj with projector `qwen3a` is found next to it). Gemma 4
   E4B is offered when the model list has it with its audio encoder. `/props` shows
   `"whisper": {"model": "whisper-large-v3", "asr": "qwen3-asr-1.7b", "chat_asr": "gemma4-e4b", ...}`.
-  GPU memory: large-v3 and Qwen3-ASR 7.79 GiB together (turbo and Qwen3-ASR before f16 K: 5.31). Note: in the
-  server with large-v3 loaded first, Qwen3-ASR wrote the 2:34 recording's 507 tokens in 24.1 s against 18.7 s on
-  the command line (19.8 s in the server with turbo): not looked into yet.
+  GPU memory: large-v3 and Qwen3-ASR 7.79 GiB together (turbo and Qwen3-ASR before f16 K: 5.31). In the server
+  Qwen3-ASR decodes as fast as on the command line: the 2:34 recording's 507 tokens in 19.1-19.2 s three times, the
+  command line in between 18.9-25.1 s (the laptop's own variation; one 24.1-s server run was that too). Whisper
+  large-v3 loaded before or after it on the command line: +2 % at most.
 - `POST /v1/audio/transcriptions`: no `model`, OpenAI's `whisper-1` or `qwen3-asr` -> Qwen3-ASR; `gemma4-e4b` /
   `e4b` -> Gemma 4 E4B (in parts of up to 2 minutes cut at quiet points, a segment each; the server loads E4B as its
   chat model when another one is loaded); `whisper` or its id -> Whisper large-v3 (word times); any other chat model:
@@ -177,5 +178,4 @@ Checks: `ref_qwen3a mmproj.gguf audio out.ref [seconds]` writes the f32 encoder 
 
 - Timestamps (Qwen3-ForcedAligner-0.6B, or cutting at pauses done better than here).
 - Memory: the encoder's f16 weights (0.6 GiB) could be int8 as the vision encoders' two-pass path has them.
-- The server's slower decoding with Whisper large-v3 loaded before it (see Using it).
 - Streaming (the user's friend runs it in vLLM for voice calls; Qwen's package feeds 2-s chunks).
