@@ -94,6 +94,13 @@ risk reports), key words in each transcript (✓ as said, as far as the context 
 | Gemma 4 E4B | 36.7 s | ✗ | ✓ | ✓ | ✗ kebersih-an | ✗ | ✓ | ✓ | ✓ (audensi) | yes |
 | Gemma 4 12B | 75.0 s | ✗ | ✗ | ✗ BPGS katanaga kerja | ✗ akurasi keputusan | ✓ | ✗ jemo | ✗ | ✗ | yes; "Amerika", "tiga tuluhan", "I K C" |
 
+The user confirmed "JMO" and "risiko **operasional**" (only Gemma 4 E4B wrote operasional; the others "personal").
+With a glossary as its context (`terms` / the Transcripts tab's Glossary; `asr_testz --context`: "BPJS
+Ketenagakerjaan, Profil Risiko Badan (PRB), risiko operasional, kepesertaan, aplikasi JMO, deputi bidang MRK")
+Qwen3-ASR wrote every one of those as given, the rest of the text as before (still "pelakuan pelakuan", "dimana ko di
+saat ini", no punctuation); 22.0 s. (The glossary held the right words, so this shows what a user's own list of
+names and terms does, not an unaided result.)
+
 No model invented sentences on this recording except Gemma 4 12B, whose text drifts (it has no audio encoder: raw
 40-ms frames, see the Gemma 4 12B audio notes); on the first recording 12B wrote a short translated summary instead
 of a transcript. Here Qwen3-ASR named the language Indonesian, and wrote it without punctuation, as it did when the
