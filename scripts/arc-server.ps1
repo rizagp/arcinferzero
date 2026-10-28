@@ -269,7 +269,7 @@ Options for start / restart:
 A running server is kept when the model and every option given match; otherwise it is restarted with them.
 
 A window for all of this: arc-launcher.cmd in the project folder (models with their memory and automatic
-context, the main options filled in with the best value, Start / Stop, the running server's memory and speeds).
+context, every option filled in with the best value (speech to text too), Start / Stop, Record, the running server's memory and speeds).
 
 The server is started as bin\serverz.exe with --ctx, --mtp (when the model has
 an MTP block or a Gemma drafter), --draft for the -nodf / -df variants, --think-budget 8192 and the options above;

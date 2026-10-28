@@ -22,7 +22,8 @@ setup: everything arcinferzero needs on this laptop, in one command. Safe to run
 
 USAGE
   setup                          check, build, ask which models to download, connect Pi
-  setup -Models 27b,4b           download these without asking: 27b 35b 9b 4b g12 e4b, or all / none
+  setup -Models 27b,4b           download these without asking: 27b 35b 9b 4b g12 e4b, whisper asr (speech to
+                                 text), or all / none
   setup -Tests                   also build the test tools and run the regression tests (needs the 4B model)
   setup -NoPi                    leave Pi alone
   setup -Yes                     do not ask: pip installs and downloads go ahead (with -Models: those models;
@@ -52,7 +53,10 @@ MODELS
   9b   Qwen3.5 9B (Unsloth UD-Q4_K_XL, MTP)                6.1 GB
   4b   Qwen3.5 4B (Unsloth UD-Q4_K_XL, MTP)                3.0 GB
   g12  Gemma 4 12B (Google QAT Q4_0) + image projector + drafter  7.4 GB
-  e4b  Gemma 4 E4B (Google QAT Q4_0) + drafter                     5.2 GB
+  e4b  Gemma 4 E4B (Google QAT Q4_0) + projector (images, audio) + drafter  6.2 GB
+  whisper  Whisper large-v3 (faster-whisper): transcripts with words' times, live text   3.1 GB
+  asr  Qwen3-ASR 1.7B Q8_0 + its projector: the default speech model                  2.4 GB
+       (both for arc-server start -Whisper auto: the web UI's Transcripts / Meetings tabs, voice messages)
 
 Not installed by setup: the graphics driver, Visual Studio Build Tools, Python and Pi (vendor installers).
 '@
@@ -197,7 +201,12 @@ $catalog = @(
   # (its projector: images and audio, also for transcripts with -Whisper)
   [pscustomobject]@{ key = "e4b"; name = "Gemma 4 E4B (images, audio; drafter)"; repo = "google/gemma-4-E4B-it-qat-q4_0-gguf"; gb = 6.2
     files = @("gemma-4-E4B_q4_0-it.gguf", "gemma-4-E4B-it-mmproj.gguf", "mtp-gemma-4-E4B-it.gguf")
-    drafter = @{ repo = "unsloth/gemma-4-E4B-it-qat-GGUF"; file = "mtp-gemma-4-E4B-it.gguf" } }
+    drafter = @{ repo = "unsloth/gemma-4-E4B-it-qat-GGUF"; file = "mtp-gemma-4-E4B-it.gguf" } },
+  # speech to text (arc-server -Whisper auto): Whisper large-v3, and Qwen3-ASR, the default speech model
+  [pscustomobject]@{ key = "whisper"; name = "Whisper large-v3 (speech to text: words' times, live text)"; repo = "Systran/faster-whisper-large-v3"; gb = 3.1
+    files = @("model.bin", "config.json", "tokenizer.json", "preprocessor_config.json") },
+  [pscustomobject]@{ key = "asr"; name = "Qwen3-ASR 1.7B (speech to text: the default model)"; repo = "unslothai/Qwen3-ASR-1.7B-GGUF"; gb = 2.4
+    files = @("Qwen3-ASR-1.7B-Q8_0.gguf", "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf") }
 )
 function Present($m) {
   if ($m.key -eq "35b") { return Test-Path $gsq35 }
@@ -208,19 +217,19 @@ function Present($m) {
 }
 foreach ($m in $catalog) { $m | Add-Member have (Present $m) }
 foreach ($m in $catalog) {
-  Write-Host ("  {0} {1,-4} {2,-60} {3,5:N1} GB" -f $(if ($m.have) { "[x]" } else { "[ ]" }), $m.key, $m.name, $m.gb)
+  Write-Host ("  {0} {1,-7} {2,-60} {3,5:N1} GB" -f $(if ($m.have) { "[x]" } else { "[ ]" }), $m.key, $m.name, $m.gb)
 }
 $want = @()
 if ($Models) {
   if ($Models -contains "all") { $want = @($catalog | ForEach-Object { $_.key }) }
   elseif ($Models -notcontains "none") {
-    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 9b 4b g12 e4b, all or none" } }
+    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 9b 4b g12 e4b whisper asr, all or none" } }
     $want = $Models
   }
 } elseif (-not $Yes) {
-  $a = Read-Host "  Models to download (e.g. '27b 4b'; Enter = none)"
+  $a = Read-Host "  Models to download (e.g. '27b 4b whisper asr'; Enter = none)"
   $want = @(($a -split "[,;\s]+") | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
-  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 9b 4b g12 e4b" } }
+  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 9b 4b g12 e4b whisper asr" } }
 }
 $todo = @($catalog | Where-Object { $want -contains $_.key -and -not $_.have })
 if ($todo | Where-Object { $_.key -eq "35b" }) {  # its tokenizer comes from the 4B GGUF

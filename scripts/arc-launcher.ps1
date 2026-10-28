@@ -61,6 +61,8 @@ function New-Combo($items, $w = 90) {
   $c = New-Object System.Windows.Forms.ComboBox; $c.DropDownStyle = "DropDownList"; $c.Width = $w
   $c.Margin = New-Object System.Windows.Forms.Padding(3, 3, 3, 3); [void]$c.Items.AddRange($items); $c.SelectedIndex = 0; $c
 }
+# a combo that also takes typed text (a folder or file next to auto / off)
+function New-EditCombo($items, $w = 90) { $c = New-Combo $items $w; $c.DropDownStyle = "DropDown"; $c }
 function New-Check($t) { $c = New-Object System.Windows.Forms.CheckBox; $c.Text = $t; $c.AutoSize = $true; $c.Margin = New-Object System.Windows.Forms.Padding(3, 5, 3, 0); $c }
 function New-Info {
   $t = New-Object System.Windows.Forms.TextBox; $t.Multiline = $true; $t.ReadOnly = $true; $t.Dock = "Fill"
@@ -106,6 +108,16 @@ $noPrefixChk = New-Check "no prefix cache"
 $noSwapChk = New-Check "keep the loaded model (--no-swap: requests do not switch models)"
 $netChk = New-Check "reachable from other computers (0.0.0.0)"
 $f32Chk = New-Check "f32 attention (tests)"
+$noMtpChk = New-Check "no speculative decoding (-NoMtp)"
+$visionBox = New-Combo @("on", "off") 60
+$slotsBox = New-Num 1 8 1 0 60
+$npuBox = New-Combo @("off", "on") 60
+$noStreamChk = New-Check "every expert on the GPU (-NoStream: no SSD reads, smaller context)"
+$keepThinkChk = New-Check "earlier turns keep their reasoning (-PreserveThinking)"
+$whisperBox = New-EditCombo @("off", "auto") 170
+$asrBox = New-EditCombo @("auto", "off") 170
+$whDevBox = New-Combo @("gpu", "npu") 60
+$whMaxBox = New-Num 1 1440 180 0 70
 
 $opt = New-Object System.Windows.Forms.TableLayoutPanel
 $opt.Dock = "Fill"; $opt.ColumnCount = 2; $opt.AutoScroll = $true
@@ -146,12 +158,23 @@ Add-Opt "API address" $apiPanel "for other apps; API key: anything; model: the i
 Add-Opt "MTP drafts per step" $draftBox
 Add-Opt "Thinking budget (tokens)" $thinkBox
 Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; 0 = off"
+Add-Opt "NPU" $npuBox "part of each prompt chunk on the NPU (27B, Gemma 12B); kept on a restart"
 Add-Opt "" $netChk
+# ---- speech to text (-Whisper): the Transcripts / Meetings tabs, /v1/audio/transcriptions
+$speechHead = New-Label "Speech to text" $true
+$speechHead.Margin = New-Object System.Windows.Forms.Padding(3, 10, 3, 2)
+$opt.Controls.Add($speechHead); $opt.SetColumnSpan($speechHead, 2)
+Add-Opt "Speech (-Whisper)" $whisperBox "auto | off | a faster-whisper folder; ~8 GB off the context; kept on a restart"
+Add-Opt "Qwen3-ASR (-Asr)" $asrBox "auto | off (Whisper alone) | a .gguf file"
+Add-Opt "Whisper encoder on" $whDevBox -Advanced
+Add-Opt "Longest clip (minutes)" $whMaxBox "uploads and chat clips; the library takes up to 6 h" -Advanced
 $advChk = New-Check "Show advanced options"
 $advChk.Margin = New-Object System.Windows.Forms.Padding(3, 10, 3, 4)
 $opt.Controls.Add($advChk); $opt.SetColumnSpan($advChk, 2)
 Add-Opt "Port" $portBox -Advanced
 Add-Opt "Prompt chunk" $chunkBox "smaller = more context, slower prompts" -Advanced
+Add-Opt "Conversations at once" $slotsBox "-Slots: each its own KV cache; the context is shared out (auto)" -Advanced
+Add-Opt "Images / audio" $visionBox "off: no mmproj, a longer context" -Advanced
 Add-Opt "Image tokens min / max" $imgMinBox -Advanced
 Add-Opt "" $imgMaxBox -Advanced
 Add-Opt "Resident W8 weights (GB)" $budgetBox "0 = chosen with the context" -Advanced
@@ -159,6 +182,9 @@ Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\arcinferzero\z
 Add-Opt "Prefix cache (GB on disk)" $prefixBox "system prompts per project" -Advanced
 Add-Opt "" $noPrefixChk -Advanced
 Add-Opt "" $noSwapChk -Advanced
+Add-Opt "" $noMtpChk -Advanced
+Add-Opt "" $noStreamChk -Advanced
+Add-Opt "" $keepThinkChk -Advanced
 Add-Opt "" $f32Chk -Advanced
 function Show-Advanced([bool]$on) { foreach ($r in $script:advRows) { $r[0].Visible = $on; $r[1].Visible = $on } }
 $advChk.Add_CheckedChanged({ Show-Advanced $advChk.Checked })
@@ -171,13 +197,15 @@ $fields = [ordered]@{
   port = $portBox; ctx = $ctxBox; chunk = $chunkBox; drafts = $draftBox; think = $thinkBox; img_min = $imgMinBox
   img_max = $imgMaxBox; budget = $budgetBox; prompt_cache = $sessBox; prompt_cache_dir = $sessDirBox
   prefix_cache = $prefixBox; no_prefix = $noPrefixChk; no_swap = $noSwapChk; network = $netChk; attn_f32 = $f32Chk
+  no_mtp = $noMtpChk; vision = $visionBox; slots = $slotsBox; npu = $npuBox; no_stream = $noStreamChk
+  preserve_think = $keepThinkChk; whisper = $whisperBox; asr = $asrBox; whisper_device = $whDevBox; whisper_max = $whMaxBox
 }
 function Get-Field($k) {
   $c = $fields[$k]
   switch ($c.GetType().Name) {
     "TextBox" { return $c.Text.Trim() }
     "NumericUpDown" { return [double]$c.Value }
-    "ComboBox" { return [string]$c.SelectedItem }
+    "ComboBox" { if ($c.DropDownStyle -eq "DropDown") { return $c.Text.Trim() }; return [string]$c.SelectedItem }
     default { return [bool]$c.Checked }
   }
 }
@@ -188,7 +216,10 @@ function Put-Field($k, $v) {
     switch ($c.GetType().Name) {
       "TextBox" { $c.Text = "$v" }
       "NumericUpDown" { $c.Value = [decimal][math]::Max([double]$c.Minimum, [math]::Min([double]$c.Maximum, [double]$v)) }
-      "ComboBox" { $i = $c.Items.IndexOf([string]$v); if ($i -ge 0) { $c.SelectedIndex = $i } }
+      "ComboBox" {
+        if ($c.DropDownStyle -eq "DropDown") { $c.Text = "$v" }
+        else { $i = $c.Items.IndexOf([string]$v); if ($i -ge 0) { $c.SelectedIndex = $i } }
+      }
       default { $c.Checked = [bool]$v }
     }
   } finally { $script:filling = $false }
@@ -212,10 +243,13 @@ foreach ($k in $fields.Keys) {
   switch ($c.GetType().Name) {
     "TextBox" { $c.Add_TextChanged($onEdit) }
     "NumericUpDown" { $c.Add_ValueChanged($onEdit) }
-    "ComboBox" { $c.Add_SelectedIndexChanged($onEdit) }
+    "ComboBox" { if ($c.DropDownStyle -eq "DropDown") { $c.Add_TextChanged($onEdit) } else { $c.Add_SelectedIndexChanged($onEdit) } }
     default { $c.Add_CheckedChanged($onEdit) }
   }
 }
+# the ASR / Whisper fields only count with speech on
+function Update-Speech { $asrBox.Enabled = $whDevBox.Enabled = $whMaxBox.Enabled = (Get-Field "whisper") -notin "", "off" }
+$whisperBox.Add_TextChanged({ Update-Speech })
 # the selected model's best values (what the server picks itself), into every field not overridden
 function Fill-Defaults {
   $m = if ($grid.SelectedRows.Count) { $grid.SelectedRows[0].Tag } else { $null }
@@ -226,14 +260,17 @@ function Fill-Defaults {
     chunk = $(if ($d) { $d.chunk } else { 4096 }); drafts = $(if ($d -and $d.mtp_drafts) { $d.mtp_drafts } else { 2 })
     think = 8192; img_min = $(if ($d) { $d.image_min } else { 0 }); img_max = $(if ($d) { $d.image_max } else { 0 })
     budget = 0; prompt_cache = 8; prompt_cache_dir = ""; prefix_cache = 8; no_prefix = $false; no_swap = $false
-    network = $false; attn_f32 = $false
+    network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; npu = "off"; no_stream = $false
+    preserve_think = $false; whisper = "off"; asr = "auto"; whisper_device = "gpu"; whisper_max = 180
   }
   foreach ($k in $fields.Keys) {
     Put-Field $k $(if ($script:over.ContainsKey($k)) { $script:over[$k] } else { $v[$k] })
     Show-Mark $k
   }
-  $draftBox.Enabled = [bool]($m -and $m.mtp)
-  $imgMinBox.Enabled = $imgMaxBox.Enabled = [bool]($m -and $m.vision)
+  $draftBox.Enabled = $noMtpChk.Enabled = [bool]($m -and $m.mtp)
+  $imgMinBox.Enabled = $imgMaxBox.Enabled = $visionBox.Enabled = [bool]($m -and $m.vision)
+  $noStreamChk.Enabled = [bool]($m -and $m.moe)
+  Update-Speech
 }
 
 $detail = New-Info
@@ -267,6 +304,15 @@ $resetBtn = New-Button "Reset options" 110
 $webBtn = New-Button "Open web UI"
 $logBtn = New-Button "Open log"
 $buttons.Controls.AddRange(@($startBtn, $stopBtn, $defBtn, $resetBtn, $refreshBtn, $webBtn, $logBtn))
+# meeting recording (arc-server record / record-stop; only with bin\arc_recorder.exe): App = the meeting app whose
+# sound is "Others" (empty: everything the speakers play)
+$recAppLbl = New-Label "App:"
+$recAppBox = New-Text 110
+$recBtn = New-Button "Record" 80
+$recStopBtn = New-Button "Stop recording" 120
+$buttons.Controls.AddRange(@($recAppLbl, $recAppBox, $recBtn, $recStopBtn))
+$hasRec = Test-Path (Join-Path $root "bin\arc_recorder.exe")
+foreach ($c in $recAppLbl, $recAppBox, $recBtn, $recStopBtn) { $c.Visible = $hasRec }
 $msg = New-Object System.Windows.Forms.Label
 $msg.Dock = "Bottom"; $msg.Height = 24; $msg.Padding = New-Object System.Windows.Forms.Padding(10, 4, 10, 0)
 $msg.ForeColor = [System.Drawing.Color]::DimGray
@@ -422,6 +468,17 @@ function Start-Action([string[]]$argList) {
     -RedirectStandardOutput $script:actOut -RedirectStandardError $script:actErr
   Update-Status
 }
+# record / record-stop: its own process (the server's start / stop goes on beside it)
+$script:recProc = $null
+$script:recOut = Join-Path $env:TEMP "arc-launcher-record.log"
+$script:recErr = Join-Path $env:TEMP "arc-launcher-record.err"
+function Start-Rec([string[]]$argList) {
+  if ($script:recProc -and -not $script:recProc.HasExited) { return }
+  Remove-Item $script:recOut, $script:recErr -ErrorAction SilentlyContinue
+  $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$arcServer`"") + $argList
+  $script:recProc = Start-Process -FilePath $shell -ArgumentList $a -WindowStyle Hidden -PassThru `
+    -RedirectStandardOutput $script:recOut -RedirectStandardError $script:recErr
+}
 function Start-Selected {
   if ($grid.SelectedRows.Count -eq 0) { return }
   $m = $grid.SelectedRows[0].Tag
@@ -451,6 +508,16 @@ function Start-Selected {
       "no_swap" { if ($v) { $a += "-NoSwap" } }
       "network" { if ($v) { $a += @("-ListenHost", "0.0.0.0") } }
       "attn_f32" { if ($v) { $a += "-AttnF32" } }
+      "no_mtp" { if ($v -and $m.mtp) { $a += "-NoMtp" } }
+      "vision" { if ($m.vision) { $a += @("-Vision", $v) } }
+      "slots" { $a += @("-Slots", [int]$v) }
+      "npu" { $a += @("-Npu", $v) }  # (off too: a running server's on is kept otherwise)
+      "no_stream" { if ($v -and $m.moe) { $a += "-NoStream" } }
+      "preserve_think" { if ($v) { $a += "-PreserveThinking" } }
+      "whisper" { if ($v) { $a += @("-Whisper", $(if ($v -in "auto", "off") { $v } else { "`"$v`"" })) } }
+      "asr" { if ($v) { $a += @("-Asr", $(if ($v -in "auto", "off") { $v } else { "`"$v`"" })) } }
+      "whisper_device" { $a += @("-WhisperDevice", $v) }
+      "whisper_max" { $a += @("-WhisperMaxMinutes", [int]$v) }
     }
   }
   $msg.Text = "Starting $($m.alias)... (loading takes 5-40 s; 35B up to 1-3 min)"
@@ -467,7 +534,7 @@ if (Test-Path $settingsFile) {
     foreach ($p in $o.PSObject.Properties) { if ($fields.Contains($p.Name)) { $script:over[$p.Name] = $p.Value } }
   } catch {}
 }
-if (@($script:over.Keys | Where-Object { $_ -notin "ctx", "drafts", "think", "prompt_cache", "network" }).Count) { $advChk.Checked = $true }
+if (@($script:over.Keys | Where-Object { $_ -notin "ctx", "drafts", "think", "prompt_cache", "network", "npu", "whisper", "asr" }).Count) { $advChk.Checked = $true }
 $defBtn.Add_Click({
     $script:over | ConvertTo-Json | Set-Content $settingsFile -Encoding utf8
     $n = $script:over.Count
@@ -497,6 +564,14 @@ $stopBtn.Add_Click({
 $refreshBtn.Add_Click({ Start-List })
 $webBtn.Add_Click({ Start-Process "$(Base)/" })
 $logBtn.Add_Click({ if (Test-Path $serverLog) { Start-Process notepad.exe -ArgumentList "`"$serverLog`"" } })
+$recBtn.Add_Click({
+    $a = @("record")
+    $app = $recAppBox.Text.Trim().Replace('"', '')
+    if ($app) { $a += @("-App", "`"$app`"") }
+    $msg.Text = "Starting the recording..."
+    Start-Rec $a
+  })
+$recStopBtn.Add_Click({ $msg.Text = "Ending the recording (the server transcribes it: the Meetings tab)..."; Start-Rec @("record-stop") })
 
 # ---- timer: collect background results; the server state every 2 s
 $timer = New-Object System.Windows.Forms.Timer
@@ -522,6 +597,14 @@ $timer.Add_Tick({
         $script:actProc = $null
         Update-Status
       }
+    }
+    if ($script:recProc -and $script:recProc.HasExited) {
+      $out = @(Get-Content $script:recOut -ErrorAction SilentlyContinue | Where-Object { $_ })
+      if ($script:recProc.ExitCode -ne 0) {
+        $err = Get-Content $script:recErr -Raw -ErrorAction SilentlyContinue
+        [void][System.Windows.Forms.MessageBox]::Show("Recording failed:`n$(($out -join "`n"))`n$err", "arcinferzero")
+      } elseif ($out.Count) { $msg.Text = ($out -join "  ") }
+      $script:recProc = $null
     }
     if (($script:tick++ % 4) -eq 0) { Update-Status }
   })

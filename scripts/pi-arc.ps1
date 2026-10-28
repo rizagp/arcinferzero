@@ -175,7 +175,7 @@ SERVER COMMANDS (arc-server)
     -BudgetGb <GB>  -AttnF32  -NoPrefixCache  -PrefixCacheGb <N>  -NoSwap  -ListenHost <addr>  -SessionDir <dir>
     -Quiet
   arc-launcher.cmd (project folder)  a window: every model and variant with its memory and automatic context, a
-                                 field for the main options, Start / Stop, and the running server's GPU memory,
+                                 field for every option (speech to text too), Start / Stop, Record, and the running server's GPU memory,
                                  requests and speeds (the server keeps running when it is closed)
 
 SERVER DIRECTLY (bin\serverz.exe; arc-server passes these for you; details:

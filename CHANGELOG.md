@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-28: the launcher, setup and the docs brought up to date
+
+- **arc-launcher**: every arc-server option now has its field: speech to text (Speech, Qwen3-ASR, Whisper's encoder,
+  the longest clip), NPU, conversations at once, images / audio, no MTP, no streaming, earlier turns' reasoning;
+  Record / Stop recording buttons for meetings (when `bin\arc_recorder.exe` is there).
+- **setup**: `-Models whisper asr` downloads the speech models (Whisper large-v3, Qwen3-ASR 1.7B with its projector).
+- **Transcripts tab**: Accurate (beam 5) / Fast (greedy) shows only for Whisper: Qwen3-ASR and Gemma 4 E4B always
+  decode greedily.
+- **Docs**: what was written two or three times (setup, Pi, the launcher, troubleshooting, the web UI, NPU, speech)
+  now lives in one place with links from the others; out-of-date statements corrected (chats are kept by the server,
+  the speech models, files copied between chats); the finished Gemma two-pass plan moved to docs/archive/.
+
 ## 2026-10-28: an external audit checked and fixed
 
 A further static audit (23 findings) was checked finding by finding in the code; all held and are fixed:

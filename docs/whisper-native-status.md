@@ -190,7 +190,8 @@ before the model's lock, when the loaded model does not hear audio or the reques
 blank line: the template joins a message's parts, and the question after it ran into the transcript's last word);
 one of more than 12,000 characters becomes a text file in the chat's folder, read as a document. Transcripts are
 cached by the clip's bytes (each turn sends the audio again). The web UI's setting **Speech** (Voice section):
-Whisper for every model, or the model hears it. Measured:
+Whisper for every model, or the model hears it. **Later** (2026-10-28): the speech model is Qwen3-ASR by default,
+Whisper when Qwen3-ASR is off ([qwen3-asr.md](qwen3-asr.md#using-it)). Measured:
 
 | | First turn | Next turn |
 |---|---|---|

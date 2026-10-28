@@ -386,11 +386,11 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <option value="id,en">Indonesian + English mixed</option>
         </select>
         <select id="trmodel" aria-label="Speech model" hidden
-          title="Qwen3-ASR: the most complete on noisy, mixed Indonesian and English; one text per part of up to 6 minutes, no timestamps; a glossary helps it most. Gemma 4 E4B: the most readable on clear speech, but it can add sentences over noise or silence; the server switches its chat model to E4B. Whisper large-v3: segments with every word's time. A live recording's text as it is spoken is Whisper's; the model chosen here does the pass after Stop">
+          title="Qwen3-ASR: the most complete on noisy, mixed Indonesian and English; one text per part of up to 4 minutes, no timestamps; always greedy; a glossary helps it most. Gemma 4 E4B (greedy): the most readable on clear speech, but it can add sentences over noise or silence; the server switches its chat model to E4B. Whisper large-v3: segments with every word's time; Accurate (beam 5) or Fast (greedy). A live recording's text as it is spoken is Whisper's; the model chosen here does the pass after Stop">
           <option value="qwen3-asr">Model: Qwen3-ASR</option><option value="e4b">Model: Gemma 4 E4B</option>
           <option value="whisper">Model: Whisper</option>
         </select>
-        <select id="trbeam" aria-label="Accuracy" title="Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy">
+        <select id="trbeam" aria-label="Accuracy" title="Whisper only: Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy (Qwen3-ASR and Gemma 4 E4B are always greedy)">
           <option value="5">Accurate (beam 5)</option><option value="1">Fast (greedy)</option>
         </select>
         <select id="trkeep" aria-label="Recordings kept as" title="How a live recording is kept: WAV is lossless (best for transcribing it again with another model), ~5.5 MB a minute a track; MP3 192 kbps ~1.4 MB a minute">
@@ -3017,7 +3017,11 @@ function trCaps() {
   sel.querySelector('[value="whisper"]').textContent = "Model: " + (/large-v3$/.test(caps.stt) ? "Whisper large-v3" : caps.stt || "Whisper");
   sel.hidden = !caps.asr && !caps.chatAsr;
   if (sel.selectedOptions[0]?.hidden || !sel.value) sel.value = caps.asr ? "qwen3-asr" : "whisper";
+  trBeamShown();
 }
+// (beam 5 / greedy is Whisper's choice: Qwen3-ASR and Gemma 4 E4B always decode greedily)
+function trBeamShown() { $("trbeam").hidden = !$("trmodel").hidden && $("trmodel").value !== "whisper"; }
+$("trmodel").addEventListener("change", trBeamShown);
 (function trLoadPrefs() {
   const p = prefs.tr || {};
   if (p.lang) $("trlang").value = p.lang;

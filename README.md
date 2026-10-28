@@ -24,8 +24,10 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
   inside Pi, two Pi sessions at once on one model (`--slots 2`): when both are writing, their next tokens run in
   one engine pass (27B prose 7.3 -> 10.5 tok/s together, 35B 20.2 -> 24.7, Gemma 4 26B 19.8 -> 26.2).
 - **A web UI that searches and talks**: the model can search the web and read pages (the server fetches them,
-  public addresses only), and with Gemma 4 E4B / 12B you can talk to it: the microphone stays open, it hears the
-  audio itself, answers aloud sentence by sentence, can be interrupted, and looks things up while it talks.
+  public addresses only), and you can talk to it: the microphone stays open (Gemma 4 E4B / 12B hear the audio
+  themselves; with `--whisper auto` Qwen3-ASR writes it down for any model), it answers aloud sentence by sentence,
+  can be interrupted, and looks things up while it talks. Speech to text also fills a **Transcripts** and a
+  **Meetings** tab.
 
 ### Results at a glance (2026-10-25)
 
@@ -76,9 +78,11 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 - Speed by date, long contexts, the 4-bit V cache: [docs/speed-progress.md](docs/speed-progress.md)
 - The NPU next to the GPU for prompts (`--npu on`): [docs/npu-experiment.md](docs/npu-experiment.md)
 - arcinferzero development log: [docs/archive/arcinferzero-log.md](docs/archive/arcinferzero-log.md)
+- Speech to text: [docs/qwen3-asr.md](docs/qwen3-asr.md) (the default model), [docs/whisper-native.md](docs/whisper-native.md)
+  (Whisper, transcripts, meetings; its status: [docs/whisper-native-status.md](docs/whisper-native-status.md))
 - What changed recently: [CHANGELOG.md](CHANGELOG.md); usage guide (step by step): [USAGE.md](USAGE.md)
-- Open work and decisions: [QUEUE.md](QUEUE.md); the Gemma 4 accurate-mode plan: [docs/f21-q2-speed.md](docs/f21-q2-speed.md);
-  Flash Next's architecture: [docs/flash-next-spec.md](docs/flash-next-spec.md)
+- Open work and decisions: [QUEUE.md](QUEUE.md); Flash Next's architecture: [docs/flash-next-spec.md](docs/flash-next-spec.md);
+  the finished Gemma 4 accurate-mode plan: [docs/archive/f21-q2-speed.md](docs/archive/f21-q2-speed.md)
 
 ## Supported models
 
@@ -107,7 +111,7 @@ Once the graphics driver, Visual Studio Build Tools (C++), Python and optionally
 
 ```powershell
 .\setup.cmd                    # checks, builds, asks which models to download, connects Pi
-.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 9b 4b g12 e4b, all, none)
+.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 9b 4b g12 e4b, whisper asr: speech to text; all, none)
 .\setup.cmd -Tests             # also build the test tools and run the regression tests (needs the 4B)
 ```
 
@@ -218,9 +222,10 @@ in the same folder as the model: download them from the same repository in the s
 
 With their `mmproj` file next to the model, Gemma 4 12B and E4B read images and audio, and Gemma 4 26B, Qwen3.5
 4B / 9B, Qwen3.8 27B and Qwen3.6 35B read images (all encoders run on the GPU).
-For speech, prefer E4B: the 12B has no audio encoder (its projector maps raw 40-ms waveform frames straight into
-the model), and on noisy recordings of mixed Indonesian and English it made up sentences or repeated a word where
-E4B's conformer transcribed them; llama.cpp's mtmd gives the 12B the same answers. Clear speech it transcribes well.
+Transcripts use Qwen3-ASR (the default), Whisper large-v3 (turbo only when large-v3 is not cached) or Gemma 4 E4B
+([docs/qwen3-asr.md](docs/qwen3-asr.md#using-it)); Gemma 4 12B is refused for transcripts: it has no audio encoder
+(its projector maps raw 40-ms waveform frames straight into the model), and on noisy recordings of mixed Indonesian
+and English it made up sentences or repeated a word where E4B's conformer transcribed them.
 
 Shortcuts (`pi-arc <shortcut>`, `arc-server start -Model <shortcut>`): `27b`, `35b`, `35b-s`, `35b-mtp`, `flash`,
 `9b`, `4b`, `g12`, `e4b`, `g26`. Other GGUFs of these architectures get an id from their file name (`pi-arc --pick`
@@ -264,26 +269,8 @@ server ~21–26 s) to `%USERPROFILE%\arcinferzero\zero\`; it can be deleted at a
 UI at http://127.0.0.1:8090/ or call the OpenAI API at `http://127.0.0.1:8090/v1`. `arc-server status` shows what
 is running and `arc-server stop` frees the GPU memory.
 
-**Launcher window.** `arc-launcher.cmd` (double-click it in the project folder) opens a window (English):
-
-- **Model list:** every model and variant in the Hugging Face cache with MTP, images, auto context, GPU memory at
-  that context, file size, its id for Pi's `/model` and whether arcinferzero supports it; the running one is green.
-- **Options:** filled in with the best values for the selected model (what the server picks itself), so selecting a
-  model and pressing Start is enough. Shown: context, MTP drafts, thinking budget (for clients that send none; Pi
-  sends its own), prompt cache and network access; "Show advanced options" adds port, prompt chunk, image tokens,
-  resident W8 weights, the cache folders and sizes, `--no-swap` and f32 attention. A field you change turns yellow
-  and only those are passed on. "Set as default" keeps them (`%USERPROFILE%\arcinferzero\launcher.json`) and makes the
-  selected model the default one (also pi-arc's); "Reset options" goes back to the best values.
-- **Selected model:** what it supports and how its auto context was counted: GPU memory, minus 1.2 GiB for the
-  driver, state snapshots, encoders, weights, MTP block and working buffers, divided by the context's memory per
-  1,000 tokens, at most the model's max context length.
-- **Running server:** model, filled context, GPU memory by part (weights, context, MTP, buffers, encoders),
-  requests, the last prompt / answer speed and MTP acceptance.
-- **Start / Stop server**, refresh, web UI, log. Start and Stop go through `arc-server`, so the server keeps running
-  after the window is closed.
-
-The same numbers come from `serverz.exe --list-models` ("memory", "defaults") and the server's `/props` ("memory",
-"stats").
+**Launcher window.** `arc-launcher.cmd` (double-click it in the project folder) opens a window to pick a model,
+set its options and start or stop the server: [USAGE.md, section 3](USAGE.md#3-managing-the-server).
 
 ### 9. Pi (optional)
 
@@ -302,19 +289,12 @@ The same numbers come from `serverz.exe --list-models` ("memory", "defaults") an
 
    ```powershell
    pi-arc                  # the model the server runs or used last (the first time: choose from a list)
-   pi-arc --pick           # choose the model from the list of every downloaded model
-   pi-arc 27b              # Qwen3.8 27B;  35b = Qwen3.6 35B-A3B (mixture of experts, much faster);
-                           # 35b-mtp = its UD-Q3_K_M file;  flash = Qwen3.8 Flash Next (step 6 lists the files)
-   pi-arc g12              # Gemma 4 12B (also reads images);  e4b = Gemma 4 E4B;  9b / 4b = Qwen3.5 9B / 4B
-   pi-arc g26              # Gemma 4 26B-A4B (mixture of experts, experts on the SSD, reads images)
-   pi-arc -c               # continue the last session in this folder;  pi-arc -r = choose a session
-   pi-arc --think off      # no reasoning; also minimal / low (default) / medium / high
+   pi-arc 27b              # a model by its shortcut (step 6);  pi-arc --pick = choose from every downloaded model
    pi-arc --help           # every option
-   arc-server status       # what is running;  arc-server stop = free the GPU memory
-   arc-server clear-cache  # delete saved conversations (session cache: on by default, 8 GB; pi-arc --session-cache 0 = off)
    ```
 
-   Inside Pi, `/model` switches between all of them (the server loads the chosen one).
+   Inside Pi, `/model` switches between all of them (the server loads the chosen one). Every pi-arc and
+   arc-server command: [USAGE.md, sections 2 and 3](USAGE.md#2-using-pi).
 
 ### 10. Check the installation (optional)
 
@@ -341,15 +321,10 @@ test uses port 8091 and needs the GPU memory.
 | `cannot load OpenCL.dll` / `no OpenCL GPU found` | Install or update the Intel graphics driver (step 2) and restart. |
 | `build failed` right away / `No Visual Studio C++ compiler found` | Visual Studio's C++ workload is missing (step 3); to use a particular installation, set `$env:ARC_VCVARS` to its `vcvars64.bat`. `setup.cmd` checks this. The compiler output of `setup.cmd` is in `%USERPROFILE%\arcinferzero\build.log`. |
 | `running scripts is disabled on this system` | Run the script through `powershell -ExecutionPolicy Bypass -File ...` (see the top of this section). |
-| `Model file ... not found` | Download it with `hf download` (step 6); `arc-server` searches `%USERPROFILE%\arcinferzero\models` and the Hugging Face cache. |
-| Models moved to another drive | List the folders, one per line, in `%USERPROFILE%\arcinferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated): a Hugging Face cache layout (`models--...`) or `.gguf` files directly in the folder. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. The Hugging Face cache is searched first, so a model kept in both places loads from there; a copy with the same file name and size elsewhere (a backup on another drive), or the GGUF an arcinferzero package was made from, is listed once (the package, else the Hugging Face cache, else the C: copy). |
+| `Model file ... not found` | Download it with `hf download` (step 6); `arc-server` searches `%USERPROFILE%\arcinferzero\models` and the Hugging Face cache (models on another drive: [USAGE.md, section 8](USAGE.md#8-troubleshooting)). |
 | The first start of a model takes minutes | The driver compiles the kernels once; later starts use `%USERPROFILE%\arcinferzero\kernels`. |
-| The server stops while loading, or another model fails to start | Another arcinferzero server or a llama.cpp process holds the GPU memory: `arc-server stop`, close other GPU programs. The log is `%USERPROFILE%\arcinferzero\server.log`. |
 | Gemma does not use its drafter | `mtp-gemma-4-*-it.gguf` must be in the same folder as the model GGUF (download it from the same repository). |
-| Generation gets slower after a few minutes | The laptop throttles under sustained load (5–10 %); plug in the charger and use a performance power mode. |
-| Windows gets slow or stops responding with a model loaded | The GPU memory setting (Intel Graphics Software) is so high that the model leaves too little RAM for Windows (seen at 20 GB on a 32 GB laptop). Lower it; the contexts follow the setting (`arc-server restart`). |
-| Pi's `web_search` answers "No results found" or never returns | Its default engines are DuckDuckGo and Startpage; where DuckDuckGo is blocked (Indonesia) neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or Pi's `/search-config`). |
-| A new Pi session takes ~40 s before answering | The first session in a project folder processes Pi's system prompt once; later sessions there reuse it. `%USERPROFILE%\arcinferzero\server.log` shows it (`system-prompt cache: saved / loaded ... for <folder>`). |
+| Later problems (the server stops while loading, Windows gets slow, Pi's `web_search`, slow first sessions, models on another drive) | [USAGE.md, section 8](USAGE.md#8-troubleshooting). |
 
 ## Run the server by hand
 
@@ -359,14 +334,9 @@ test uses port 8091 and needs the GPU memory.
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\arcinferzero\models, model-dirs.txt), as JSON
 ```
 
-- Web UI: http://127.0.0.1:8080/, laid out like WhatsApp Web: the chats kept in the browser, the model picker in the
-  chat header, chat with images, audio and files (one folder per chat), voice messages, **Talk** (a spoken
-  conversation), web search, documents the model writes (DOCX / PDF / DOC / RTF, corrected on request) and reads (long DOCX / PDF through
-  their outline and a search, not a prompt of the whole file), a terminal the
-  model may use after you allow each command, context use and compaction; the settings behind the gear. With
-  `--whisper`: a **Transcripts** tab (audio / video files and live recordings to text and subtitles, playback with
-  the word lit, edits, exports) and a **Meetings** tab (microphone + the meeting's sound as Me / Others, summary and
-  minutes by the loaded model). Details: [USAGE.md](USAGE.md#4-web-ui-and-other-apps).
+- Web UI: http://127.0.0.1:8080/: chats with images, audio and files (one folder per chat, kept by the server),
+  voice messages and **Talk**, web search, documents the model reads and writes, a terminal, and with `--whisper` the
+  **Transcripts** and **Meetings** tabs: [USAGE.md, section 4](USAGE.md#4-web-ui-and-other-apps).
 - OpenAI API: `POST /v1/chat/completions` (streaming, `reasoning_content`, tool calls streamed while they are
   generated, string arguments and array / object arguments alike (Pi's `edit` puts its whole change in an array),
   `usage`; the last streamed chunk carries `usage` and llama-server's `timings` together),
@@ -395,13 +365,12 @@ test uses port 8091 and needs the GPU memory.
     `GET /api/tags`, `POST /api/show`, `GET /api/ps`, `GET /api/version`: apps with an Ollama setting connect to
     `http://127.0.0.1:8090`.
   - OpenAI audio: `POST /v1/audio/transcriptions` and `/v1/audio/translations` (multipart upload) with
-    `--whisper auto`: **Qwen3-ASR 1.7B by default** (the closest to what was said on a noisy mixed Indonesian /
-    English recording, no timestamps; [docs/qwen3-asr.md](docs/qwen3-asr.md)), `model=gemma4-e4b` (Gemma 4 E4B, the
-    most readable on clear speech) or `model=whisper` (Whisper large-v3 on the iGPU, or its encoder on the NPU with
-    `--whisper-device npu`; words with times; translations; [docs/whisper-native.md](docs/whisper-native.md)); json,
+    `--whisper auto`: Qwen3-ASR 1.7B by default, `model=gemma4-e4b` or `model=whisper` (Whisper large-v3, words
+    with times, translations; its encoder on the NPU with `--whisper-device npu`); Gemma 4 12B is refused; json,
     text, srt, vtt, verbose_json, streaming, and subtitle / Remotion formats. Without `--whisper`: a model with an
-    audio encoder (Gemma 4 E4B). Saved transcripts: `/v1/transcripts` (audio and video
-    files of any size uploaded in pieces, a queue with progress and cancel, exports, edits).
+    audio encoder (Gemma 4 E4B). Saved transcripts: `/v1/transcripts`; live recording: `/v1/live`. Which model
+    answers what: [docs/qwen3-asr.md](docs/qwen3-asr.md#using-it); the endpoints in full:
+    [docs/whisper-native.md](docs/whisper-native.md#server-api).
 - Model switching: a request whose `model` is another model of `--list-models` (its id, `org/repo` name or file)
   makes the server unload the current model and load that one (context auto, same options); `--no-swap` keeps the
   loaded model.
@@ -421,20 +390,17 @@ test uses port 8091 and needs the GPU memory.
   folders do not replace (27B: ~290 MB each); other clients' prompts: the 8 used last. All models together
   stay under `--prefix-cache-gb` (default 8; least recently used go first); `--no-prefix-cache` turns it off.
   Files: `<folder>-<folder hash>-<prompt hash>-<tokens>.arcp`.
-- The NPU next to the GPU (`--npu on`; `arc-server start -Npu on`, `pi-arc --npu on`): the Intel AI Boost NPU
-  computes part of each prompt chunk's matrix products while the GPU computes the rest, through Level Zero alone.
-  Qwen3.8 27B: prompts +15-20 % (4K: ~133 -> ~157 tok/s), KL vs f32 0.00066 -> 0.003, 0.4 GB of RAM; Gemma 4 12B
-  +10 % (129 -> 142 tok/s, KL 0.0027); generation unchanged. Models where it gains nothing (4B, 9B, E4B, the MoE
-  models 35B, Gemma 4 26B, Flash Next) stay off and say so; `--npu force` runs it on every Qwen and Gemma model. The setting is the server's: switching
-  models and a restart keep it, `-Npu off` or a start after stop turns it off. Default off. Details: [docs/npu-experiment.md](docs/npu-experiment.md).
+- The NPU next to the GPU (`--npu on|off|force`, default off): the Intel AI Boost NPU computes part of each prompt
+  chunk's matrix products while the GPU computes the rest, through Level Zero alone (Qwen3.8 27B and Gemma 4 12B;
+  generation unchanged). Where it pays off, how it is turned on and off, and the results:
+  [docs/npu-experiment.md](docs/npu-experiment.md).
 - Conversation slots (`--slots N`, arcinferzero): the server holds N conversations, each with its own KV cache and
   states; requests in different slots take turns step by step (by GPU time), so two clients answer at the same
   time. When several are generating, their next tokens and drafts run in one engine pass (Qwen dense and MoE, Gemma
-  4, and Flash Next without a drafter since 2026-10-27; logits bit-identical to each slot alone; `ARC_NO_BATCH=1`:
-  turns only). Flash Next gains little in real chats on this laptop (~1.05x for two: each conversation reads its own
-  missing experts from the SSD; 1.43x with the experts cached). Each slot gets the context that fits N
-  of them (streamed MoE models: 128K in all, at least 32K per slot). A step that fails ends its requests and starts
-  their conversations over. Details: [USAGE.md](USAGE.md#3-managing-the-server).
+  4, and Flash Next without a drafter; logits bit-identical to each slot alone; `ARC_NO_BATCH=1`: turns only). Each
+  slot gets the context that fits N of them (streamed MoE models: 128K in all, at least 32K per slot). A step that
+  fails ends its requests and starts their conversations over. Use and speeds:
+  [USAGE.md, section 3](USAGE.md#3-managing-the-server).
 - Session cache: when a request belongs to another conversation (a new Pi session, or switching back to an older
   one), the server saves the conversation it holds to disk (KV cache, DeltaNet states; `%USERPROFILE%\arcinferzero\zero\sessions`)
   and loads a saved one that matches the request, instead of processing its whole prompt again. New conversations
@@ -460,9 +426,8 @@ test uses port 8091 and needs the GPU memory.
   picks the drafter: DFlash2 while its drafts are accepted, else MTP. Greedy answers are identical to plain decoding.
   A model with a DFlash2 drafter is also listed with one drafter only: `<id>-nodf` drafts with the MTP block only,
   `<id>-df` with DFlash2 only (the MTP block is not loaded); `--draft auto|mtp|dflash` (server, `runz`) does the
-  same, default `auto` = both. The drafters are trained mostly on English and code: `-df` is the fastest for code,
-  `-nodf` for Indonesian and other prose. Speeds of each variant:
-  [docs/before-after.md](docs/before-after.md#where-it-stands).
+  same, default `auto` = both. Which variant for which text: [USAGE.md, section 3](USAGE.md#3-managing-the-server);
+  speeds of each variant: [docs/before-after.md](docs/before-after.md#where-it-stands).
 - Images (`image_url` content parts, data URLs) and audio (`input_audio`, `/v1/audio/transcriptions`) when the
   model's `mmproj-*.gguf` is next to it (or given with `--mmproj`): images on Gemma 4 12B / E4B / 26B, Qwen3.5 4B /
   9B, Qwen3.8 27B and Qwen3.6 35B, audio on Gemma 4 12B / E4B; the encoders run on the GPU.
@@ -472,74 +437,17 @@ test uses port 8091 and needs the GPU memory.
   logs the raw text of every tool call.
 - During a long prompt, streaming responses carry `: prefill N/M` progress comments (also shown in the web UI).
 - Qwen3.8 Flash Next (arcinferzero only): pass the first part (`...-IQ3_S-00001-of-00002.gguf`) with `-m`; part 2
-  must sit next to it (or use the packaged single file). Generation ~6-7 tok/s; prompts ~164 tok/s (4K) to 123
-  (125K); context up to 262,144 with `--ctx`. KL vs the CPU reference: 0.0143 prompt / 0.0147 decode on 363 tokens
-  of README text, 0.0186 / 0.0177 on a 3,584-token prompt with QSA; `ARC_FN_PRECISE=1` (opt-in: BF16 HC rows and
-  router, two int8 passes everywhere) 0.0127 / 0.0132 at about half the prompt speed. No MTP block, no image input;
-  its DFlash2 drafter works with `--dflash DIR` (the same text, ~79 % accepted, no faster: QUEUE F21.16). Where its time goes and what was tried: QUEUE F21.13 / F21.15. Details:
-  [docs/before-after.md](docs/before-after.md#where-it-stands).
+  must sit next to it (or use the packaged single file); context up to 262,144 with `--ctx`; `ARC_FN_PRECISE=1`
+  (opt-in) is the more exact, slower mode. Its speed and KL: the tables above and "Supported models"; running it:
+  [USAGE.md, section 3](USAGE.md#3-managing-the-server); where its time goes and what was tried: QUEUE F21.13 /
+  F21.15.
 
 ## Using Pi
 
-`pi-arc` (step 9, or `setup.cmd`) starts the server in the background if it is not running, then Pi. The server
-stays loaded between Pi sessions, so only the first start pays the model load (5–40 s). `pi-arc --help` lists
-every option.
-
-- **Model:** the one the server runs, else the one used last, else a numbered list of every model in the Hugging
-  Face cache by full name (`pi-arc --pick` always asks; `pi-arc 35b` or `pi-arc -Model swift` chooses directly).
-  Every model is in Pi's `/model` list; choosing another one makes the server unload the current model and load
-  that one (5–40 s) with its own context, and the next `pi-arc` starts with it. The list is rescanned on every
-  `pi-arc` and `arc-server start` / `restart`: a model deleted from the Hugging Face cache disappears from it.
-- **Context:** each model gets the largest context that fits the GPU memory currently set (Intel Graphics
-  Software) minus 1.2 GiB for the driver, at most its max context length (the GGUF's `context_length`). The GPU
-  memory the driver offers changes with what else runs, so the numbers move; the launcher window shows how each one
-  is counted. Examples (arcinferzero, 20.4 GiB GPU share, 2026-10-23): Qwen3.6 35B-A3B 131,072 with images, MTP and
-  DFlash2 (experts streamed from the SSD; the automatic context reserves 128K, then sizes the expert cache: ~76-81 %
-  of the experts cached; 262,144 with `--ctx 262144` or the `-std` variant, 71-77 % cached); Qwen3.8 Flash Next
-  131,072 (~20-25 % cached); Gemma 4 26B-A4B 90,112 with images and its drafter (118,784 `-mtp`, 102,400 `-vision`,
-  131,072 `-std`; the expert cache keeps at least 0.6 of the free memory); Qwen3.5 4B / 9B and Gemma 4 12B 262,144;
-  Gemma 4 E4B 131,072; Qwen3.8 27B 65,536 with images, MTP and DFlash2 (`27b-df` 90,112, `27b-mtp` / `27b-nodf`
-  110,592, `27b-vision` 143,360, `27b-std` 188,416). `pi-arc --ctx N` sets a context, `pi-arc --ctx auto` goes back to the automatic one (restarting a server
-  that runs a fixed context). `--chunk 1024` frees 1.1 GiB on the 27B for more context (118,784 at 18.3 GiB;
-  prompts of ~11K tokens ~4 % slower, from ~34K on no difference). Pi's `maxTokens` is the whole window: Pi clamps
-  each request to the room left (window − prompt − 4096).
-- Reasoning effort `pi-arc --think off|minimal|low|medium|high` (default low; Pi's `/thinking` changes it). Pi
-  sends the effort and a thinking budget per level, so the server's `--think-budget` does not apply to it:
-
-  | Pi level | budget Pi sends | server |
-  |---|---|---|
-  | off | - | no reasoning |
-  | minimal | 1,024 | reasoning off (minimal counts as off) |
-  | low | 2,048 | effort low, `<think>` closed after 2,048 tokens |
-  | medium | 8,192 | effort medium, closed after 8,192 |
-  | high / xhigh | 16,384 | effort xhigh, closed after 16,384 (Pi treats xhigh as high) |
-
-  The effort reaches the chat template only where it uses one (Qwen3.8 27B); the budget applies to every model.
-  MTP speculative decoding is on by default (`--no-mtp` to disable).
-
-### Sessions, caching and Esc
-
-What the server has to process (times on the 27B; see "Run the server by hand" for how the caches work):
-
-| You | The server processes |
-|---|---|
-| keep working in a session (agent loop) | only what is new: 5–7 s before the model starts writing, even 27K tokens into a session |
-| open a new session (`pi-arc`, `/new`) in a project used before | only your message: the project's ~4K-token system prompt comes from memory or disk (~4–5 s instead of ~40 s), also after a server restart or a model switch |
-| open the first session in a new project folder | its system prompt once (~40 s); it is then kept for that folder |
-| continue a session (`pi-arc -c`, `pi-arc -r`, `/resume`) right after closing it | only your new message (the server still holds that conversation) |
-| ... after another session or project used the server | only the new message: the session cache (on by default) loads it from disk in seconds |
-| ... after `arc-server restart` / `stop` or a model switch | only the new message: the held conversation is saved first and loaded from disk |
-| press Esc | nothing more: the server stops within ~1 s while reading the prompt, before the next token while writing; your next message only processes what is new |
-
-A new session starts empty: Pi sends only its system prompt and your message, so the model does not see an earlier
-session. To continue one, use `pi-arc -c` (the last session in this folder) or `pi-arc -r` (choose).
-
-When a conversation gets long, Pi compacts it (summarizes the older part and keeps the last ~20 K tokens) once it
-passes `contextWindow − 16384` tokens, using the token usage the server reports. If a single request still exceeds
-the context, the server answers with llama-server's `exceed_context_size_error` ("the request exceeds the available
-context size"), which Pi recognizes: it compacts and retries. A prompt that cannot possibly fit (more text than the
-context times the longest token) gets the same error before it is tokenized, with "at least N tokens". The server itself does not drop old tokens (no
-context shift): the Qwen3.5/3.8 DeltaNet layers keep a recurrent state that cannot forget individual tokens.
+`pi-arc` (step 9, or `setup.cmd`) starts the server in the background if it is not running, then Pi; the server
+stays loaded between Pi sessions. Choosing the model, the context, the reasoning levels, what each new or resumed
+session processes, Esc and compaction: [USAGE.md, section 2](USAGE.md#2-using-pi) and
+[section 5](USAGE.md#5-context-size-and-when-a-conversation-gets-long).
 
 Manual configuration, if you prefer: add a provider to `~/.pi/agent/models.json`:
 
@@ -674,8 +582,10 @@ scripts/    arc-server.ps1 (server in the background), arc-launcher.ps1 (launche
 tests/      run_tests.ps1 and its reference data
 webui/      index.html (chat, files and documents, terminal, web search tools, Talk voice mode)
 docs/       before-after.md (every change, before / after, accuracy), review.md (results), speed-progress.md
-            (speed by date), lessons-intel-arc-igpu.md, f21-q2-speed.md (Gemma 4 accurate-mode plan),
-            flash-next-spec.md, npu-experiment.md (the NPU next to the GPU), archive/ (arcinferzero-log.md, review_notes.md: older logs and notes)
+            (speed by date), lessons-intel-arc-igpu.md, flash-next-spec.md, npu-experiment.md (the NPU next to
+            the GPU), qwen3-asr.md + whisper-native.md + whisper-native-status.md (speech to text), kernel-audit and
+            self-audit reports, archive/ (arcinferzero-log.md, review_notes.md, f21-q2-speed.md: older logs, notes
+            and finished plans)
 QUEUE.md    open work, measurements and the decisions waiting for the user
 setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1: builds one or more tools
 ```

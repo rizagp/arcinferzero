@@ -13,20 +13,9 @@ Open PowerShell or Terminal in the arcinferzero folder, then run:
 .\setup.cmd
 ```
 
-The setup is safe to run again (steps that are already done are skipped). It:
-
-- checks the requirements: 64-bit Windows, an Intel Arc GPU, Visual Studio Build Tools (C++), Python and Pi, and
-  says how to install whatever is missing;
-- builds `bin\serverz.exe`, `runz.exe`, `clinfo.exe`, `transcribez.exe` and `arc_recorder.exe` when they are missing or older than their sources, then
-  checks the GPU (OpenCL 3.0, DP4a, GPU memory);
-- asks which models to download into the Hugging Face cache (`.\setup.cmd -Models 27b,4b` without asking; Gemma
-  comes with its drafter and image projector; the 35B is downloaded and then converted). `huggingface_hub` /
-  `numpy` are installed with pip when needed (it asks first);
-- adds the `arcinferzero` provider to `~/.pi/agent/models.json` with every model it finds and each one's context
-  (other providers are left unchanged, the previous file is kept as `models.json.bak`), and installs the `pi-arc`
-  and `arc-server` commands into `~/.pi/agent/bin` (already on the PATH), so they can be called from any folder.
-
-`.\setup.cmd -Tests` also runs the regression tests.
+The setup is safe to run again (steps that are already done are skipped): it checks the requirements, builds the
+programs, asks which models to download and connects Pi (the `pi-arc` and `arc-server` commands, callable from any
+folder). What it does and its options: [README, "Quick setup"](README.md#quick-setup).
 
 Download a model by hand: see [README, section 6](README.md#6-download-models) (every model, its shortcut and the
 `hf download` command). `pi-arc 35b` is Qwen3.6 35B-A3B UD-IQ4_XS from Unsloth's MTP repository (MTP and images);
@@ -63,55 +52,68 @@ and the DFlash2 drafters are not downloaded by setup.
 | `pi-arc --no-mtp` | No speculative decoding (MTP / drafter) |
 | `pi-arc --help` | Every pi-arc option, the server and the files it uses |
 
-Inside Pi, `/model` shows every model; choosing one makes the server switch to that model (5–40 s), with its own
-context. The next `pi-arc` uses the model chosen last.
+Without a model name, `pi-arc` takes the one the server runs, else the one used last, else asks from a numbered list
+(`pi-arc -Model swift` also chooses by part of a name). Inside Pi, `/model` shows every model; choosing one makes the
+server switch to that model (5–40 s), with its own context. The next `pi-arc` uses the model chosen last. The list
+is rescanned on every `pi-arc` and `arc-server start` / `restart`: a model deleted from the Hugging Face cache
+disappears from it.
 
 The server keeps running after Pi is closed. The next session is ready right away without loading the model again,
 and a repeated prompt (for example Pi's system prompt) comes from the cache. If `pi-arc` is called with another
 model, the server switches models automatically.
 
-Pi's system prompt is also saved to disk (`%USERPROFILE%\arcinferzero\zero\prefix`), so after the server restarts or
-switches models, a new Pi session still starts within a few seconds (27B: ~5 s instead of ~40 s). Pi's system
-prompt contains the project folder and its `AGENTS.md`, so the saved prompts are grouped per project folder: each
-folder keeps its 2 latest versions and is not pushed out by other folders (27B: ~290 MB per file). All models
-together are limited to 8 GB (the least recently used go first; change it with `--prefix-cache-gb`).
+**Thinking.** Pi sends the effort and a thinking budget per level (`pi-arc --think`, or Pi's `/thinking`), so the
+server's `--think-budget` does not apply to it:
 
-A new session always starts empty: Pi only sends its system prompt and your message, so the model does not see the
-conversation of an earlier session. To continue a conversation, use `pi-arc -c` or `pi-arc -r`. What the server
-processes then:
+| Pi level | budget Pi sends | server |
+|---|---|---|
+| off | - | no reasoning |
+| minimal | 1,024 | reasoning off (minimal counts as off) |
+| low (default) | 2,048 | effort low, `<think>` closed after 2,048 tokens |
+| medium | 8,192 | effort medium, closed after 8,192 |
+| high / xhigh | 16,384 | effort xhigh, closed after 16,384 (Pi treats xhigh as high) |
 
-| Situation | What is processed (27B) |
+The effort reaches the chat template only where it uses one (Qwen3.8 27B); the budget applies to every model.
+
+**Sessions.** A new session always starts empty: Pi only sends its system prompt and your message, so the model does
+not see the conversation of an earlier session. To continue a conversation, use `pi-arc -c` or `pi-arc -r`. What the
+server processes (times on the 27B; how the caches work: [README, "Run the server by hand"](README.md#run-the-server-by-hand)):
+
+| You | The server processes |
 |---|---|
-| right after Pi is closed | only the new message (the server still holds that conversation) |
-| after another session or project | only the new message: the session cache (on by default, 8 GB) saves the conversation that was left to disk and loads it again in seconds (`pi-arc --session-cache 0` turns it off) |
-| after `arc-server stop` / `restart` or a model switch | only the new message: the conversation being held is saved to disk first and then loaded again (lost only if the server process is killed) |
-
-Pressing Esc in Pi stops the server right away (while reading the prompt: within ~1 s; while writing the answer:
-before the next token), so the next message does not have to wait. The next message also does not process the
-whole conversation again: only the new message is processed.
+| keep working in a session (agent loop) | only what is new: 5–7 s before the model starts writing, even 27K tokens into a session |
+| open a new session (`pi-arc`, `/new`) in a project used before | only your message: the project's ~4K-token system prompt comes from memory or disk (~4–5 s instead of ~40 s), also after a server restart or a model switch |
+| open the first session in a new project folder | its system prompt once (~40 s); it is then kept for that folder (`%USERPROFILE%\arcinferzero\zero\prefix`, its 2 latest versions, all models together at most 8 GB: `--prefix-cache-gb`) |
+| continue a session (`pi-arc -c`, `pi-arc -r`, `/resume`) right after closing it | only your new message (the server still holds that conversation) |
+| ... after another session or project used the server | only the new message: the session cache (on by default, 8 GB; `pi-arc --session-cache 0` turns it off) loads it from disk in seconds |
+| ... after `arc-server restart` / `stop` or a model switch | only the new message: the held conversation is saved first and loaded from disk (lost only if the server process is killed) |
+| press Esc | nothing more: the server stops within ~1 s while reading the prompt, before the next token while writing; your next message only processes what is new |
 
 ## 3. Managing the server
 
 **Through the window:** double-click `arc-launcher.cmd` in the project folder. The window shows:
-- every model and its variants (MTP, images, auto context, VRAM at that context, compatible or not);
-- for the selected model: how the auto context is counted (GPU memory minus 1.2 GiB for the driver, snapshots,
-  image encoder, weights, MTP block and buffers, then the rest divided by the memory needed per 1,000 tokens);
+- every model and its variants in the Hugging Face cache (MTP, images, auto context, GPU memory at that context,
+  file size, its id for Pi's `/model`, compatible or not); the running one is green;
+- for the selected model: what it supports and how the auto context is counted (GPU memory minus 1.2 GiB for the
+  driver, snapshots, encoders, weights, MTP block and buffers, then the rest divided by the memory needed per 1,000
+  tokens, at most the model's max context length);
 - the server option fields: the main ones are shown directly (context, MTP drafts, thinking budget, prompt cache,
   access from other computers); the rest (port, chunk, image tokens, W8 weights, cache folders and sizes,
   `--no-swap`, f32 attention) appear after ticking "Show advanced options";
-- monitoring of the running server: model, filled context, VRAM per part, number of requests, the last prompt and
-  answer speed, the percentage of MTP drafts accepted.
+- monitoring of the running server: model, filled context, GPU memory per part (weights, context, MTP, buffers,
+  encoders), number of requests, the last prompt and answer speed, the percentage of MTP drafts accepted;
+- Start / Stop, refresh, the web UI and the log.
 
-All fields are filled in automatically with the best values for the selected model, so just choose a model and
-press Start. Fields you change turn yellow and only those are sent to the server. "Set as default" saves the
-changed fields and makes the selected model the default one (also for `pi-arc` without a model name); "Reset
-options" goes back to the best values. The Start / Stop buttons use `arc-server`, so the server keeps running after
-the window is closed. (The window text is in English: prompt cache = saved conversations, prefix cache = saved
-system prompt.)
+All fields are filled in automatically with the best values for the selected model (what the server picks itself),
+so just choose a model and press Start. Fields you change turn yellow and only those are sent to the server. "Set
+as default" saves the changed fields (`%USERPROFILE%\arcinferzero\launcher.json`) and makes the selected model the
+default one (also for `pi-arc` without a model name); "Reset options" goes back to the best values. The Start / Stop
+buttons use `arc-server`, so the server keeps running after the window is closed. (The window text is in English:
+prompt cache = saved conversations, prefix cache = saved system prompt.) The same numbers come from
+`serverz.exe --list-models` ("memory", "defaults") and the server's `/props` ("memory", "stats").
 
 The thinking budget in the launcher only applies to clients that do not send their own budget (web UI, other
-apps). Pi sends its own budget according to its `/thinking` level: minimal = thinking off, low 2,048, medium 8,192,
-high/xhigh 16,384 tokens.
+apps). Pi sends its own budget according to its `/thinking` level (section 2).
 
 **Through the terminal:**
 
@@ -131,9 +133,8 @@ The server log is `%USERPROFILE%\arcinferzero\server.log`. The server uses port 
 
 **arcinferzero (the engine):** the server runs through Level Zero (Intel's GPU driver). For
 MoE models (Qwen3.6 35B) the experts are kept on the SSD and only the frequently used experts are in GPU memory (a
-cache): the context can reach 262K together with images and MTP.
-The automatic context reserves 128K tokens, then sizes the expert cache (35B: 131,072 tokens with ~76-81 % of the
-experts cached), because a small cache makes generation pause for SSD reads; 262,144 with `--ctx 262144`.
+cache): the context can reach 262K together with images and MTP. The automatic context reserves 128K tokens, then
+sizes the expert cache, because a small cache makes generation pause for SSD reads (section 5).
 
 ```powershell
 arc-server start -Model 35b          # experts streamed from the SSD
@@ -167,7 +168,7 @@ arcinferzero notes:
 once from the main model's hidden state, then the main model checks them in a single pass. Download the drafter
 ([README, section 6](README.md#6-download-models)), then pass its folder (the snapshot folder containing `config.json` and `model.safetensors`)
 with `--dflash DIR`. The model's MTP block is still used: at each step the server picks DFlash2 while many of its
-drafts are accepted, otherwise MTP. Results (greedy, answers identical to running without a drafter):
+drafts are accepted, otherwise MTP; greedy answers are identical to running without a drafter.
 
 A model with a DFlash2 drafter is also listed (Pi's `/model`, `pi-arc --pick`) with one drafter only:
 `<id>-nodf` drafts with the MTP block only, `<id>-df` with DFlash2 only (the MTP block is not loaded, which leaves a
@@ -177,21 +178,14 @@ use: `-df` for code, `-nodf` for Indonesian and other prose (the drafter was tra
 code), the default (both) when the text is mixed. Speeds of each variant:
 [docs/before-after.md, "Where it stands"](docs/before-after.md#where-it-stands).
 
-**Gemma 4 runs in its accurate mode.** The attention is computed in float (f32 queries and keys, f16 values); on
-the 26B and 12B every matmul input also goes through two int8 passes (the value, then its rounding residual).
-E4B is accurate enough with one pass and keeps it (since 2026-10-23: its prompts ~1.5x faster). KL against an f32
-reference on a 480-token code prompt: 26B 0.0042, 12B 0.0002, E4B 0.00088 (the limit kept is 0.015; the old fully
-int8 mode gave 0.0985 / 0.033 / 0.0010). Speed: 26B with its drafter ~25 tokens/s, 4K prompt ~252 tokens/s; E4B
-with its drafter ~32 tokens/s, a 14K prompt in ~23 s. Conversations saved by an older mode are not loaded (they are
-processed again).
+**Gemma 4 runs in its accurate mode** (float attention; the 26B and 12B with two int8 passes per matmul, E4B with
+one: [README, "How it works"](README.md#how-it-works), its KL under "Validation"). Conversations saved by an older
+mode are not loaded (they are processed again).
 
 **The NPU next to the GPU (`-Npu on`).** `pi-arc 27b --npu on` (or `arc-server start -Model 27b -Npu on`) lets
-the Intel AI Boost NPU compute part of every prompt chunk while the GPU computes the rest: Qwen3.8 27B prompts
-+15-20 %, about 0.4 GB more RAM, generation unchanged. The setting stays with the server: Pi's `/model`, another
-client's model, or `pi-arc` on another model keep it (models it does not help, such as the 4B or the 35B, run
-without it and say so in the log); `arc-server restart` keeps it, a stop turns it off. The first prompt of a new length
-class compiles the NPU's graphs once (10-30 s; cached in `%USERPROFILE%\arcinferzero\npu`).
-[docs/npu-experiment.md](docs/npu-experiment.md).
+the Intel AI Boost NPU compute part of every prompt chunk while the GPU computes the rest (Qwen3.8 27B and Gemma 4
+12B; generation unchanged). The setting stays with the server across model switches and `arc-server restart`; a
+stop turns it off. Which models it helps, its cost and first-use compile: [docs/npu-experiment.md](docs/npu-experiment.md).
 
 **Two conversations at once (`-Slots 2`, arcinferzero).** By default the server holds one conversation and runs one
 request at a time: a second Pi window waits until the first one's answer is finished, and switching between them
@@ -232,14 +226,15 @@ While the server is running:
   - **Chats** on the left: every conversation is kept by the server in the data folder, **one folder per chat**:
     `%USERPROFILE%\arcinferzero\chats\<date> <first words> (<id>)\` holds `chat.json` and the chat's files under their
     own names (uploads, voice messages, documents the model wrote). Search the chats; the pencil starts a new one; the
-    bin on a chat deletes its folder with its files (a file another chat uses too stays there).
+    bin on a chat deletes its folder with its files (other chats keep their own copies).
   - **The model** in the chat header: click its name to pick another model or variant; the server loads it with the
     next message (5-40 s). Under the name: the context used, and whether thinking and web search are on.
   - **Attachments** with the paperclip, drag-and-drop or paste: text files, images (Gemma 4 12B / E4B / 26B, Qwen3.5
     4B / 9B, Qwen3.8 27B, Qwen3.6 35B), audio. Each file goes into the chat's folder; messages refer to it, and the model also gets its name,
     type, size and upload time.
   - **@ in the message** lists the files uploaded before (filtered as you type): Enter or a click attaches one again,
-    without uploading it again (another chat gets its own copy: a command run in one chat does not change the other's).
+    without uploading it again (a file from another chat is copied into this chat's folder: a command run in one
+    chat does not change the other's).
   - **Files** in the left rail: every saved file of every chat with its size, date and the chats that use it;
     filter, sort, search, attach it to the message, or delete files one by one, several at once, or all files no chat
     uses. Files put into a chat's folder by hand show up too.
@@ -302,8 +297,8 @@ While the server is running:
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
   on with what it found. The server does the requests itself (Brave Search, Bing when Brave gives nothing) and
   turns pages into plain text; it only reaches public http(s) addresses (nothing on this machine or the local
-  network). Other clients can use the same endpoints: `POST /v1/tools/web_search` with `{"query": "..."}` and
-  `POST /v1/tools/web_fetch` with `{"url": "...", "offset": 0}`. `--no-web-tools` turns them off.
+  network). Other clients can use the same endpoints ([README, "Run the server by hand"](README.md#run-the-server-by-hand));
+  `--no-web-tools` turns them off.
 - **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
   (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, Excel XLSX / XLSM, PowerPoint
   PPTX (one heading per slide, with its speaker notes), text, Markdown, CSV; "read all the files I uploaded today" works; a spreadsheet reads as one heading per sheet and one
@@ -348,22 +343,24 @@ While the server is running:
   (`terminal_panel`; "close" hides it, the session goes on). The model is told the shell and Windows version in the
   session's first result, so it writes commands for Windows PowerShell 5.1 rather than bash. **Exit** (the power
   button) ends it: a command still running (yours or the model's, also one waiting for Run) is stopped, and the next
-  session starts again in the chat's folder, its first command asking again; **×** only hides the panel.
+  session starts again in the chat's folder, its first command asking again; **×** only hides the panel. A command
+  stops after 2 minutes (the model may ask for up to 10; yours: 10), together with every program it started; up to
+  64 KB of its output goes back to the model. Only the web UI on this computer can use the terminal: the server
+  refuses it to other computers (also with `--host`; such a server is opened by its IP address,
+  http://192.168.x.x:port/, not by a name, against DNS rebinding), and entirely with `--no-terminal`.
 - **Web UI: pages.** A code block of HTML or SVG in an answer has **Open** next to Copy and Download, and a saved
   `.html` / `.svg` file's chip opens the page (Ctrl+click: its source). It opens in a new tab inside a sandbox: its
   scripts run and it may load from `https:` sites (a CDN's chart library, images, fonts), but it cannot reach this
-  server (no commands, chats or files), the web UI's storage or its window. A command stops after 2 minutes (the model may ask for up to
-  10; yours: 10), together with every program it started; up to 64 KB of its output goes back to the model. Only the web UI
-  on this computer can use it: the server refuses it to other computers (also with `--host`; such a server is opened by
-  its IP address, http://192.168.x.x:port/, not by a name, against DNS rebinding), to pages of other sites
-  and of other servers on this computer (another port), and entirely with `--no-terminal`. Such pages reach only
-  the model endpoints (chat, audio, /tokenize); chats, files, transcripts and settings are the web UI's own.
+  server (no commands, chats or files), the web UI's storage or its window.
+- **Pages of other sites and of other local servers** (another port on this computer) reach only the model
+  endpoints (chat, audio, /tokenize): not the tools, files, chats, transcripts, live recording, slots or sessions,
+  which are the web UI's own.
 - **Web UI: voice messages and talking.** The microphone in the message box records a voice message (the bin
   discards it, Send sends it). The headset in the chat header starts **Talk**: the microphone stays on, the end of
   each sentence is detected after a second of quiet, and the answer is read aloud while it is written. Speak while
-  it talks to interrupt it; press the headset again to stop. With Whisper on the server (`--whisper auto`, or
-  `arc-server start -Whisper auto`; [docs/whisper-native.md](docs/whisper-native.md)) your speech is written as text
-  first, so both work with every model; without it they need Gemma 4 E4B or 12B, which hear the recording
+  it talks to interrupt it; press the headset again to stop. With speech to text on the server (`--whisper auto`, or
+  `arc-server start -Whisper auto`: Qwen3-ASR by default) your speech is written as text first, so both work with
+  every model; without it they need Gemma 4 E4B or 12B, which hear the recording
   themselves. Something you said just before stopping Talk waits in the message box instead of being sent. Pick the reading voice and
   speed in the settings (Windows: Settings > Time & language > Speech adds an Indonesian voice). The audio goes only
   to this server. Headphones avoid the AI hearing itself.
@@ -382,21 +379,17 @@ While the server is running:
   - **Anthropic**: `http://127.0.0.1:8090/v1/messages` (Claude format, including tool_use and thinking).
   - **OpenAI Responses**: `/v1/responses` (used e.g. by Codex CLI); the old **Completions**: `/v1/completions`
     (raw prompt, for code autocomplete).
-  - **Audio transcription**: `/v1/audio/transcriptions` (upload an audio file, the result is text). With
-    `--whisper auto` (arc-server `-Whisper auto`): Qwen3-ASR by default, `model=whisper` (Whisper large-v3, words
-    with times) or `model=gemma4-e4b`; Gemma 4 12B is refused for transcripts. Without it: the loaded model, when it
-    hears audio (Gemma 4 E4B).
+  - **Audio transcription**: `/v1/audio/transcriptions` (upload an audio file, the result is text), with
+    `--whisper auto` (arc-server `-Whisper auto`): which model answers what is in
+    [docs/qwen3-asr.md, "Using it"](docs/qwen3-asr.md#using-it).
 - Embeddings (`/v1/embeddings`) are not available yet: they need an embedding model with an architecture the engine
   does not support yet.
 - **Web UI: automatic compaction.** The top right shows the context use ("context 12.3K / 40.9K"). If the next
   message would make the context almost full, the older messages are summarized by the model first, then the
   conversation continues with the summary + the last exchanges. The **Compact** button does this at any time;
   **Stop** cancels it.
-- **Well-formed tool calls** (Gemma 4 and Qwen): while the model writes a tool call, the server only picks tokens
-  that keep the call valid for the tool's schema (required arguments such as `path` cannot be left out, field names
-  only those in the schema). The content is still the model's choice. Turn it off with the variable
-  `ARC_TOOL_CONSTRAINT=0`. `ARC_LOG_TOOLCALLS=file.jsonl` logs the raw text of every tool call (to investigate
-  failed tool calls).
+- **Well-formed tool calls** (Gemma 4 and Qwen): the server keeps every tool call valid for the tool's schema
+  ([README, "Run the server by hand"](README.md#run-the-server-by-hand); `ARC_TOOL_CONSTRAINT=0` turns it off).
 - **Qwen3.6 35B: `pi-arc 35b --preserve-thinking`**: the thinking of earlier turns stays in the prompt (an official
   option of the Qwen3.6 template; Qwen3.8 27B always does this). Follow-up messages do not process anything again;
   the context fills faster.
@@ -429,24 +422,30 @@ for the driver, or the model's training limit. The context adjusts itself when t
 | Model | Default context |
 |---|---|
 | Qwen3.8 27B | 65,536 with images + MTP + DFlash2 (`27b`); 90,112 `27b-df`; 110,592 `27b-mtp` / `27b-nodf`; 143,360 `27b-vision`; 188,416 `27b-std` |
-| Gemma 4 26B-A4B | 90,112 with images + drafter (`g26`); 118,784 `g26-mtp`; 102,400 `g26-vision`; 131,072 `g26-std` (generation at 36K of depth: 11.4 tok/s with a 49K context, 10.5 with 131K) |
-| Qwen3.6 35B-A3B | 131,072 automatically (images + MTP + DFlash2, ~80 % of the experts cached); up to 262,144 with `--ctx` (smaller expert cache) |
-| Qwen3.8 Flash Next | 131,072 automatically; up to 262,144 with `--ctx` |
+| Gemma 4 26B-A4B | 90,112 with images + drafter (`g26`); 118,784 `g26-mtp`; 102,400 `g26-vision`; 131,072 `g26-std`; the expert cache keeps at least 0.6 of the free memory (generation at 36K of depth: 11.4 tok/s with a 49K context, 10.5 with 131K) |
+| Qwen3.6 35B-A3B | 131,072 automatically (images + MTP + DFlash2; the automatic context reserves 128K, then sizes the expert cache: ~76-81 % of the experts cached); up to 262,144 with `--ctx 262144` or the `-std` variant (71-77 % cached) |
+| Qwen3.8 Flash Next | 131,072 automatically (~20-25 % of the experts cached); up to 262,144 with `--ctx` |
 | Qwen3.5 9B / 4B | 262,144 tokens (full) |
 | Gemma 4 12B | 262,144 tokens (full) |
 | Gemma 4 E4B | 131,072 tokens (full) |
 
+`pi-arc --ctx N` sets a context, `pi-arc --ctx auto` goes back to the automatic one (restarting a server that runs a
+fixed context). `--chunk 1024` frees 1.1 GiB on the 27B for more context (118,784 at 18.3 GiB; prompts of ~11K
+tokens ~4 % slower, from ~34K on no difference).
+
 arcinferzero uses the whole GPU share you set except 1.2 GiB for the driver, so the share decides how much RAM is left
 for Windows: if the laptop becomes slow or stops responding while a model runs, lower the GPU memory setting.
 
-The output limit (`maxTokens` in Pi) equals the context size: Pi itself clamps it to the room left. Very long
-prompts still take time (see section 6), so a large context is mainly useful for long sessions that use the prefix
-cache.
+The output limit (`maxTokens` in Pi) equals the context size: Pi itself clamps each request to the room left
+(window − prompt − 4096). Very long prompts still take time (see section 6), so a large context is mainly useful
+for long sessions that use the prefix cache.
 
-Pi handles a full context, not the server. When the conversation passes `context size − 16384` tokens, Pi
-summarizes the older part and keeps the latest ~20,000 tokens. If a single request still exceeds the context, the
-server sends the same error as llama.cpp ("the request exceeds the available context size"). Pi recognizes it,
-then summarizes and retries automatically. You can also summarize at any time with the `/compact` command in Pi.
+Pi handles a full context, not the server. When the conversation passes `context size − 16384` tokens (counted from
+the token usage the server reports), Pi summarizes the older part and keeps the latest ~20,000 tokens. If a single
+request still exceeds the context, the server sends llama-server's `exceed_context_size_error` ("the request exceeds
+the available context size"); a prompt that cannot possibly fit (more text than the context times the longest
+token) gets it before it is tokenized, with "at least N tokens". Pi recognizes it, then summarizes and retries
+automatically. You can also summarize at any time with the `/compact` command in Pi.
 
 This summary takes time (a few minutes on the 27B), because the model has to read the part being summarized and
 then process the new conversation again. The server cannot simply drop old tokens: the DeltaNet layers of
@@ -468,16 +467,9 @@ comparison: [docs/before-after.md, "Where it stands"](docs/before-after.md#where
 Tips:
 
 - The longest part is usually the thinking phase. `--think off` or `--think minimal` speeds up simple answers.
-- Follow-up requests in the same session only process the new tokens (prefix cache), so they are much faster than
-  the first request.
-- A new session in a project used before is fast: Pi's system prompt comes from the cache (memory or disk), so only
-  your message is processed. The first session in a new project folder processes its system prompt once (27B:
-  ~40 s).
-- Going back to an old session after another session (or the web UI) loads its conversation from disk in seconds:
-  the session cache is on by default (8 GB in `%USERPROFILE%\arcinferzero\zero\sessions`, delete with
-  `arc-server clear-cache`, turn off with `pi-arc --session-cache 0`). `arc-server stop` / `restart` and a model
-  switch first save the conversation the server holds, so afterwards that conversation is loaded too, not processed
-  again.
+- Follow-up requests, new sessions in a project used before and old sessions taken up again only process what is
+  new (the caches: section 2). Saved conversations are in `%USERPROFILE%\arcinferzero\zero\sessions`;
+  `arc-server clear-cache` deletes them.
 - A new message in the same session (Qwen 4B / 9B / 35B) only processes the last turn again: the Qwen template drops
   the thinking of earlier turns as soon as you write again, and the server keeps the starting point of that turn
   (arcinferzero).
@@ -499,12 +491,13 @@ Only the `pi-arc` / `arc-server` shortcut commands store the folder location; ev
 |---|---|
 | `pi-arc` is not recognized | Run `setup.cmd` (section 1), then open a new terminal. |
 | Setup fails at the build step | Visual Studio Build Tools (C++) is not installed; setup shows how to install it. The compiler output is in `%USERPROFILE%\arcinferzero\build.log`. |
-| "The server stopped while loading" | Look at the log it shows. Usually there is not enough GPU memory: close heavy apps, or use `--ctx 32768` / a smaller model. |
-| Windows is slow or stops responding while a model loads | The GPU memory is set too high (section 5): lower it in Intel Graphics Software, then `arc-server restart`. |
+| "The server stopped while loading", or another model fails to start | Look at the log it shows (`%USERPROFILE%\arcinferzero\server.log`). Usually there is not enough GPU memory: another arcinferzero server or a llama.cpp process holds it (`arc-server stop`, close other GPU programs), or use `--ctx 32768` / a smaller model. |
+| Windows is slow or stops responding while a model loads | The GPU memory is set too high (section 5; seen at 20 GB on a 32 GB laptop): lower it in Intel Graphics Software, then `arc-server restart`. |
+| Generation gets slower after a few minutes | The laptop throttles under sustained load (5–10 %); plug in the charger and use a performance power mode. |
 | `web_search` in Pi answers "No results found" or never finishes | Its default search engines are DuckDuckGo and Startpage; DuckDuckGo is blocked in Indonesia, so neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or with the `/search-config` command in Pi). |
-| A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. |
+| A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. The server log shows it (`system-prompt cache: saved / loaded ... for <folder>`). |
 | "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [README, section 6](README.md#6-download-models)). |
-| Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\arcinferzero\model-dirs.txt`, e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first. A plain folder of `.gguf` files (a copied model) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
+| Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\arcinferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated), e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first, so a model kept in both places loads from there. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, such as a backup on another drive, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
 | The answer is very slow at the start | Normal for the first large prompt (see section 6); later ones use the cache. |
 | Want to see what is happening | `arc-server status`, and the log in `%USERPROFILE%\arcinferzero\server.log` (prompt processing time, speed, MTP statistics per request). |

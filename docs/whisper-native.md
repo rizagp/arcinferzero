@@ -243,8 +243,9 @@ library's files take up to 6 hours, or this when it is more); `arc-server -Whisp
   | `ass` | `ttml` | `md` | `csv` | `tsv`; `language` = `auto` or a list (`id,en`); `beam_size` 1..5 (default 5);
   `terms` (a glossary kept before every window); `dual_language` (0..1, default 0.8);
   `condition_on_previous_text=true` (off by default); `transcript.progress` events (`done`, `total` seconds) while streaming.
-- Which model answers: Whisper, unless `model` names a chat model (the loaded one or one of `--list-models`: then the
-  old path, Gemma 4 hearing the clip). Without `--whisper`, a `model` containing "whisper" gets a 400 that says so.
+- Which model answers (since 2026-10-28): Qwen3-ASR by default, Whisper large-v3 when `model` names it, Gemma 4 E4B
+  for `gemma4-e4b`; any other chat model (Gemma 4 12B included) gets a 400: [qwen3-asr.md](qwen3-asr.md#using-it).
+  Without `--whisper`, a `model` naming `whisper` or `qwen3-asr` gets a 400 that says so.
 - Translation: large-v3-turbo was not trained for the translate task and mostly answers in the spoken language; a
   chat model translating the transcript is the better route.
 - **Next to the LLM**: Whisper loads before the model; `--ctx auto` keeps its GPU memory free (iGPU 1.39 GiB, NPU mode
@@ -261,8 +262,8 @@ library's files take up to 6 hours, or this when it is more); `arc-server -Whisp
   format; `max_chars`, `max_lines`, `max_cue_s`, `word_cues=1`) with the file name; `GET /v1/transcripts/<id>/media`
   (byte ranges); `POST /v1/transcripts/<id>/cancel`; `DELETE /v1/transcripts/<id>`. One file at a time, after the
   OpenAI endpoint's requests in its lock; 507 when the disk lacks the file's size + 512 MB.
-- **Audio in a chat**: `/v1/chat/completions` (and the APIs routed through it) writes a request's audio with
-  Whisper when the loaded model does not hear audio, or with `"speech": "whisper"`; `"speech": "model"` keeps
+- **Audio in a chat**: `/v1/chat/completions` (and the APIs routed through it) writes a request's audio as text
+  (Qwen3-ASR, Whisper when Qwen3-ASR is off) when the loaded model does not hear audio, or with `"speech": "whisper"`; `"speech": "model"` keeps
   it as audio for Gemma 4 E4B / 12B. A long transcript (12,000+ characters) goes in as a text file (a document).
 - **Live recordings** (the Transcripts tab's Live, the Meetings tab): `POST /v1/live` `{name, language, terms,
   beam_size, tracks: 1 | 2, rate, speakers, kind, mp3_kbps}` -> a transcript record with status `live`;
