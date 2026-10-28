@@ -214,6 +214,7 @@ in the same folder as the model: download them from the same repository in the s
 | (`35b`) | Qwen3.6 35B-A3B, 2-bit GSQ, no MTP (what `setup.cmd -Models 35b` downloads) | see step 7 (download 12.6 GB, then convert) | 11.7 GB |
 | `flash` | Qwen3.8 Flash Next (arcinferzero only) | `hf download ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF --include "IQ3_S/*"` | 54.8 + 28.8 GB |
 | | DFlash2 drafters (optional, see `--dflash` below) | `hf download z-lab/Qwen3.8-27B-DFlash2` / `hf download incoai/Qwen3.6-35B-A3B-DFlash2` | 3.85 / 1.05 GB |
+| | Speech to text (optional, `arc-server start -Whisper auto`): Whisper large-v3, and Qwen3-ASR 1.7B (the default speech model; its mmproj next to it) | `hf download Systran/faster-whisper-large-v3` and `hf download unslothai/Qwen3-ASR-1.7B-GGUF --include "*Q8_0*" "*mmproj*"` | 2.9 + 2.4 GB |
 
 With their `mmproj` file next to the model, Gemma 4 12B and E4B read images and audio, and Gemma 4 26B, Qwen3.5
 4B / 9B, Qwen3.8 27B and Qwen3.6 35B read images (all encoders run on the GPU).

@@ -238,6 +238,10 @@ pi-arc: the Pi coding agent on the local arcinferzero server (Intel Arc iGPU).
   pi-arc --think off             no reasoning (fastest answers); minimal / low (default) / medium / high
   pi-arc -p "summarize x.md"     answer one message and exit (any other Pi option works too)
   arc-server stop                stop the background server (frees the GPU memory)
+  arc-server start -Whisper auto speech to text too: the web UI's Transcripts / Meetings tabs and voice messages
+                                 (Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; ~8 GB of GPU memory)
+  arc-server record -App Zoom.exe   record a meeting (record-stop: transcribed in the Meetings tab)
+  web UI                         http://127.0.0.1:8090/ while the server runs
 
 In Pi: /model switches the model (5-40 s), Esc stops the answer, /new starts a new session, /compact
 shortens a long conversation (the details it drops are gone for the model).
