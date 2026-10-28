@@ -238,6 +238,18 @@ answered; beam 5 in 5.2 s with the upload (iGPU), 9.6 s in NPU mode; a chat requ
 normally; 6 uploads at once: 4 answered, 2 got 429; an unknown language, a non-audio file and an unknown format get
 400.
 
+**Text over silence and noise** (2026-10-28, a user's live recording in Indonesian): the quiet stretches came out
+"Продолжение следует...", "Спасибо.", "Obrigada.", "MBC 뉴스 ...", "Thank you.", each with a no-speech probability
+of 0.00. large-v3-turbo does this on 12 s of digital silence too, in the f32 CPU reference as well (no-speech
+probability 1.5e-10), so `no_speech_threshold` never skipped a window. Now (src/whisper.h `drop_unvoiced`, on by
+default): a segment with less than 0.3 s of voice under it (10-ms frames 12 dB over the recording's quietest tenth,
+above -50 dB) is left out, a credit line ("Продолжение следует", "Thanks for watching", "MBC 뉴스") with less than
+3 s, thanks in a language other than the speech's with less than 2 s, in its language with less than 0.5 s (a spoken
+"terima kasih" stays). A live recording with language auto keeps the language of its first two clear utterances
+(`live_lock`). Checked: 12 s of silence / quiet noise, auto and id: 6 of 6 hallucinated segments before, none now; an
+80-s live recording of the 14-minute file with 8 s of silence, 8 s of noise and 4 s of silence at the end: the final
+transcript's "Продолжение следует..." over the last silence gone, its 30 speech segments as before.
+
 ## Next steps
 
 1. Speed: done (W1, above).

@@ -254,7 +254,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .tradd button { color: var(--accent); font-weight: 600; }
 .tropts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 12px 8px; border-bottom: 1px solid var(--line); }
 .tropts select, .tropts textarea { font: inherit; font-size: 13px; color: var(--text); background: var(--head); border: 0; border-radius: 6px; padding: 5px 8px; min-width: 0; }
-.tropts textarea { grid-column: 1 / -1; resize: vertical; min-height: 32px; }
+.tropts textarea { grid-column: 1 / -1; resize: vertical; min-height: 68px; max-height: 40vh; line-height: 1.4; }
 .trrow { display: flex; gap: 10px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .trrow:hover { background: var(--hover); }
 .trrow.on { background: var(--active); }
@@ -388,7 +388,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <select id="trbeam" aria-label="Accuracy" title="Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy">
           <option value="5">Accurate (beam 5)</option><option value="1">Fast (greedy)</option>
         </select>
-        <textarea id="trterms" rows="1" placeholder="Glossary: names and terms the speech uses (Qwen, GGUF, Level Zero…)" aria-label="Glossary"
+        <textarea id="trterms" rows="3"placeholder="Glossary: names and terms the speech uses (Qwen, GGUF, Level Zero…)" aria-label="Glossary"
           title="Kept before every 30 s of audio, so Whisper writes these words as given. Written inside a casual sentence, the text keeps a casual spelling; a bare list makes it more formal"></textarea>
       </div>
       <div class="body" id="trlist"></div>
@@ -2850,6 +2850,9 @@ function trSavePrefs() {
 }
 ["trlang", "trbeam", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
 $("trfmts").addEventListener("change", trSavePrefs);
+// the glossary grows with its text (up to its max-height; a drag of its corner still sets it by hand)
+function trTermsFit() { const t = $("trterms"); t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px"; }
+$("trterms").addEventListener("input", trTermsFit);
 const trClock = (s) => {
   s = Math.max(0, Math.floor(s || 0));
   const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = String(s % 60).padStart(2, "0");
@@ -3055,9 +3058,11 @@ function trHeader(m) {
   $("trname").title = "Rename " + m.name;
   if (!rec) $("trsub").textContent = trState(m).text;
   $("trcancel").hidden = !["queued", "running"].includes(m.status);
-  $("trdel").hidden = rec;
+  $("trdel").hidden = rec || (m.status === "live" && m.id === live.finishing);
   $("trmark").hidden = !rec;
-  $("trstoplive").hidden = !rec && m.status !== "live";
+  // (Stop: this page's recording, or one still live of another page; not the one this page is finishing, which
+  // stays "live" on the server while its last audio goes: the header's Stop stayed after the Live button's)
+  $("trstoplive").hidden = !rec && (m.status !== "live" || m.id === live.finishing);
   const done = !rec && m.kind === "meeting" && (m.status === "done" || m.status === "cancelled");
   $("trsum").hidden = $("trdocx").hidden = $("trpdf").hidden = !done;
 }
@@ -3083,13 +3088,19 @@ async function trOpen(id) {
   trHeader(m);
   trRenderList();
   const v = $("trvideo"), playable = m.status !== "uploading" && m.status !== "live";
-  // (also a file that was not playable yet, uploading or live, and one whose file changed: a recording kept as MP3)
-  if (v.dataset.id !== id || (playable && (!v.getAttribute("src") || v.dataset.ext !== m.ext))) {
+  // (also a file that was not playable yet, uploading or live, and one whose file changed: a recording kept as MP3,
+  //  taken when the player is not playing, at the same time; until then ?f=wav still reads the WAV, which the server
+  //  keeps a while: a player reading it in ranges from a plain URL got the MP3's bytes and stopped mid-way)
+  const changed = v.dataset.id === id && playable && v.getAttribute("src") && v.dataset.ext !== m.ext;
+  if (v.dataset.id !== id || (playable && !v.getAttribute("src")) || (changed && v.paused)) {
+    const at = changed ? v.currentTime : 0;
     v.pause();
     v.dataset.id = id;
     v.dataset.ext = m.ext || "";
-    if (playable) v.src = "/v1/transcripts/" + id + "/media";
-    else v.removeAttribute("src");
+    if (playable) {
+      v.src = "/v1/transcripts/" + id + "/media?f=" + encodeURIComponent(m.ext || "");
+      if (at > 0) v.addEventListener("loadedmetadata", () => { v.currentTime = at; }, { once: true });
+    } else v.removeAttribute("src");
     $("trmedia").classList.toggle("audio", TR_AUDIO.includes(m.ext));
   }
   $("trmedia").hidden = !playable;
@@ -3097,7 +3108,17 @@ async function trOpen(id) {
 }
 const trEditing = () => !!$("trbody").querySelector('[contenteditable="true"]');
 $("trvideo").addEventListener("error", () => {
-  if ($("trvideo").getAttribute("src")) trNote("this file's format does not play in the browser; the transcript is fine", 10000);
+  const v = $("trvideo");
+  if (!v.getAttribute("src")) return;
+  // (a recording's WAV gone since, its MP3 now: the MP3 from where it was)
+  if (tr.meta && tr.meta.id === v.dataset.id && tr.meta.ext && v.dataset.ext !== tr.meta.ext) {
+    const at = v.currentTime;
+    v.dataset.ext = tr.meta.ext;
+    v.src = "/v1/transcripts/" + v.dataset.id + "/media?f=" + encodeURIComponent(tr.meta.ext);
+    if (at > 0) v.addEventListener("loadedmetadata", () => { v.currentTime = at; }, { once: true });
+    return;
+  }
+  trNote("this file's format does not play in the browser; the transcript is fine", 10000);
 });
 function trRender() {
   const body = $("trbody"), m = tr.meta, rec = live.on && tr.sel === live.id;
@@ -3510,6 +3531,9 @@ const live = {
   async stop() {
     if (!this.on) return;
     this.on = false;
+    this.finishing = this.id;  // (its Stop and Mark go at once, its state says "Finishing the recording…")
+    liveButtons();
+    if (tr.meta && tr.meta.id === this.id) trHeader(tr.meta);
     clearInterval(this.timer);
     clearInterval(this.clock);
     this.streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
@@ -3529,8 +3553,8 @@ const live = {
       this.chunks = [];
       trNote("the last " + trClock(frames / (this.ctx?.sampleRate || 48000)) + " could not be sent: saved as a WAV", 20000);
     }
-    this.finishing = id;
-    await fetch("/v1/live/" + id + "/stop", { method: "POST", body: "{}" }).catch(() => {});
+    const ok = await fetch("/v1/live/" + id + "/stop", { method: "POST", body: "{}" }).then((r) => r.ok, () => false);
+    if (!ok) this.finishing = "";  // (the server did not take the stop: its header Stop shows again, to try once more)
     this.id = "";
     liveButtons();
     trNote("stopped: the recording is transcribed again accurately now", 8000);

@@ -394,6 +394,41 @@ int main() {
     check("cues of two speakers: in order, no negative length, no line break inside a word", ok && srt.find("\n\n\n") == std::string::npos,
           srt.substr(0, 300));
   }
+  {
+    // Whisper's stock phrases over silence and noise: 20 s of 16-kHz audio, a quiet room (noise at -66 dB) with a
+    // "voice" (a 200-Hz tone at -20 dB) from 2 to 6 s and from 12 to 12.8 s (a spoken "terima kasih")
+    std::string l;
+    check("stock phrases: a credit line (Cyrillic capitals lowered)", whisper::stock_phrase(" Продолжение следует...") == 2 &&
+          whisper::stock_phrase("MBC 뉴스 김성현입니다.") == 2 && whisper::stock_phrase("Thanks for watching!") == 2);
+    check("stock phrases: thanks with their language", whisper::stock_phrase(" Terima kasih.", &l) == 1 && l == "id" &&
+          whisper::stock_phrase("Спасибо.", &l) == 1 && l == "ru" && whisper::stock_phrase(" E aí", &l) == 1 && l == "pt");
+    check("stock phrases: speech is not one", !whisper::stock_phrase(" Terima kasih sudah datang ke acara ini") &&
+          !whisper::stock_phrase(" Saya pakai bahasa Indonesia"));
+    std::mt19937 rng(3);
+    std::normal_distribution<float> nd(0, 0.0005f);
+    std::vector<float> x(20 * 16000);
+    for (size_t i = 0; i < x.size(); ++i) {
+      x[i] = nd(rng);
+      const double t = (double)i / 16000;
+      if ((t >= 2 && t < 6) || (t >= 12 && t < 12.8)) x[i] += 0.14f * (float)std::sin(2 * 3.14159265 * 200 * t);
+    }
+    auto sg = [](double a, double b, const char* text, const char* lang) {
+      whisper::Segment g;
+      g.start = a;
+      g.end = b;
+      g.text = text;
+      g.lang = lang;
+      return g;
+    };
+    std::vector<whisper::Segment> s = {sg(2.0, 6.0, " Halo semua, apa kabar", "id"), sg(7.0, 11.0, " Продолжение следует...", "ru"),
+                                       sg(12.0, 12.8, " Terima kasih.", "id"), sg(14.0, 16.0, " Gracias.", "es"),
+                                       sg(16.0, 19.9, " Saya di sini", "id")};
+    whisper::drop_unvoiced(s, x, "");
+    std::string got;
+    for (const auto& g : s) got += "|" + g.text;
+    check("silence / noise: speech and a short thanks in its language kept, the rest left out",
+          s.size() == 2 && s[0].text == " Halo semua, apa kabar" && s[1].text == " Terima kasih.", got);
+  }
   if (fails) {
     printf("test_audio: %d failed\n", fails);
     return 1;

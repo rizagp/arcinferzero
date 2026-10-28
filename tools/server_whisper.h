@@ -752,9 +752,19 @@ class Service {
           {"mkv", "video/x-matroska"}, {"avi", "video/x-msvideo"}, {"wmv", "video/x-ms-wmv"}, {"mp3", "audio/mpeg"},
           {"m4a", "audio/mp4"}, {"aac", "audio/aac"}, {"wav", "audio/wav"}, {"ogg", "audio/ogg"}, {"opus", "audio/ogg"},
           {"oga", "audio/ogg"}, {"flac", "audio/flac"}, {"wma", "audio/x-ms-wma"}};
-      const auto mt = kMime.find(m["ext"].str());
+      // ?f=<ext>: that file while it is there (a recording's WAV, kept a while after its MP3: a player reading it in
+      // ranges got the MP3's bytes from the same URL once the record said mp3, and stopped where its buffer ended)
+      std::string ext = m["ext"].str();
+      fs::path file = src;
+      const std::string f = query_param(rq.query, "f");
+      if (!f.empty() && f != ext && f.size() <= 5 &&
+          std::all_of(f.begin(), f.end(), [](char c) { return isalnum((unsigned char)c) != 0; })) {
+        std::error_code ec;
+        if (fs::is_regular_file(dir / ("source." + f), ec)) { file = dir / ("source." + f); ext = f; }
+      }
+      const auto mt = kMime.find(ext);
       rs.extra = "X-Content-Type-Options: nosniff\r\n";
-      return rs.send_file(src, mt == kMime.end() ? "application/octet-stream" : mt->second, rq.header("range"));
+      return rs.send_file(file, mt == kMime.end() ? "application/octet-stream" : mt->second, rq.header("range"));
     }
     if (what == "cancel" && rq.method == "POST") {
       std::lock_guard<std::mutex> lk(lib_mu_);
@@ -1048,6 +1058,7 @@ class Service {
     std::vector<whisper::Segment> draft;  // (in the order they came)
     int pending = 0;                      // (utterances not transcribed yet)
     bool stopped = false, skipped = false;  // (skipped: utterances left out of the draft, it fell too far behind)
+    std::map<std::string, int> votes;       // (language "auto": clear utterances per detected language, see live_lock)
     std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();  // (the last audio)
   };
   static constexpr int kLiveMaxPiece = 120, kLiveMaxPending = 64;
@@ -1300,6 +1311,7 @@ class Service {
         }
         continue;
       }
+      live_lock(s, segs);
       for (whisper::Segment& g : segs) {
         g.start += off;
         g.end += off;
@@ -1314,6 +1326,24 @@ class Service {
                        [](const whisper::Segment& a, const whisper::Segment& b) { return a.start < b.start; });
       r.duration = (double)s.frames / s.rate;
       write_atomic(lib_ / s.id / "transcript.json", whisper::to_json(r));
+    }
+  }
+  // Language "auto" in a live recording: each utterance alone (a second or two, or a noise) was detected anew, and
+  // the quiet ones came out Russian, Spanish, Portuguese, Korean ("Продолжение следует...", "Gracias.") in an
+  // Indonesian recording. Once two clear utterances (1 s or longer, greedy without fallback, avg logprob > -0.6, not
+  // a stock phrase) are in one language, the rest of the recording is decoded in it. (The live worker's thread alone
+  // reads and writes s.opt.) "id,en" (speech that mixes them) is left as it is.
+  static void live_lock(Live& s, const std::vector<whisper::Segment>& segs) {
+    if (s.opt.language != "auto") return;
+    for (const whisper::Segment& g : segs) {
+      if (g.lang.empty() || g.end - g.start < 1.0 || g.temperature > 0 || g.avg_logprob <= -0.6f ||
+          whisper::stock_phrase(g.text))
+        continue;
+      if (++s.votes[g.lang] >= 2) {
+        s.opt.language = s.opt.expect_language = g.lang;
+        fprintf(stderr, "whisper: live recording %s: language %s from here on\n", s.id.c_str(), g.lang.c_str());
+        return;
+      }
     }
   }
   void live_finish(const std::shared_ptr<Live>& s) {  // (the recording closed; the accurate pass queued)
@@ -1509,7 +1539,18 @@ class Service {
       Json meta;
       {
         std::unique_lock<std::mutex> lk(lib_mu_);
-        lib_cv_.wait(lk, [&] { return stop_ || !next_queued().empty(); });
+        // (a minute at a time: recordings' WAVs kept past their MP3 deleted once kWavKeep has gone by)
+        while (!lib_cv_.wait_for(lk, std::chrono::seconds(60), [&] { return stop_ || !next_queued().empty(); })) {
+          const auto now = std::chrono::steady_clock::now();
+          for (size_t i = 0; i < old_wavs_.size();)
+            if (now - old_wavs_[i].second >= kWavKeep) {
+              std::error_code ec;
+              fs::remove(old_wavs_[i].first, ec);
+              old_wavs_.erase(old_wavs_.begin() + i);
+            } else {
+              ++i;
+            }
+        }
         if (stop_) return;
         tid = next_queued();
         running_ = tid;
@@ -1654,9 +1695,8 @@ class Service {
     auto it = metas_.find(tid);
     if (it == metas_.end()) return;
     if (ok) {
-      // (deleted even while a player reads it: the media is read shared; a WAV that stays is deleted at the next start)
-      std::error_code ec;
-      fs::remove(src, ec);
+      // (the WAV kept kWavKeep for a player reading it, ?f=wav; then deleted by the worker, or at the next start)
+      old_wavs_.push_back({src, std::chrono::steady_clock::now()});
       it->second.set("ext", "mp3");
       std::error_code ec2;
       it->second.set("size", (double)fs::file_size(dir / "source.mp3", ec2));
@@ -1714,6 +1754,9 @@ class Service {
   std::string running_;
   std::set<std::string> writing_;  // (uploads whose piece is being written, outside lib_mu_)
   bool cancel_running_ = false, delete_running_ = false, stop_ = false;
+  // recordings' WAVs after their MP3 (under lib_mu_), deleted by the worker kWavKeep later
+  static constexpr std::chrono::minutes kWavKeep{30};
+  std::vector<std::pair<std::filesystem::path, std::chrono::steady_clock::time_point>> old_wavs_;
   std::thread worker_;
   // chat audio's texts, by the clip's bytes
   struct Clip {

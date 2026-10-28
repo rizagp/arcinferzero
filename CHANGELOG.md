@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-10-28: Whisper over silence, a live recording's language, replay after the MP3, the Transcripts tab
+
+- **No more text over silence and noise** (src/whisper.h `drop_unvoiced`): a live recording in Indonesian came out
+  "Продолжение следует...", "Спасибо.", "Obrigada.", "MBC 뉴스", "Thank you." in its quiet stretches. large-v3-turbo
+  writes these with a no-speech probability near 0 (the f32 reference too), so the no-speech check never skipped
+  them. Segments with almost no voice under them are left out now, Whisper's stock credit lines and thanks in
+  another language when short; a spoken "terima kasih" stays. 12 s of silence: no segment (before: one, Russian with
+  auto, "Terima kasih." with id). docs/whisper-native-status.md; tests/test_audio.cpp.
+- **A live recording with language auto keeps one language** (tools/server_whisper.h `live_lock`): each utterance
+  was detected alone, and quiet ones came out Russian, Spanish, Portuguese; once two clear utterances are in one
+  language, the rest is decoded in it ("id,en" for mixed speech is left as it is).
+- **Replay stopped mid-way after a recording ended** (~0:55 of 2 minutes): once the recording was kept as MP3, the
+  WAV was deleted and the same media URL gave the player, reading the WAV in ranges, the MP3's bytes. The page asks
+  for the file by its type (`/media?f=wav`), the server keeps the WAV 30 minutes for it, and the player takes the MP3
+  when it is not playing, at the same time.
+- Stop in the Live panel now hides the header's Stop at once (it stayed while the last audio was sent, the server
+  still saying "live"); the glossary box has 3 lines and grows with its text.
+
 ## 2026-10-28: `arc-server restart` keeps -Npu and -Whisper
 
 - `arc-server restart` (e.g. `restart -Model 27b -Whisper auto`) kept the slots but turned the NPU and Whisper off

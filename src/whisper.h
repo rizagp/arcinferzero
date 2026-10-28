@@ -453,6 +453,11 @@ struct Options {
   std::string initial_prompt;  // the first window's previous text (a sample sentence); later windows have their own
   std::string terms;           // a glossary before every window's previous text ("GPU, kernel, deploy"), at most
                                // kMaxTermsTokens tokens; the previous text gets the rest of the 223
+  // segments over silence or noise left out (drop_unvoiced below): large-v3(-turbo) writes text there with a
+  // no-speech probability near 0, so no_speech_threshold alone never skipped them
+  bool drop_unvoiced = true;
+  std::string expect_language;  // the speech's language when known (a live recording's, once locked): a stock phrase
+                                // in another one is left out; empty: the one most of the result is in
   float dual_language = 0.8f;  // language detected per window: when the likeliest is below this probability, the two
                                // likeliest are each decoded and the likelier text is kept (0: off)
   bool timestamps = true;
@@ -514,6 +519,104 @@ inline void log_softmax(const float* x, int n, std::vector<float>& out) {
   for (int i = 0; i < n; ++i) s += std::exp((double)x[i] - mx);
   const float lse = mx + (float)std::log(s);
   for (int i = 0; i < n; ++i) out[i] = x[i] - lse;
+}
+
+// ---------------------------------------------------------------- text over silence and noise
+// Whisper's stock phrases from its training subtitles, written where nobody speaks: lowercase, without spaces and
+// punctuation. Credits (a subtitler's or a channel's line) are never speech here; thanks are, in the speech's own
+// language, so those go only in another language or with almost no voice under them.
+inline std::string phrase_key(const std::string& s) {
+  std::string k;
+  for (size_t i = 0; i < s.size(); ++i) {
+    const unsigned char c = (unsigned char)s[i];
+    if (c < 0x80) {
+      if (isalnum(c)) k += (char)tolower(c);
+    } else if (c == 0xD0 && i + 1 < s.size() && (unsigned char)s[i + 1] >= 0x90 && (unsigned char)s[i + 1] <= 0xAF) {
+      const unsigned char d = (unsigned char)s[++i];  // (Cyrillic А-Я to а-я)
+      k += d < 0xA0 ? '\xD0' : '\xD1';
+      k += (char)(unsigned char)(d < 0xA0 ? d + 0x20 : d - 0x20);
+    } else {
+      k += (char)c;
+    }
+  }
+  return k;
+}
+// 2: a credit line, 1: thanks (with the language it is in), 0: neither
+inline int stock_phrase(const std::string& text, std::string* lang = nullptr) {
+  const std::string k = phrase_key(text);
+  if (k.empty()) return 0;
+  // (prefixes; the source is UTF-8 and built with /utf-8: these literals are UTF-8 bytes)
+  static const char* credits[] = {
+      "продолжениеследует", "субтитры", "редакторсубтитров", "mbc뉴스", "subtitlesby", "subtitlebythe", "amaraorg",
+      "thanksforwatching", "thankyouforwatching", "pleasesubscribe", "terimakasihtelahmenonton",
+      "terimakasihsudahmenonton", "subtítulosporlacomunidad", "legendaspelacomunidade", "untertitelim",
+      "soustitrage"};
+  for (const char* c : credits)
+    if (k.rfind(c, 0) == 0) return 2;
+  static const std::pair<const char*, const char*> thanks[] = {
+      {"спасибо", "ru"}, {"thankyou", "en"}, {"thanks", "en"}, {"thankyouverymuch", "en"}, {"bye", "en"},
+      {"you", "en"}, {"terimakasih", "id"}, {"terimakasihbanyak", "id"}, {"obrigada", "pt"}, {"obrigado", "pt"},
+      {"eaí", "pt"}, {"gracias", "es"}, {"danke", "de"}, {"merci", "fr"}, {"grazie", "it"},
+      {"ご視聴ありがとうございました", "ja"}, {"감사합니다", "ko"}};
+  for (const auto& [t, l] : thanks)
+    if (k == t) {
+      if (lang) *lang = l;
+      return 1;
+    }
+  return 0;
+}
+// the 10-ms frames of 16-kHz samples with a voice: 12 dB above the recording's noise floor (its quietest tenth) and
+// above -50 dB (the voice detection of a live recording, server_whisper.h live_vad, uses the same margins)
+inline std::vector<uint8_t> voiced_frames(const std::vector<float>& x) {
+  const size_t n = x.size() / 160;
+  std::vector<float> db(n);
+  for (size_t f = 0; f < n; ++f) {
+    double e = 0;
+    for (int i = 0; i < 160; ++i) e += (double)x[f * 160 + i] * x[f * 160 + i];
+    db[f] = (float)(10 * std::log10(e / 160 + 1e-10));
+  }
+  std::vector<uint8_t> v(n);
+  if (!n) return v;
+  std::vector<float> s = db;
+  std::nth_element(s.begin(), s.begin() + n / 10, s.end());
+  const float floor = s[n / 10];
+  for (size_t f = 0; f < n; ++f) v[f] = db[f] > floor + 12 && db[f] > -50;
+  return v;
+}
+// Segments over silence or noise left out: one with less than 0.3 s of voice under it (large-v3-turbo wrote
+// "Продолжение следует..." over 12 s of digital silence, no-speech probability 1.5e-10, the f32 reference too); a
+// credit line with less than 3 s; thanks in a language other than the speech's with less than 2 s, in its language
+// with less than 0.5 s. lang: the speech's language, or "" for the one most voiced seconds of the result are in.
+inline void drop_unvoiced(std::vector<Segment>& segs, const std::vector<float>& x, std::string lang) {
+  if (segs.empty()) return;
+  const std::vector<uint8_t> v = voiced_frames(x);
+  auto voiced = [&](const Segment& g) {  // (seconds; the segment's times padded 0.1 s, Whisper's are that loose)
+    const int64_t a = std::max<int64_t>(0, (int64_t)std::floor((g.start - 0.1) * 100));
+    const int64_t b = std::min<int64_t>((int64_t)v.size(), (int64_t)std::ceil((g.end + 0.1) * 100));
+    int c = 0;
+    for (int64_t f = a; f < b; ++f) c += v[f];
+    return c / 100.0;
+  };
+  std::vector<double> vs(segs.size());
+  for (size_t i = 0; i < segs.size(); ++i) vs[i] = voiced(segs[i]);
+  if (lang.empty()) {
+    std::map<std::string, double> by;
+    for (size_t i = 0; i < segs.size(); ++i)
+      if (!stock_phrase(segs[i].text)) by[segs[i].lang] += vs[i];
+    double best = 0;
+    for (const auto& [l, s] : by)
+      if (s > best) { best = s; lang = l; }
+  }
+  std::vector<Segment> keep;
+  for (size_t i = 0; i < segs.size(); ++i) {
+    std::string pl;
+    const int k = stock_phrase(segs[i].text, &pl);
+    const double s = vs[i];
+    const bool other = !lang.empty() && pl != lang;
+    if (s < 0.3 || (k == 2 && s < 3.0) || (k == 1 && s < (other ? 2.0 : 0.5))) continue;
+    keep.push_back(std::move(segs[i]));
+  }
+  segs = std::move(keep);
 }
 
 // ---------------------------------------------------------------- the transcription
@@ -705,6 +808,12 @@ class Transcriber {
         prompt_reset_since = (int)all_tokens.size();
       (void)n_initial;
       if (progress && !progress(std::min(total, (double)seek * kHop / kSampleRate), total, res.segments)) break;
+    }
+    if (opt.drop_unvoiced) {
+      const size_t before = res.segments.size();
+      drop_unvoiced(res.segments, x, fixed ? lang : opt.expect_language);
+      if (dbg && res.segments.size() != before)
+        fprintf(stderr, "whisper: %zu segments over silence / noise left out\n", before - res.segments.size());
     }
     return res;
   }
