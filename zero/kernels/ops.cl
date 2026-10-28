@@ -7,8 +7,18 @@
 #ifndef SB
 #define SB 1
 #endif
-// Gemma 4's float attention: the K rows in f32
+// Gemma 4's float attention: the K rows in f32 (-DK_F16: in f16, Qwen3 dense: its float attention reads half the K
+// bytes. Qwen3-ASR, 72-token prompt against f32: KL < 0.00001 either way (max 0.00004); attention -10 %, one token
+// at 2048 of context 26.8 -> 27.9 tok/s; Gemma 4 keeps f32 K, bit-identical)
+#ifdef K_F16
+#define KC_T half
+#define KLD16(p) vload_half16(0, p)
+#define KST1(x, p) vstore_half(x, 0, p)
+#else
 #define KC_T float
+#define KLD16(p) vload16(0, p)
+#define KST1(x, p) (*(p) = (x))
+#endif
 // and the V rows in f16
 #define VC_T half
 #define VC_RAW ushort
@@ -1699,7 +1709,7 @@ __kernel void attn_prep_g(__global const float* qkv, int ldq, int nh, int nkv, i
     } else {
       __global KC_T* kd = kc + ((size_t)kvh * cap + pos % cap) * HD + VPL * lane;
 #pragma unroll
-      for (int i = 0; i < VPL; ++i) kd[i] = v[i];
+      for (int i = 0; i < VPL; ++i) KST1(v[i], kd + i);
     }
   }
   if (isq) {
@@ -1791,6 +1801,9 @@ inline void fa_split_range(int lo, int hi, int sp, int* b0, int* b1) {  // block
 #ifndef FA_ROWS
 #define FA_ROWS 1
 #endif
+#if FA_ROWS > 1 && defined(K_F16)
+#error "FA_ROWS copies f32 K rows as 32-bit words: not with K_F16"
+#endif
 #if FA_ROWS > 1
 #define FA_KS (HD + 1)  // (a key's row stride in local memory: lane = key reads without bank conflicts)
 #define FA_KW uint
@@ -1867,7 +1880,7 @@ __kernel void attn_fa_g(__global const float* qf, __global const KC_T* kc, __glo
     __global const KC_T* krow = kb + (size_t)(t0s + lane) * HD;
 #endif
     for (int c = 0; c < HD / 16; ++c) {
-      const float16 kv = valid ? vload16(0, krow + 16 * c) : (float16)0.0f;
+      const float16 kv = valid ? KLD16(krow + 16 * c) : (float16)0.0f;
 #pragma unroll
       for (int r = 0; r < GQ; ++r) {
         const float qc = as_float(intel_sub_group_block_read((__global const uint*)(qp + r * HD + 16 * c)));
@@ -2043,7 +2056,7 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
       for (int c = 0; c < HD / 16; ++c) {
         float16 kv[KB];
 #pragma unroll
-        for (int kk = 0; kk < KB; ++kk) kv[kk] = any[kk] ? vload16(0, krow[kk] + 16 * c) : (float16)0.0f;
+        for (int kk = 0; kk < KB; ++kk) kv[kk] = any[kk] ? KLD16(krow[kk] + 16 * c) : (float16)0.0f;
 #pragma unroll
         for (int h = 0; h < GRH; ++h) {
           const int r = h / HPG, m = min(m0 + r, M_valid - 1);

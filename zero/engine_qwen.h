@@ -184,7 +184,7 @@
   }
 
   // Qwen3 dense attention (qwen3 / qwen3vl), in float: q / k RMS norms, NEOX RoPE over the whole 128-dim head, the f32
-  // query and the f32 K / f16 V rows through Gemma 4's attn_prep_g (V as projected, has_v = 2; q scaled by 1/sqrt(d);
+  // query and the f16 K (kf16_; else f32) / f16 V rows through Gemma 4's attn_prep_g (V as projected, has_v = 2; q scaled by 1/sqrt(d);
   // no int8 copy), then attn_fa_gh for prompt chunks and the split attn_fa_g for up to 8 rows; no output gate.
   void layer_qwen3_attn(Layer& L, int T, int Mp) {
     const int E = hp.n_embd, nh = hp.n_head, nkv = hp.n_head_kv, hd = hp.head_dim, hpg = nh / nkv;
@@ -198,7 +198,8 @@
       matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, false, a_in);
       matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, false, a_in);
     }
-    cl_kernel kp = kernel("ops", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + sb_opt(hd) + " -DRT_TABLE",
+    const std::string kdef = kf16_ ? " -DK_F16" : "";  // (f16 K rows, see kf16_)
+    cl_kernel kp = kernel("ops", "-cl-intel-256-GRF-per-thread -DHD=" + std::to_string(hd) + sb_opt(hd) + " -DRT_TABLE" + kdef,
                           "attn_prep_g");
     // rows r0 .. r0 + Tq of the pass at position p0 (a batched pass: per sequence, in its slot)
     auto prep = [&](int r0, int Tq, int p0) {
@@ -219,7 +220,7 @@
       int cp = ctx, nn = nh, nk = nkv, pp = p0, MM = n, w = 0, nlo = -1, nhi = -1;
       if (n <= 8) {  // (flash-decoding: the keys in splits, then combined)
         const int gq = std::min(hpg, 4);
-        const std::string fd = "-cl-intel-256-GRF-per-thread -DFA_G -DFA_SPLIT -DHD=" + std::to_string(hd) + " -DGQ=" + std::to_string(gq);
+        const std::string fd = "-cl-intel-256-GRF-per-thread -DFA_G -DFA_SPLIT -DHD=" + std::to_string(hd) + " -DGQ=" + std::to_string(gq) + kdef;
         cl_kernel k = kernel("ops", fd, "attn_fa_g");
         const int nb = (p0 + n - 1) / 16 + 1;
         int ns = std::min(64, (nb + 7) / 8);
@@ -237,7 +238,7 @@
       // (attn_fa_gh: each key row read once for the q heads of its kv head; 2 sub-groups of 4 dims per lane, up to 4
       //  query rows per work-group, 2 key blocks per step, as layer_gemma_attn picks them for head 128)
       const int fs = 2, gr = std::clamp(64 / (hpg * (hd / fs / 16)), 1, 4), kb = hpg * gr <= 8 ? 2 : 1;
-      cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH -DHD=" + std::to_string(hd) + " -DHPG=" +
+      cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH" + kdef + " -DHD=" + std::to_string(hd) + " -DHPG=" +
                                       std::to_string(hpg) + " -DFS=" + std::to_string(fs) + " -DGR=" + std::to_string(gr) +
                                       " -DKB=" + std::to_string(kb), "attn_fa_gh");
       set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM, from(o_, (size_t)r0 * nh * hd * 4),

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-28: Qwen3-ASR's attention with f16 K
+
+- **f16 K rows in Qwen3's float attention** (Gemma 4 keeps f32): attention -10 %, generation +4 %, the two
+  recordings' text 2-3 % sooner, the KV cache a third smaller (server -0.32 GiB); KL < 0.00001, the transcripts
+  identical, Gemma 4 E4B / 12B and Qwen3.5 4B bit-identical. `ARC_Q3_KF32=1`: f32 K.
+
 ## 2026-10-28: Qwen3-ASR GEMV / GEMM; the speech code in its own files
 
 - **Qwen3-ASR's q / k / v and gate / up each one matrix** (their Q8_0 rows stacked as they are): one token at 2048

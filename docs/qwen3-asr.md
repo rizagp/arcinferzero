@@ -123,7 +123,7 @@ Notes from the runs:
 
 | File | What |
 |---|---|
-| zero/engine.h, zero/engine_qwen.h | the Qwen3 dense text model (`load_hparams_qwen3`, `layer_qwen3_attn`; q / k / v and gate / up stacked) |
+| zero/engine.h, zero/engine_qwen.h | the Qwen3 dense text model (`load_hparams_qwen3`, `layer_qwen3_attn`; q / k / v and gate / up stacked; f16 K rows, ops.cl -DK_F16) |
 | zero/audio_qwen3a.h, zero/kernels/asr.cl | the audio encoder |
 | zero/asr_qwen3.h | a transcription: prompt, decoding, output parsing, parts, model lookup |
 | tools/server_whisper_asr.h | Qwen3-ASR and Gemma 4 E4B inside the speech service (included in its class) |
@@ -145,7 +145,9 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
   `--asr <file.gguf>` a given one, `--asr off` none; the mmproj with projector `qwen3a` is found next to it). Gemma 4
   E4B is offered when the model list has it with its audio encoder. `/props` shows
   `"whisper": {"model": "whisper-large-v3", "asr": "qwen3-asr-1.7b", "chat_asr": "gemma4-e4b", ...}`.
-  GPU memory: large-v3 and Qwen3-ASR 8.11 GiB together (turbo and Qwen3-ASR: 5.31).
+  GPU memory: large-v3 and Qwen3-ASR 7.79 GiB together (turbo and Qwen3-ASR before f16 K: 5.31). Note: in the
+  server with large-v3 loaded first, Qwen3-ASR wrote the 2:34 recording's 507 tokens in 24.1 s against 18.7 s on
+  the command line (19.8 s in the server with turbo): not looked into yet.
 - `POST /v1/audio/transcriptions`: no `model`, OpenAI's `whisper-1` or `qwen3-asr` -> Qwen3-ASR; `gemma4-e4b` /
   `e4b` -> Gemma 4 E4B (in parts of up to 2 minutes cut at quiet points, a segment each; the server loads E4B as its
   chat model when another one is loaded); `whisper` or its id -> Whisper large-v3 (word times); any other chat model:
@@ -174,6 +176,6 @@ Checks: `ref_qwen3a mmproj.gguf audio out.ref [seconds]` writes the f32 encoder 
 ## Left to do
 
 - Timestamps (Qwen3-ForcedAligner-0.6B, or cutting at pauses done better than here).
-- Memory: f16 K rows would save ~0.35 GiB more (the float-attention kernels take f32 K, `KC_T`, shared with Gemma 4);
-  the encoder's f16 weights (0.6 GiB) could be int8 as the vision encoders' two-pass path has them.
+- Memory: the encoder's f16 weights (0.6 GiB) could be int8 as the vision encoders' two-pass path has them.
+- The server's slower decoding with Whisper large-v3 loaded before it (see Using it).
 - Streaming (the user's friend runs it in vLLM for voice calls; Qwen's package feeds 2-s chunks).

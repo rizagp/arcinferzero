@@ -547,7 +547,7 @@ class Engine {
   // Qwen KV bytes per position and kv head: K and V int8 + their scales
   size_t kv_pos_bytes() const {
     if (!opt.attn_int8) return 4 * (size_t)hp.head_dim;  // (--attn-f32: f16 K and V rows, load_attn's kc / vc)
-    if (hp.qwen3) return 6 * (size_t)hp.head_dim;       // (Qwen3 dense: f32 K and f16 V rows only)
+    if (hp.qwen3) return (size_t)(kc_bytes() + 2) * hp.head_dim;  // (Qwen3 dense: f16 (or f32) K and f16 V rows only)
     return 2 * (size_t)hp.head_dim + 8;
   }
   size_t mtp_kv_bytes(int c) const {
@@ -1328,7 +1328,7 @@ class Engine {
       if (frows_)  // (the float K / V rows attn_fa_g reads, [kv head][cap][hd], the same 16-row blocks)
         for (int g = 0; g < k.nkv; ++g)
           for (int t = 0; t < 2; ++t) {
-            const size_t unit = (size_t)16 * k.hd * (t == 0 ? 4 : 2), base = (size_t)g * nbc;
+            const size_t unit = (size_t)16 * k.hd * (t == 0 ? kc_bytes() : 2), base = (size_t)g * nbc;
             cl_mem b = t == 0 ? k.L->kc : k.L->vc;
             if (first > 0) v.push_back({b, (base + s0) * unit, (size_t)first * unit});
             if (n > first) v.push_back({b, base * unit, (size_t)(n - first) * unit});
@@ -1667,6 +1667,7 @@ class Engine {
       return (int)v;
     };
     hp.qwen3 = true;
+    kf16_ = !(getenv("ARC_Q3_KF32") && atoi(getenv("ARC_Q3_KF32")) != 0);
     hp.n_layer = I("block_count");
     if (hp.n_layer <= 0 || hp.n_layer > 4096) throw std::runtime_error("invalid block_count in the GGUF");
     hp.n_embd = I("embedding_length");
@@ -2724,9 +2725,9 @@ class Engine {
           L.vq = buf(64);
           L.ksc = buf(64);
           L.vsc = buf(64);
-          L.kc = buf(kvb * 4);
+          L.kc = buf(kvb * kc_bytes());
           L.vc = buf(kvb * 2);
-          fill(L.kc, kvb * 4);
+          fill(L.kc, kvb * kc_bytes());
           fill(L.vc, kvb * 2);
           return;
         }
@@ -3293,6 +3294,9 @@ class Engine {
   // two-pass attention). The offsets come from alloc_buffers' sizes (max_chunk rows of the widest input).
   bool q2_ = false;
   bool frows_ = false;  // (the float K / V rows (f32 K, f16 V) and f32 queries of attn_fa_g: Gemma 4's two-pass mode)
+  // (Qwen3 dense: the K rows in f16 as well (ops.cl -DK_F16); ARC_Q3_KF32=1: f32 as Gemma's)
+  bool kf16_ = false;
+  size_t kc_bytes() const { return kf16_ ? 2 : 4; }
   // (two-pass matmul inputs: Gemma 4's mode, and Flash Next's dense matmuls with ARC_FN_Q2=1, an F21.13 experiment:
   //  363-token KL against f32 0.0483 -> 0.0384, 4K prompt 191 -> 160 tok/s; its experts stay one pass)
   bool q2mm_ = false;
