@@ -1,10 +1,12 @@
 // CPU reference forward for Qwen3.5 (f32 activations, dequantized weights), mirroring llama.cpp's graph.
 // Used to measure how close arcinferzero and llama.cpp are to the unquantized-activation result.
-// usage: ref_forward model.gguf 1,2,3 [arcinferzero_top_logits_file]
+// usage: ref_forward model.gguf 1,2,3|@ids_file [arcinferzero_top_logits_file]
 #include "../src/gguf.h"
 #include "../src/quants.h"
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <algorithm>
 #include <filesystem>
@@ -330,6 +332,16 @@ static void gemma4_layers(const std::vector<int>& toks, std::vector<float>& x) {
   for (int t = 0; t < T; ++t) {
     dequant_row(te.type, te.data + (size_t)toks[t] * (te.nbytes / V), E, &x[(size_t)t * E]);
     for (int i = 0; i < E; ++i) x[(size_t)t * E + i] *= std::sqrt((float)E);
+  }
+  // REF_EMB=file: rows of input embeddings (an audio clip, as zero/vision_testz writes <clip>.g4a.bin: header n_tok,
+  // n_out, the first row's position; f32 rows) in place of the token rows there, unscaled (llama.cpp: raw embeddings
+  // input); the ids at those positions only pick the per-layer embeddings (0: llama.cpp's padding token)
+  if (const char* ef = getenv("REF_EMB")) {
+    FILE* fe = fopen(ef, "rb");
+    int hd[3] = {0, 0, 0};
+    if (!fe || fread(hd, 4, 3, fe) != 3 || hd[1] != E || hd[2] < 0 || hd[2] + hd[0] > T) { fprintf(stderr, "REF_EMB: bad file\n"); exit(1); }
+    if (fread(&x[(size_t)hd[2] * E], 4, (size_t)hd[0] * E, fe) != (size_t)hd[0] * E) { fprintf(stderr, "REF_EMB: short file\n"); exit(1); }
+    fclose(fe);
   }
   // per-layer embeddings (E2B / E4B, as llama.cpp gemma3n / gemma4 and the engine's ple_inputs): per layer NPL values,
   // pl = (rmsnorm(proj(x) / sqrt(E)) * w + tok_embd_pl * sqrt(NPL)) / sqrt(2); at the end of layer il,
@@ -968,7 +980,16 @@ int main(int argc, char** argv) {
   A = f.get_str("general.architecture");
   open_package(argv[1]);
   std::vector<int> toks;
-  { std::stringstream ss(argv[2]); std::string s; while (std::getline(ss, s, ',')) toks.push_back(std::stoi(s)); }
+  {  // (ids "1,2,3", or @file holding them)
+    std::string ids = argv[2];
+    if (ids[0] == '@') {
+      std::ifstream fi(ids.substr(1), std::ios::binary);
+      ids.assign(std::istreambuf_iterator<char>(fi), std::istreambuf_iterator<char>());
+    }
+    std::stringstream ss(ids);
+    std::string s;
+    while (std::getline(ss, s, ',')) toks.push_back(std::stoi(s));
+  }
   const int T = (int)toks.size();
   const int nl = hp("block_count") - hp("nextn_predict_layers", 0), E = hp("embedding_length");
   const int nh = hp("attention.head_count"), nkv = hp("attention.head_count_kv"), hd = hp("attention.key_length");

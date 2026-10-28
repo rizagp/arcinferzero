@@ -175,13 +175,14 @@ Optional tools (tests and benchmarks):
 
 ```powershell
 .\build.ps1 tools\tok_test.cpp tools\chat_render.cpp tools\ref_forward.cpp tools\gguf_dump.cpp tools\tool_stream_test.cpp
-.\build.ps1 zero\vision_testz.cpp tools\gemma4v_ref.cpp
+.\build.ps1 zero\vision_testz.cpp tools\gemma4v_ref.cpp tools\gemma4a_ref.cpp
 .\build.ps1 bench\gemv_bench.cpp bench\attn_dec_bench.cpp bench\attn_bench.cpp bench\bw_bench.cpp
 ```
 
 `zero\vision_testz` times an image through a model's encoder (Gemma 4 or Qwen3-VL `mmproj`, `ARC_PROF=1` per kernel)
 and with `ARC_VIS_LM=file` writes the model's log-probabilities for 32 tokens after the image, to compare two encoder
-builds or against `tools\gemma4v_ref` (the Gemma 4 encoder in f32 on the CPU). `runz --bench-batch N --prof-gen`
+builds or against `tools\gemma4v_ref` (the Gemma 4 encoder in f32 on the CPU); an audio clip with E4B's `mmproj`
+the same against `tools\gemma4a_ref` (its audio conformer in f32; `ARC_AUDIO_EMB` runs the model on those rows). `runz --bench-batch N --prof-gen`
 shows each kernel's GPU time of a decoding step alone and batched; `ARC_KLIST=1` prints the cache file and build
 options of every kernel, to read the driver's own assembly with Intel's `ocloc disasm`
 ([docs/kernel-audit-2026-10-27.md](docs/kernel-audit-2026-10-27.md)). The source builds warning-free at
@@ -216,6 +217,9 @@ in the same folder as the model: download them from the same repository in the s
 
 With their `mmproj` file next to the model, Gemma 4 12B and E4B read images and audio, and Gemma 4 26B, Qwen3.5
 4B / 9B, Qwen3.8 27B and Qwen3.6 35B read images (all encoders run on the GPU).
+For speech, prefer E4B: the 12B has no audio encoder (its projector maps raw 40-ms waveform frames straight into
+the model), and on noisy recordings of mixed Indonesian and English it made up sentences or repeated a word where
+E4B's conformer transcribed them; llama.cpp's mtmd gives the 12B the same answers. Clear speech it transcribes well.
 
 Shortcuts (`pi-arc <shortcut>`, `arc-server start -Model <shortcut>`): `27b`, `35b`, `35b-s`, `35b-mtp`, `flash`,
 `9b`, `4b`, `g12`, `e4b`, `g26`. Other GGUFs of these architectures get an id from their file name (`pi-arc --pick`

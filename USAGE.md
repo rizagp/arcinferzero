@@ -379,7 +379,8 @@ While the server is running:
   - **OpenAI Responses**: `/v1/responses` (used e.g. by Codex CLI); the old **Completions**: `/v1/completions`
     (raw prompt, for code autocomplete).
   - **Audio transcription**: `/v1/audio/transcriptions` (upload an audio file, the result is text; needs Gemma 4
-    12B / E4B, which have an audio encoder).
+    12B / E4B, which hear audio; E4B is the better listener: the 12B, without an audio encoder, may make up text
+    for a noisy recording).
 - Embeddings (`/v1/embeddings`) are not available yet: they need an embedding model with an architecture the engine
   does not support yet.
 - **Web UI: automatic compaction.** The top right shows the context use ("context 12.3K / 40.9K"). If the next
