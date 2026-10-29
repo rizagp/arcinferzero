@@ -65,7 +65,10 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 .jobsbar button { color: var(--danger); font-size: 13px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); }
 .conv .snip { color: var(--muted); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv .del { position: absolute; right: 10px; bottom: 8px; width: 26px; height: 26px; border-radius: 50%; display: none; place-items: center; color: var(--muted); background: var(--side); }
-.conv:hover .del { display: grid; }
+/* (a touch screen has no hover: there a first tap that shows the button is taken as the hover alone (iOS), so the
+   chat did not open; the button is shown on hover with a mouse, always on a touch screen) */
+@media (hover: hover) { .conv:hover .del { display: grid; } }
+@media (hover: none) { .conv .del { display: grid; } .conv .snip { padding-right: 30px; } }
 .conv .del svg { width: 16px; height: 16px; }
 .list .none { color: var(--muted); text-align: center; padding: 30px 20px; font-size: 13.5px; }
 .av { border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 600; font-size: 17px; }
@@ -117,7 +120,8 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 .menu.mention { top: auto; bottom: 62px; left: 64px; }
 .menu.mention button.sel { background: var(--active); }
 .msg .more { position: absolute; top: 2px; right: 4px; width: 24px; height: 22px; border-radius: 4px; display: none; place-items: center; color: var(--muted); background: inherit; z-index: 1; }
-.msg:hover .more { display: grid; }
+@media (hover: hover) { .msg:hover .more { display: grid; } }
+@media (hover: none) { .msg .more { display: grid; } }  /* (as .conv .del: no first tap lost to the hover) */
 .msg .more svg { width: 18px; height: 18px; }
 .msg.old .more { display: none !important; }
 .menu.bubble { position: fixed; top: 0; left: 0; min-width: 150px; }

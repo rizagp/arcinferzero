@@ -10,6 +10,9 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **Web UI on a phone**: tapping a chat in the list did not open it: the row's delete button appeared on hover, and a
+  touch screen (iOS) takes the first tap that shows something as the hover alone. Touch screens now show the delete
+  button (and a message's menu button) all the time; with a mouse they appear on hover as before.
 - **Web UI lighter on the browser**: the transcript player's word highlight runs a frame loop only while the media
   plays (it ran 60 times a second all the time, so the page never went idle); a streaming answer is rendered again
   only when its text changed, at a gap that grows with the render's cost (8x its time, at least 120 ms, so a very
