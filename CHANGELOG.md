@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-29: the data folder is %USERPROFILE%\.arcinferzero; Qwen3-ASR keeps the language
+## 2026-10-29: the data folder is %USERPROFILE%\.arcinferzero; Qwen3-ASR keeps the language; Flash Next images
 
 - The data folder (kernel cache, model packages and expert files, caches, logs, settings, chats, transcripts,
   recordings) is now `%USERPROFILE%\.arcinferzero`, a dot folder like the other tools' folders in the user's profile
@@ -10,6 +10,12 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **Flash Next reads images right**: an image's rows went into the model as single rows of its width, while Flash
+  Next keeps every row as 4 hyper-connection streams, so four image rows shared one row and the PLE n-gram block read
+  the previous text's rows. Each row now goes in as its 4 streams with the n-gram rows of `<|image_pad|>` (the model's
+  `ple.image_token_id`). A test picture's "PROFIL RISIKO 2026", read as "PFILIKO 2013" before, is now read right.
+  Its image projector: `mmproj-Qwen3.8-Flash-Next-f16.gguf` from bartowski/Qwen3.8-Flash-Next-GGUF, next to the
+  model (or its package).
 - **Qwen3-ASR keeps to the transcript's language**: the request's language (a code, or the first of a list such as
   `id,en`) is now forced (`language Indonesian<asr_text>`), and the Web UI's default is Indonesian. Detection named
   most parts of a 26-min Indonesian meeting Malay, and one part drifted into Malay words; forced Indonesian kept every

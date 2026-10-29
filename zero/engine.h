@@ -56,6 +56,7 @@ struct Hparams {
   bool hc = false;
   int hc_n = 1, hc_lr = 0, ple_layer = -1, ple_dim = 0, ple_ng = 0, ple_per = 0, ple_taps = 0;
   int64_t ple_eos = -1;
+  int ple_img = -1;  // (ple.image_token_id, <|image_pad|>: the id of an image's rows in the n-gram hash)
   std::vector<int64_t> ple_mult, ple_off, ple_voc;
   // QSA sparse attention (Flash Next): block size per layer (0: dense), indexer heads / key size, keys selected
   std::vector<int> qsa_ratio;
@@ -369,10 +370,27 @@ class Engine {
     if (pos + n > ctx) throw std::runtime_error("context overflow");
     const int Mp = n >= 128 ? std::min((n + 127) / 128 * 128, max_chunk) : (n + 15) / 16 * 16;
     cur_T_ = n;
-    std::fill(x_host_.begin(), x_host_.begin() + (size_t)Mp * hp.n_embd, 0.0f);
-    std::copy(embd, embd + (size_t)n * hp.n_embd, x_host_.begin());
-    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, (size_t)Mp * hp.n_embd * 4, x_host_.data(), 0, nullptr,
-                                  nullptr));
+    if (hp.hc) {
+      // Flash Next: each row as hc_n copies, its residual streams (as embed lays out a token's), and the PLE n-gram
+      // rows of <|image_pad|> (ple.image_token_id) for its id; a row of n_embd laid out as one stream put four image
+      // rows into one row's streams, and the PLE block read the last text chunk's rows
+      const int W = hp.hce(), E = hp.n_embd;
+      attn_in_ready_ = ffn_in_ready_ = false;  // (as embed)
+      std::fill(x_host_.begin(), x_host_.begin() + (size_t)Mp * W, 0.0f);
+      for (int t = 0; t < n; ++t)
+        for (int c = 0; c < hp.hc_n; ++c)
+          std::copy(embd + (size_t)t * E, embd + (size_t)(t + 1) * E, x_host_.begin() + (size_t)t * W + (size_t)c * E);
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, (size_t)Mp * W * 4, x_host_.data(), 0, nullptr, nullptr));
+      if (hp.ple_layer >= 0) {
+        const std::vector<int> ids(n, hp.ple_img >= 0 ? hp.ple_img : (int)hp.ple_eos);
+        ple_embed(ids.data(), n);
+      }
+    } else {
+      std::fill(x_host_.begin(), x_host_.begin() + (size_t)Mp * hp.n_embd, 0.0f);
+      std::copy(embd, embd + (size_t)n * hp.n_embd, x_host_.begin());
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, (size_t)Mp * hp.n_embd * 4, x_host_.data(), 0, nullptr,
+                                    nullptr));
+    }
     if (hp.n_ple) {
       // E2B / E4B: every embedding row takes the per-layer token embedding of token 0 (padding), combined as usual
       // with the projection of the row itself (llama.cpp models/gemma4.cpp, TAG_GEMMA4_IMG_PADDING)
@@ -1601,6 +1619,7 @@ class Engine {
         hp.ple_per = I("ple.heads_per_ngram");
         hp.ple_taps = I("ple.conv_kernel");
         hp.ple_eos = f_.get_int(a + ".ple.eos_token_id", -1);
+        hp.ple_img = (int)f_.get_int(a + ".ple.image_token_id", -1);
         for (auto [key, v] : {std::pair{"ple.layer_multipliers", &hp.ple_mult}, std::pair{"ple.head_offsets", &hp.ple_off},
                               std::pair{"ple.head_vocab_sizes", &hp.ple_voc}})
           if (const auto* x = f_.get_ints(a + "." + key)) v->assign(x->begin(), x->end());

@@ -110,7 +110,8 @@
   }
   // n-gram rows of the chunk's tokens (host hash, rows read from the table in the GGUF) into ple_emb_; advances the
   // token history (host and the PLE layer's state). llama.cpp qwen4exp: predecessors that are missing (sequence
-  // start) or an EOS cut the window; everything at or before the cut reads as EOS.
+  // start) or an EOS cut the window; everything at or before the cut reads as EOS. An image's rows (forward_embd)
+  // are <|image_pad|> here, ple.image_token_id, as the model's own input ids have them.
   void ple_embed(const int* tokens, int T) {
     const auto h0 = hclk::now();
     struct Acc { double& t; hclk::time_point a; ~Acc() { t += hms(a); } } acc{hst_ple_ms_, h0};
