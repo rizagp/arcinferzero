@@ -199,9 +199,16 @@ $gsq35 = Join-Path $arcModels "Qwen3.6-35B-A3B-GSQ2-arc.gguf"
 # (35b-gsq: the 2-bit GSQ file, converted with Python: smaller, no MTP; setup's own step)
 $catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6 35B-A3B 2-bit GSQ (converted; needs Python)"
     repo = "ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ"; gb = 12.6; files = @() })
+$ErrorActionPreference = "Continue"
+$listed = @(& (Join-Path $bin "serverz.exe") --list-models 2>$null | ConvertFrom-Json | ForEach-Object { $_ })
+$ErrorActionPreference = "Stop"
+# (in the Hugging Face cache, or anywhere the server finds the same file: a package in .arcinferzero\zero\models, a
+#  folder of model-dirs.txt; before, a 35B kept as a package was offered for download again)
 function Present($m) {
   if ($m.key -eq "35b-gsq") { return Test-Path $gsq35 }
-  return Test-ArcModel $m $hub
+  if (Test-ArcModel $m $hub) { return $true }
+  $main = Split-Path $m.files[0] -Leaf
+  return [bool]($listed | Where-Object { $_.file -eq $main -or ($_.path -and (Split-Path $_.path -Leaf) -eq $main) })
 }
 foreach ($m in $catalog) { $m | Add-Member have (Present $m) }
 foreach ($m in $catalog) {
@@ -313,5 +320,7 @@ Write-Host "Done." -ForegroundColor Green
 if ($hasPi -and -not $NoPi) {
   Write-Host "  Open a new terminal, go to a project folder and run:  pi-arc        (pi-arc --help: all options)"
 }
-Write-Host "  Server without Pi:  scripts\arc-server.ps1 start   (web UI http://127.0.0.1:8090/, API http://127.0.0.1:8090/v1)"
+Write-Host "  The easiest start: double-click arc-launcher.cmd (choose a model, Start: the web UI opens in the browser;"
+Write-Host "  'Get models' downloads more)."
+Write-Host "  Server without Pi:  arc-server start   (web UI http://127.0.0.1:8090/, API http://127.0.0.1:8090/v1)"
 Write-Host "  The first start of a model compiles its GPU kernels once (a minute or two)."

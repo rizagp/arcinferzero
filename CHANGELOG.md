@@ -2,6 +2,10 @@
 
 ## 2026-10-29 (evening): a ready-to-use package for people who never open a terminal
 
+- **setup (the installer from the sources)**: a model the server already finds outside the Hugging Face cache (a
+  package in `.arcinferzero\zero\models`, a `model-dirs.txt` folder) counts as there (the packaged 35B was offered for
+  download again); `setup.cmd` ends with setup's exit code (it said 0 after a failure) and, double-clicked, keeps its
+  window open at the end; the last lines point to `arc-launcher.cmd`.
 - **Precise mode as an option**: `arc-server start -Precise` / `-NoPrecise`, `pi-arc --precise`, the launcher's
   "Accuracy" box (Flash Next only) and the server's `--precise` (the same as `ARC_FN_PRECISE=1`, which works as
   before); kept on a restart and a model switch like `-Npu`, reported by `arc-server status` and in the server log.

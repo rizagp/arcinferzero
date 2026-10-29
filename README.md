@@ -144,7 +144,11 @@ memory), downloads the chosen models into the Hugging Face cache without Python 
 projector; `35b-gsq` is the one model converted with Python, then it installs `huggingface_hub` / `numpy` with pip
 after asking), and
 connects Pi (`pi-arc`, `arc-server`, Pi's model list with each model's context). Running it again only does what
-is missing. Steps 1–10 describe the same by hand.
+is missing: a model the server already finds (in the Hugging Face cache, as a package in
+`%USERPROFILE%\.arcinferzero\zero\models` or in a folder of `model-dirs.txt`) is not downloaded again. Double-clicked,
+its window stays open at the end so the result can be read; it ends with setup's exit code (1 when a step failed).
+Afterwards the easiest start is `arc-launcher.cmd` (see the package's steps above). Steps 1–10 describe the same by
+hand.
 
 ### 1. Requirements
 
@@ -188,7 +192,9 @@ already contains everything it needs to build (`third_party\` holds minja and nl
 This takes a few minutes and writes `bin\serverz.exe` / `bin\runz.exe` (arcinferzero: the HTTP server and the
 command-line tool for runs, benchmarks and accuracy checks) and `bin\clinfo.exe`. `zero\serverz.cpp` compiles
 `tools\server.cpp` (the HTTP API) on the Level Zero engine. Run the programs from the project folder, because they
-read `zero\kernels\*.cl` and `webui\` from there.
+read `zero\kernels\*.cl` and `webui\` from there. They are built with the C++ runtime inside (`/MT`) and the OpenMP
+runtime `vcomp140.dll`, which `build.ps1` copies into `bin\` from Visual Studio's redistributable folder: the folder
+runs on a PC without Visual Studio or the Visual C++ Redistributable.
 
 Check that the GPU is usable:
 
@@ -218,7 +224,10 @@ options of every kernel, to read the driver's own assembly with Intel's `ocloc d
 
 ### 6. Download models
 
-Install the Hugging Face command-line tool once:
+Without Python: `powershell -File scripts\get-models.ps1 4b asr` (the keys of `setup.cmd -Models`, from
+`scripts\model-catalog.ps1`), or any repository's files with
+`powershell -File scripts\hf-get.ps1 <org/name> <file> ...` (curl.exe, resumed after a cut, SHA256 checked, into
+the Hugging Face cache). With Python, install the Hugging Face command-line tool once:
 
 ```powershell
 python -m pip install -U huggingface_hub
