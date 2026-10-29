@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-29: the data folder is %USERPROFILE%\.arcinferzero
+
+- The data folder (kernel cache, model packages and expert files, caches, logs, settings, chats, transcripts,
+  recordings) is now `%USERPROFILE%\.arcinferzero`, a dot folder like the other tools' folders in the user's profile
+  (`.cache`, `.pi`, `.vscode`). The first exe or script that finds only the old `%USERPROFILE%\arcinferzero` (or an
+  older `%LOCALAPPDATA%` one) moves it: a rename on the same drive, instant, nothing is copied. The paths in
+  `last-model.txt`, `launcher.json`, `ctx-auto.txt` and now also `server.json` follow it. `ARC_DATA_DIR` still
+  overrides the place.
+
 ## 2026-10-28: the launcher, setup and the docs brought up to date
 
 - **arc-launcher**: every arc-server option now has its field: speech to text (Speech, Qwen3-ASR, Whisper's encoder,

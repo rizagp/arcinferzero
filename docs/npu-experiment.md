@@ -65,7 +65,7 @@ before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`)
   NPU's weight rows are not kept: per layer the GPU decodes them from its own W8 form into the shared block
   (`npu_w8rows`, once per layer and prompt segment; until 2026-10-25 a resident copy took 5.8 GiB more, same speed).
 - The first prompt with a new chunk height (multiples of 1024 rows, 2048-4096) compiles its graphs (10-30 s each
-  kind), later ones load them in milliseconds from `%USERPROFILE%\arcinferzero\npu`.
+  kind), later ones load them in milliseconds from `%USERPROFILE%\.arcinferzero\npu`.
 
 ## What runs where
 

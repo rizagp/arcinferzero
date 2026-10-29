@@ -1,6 +1,6 @@
 // arcinferzero NPU experiment: the NPU through Level Zero's graph extension (no OpenVINO): device and context,
 // graphs compiled from npu::Ir with a blob cache (the driver's compiler takes 10-60 s for a large graph: its native
-// binary is saved under %USERPROFILE%\arcinferzero\npu and loaded as ZE_GRAPH_FORMAT_NATIVE next time), memory
+// binary is saved under %USERPROFILE%\.arcinferzero\npu and loaded as ZE_GRAPH_FORMAT_NATIVE next time), memory
 // shared with another Level Zero context (external memmap), arguments by name, runs on an immediate command list.
 #pragma once
 #include "../../src/app_dir.h"
@@ -90,7 +90,7 @@ struct Rt {
     if (zeContextCreate(drv, &cd, &ctx) != 0) return false;
     ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 0, 0, 0};
     if (zeCommandListCreateImmediate(ctx, dev, &qd, &cl) != 0) return false;
-    cache_dir = app_dir() + "\\npu";  // (src/app_dir.h: %USERPROFILE%\arcinferzero)
+    cache_dir = app_dir() + "\\npu";  // (src/app_dir.h: %USERPROFILE%\.arcinferzero)
     return true;
   }
   // compiled graph of ir: from the blob cache when it holds one for this model text and compiler, else compiled (and

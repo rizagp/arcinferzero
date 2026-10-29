@@ -36,12 +36,12 @@ STEPS
                    Missing ones: where to get them.
   2 build          bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe (Whisper), arc_recorder.exe (meetings)
                    when missing or older than their sources; the compiler
-                   output goes to %USERPROFILE%\arcinferzero\build.log (shown when a build fails). A running server
+                   output goes to %USERPROFILE%\.arcinferzero\build.log (shown when a build fails). A running server
                    is stopped first if serverz.exe has to be rebuilt.
   3 GPU check      bin\clinfo.exe: OpenCL device, DP4a (cl_khr_integer_dot_product), Intel sub-groups, GPU memory
   4 models         into the Hugging Face cache (HF_HUB_CACHE / HF_HOME respected): Gemma with its drafter and
                    image projector; the 35B downloaded and converted (tools\convert_gsq.py, with the 4B for its
-                   tokenizer) into %USERPROFILE%\arcinferzero\models. huggingface_hub / numpy are installed with
+                   tokenizer) into %USERPROFILE%\.arcinferzero\models. huggingface_hub / numpy are installed with
                    pip after asking; the free disk space is checked. Then: every model the server finds, with
                    its context for the current GPU memory.
   5 Pi             scripts\install-pi.ps1: the pi-arc and arc-server commands, Pi's model list
@@ -121,7 +121,7 @@ if ($hasPi) { Ok "Pi: $piBin" } elseif (-not $NoPi) { Note "Pi not found (option
 
 # ---------------------------------------------------------------- 2. build
 Head 2 "Build"
-# compiler output goes to %USERPROFILE%\arcinferzero\build.log; shown only when a build fails
+# compiler output goes to %USERPROFILE%\.arcinferzero\build.log; shown only when a build fails
 . (Join-Path $root "scripts\app-dir.ps1")
 $buildLog = Join-Path (Get-AppDir) "build.log"
 New-Item -ItemType Directory -Force (Split-Path $buildLog) | Out-Null

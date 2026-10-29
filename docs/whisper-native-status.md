@@ -135,7 +135,7 @@ is decoded as it is read: the CLI no longer reads a video of gigabytes into memo
 hours never sit in memory at once.
 
 The transcript library (`/v1/transcripts`, for the Transcript tab): each transcript in its own folder under
-`%USERPROFILE%\arcinferzero\transcripts\<id>\` (`meta.json`, the uploaded file, `transcript.json`); files uploaded
+`%USERPROFILE%\.arcinferzero\transcripts\<id>\` (`meta.json`, the uploaded file, `transcript.json`); files uploaded
 in pieces (any size the disk holds), a queue transcribed one file at a time with progress, cancel (what was done is
 kept), delete (also while running), exports in every format with the cue options, the media with byte ranges, edits
 saved over the transcript, and a restart that transcribes again what was queued or running. Checked end to end

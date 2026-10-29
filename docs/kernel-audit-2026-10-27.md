@@ -1,7 +1,7 @@
 # Kernel audit with ocloc (2026-10-27)
 
 The GPU assembly of the kernels the engine runs, read for work that is not needed. The binaries are the driver's own,
-taken from the kernel cache (`%USERPROFILE%\arcinferzero\kernels`, file = FNV-1a of source + options + device, as
+taken from the kernel cache (`%USERPROFILE%\.arcinferzero\kernels`, file = FNV-1a of source + options + device, as
 `zero/clrt.h` names it; `ARC_KLIST=1` prints the file and options of every kernel built) and disassembled with
 `ocloc disasm`; variants were compiled with ocloc 2026.1 (a newer compiler than the driver's). Nothing measured on
 the GPU yet: every gain below is an estimate until measured, and every fix has to keep the logits bit-identical

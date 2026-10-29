@@ -1,7 +1,7 @@
 # Starts / stops the arcinferzero server in the background for Pi and other OpenAI-compatible clients.
 #
 #   arc-server start                  asks which model to load: every supported GGUF model in the Hugging Face cache
-#                                     (and %USERPROFILE%\arcinferzero\models), listed by its full name; Enter keeps the
+#                                     (and %USERPROFILE%\.arcinferzero\models), listed by its full name; Enter keeps the
 #                                     running one. Waits until the server is ready.
 #   arc-server start -Model 27b       the same without asking: a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26,
 #                                     with -mtp / -vision / -std / -nodf / -df for a variant), a model id, part of a model's
@@ -23,7 +23,7 @@
 #                                     Transcripts / Meetings tabs, voice messages, /v1/audio/transcriptions
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
-# Log: %USERPROFILE%\arcinferzero\server.log
+# Log: %USERPROFILE%\.arcinferzero\server.log
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "help", "--help", "-h")] [string]$Action = "start",
   [string]$Model = "",
@@ -67,7 +67,7 @@ if ($Ctx -eq "0") { $Ctx = "" }
 if ($Ctx -and $Ctx -ne "auto" -and $Ctx -notmatch '^\d+$') { throw "-Ctx: a number of tokens or auto (got '$Ctx')" }
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot "app-dir.ps1")
-$stateDir = Get-AppDir  # (%USERPROFILE%\arcinferzero; renamed from arcinfer once)
+$stateDir = Get-AppDir  # (%USERPROFILE%\.arcinferzero; renamed from arcinfer once)
 New-Item -ItemType Directory -Force $stateDir | Out-Null
 # the engine: arcinferzero (Level Zero); -NoStream keeps every expert on the GPU
 $Engine = if ($NoStream) { "zero-nostream" } else { "zero" }
@@ -86,7 +86,7 @@ $base = "http://127.0.0.1:$Port"
 # saved conversations (server --session-cache-gb, default 8 GB)
 $sessDir = if ($SessionDir) { $SessionDir } else { Join-Path $stateDir "zero\sessions" }  # (status / clear-cache: -SessionDir's folder)
 
-# The models come from `serverz.exe --list-models` (Hugging Face cache + %USERPROFILE%\arcinferzero\models): name, file,
+# The models come from `serverz.exe --list-models` (Hugging Face cache + %USERPROFILE%\.arcinferzero\models): name, file,
 # alias (= the model id of the API and Pi), shortcut, the context --ctx auto chose for the current GPU memory. The
 # context is auto unless -Ctx is given: the largest that fits the GPU memory currently set less 1.2 GiB for the
 # driver, at most the trained one (Intel Graphics Software can change the GPU memory; it is then
@@ -199,12 +199,12 @@ arc-server: the arcinferzero server in the background (port $Port), for Pi and o
   arc-server status              running model, its context and chunk size, saved conversations
   arc-server stop                stop the server and free the GPU memory
   arc-server clear-cache         delete saved conversations (session cache). Saved system prompts (per project
-                                 folder, 8 GB in all, reused across restarts) are in %USERPROFILE%\arcinferzero\zero\prefix;
+                                 folder, 8 GB in all, reused across restarts) are in %USERPROFILE%\.arcinferzero\zero\prefix;
                                  deleting that folder is safe while the server is stopped.
   arc-server record [-App Zoom.exe] [-NoMic] [-Title "weekly"]
                                  record a meeting in the background (bin\arc_recorder.exe): your microphone as
                                  "Me", the app's sound (Zoom.exe, Teams.exe, chrome.exe...; without -App: all the
-                                 speakers play) as "Others", into %USERPROFILE%\arcinferzero\recordings\. It goes on
+                                 speakers play) as "Others", into %USERPROFILE%\.arcinferzero\recordings\. It goes on
                                  if the server stops or restarts.
   arc-server record-stop         end it: the server transcribes it (Me / Others) in the Meetings tab, now or
                                  at its next start
@@ -249,7 +249,7 @@ Options for start / restart:
                                  experts (MTP layer included) on the SSD and the most used ones in a GPU cache
                                  and read the next layer's missing experts while the GPU computes (35B and Flash
                                  Next: 131,072 tokens of context by default, up to 262,144 with -Ctx). The first start writes the expert file (35B: 16 GB, ~2.5 min; Flash Next:
-                                 56 GB, ~9.5 min; Gemma 4 26B: 13 GB, ~1 min) to %USERPROFILE%\arcinferzero\zero (safe
+                                 56 GB, ~9.5 min; Gemma 4 26B: 13 GB, ~1 min) to %USERPROFILE%\.arcinferzero\zero (safe
                                  to delete: it is written again).
   -Vision on|off                 image / audio input (default on). off: the projector (mmproj) is not loaded and
                                  --ctx auto keeps no GPU memory for it, so the context is longer
@@ -264,7 +264,7 @@ Options for start / restart:
   -NoPrefixCache                 do not keep system prompts on disk;  -PrefixCacheGb <N>  their disk space (8)
   -NoSwap                        the server keeps its model (requests for another model do not switch)
   -ListenHost <addr>             listen address (default 127.0.0.1; 0.0.0.0 = other computers too)
-  -SessionDir <folder>           where saved conversations go (default %USERPROFILE%\arcinferzero\zero\sessions)
+  -SessionDir <folder>           where saved conversations go (default %USERPROFILE%\.arcinferzero\zero\sessions)
   -Quiet                         no messages
 A running server is kept when the model and every option given match; otherwise it is restarted with them.
 

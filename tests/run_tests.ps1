@@ -21,9 +21,9 @@
 #   -Port <n>                  server smoke-test port (default 8091)
 #
 # Models that are not given are searched in the Hugging Face cache (HF_HUB_CACHE, HF_HOME\hub or
-# %USERPROFILE%\.cache\huggingface\hub: models--*\snapshots), in %USERPROFILE%\arcinferzero\zero\models (MoE packages)
-# and \models (setup's converted 35B), and in the folders listed one per line in %USERPROFILE%\arcinferzero\model-dirs.txt (# starts a comment; missing folders, e.g.
-# an unplugged drive, are ignored). A check whose model is missing prints [SKIP] and does not fail.
+# %USERPROFILE%\.cache\huggingface\hub: models--*\snapshots), in %USERPROFILE%\.arcinferzero\zero\models (MoE packages)
+# and \models (setup's converted 35B), and in the folders listed one per line in
+# %USERPROFILE%\.arcinferzero\model-dirs.txt (# starts a comment; missing folders, e.g. an unplugged drive, are ignored). A check whose model is missing prints [SKIP] and does not fail.
 #
 # Checks: model-free unit tests (HTTP parser, API compatibility, expert-cache pools, tool-call streaming, chat
 # template rendering vs the GGUF Jinja templates, hyper-connection kernels), tokenizer vs reference ids, next-token

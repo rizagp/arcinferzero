@@ -246,14 +246,14 @@ python -m pip install -U numpy
 hf download ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ
 $snap = (Get-ChildItem "$env:USERPROFILE\.cache\huggingface\hub\models--ISTA-DASLab--Qwen3.6-35B-A3B-2Bit-GSQ\snapshots" | Select-Object -First 1).FullName
 $vocab = (Get-ChildItem "$env:USERPROFILE\.cache\huggingface\hub" -Recurse -Filter "Qwen3.5-4B-UD-Q4_K_XL.gguf" | Select-Object -First 1).FullName
-New-Item -ItemType Directory -Force "$env:USERPROFILE\arcinferzero\models" | Out-Null
-python tools\convert_gsq.py $snap "$env:USERPROFILE\arcinferzero\models\Qwen3.6-35B-A3B-GSQ2-arc.gguf" --vocab-from $vocab
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.arcinferzero\models" | Out-Null
+python tools\convert_gsq.py $snap "$env:USERPROFILE\.arcinferzero\models\Qwen3.6-35B-A3B-GSQ2-arc.gguf" --vocab-from $vocab
 ```
 
 The int8 matrices become Q8_0 with the same int8 values (f16 scales), the experts keep their exact 2-bit codes in
 the layout of `zero/kernels/moe.cl`, and the tensor transforms follow llama.cpp's converter (DeltaNet V-head order,
 norm weights + 1, A = -exp(A_log)). The checkpoint's MTP block has no routed experts, so this model runs without
-speculative decoding. `arc-server` / `pi-arc` find the converted file in `%USERPROFILE%\arcinferzero\models`.
+speculative decoding. `arc-server` / `pi-arc` find the converted file in `%USERPROFILE%\.arcinferzero\models`.
 
 ### 8. First run
 
@@ -262,10 +262,10 @@ speculative decoding. `arc-server` / `pi-arc` find the converted file in `%USERP
 ```
 
 This starts arcinferzero. The first start of each model compiles its GPU
-kernels (up to a minute or two); they are cached in `%USERPROFILE%\arcinferzero\kernels`, so later starts take 5–40 s
+kernels (up to a minute or two); they are cached in `%USERPROFILE%\.arcinferzero\kernels`, so later starts take 5–40 s
 (mostly reading the model file). The first arcinferzero start of a mixture-of-experts model also writes its expert
 file once (35B UD-IQ4_XS: 16 GB, about 2.5 minutes; Qwen3.8 Flash Next: 56 GB, about 9.5 minutes; later loads through the
-server ~21–26 s) to `%USERPROFILE%\arcinferzero\zero\`; it can be deleted at any time and is written again when missing. Then open the web
+server ~21–26 s) to `%USERPROFILE%\.arcinferzero\zero\`; it can be deleted at any time and is written again when missing. Then open the web
 UI at http://127.0.0.1:8090/ or call the OpenAI API at `http://127.0.0.1:8090/v1`. `arc-server status` shows what
 is running and `arc-server stop` frees the GPU memory.
 
@@ -319,10 +319,10 @@ test uses port 8091 and needs the GPU memory.
 | Symptom | Fix |
 |---|---|
 | `cannot load OpenCL.dll` / `no OpenCL GPU found` | Install or update the Intel graphics driver (step 2) and restart. |
-| `build failed` right away / `No Visual Studio C++ compiler found` | Visual Studio's C++ workload is missing (step 3); to use a particular installation, set `$env:ARC_VCVARS` to its `vcvars64.bat`. `setup.cmd` checks this. The compiler output of `setup.cmd` is in `%USERPROFILE%\arcinferzero\build.log`. |
+| `build failed` right away / `No Visual Studio C++ compiler found` | Visual Studio's C++ workload is missing (step 3); to use a particular installation, set `$env:ARC_VCVARS` to its `vcvars64.bat`. `setup.cmd` checks this. The compiler output of `setup.cmd` is in `%USERPROFILE%\.arcinferzero\build.log`. |
 | `running scripts is disabled on this system` | Run the script through `powershell -ExecutionPolicy Bypass -File ...` (see the top of this section). |
-| `Model file ... not found` | Download it with `hf download` (step 6); `arc-server` searches `%USERPROFILE%\arcinferzero\models` and the Hugging Face cache (models on another drive: [USAGE.md, section 8](USAGE.md#8-troubleshooting)). |
-| The first start of a model takes minutes | The driver compiles the kernels once; later starts use `%USERPROFILE%\arcinferzero\kernels`. |
+| `Model file ... not found` | Download it with `hf download` (step 6); `arc-server` searches `%USERPROFILE%\.arcinferzero\models` and the Hugging Face cache (models on another drive: [USAGE.md, section 8](USAGE.md#8-troubleshooting)). |
+| The first start of a model takes minutes | The driver compiles the kernels once; later starts use `%USERPROFILE%\.arcinferzero\kernels`. |
 | Gemma does not use its drafter | `mtp-gemma-4-*-it.gguf` must be in the same folder as the model GGUF (download it from the same repository). |
 | Later problems (the server stops while loading, Windows gets slow, Pi's `web_search`, slow first sessions, models on another drive) | [USAGE.md, section 8](USAGE.md#8-troubleshooting). |
 
@@ -331,7 +331,7 @@ test uses port 8091 and needs the GPU memory.
 ```powershell
 .\bin\serverz.exe -m C:\path\to\model.gguf --port 8080 --ctx auto --mtp --alias qwen3.8-27b
 .\bin\serverz.exe --help           # every option with its default
-.\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\arcinferzero\models, model-dirs.txt), as JSON
+.\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.arcinferzero\models, model-dirs.txt), as JSON
 ```
 
 - Web UI: http://127.0.0.1:8080/: chats with images, audio and files (one folder per chat, kept by the server),
@@ -383,7 +383,7 @@ test uses port 8091 and needs the GPU memory.
   prompt blocks that were complete stay processed. A reply the client drops after an abort or error costs nothing
   on the next request: the resume point sits at the start of the reply's turn header.
 - System-prompt cache: the state after a client's system prompt (Pi: ~4K tokens; it contains the project folder
-  and its `AGENTS.md`, so each project has its own) is saved to `%USERPROFILE%\arcinferzero\zero\prefix\<model>` the first
+  and its `AGENTS.md`, so each project has its own) is saved to `%USERPROFILE%\.arcinferzero\zero\prefix\<model>` the first
   time it is processed, written in the background, and loaded when a request starts with it while the server holds
   something else: after a server start, a model switch or another project's conversation. Pi's are kept per project
   folder (read from the `<cwd>` section of its system prompt): each folder keeps its 2 latest versions, which other
@@ -402,7 +402,7 @@ test uses port 8091 and needs the GPU memory.
   fails ends its requests and starts their conversations over. Use and speeds:
   [USAGE.md, section 3](USAGE.md#3-managing-the-server).
 - Session cache: when a request belongs to another conversation (a new Pi session, or switching back to an older
-  one), the server saves the conversation it holds to disk (KV cache, DeltaNet states; `%USERPROFILE%\arcinferzero\zero\sessions`)
+  one), the server saves the conversation it holds to disk (KV cache, DeltaNet states; `%USERPROFILE%\.arcinferzero\zero\sessions`)
   and loads a saved one that matches the request, instead of processing its whole prompt again. New conversations
   resume after the system prompt they share (Qwen: a recurrent-state snapshot there, kept in host memory). Saving
   and loading take about a second; outputs are identical to never switching. `--session-cache-gb N` (the server's default 0 = off; arc-server / pi-arc start it with 8 GB, `pi-arc --session-cache 0` = off;
@@ -545,7 +545,7 @@ into groups of 8 layers.
   (GPU). A request resumes from the latest one inside its shared prefix. Gemma 4 has no recurrent state and moves
   back to any position its sliding-window rings still cover. A cancelled prompt rolls the block in progress back
   (DeltaNet states from a host copy taken at the block start) and keeps the blocks before it.
-- Compiled kernels are cached in `%USERPROFILE%\arcinferzero\kernels` (keyed by source, options and driver), so
+- Compiled kernels are cached in `%USERPROFILE%\.arcinferzero\kernels` (keyed by source, options and driver), so
   only the first use of a kernel variant pays the driver's compile time.
 - Prompts longer than 16,384 tokens go through the layer-major prefill in segments of 16,384, which keeps the
   residual-stream buffer small and lets the long contexts above fit.

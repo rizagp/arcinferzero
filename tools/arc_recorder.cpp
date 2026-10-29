@@ -410,7 +410,7 @@ int usage() {
           "              without it, everything the speakers play\n"
           "  --no-mic    no microphone track (the meeting's sound only)\n"
           "  --seconds   stop by itself after N seconds\n"
-          "Writes %%USERPROFILE%%\\arcinferzero\\recordings\\<date> <title>.wav; when it stops, the server transcribes it\n"
+          "Writes %%USERPROFILE%%\\.arcinferzero\\recordings\\<date> <title>.wav; when it stops, the server transcribes it\n"
           "(the Meetings tab), now or at its next start.\n");
   return 1;
 }

@@ -2,7 +2,7 @@
 // zero/engine.h (begun as a copy of the OpenCL engine's src/engine.h) runs unchanged on top of it. Buffers are device USM allocations (a sub-buffer is
 // a pointer into its parent), commands go to one in-order immediate command list (the same order as the former OpenCL engine's in-order
 // OpenCL queue, hence the same results), and kernels are the native binaries of the OpenCL compiler: built through
-// OpenCL.dll (loaded under other names) and the kernel cache (%USERPROFILE%\arcinferzero\kernels) is the one the OpenCL engine used.
+// OpenCL.dll (loaded under other names) and the kernel cache (%USERPROFILE%\.arcinferzero\kernels) is the one the OpenCL engine used.
 #pragma once
 #include "../src/app_dir.h"
 #include "ze_min.h"

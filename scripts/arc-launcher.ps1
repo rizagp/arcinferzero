@@ -12,7 +12,7 @@ Add-Type -AssemblyName System.Drawing
 $root = Split-Path $PSScriptRoot -Parent
 $arcServer = Join-Path $PSScriptRoot "arc-server.ps1"
 . (Join-Path $PSScriptRoot "app-dir.ps1")
-$stateDir = Get-AppDir  # (%USERPROFILE%\arcinferzero; renamed from arcinfer once)
+$stateDir = Get-AppDir  # (%USERPROFILE%\.arcinferzero; renamed from arcinfer once)
 New-Item -ItemType Directory -Force $stateDir | Out-Null
 # the engine: arcinferzero (bin\serverz.exe; MoE experts streamed from the SSD); the model list and its contexts come
 # from it
@@ -178,7 +178,7 @@ Add-Opt "Images / audio" $visionBox "off: no mmproj, a longer context" -Advanced
 Add-Opt "Image tokens min / max" $imgMinBox -Advanced
 Add-Opt "" $imgMaxBox -Advanced
 Add-Opt "Resident W8 weights (GB)" $budgetBox "0 = chosen with the context" -Advanced
-Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\arcinferzero\zero\sessions" -Advanced
+Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\.arcinferzero\zero\sessions" -Advanced
 Add-Opt "Prefix cache (GB on disk)" $prefixBox "system prompts per project" -Advanced
 Add-Opt "" $noPrefixChk -Advanced
 Add-Opt "" $noSwapChk -Advanced

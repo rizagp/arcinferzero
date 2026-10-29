@@ -3,7 +3,7 @@
 //   transcribez <file | folder | wildcard> ... [options]       (docs/whisper-native.md, "Command line")
 //
 // The model: --model <folder> (a faster-whisper folder: model.bin, tokenizer.json, config.json), else
-// faster-whisper-large-v3 (else large-v3-turbo) found in the Hugging Face cache. Outputs go to %USERPROFILE%\arcinferzero\transcripts
+// faster-whisper-large-v3 (else large-v3-turbo) found in the Hugging Face cache. Outputs go to %USERPROFILE%\.arcinferzero\transcripts
 // (--out), one file per format: <name>.json, .srt, .txt by default.
 #include "../src/app_dir.h"
 #include "../src/whisper.h"
@@ -86,7 +86,7 @@ void usage() {
           "  --format <list>             json, fw, captions, verbose_json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv,\n"
           "                              tsv (default json,srt,txt)\n"
           "  --max-chars N --max-lines N --max-cue-s S   subtitle cues (42, 2, 7); --word-cues: one word per cue\n"
-          "  --out <folder | file>       default %%USERPROFILE%%\\arcinferzero\\transcripts\n"
+          "  --out <folder | file>       default %%USERPROFILE%%\\.arcinferzero\\transcripts\n"
           "  --progress                  progress and segments as JSON lines on stdout (default: a bar on stderr)\n"
           "  --dump-encoder <f> --dump-logits <f>   the first window's encoder output / greedy logits (checks)\n");
 }

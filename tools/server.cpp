@@ -4,12 +4,12 @@
 //                       [--chunk N] [--budget GB] [--mtp] [--think-budget N] [--attn-f32] [--kernels dir]
 //                       [--session-cache-gb N] [--session-dir dir]   (saved conversations; default 0 = off)
 // Built as bin\serverz.exe (zero/serverz.cpp includes this file): the arcinferzero engine, zero/engine.h (Level Zero,
-// MoE experts streamed from the SSD), with its data folder %USERPROFILE%\arcinferzero\zero (context cache, saved
+// MoE experts streamed from the SSD), with its data folder %USERPROFILE%\.arcinferzero\zero (context cache, saved
 // prompts and conversations).
 #include "../zero/engine.h"
 #include "../zero/gguf_pack.h"
 #define ARC_DATA "/zero/"  // (under app_dir(), src/app_dir.h)
-#define ARC_DATA_HELP "%%USERPROFILE%%\\arcinferzero\\zero\\"  // (the same folder, as --help prints it)
+#define ARC_DATA_HELP "%%USERPROFILE%%\\.arcinferzero\\zero\\"  // (the same folder, as --help prints it)
 #include "../src/tokenizer.h"
 #include "../src/chat.h"
 #include "../src/chat_gemma4.h"
@@ -1648,7 +1648,7 @@ int main(int argc, char** argv) {
     fprintf(stderr,
             "usage: arcinferzero-server -m model.gguf [options]   OpenAI-compatible server (API at /v1, web UI at /)\n"
             "       arcinferzero-server --list-models             the models it can load, as JSON (Hugging Face cache,\n"
-            "                                                 %%USERPROFILE%%\\arcinferzero\\models, model-dirs.txt) with each one's auto context\n"
+            "                                                 %%USERPROFILE%%\\.arcinferzero\\models, model-dirs.txt) with each one's auto context\n"
             "  -m, --model FILE      model GGUF; an mmproj-* image projector and an mtp-* drafter next to it are found\n"
             "  --host H, --port P    listen address (default 127.0.0.1:8080). A browser page of another origin (another\n"
             "                        site, or another port of this computer) reaches only the model endpoints: not the\n"
@@ -1690,12 +1690,12 @@ int main(int argc, char** argv) {
             "                        4 12B 2048, above the 1120 it was trained with)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
             "MoE models (experts read from the SSD into a GPU cache; expert file in\n"
-            "%%USERPROFILE%%\\arcinferzero\\zero, made on the first start, safe to delete):\n"
+            "%%USERPROFILE%%\\.arcinferzero\\zero, made on the first start, safe to delete):\n"
             "  --expert-cache-gb N   expert cache size in GiB (default: automatic: the GPU share Windows reports, your\n"
             "                        setting, less 1.2 GB for the driver, less the rest of the model)\n"
             "  --expert-cache-pct P  expert cache as a percentage of all experts\n"
             "  --pack FILE.gguf      make a package of a MoE model (its first part when split): the non-expert\n"
-            "                        weights + an expert file under %%USERPROFILE%%\\arcinferzero\\zero\\models; afterwards\n"
+            "                        weights + an expert file under %%USERPROFILE%%\\.arcinferzero\\zero\\models; afterwards\n"
             "                        the original GGUF can be moved away (e.g. to a USB disk)\n"
             "  --no-stream           every expert on the GPU (no SSD streaming; MoE models then get less context)\n"
             "  --attn-f32            f32 attention (tests)\n"

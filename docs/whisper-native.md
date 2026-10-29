@@ -172,10 +172,10 @@ transcript: greedy (speed matters there, the accurate pass fixes it afterwards).
 
 | Folder | What |
 |---|---|
-| `%USERPROFILE%\arcinferzero\sound-recordings\` | recordings: `<yyyy-mm-dd hh.mm> <title>\` with `others.wav` (the meeting app) and `me.wav` (the microphone), or one `.wav` / the uploaded file for a single source |
-| `%USERPROFILE%\arcinferzero\transcripts\` | transcripts: `<same name>.json` (everything: segments, words, languages, speakers, marks), `.txt`, `.srt`, `.vtt`, `.md`, and the meeting's `summary.md` |
+| `%USERPROFILE%\.arcinferzero\sound-recordings\` | recordings: `<yyyy-mm-dd hh.mm> <title>\` with `others.wav` (the meeting app) and `me.wav` (the microphone), or one `.wav` / the uploaded file for a single source |
+| `%USERPROFILE%\.arcinferzero\transcripts\` | transcripts: `<same name>.json` (everything: segments, words, languages, speakers, marks), `.txt`, `.srt`, `.vtt`, `.md`, and the meeting's `summary.md` |
 
-Both are in arcinferzero's data folder (`C:\Users\<name>\arcinferzero\`, since 2026-10-25; visible in Explorer), next
+Both are in arcinferzero's data folder (`C:\Users\<name>\.arcinferzero\`, since 2026-10-25; visible in Explorer), next
 to its caches and model packages. Both can be changed in the settings (and with `--out`).
 
 ## Command line: `bin\transcribez.exe`
@@ -201,7 +201,7 @@ transcribez <file | folder | wildcard> ... [options]
   --format <list>             json, fw, captions, verbose_json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv, tsv
                               (default json,srt,txt)
   --max-chars N --max-lines N --max-cue-s S   subtitle cues (42, 2, 7); --word-cues: one word per cue
-  --out <folder | file>       default %USERPROFILE%\arcinferzero\transcripts
+  --out <folder | file>       default %USERPROFILE%\.arcinferzero\transcripts
   --progress                  progress and segments as JSON lines on stdout (default: a bar on stderr)
   --dump-encoder <f> --dump-logits <f>   the first window's encoder output / greedy logits (checks)
 ```
@@ -353,7 +353,7 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 - Two functions, Meeting and a general Transcript (any audio / video file, e.g. for videos), plus `arc-transcribe` on
   the command line feeding the Remotion pipeline.
 - Multilingual: `auto` per window by default.
-- Folders: `%USERPROFILE%\arcinferzero\sound-recordings\` and `%USERPROFILE%\arcinferzero\transcripts\`.
+- Folders: `%USERPROFILE%\.arcinferzero\sound-recordings\` and `%USERPROFILE%\.arcinferzero\transcripts\`.
 - The five functions: realtime, accurate after recording, audio upload, video upload, a choice of output formats
   (Remotion, subtitles incl. YouTube's, the common standard ones); a progress bar for every transcription.
 - Beam 5 as the default for Transcript and the accurate pass, greedy for live (2026-10-27).
