@@ -3,7 +3,8 @@
 // timestamp_granularities[], stream), answered by zero/whisper_engine.h (the iGPU, or the encoder on the NPU).
 //
 // Extensions: response_format also fw, captions (Remotion), full_json (arcinferzero's), sbv, srv3, ass, ttml, md,
-// csv, tsv; language "id,en" (detected among the listed ones per window) or "auto"; beam_size 1..5 (default 5);
+// csv, tsv; language "id,en" (detected among the listed ones per window; Qwen3-ASR: a code, or a list's first,
+// fixes it) or "auto"; beam_size 1..5 (default 5);
 // condition_on_previous_text; terms (a glossary kept before every window); dual_language (0..1, default 0.8);
 // stream=true also sends {"type": "transcript.progress"} events.
 //

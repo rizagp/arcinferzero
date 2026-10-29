@@ -121,6 +121,11 @@
       fprintf(stderr, "asr: the glossary and prompt cut to their first %d tokens\n", kAsrContextTokens);
     }
     o.context = context;
+    // (the language: one code fixes it, the model's own "language X<asr_text>"; a list fixes its first, "id,en":
+    //  Indonesian, whose text keeps the English words and terms as said (a 26-min meeting: the same jargon as
+    //  detected, which named 6 of its 7 parts Malay); auto: the model names it per part)
+    if (!opt.language.empty() && opt.language != "auto")
+      o.language = q3asr::language_name(opt.language.substr(0, opt.language.find(',')));
     o.gpu = [this](const std::function<void()>& f) { turn_.run(false, [&] { gpu_turn(f); }); };
     double done = 0;
     bool stop = false;

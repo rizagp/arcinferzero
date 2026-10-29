@@ -381,8 +381,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <div class="tradd" id="tradd"><span id="traddtxt">Drop audio or video files here, or</span> <button id="trpick">choose files</button>
         <input type="file" id="trfile" multiple hidden accept="audio/*,video/*,.mkv,.webm,.opus,.ogg,.oga,.m4a,.wma,.wmv,.avi,.mov,.flac,.aac"></div>
       <div class="tropts">
-        <select id="trlang" aria-label="Language" title="The speech's language: detected per 30 s, one, or two mixed (each utterance's own; about 3x slower)">
-          <option value="auto">Language: detect</option><option value="id">Indonesian</option><option value="en">English</option>
+        <select id="trlang" aria-label="Language" title="The speech's language. Qwen3-ASR: Indonesian (and Indonesian + English mixed) fixes it, the English words and terms said in it stay as said, the glossary spells them; detect guesses it per part (Indonesian is often taken for Malay). Whisper: detected per 30 s, one, or two mixed (each utterance's own; about 3x slower)">
+          <option value="auto">Language: detect</option><option value="id" selected>Indonesian</option><option value="en">English</option>
           <option value="id,en">Indonesian + English mixed</option>
         </select>
         <select id="trmodel" aria-label="Speech model" hidden

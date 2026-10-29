@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-10-29: the data folder is %USERPROFILE%\.arcinferzero
+## 2026-10-29: the data folder is %USERPROFILE%\.arcinferzero; Qwen3-ASR keeps the language
 
 - The data folder (kernel cache, model packages and expert files, caches, logs, settings, chats, transcripts,
   recordings) is now `%USERPROFILE%\.arcinferzero`, a dot folder like the other tools' folders in the user's profile
@@ -10,6 +10,11 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **Qwen3-ASR keeps to the transcript's language**: the request's language (a code, or the first of a list such as
+  `id,en`) is now forced (`language Indonesian<asr_text>`), and the Web UI's default is Indonesian. Detection named
+  most parts of a 26-min Indonesian meeting Malay, and one part drifted into Malay words; forced Indonesian kept every
+  English term the detected text had. A glossary (the Transcripts tab's field) spells the jargon as given and gives
+  the punctuation back (docs/qwen3-asr.md).
 - **Qwen3-ASR BF16** (`Qwen3-ASR-1.7B-bf16.gguf`) loads: the stacked Q / K / V and gate / up matrices refused BF16 /
   F16 / F32 matrices; they are now requantized to Q8_0 row by row, as a single matrix already was. The transcript is
   word for word the one of the Q8_0 file (the engine holds both as Q8_0), the load takes 17.6 s instead of 5.4 s, so

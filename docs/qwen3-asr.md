@@ -129,10 +129,16 @@ language was forced on the first recording.
 
 Notes from the runs:
 
-- The model names this speech **Malay** (it is Indonesian). The server reports it as `id` when the request's
-  languages include `id` and not `ms` (`language: id,en`). Forcing the language (`language Indonesian<asr_text>`
-  in the prompt, `asr_testz --lang id`) gave lowercase text without punctuation and the same loop, so the server never
-  forces it.
+- The model names this speech **Malay** (it is Indonesian). Forcing the language (`language Indonesian<asr_text>`
+  in the prompt, `asr_testz --lang id`) gave lowercase text without punctuation and the same loop on this recording.
+- **Since 2026-10-29 the server forces the request's language** (`id`, `en`, ...; a list `id,en` forces its first;
+  `auto` lets the model name it per part, Malay reported as `id` when the request's languages include `id` and not
+  `ms`). The Web UI's default is Indonesian. On a 26-min meeting recording (M4A, 7 parts of 4 min, mixed Indonesian
+  with English work terms) detection named 6 of the 7 parts Malay and the last part drifted into Malay words ("aku
+  dah pernah"); forced Indonesian wrote "aku udah pernah" and kept every English word and term the detected run had
+  (Ctrl F, step, spreadsheet, download, PPT, wording, slide, timeline, conference), 1747 words against 1728, but
+  with less punctuation (254 marks against 433). Forced Indonesian with a glossary of 15 terms: 1780 words, 437 marks,
+  the glossary's spellings (PPT). So the glossary is the way to have jargon written right; forcing keeps it Indonesian.
 - Over background sound alone (113-140 s as its own clip) it wrote one word ("Kerajaan."); after speech, in one
   context, it looped on the last word. Parts cut at pauses (`Options::part_seconds`, 20 s) were worse on this
   recording: the pauses after 68 s came too early to cut, and the 85-s last part repeated a sentence four times and

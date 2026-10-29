@@ -267,10 +267,12 @@ While the server is running:
 - **Web UI: Transcripts and Meetings** (the left rail's second and third buttons; the server started with
   `--whisper auto`, or `arc-server start -Whisper auto`; [docs/whisper-native.md](docs/whisper-native.md)).
   - **Transcripts**: drop audio or video files (MP3, M4A, WAV, Ogg / Opus voice notes, MP4, MOV, MKV, WebM, AVI,
-    WMV) or choose them; they upload and wait their turn, each with its progress. Pick the **language** (detect,
-    Indonesian, English, or **Indonesian + English mixed**, about 3x slower), **Accurate** (beam 5) or **Fast**, and
-    a **Glossary** of names and terms the speech uses (written inside a casual sentence, the text keeps a casual
-    spelling). **Model**: Qwen3-ASR (the default: the most complete on noisy mixed Indonesian and English, one text
+    WMV) or choose them; they upload and wait their turn, each with its progress. Pick the **language** (Indonesian, the
+    default, English, **Indonesian + English mixed**, or detect; with Qwen3-ASR Indonesian keeps the English words
+    and terms said in it, while detect often takes Indonesian for Malay; with Whisper the mixed one is about 3x
+    slower), **Accurate** (beam 5) or **Fast**, and a **Glossary** of names and terms the speech uses: jargon,
+    abbreviations, people's names, written as you want them (written inside a casual sentence, the text keeps a
+    casual spelling). **Model**: Qwen3-ASR (the default: the most complete on noisy mixed Indonesian and English, one text
     without word times; the glossary helps it most), Gemma 4 E4B (the most readable on clear speech, but it can add
     sentences over noise; the server switches its chat model to E4B) or Whisper large-v3 (every word's time); it can
     be changed any time, each file keeps the one it was added with ([docs/qwen3-asr.md](docs/qwen3-asr.md)). Open a transcript: it plays with its media and lights the word being said; click a word or a time to
