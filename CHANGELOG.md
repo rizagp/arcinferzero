@@ -10,6 +10,10 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **Image prompts in one pass** (Qwen images on models without an MTP block or DFlash2 drafter, so Flash Next):
+  the text and the image rows go through the layers together instead of a pass per piece, so the streamed experts
+  are read once: prompt time -8 to -24 % (290-798 tokens with a picture), the same answers. `ARC_MEDIA_PASSES=1`:
+  the old way. Flash Next's image encoder stays f16 (int8 two passes would be 26-28 % faster at KL up to 0.0098).
 - **Flash Next reads images right**: an image's rows went into the model as single rows of its width, while Flash
   Next keeps every row as 4 hyper-connection streams, so four image rows shared one row and the PLE n-gram block read
   the previous text's rows. Each row now goes in as its 4 streams with the n-gram rows of `<|image_pad|>` (the model's

@@ -268,6 +268,7 @@ class Engine {
       }
     }
     const bool by_layer = cancel && !w8_resident;  // a chunk takes seconds: stop after any layer
+    struct NoRpos { int& u; ~NoRpos() { u = 0; } } no_rpos{use_rpos_};  // (set_media's positions: this call only)
     for (int c0 = 0; c0 < n; c0 += max_chunk) {
       if (c0 > 0 && cancelled()) throw Cancelled();  // between chunks the state is complete
       const int T = std::min(max_chunk, n - c0);
@@ -275,6 +276,7 @@ class Engine {
       const int Mp = T >= 128 ? std::min((T + 127) / 128 * 128, max_chunk) : (T + 15) / 16 * 16;
       if (by_layer) keep_block();
       embed(tokens + c0, T, Mp);
+      media_pos(tokens + c0, T);
       for (auto& L : layers_) {
         run_layer(L, T, Mp);
         if (by_layer && &L != &layers_.back() && cancelled()) cancel_block(pos);
@@ -316,6 +318,16 @@ class Engine {
       if (!ple_views_.empty()) ple_emb_ = ple_views_[c];
       embed(tokens + (size_t)c * max_chunk, chunk_T(c), chunk_Mp(c));
     }
+    // (set_media's rotary positions: the segment's rows written once, each chunk reads its part; every write syncs)
+    struct NoRpos { int& u; cl_mem& p; cl_mem s; ~NoRpos() { u = 0; p = s; } } no_rpos{use_rpos_, rpos_, rpos_};
+    const bool mpos = media_rpos_ && tokens >= media_base_ && tokens + n <= media_base_ + media_n_;
+    cl_mem rp_seg = nullptr;
+    if (mpos) {
+      if (!rpos_all_) rpos_all_ = buf((size_t)std::max(lm_seg_, max_chunk) * 3 * 4);
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, rpos_all_, CL_TRUE, 0, (size_t)n * 3 * 4,
+                                    media_rpos_->data() + (size_t)(tokens - media_base_) * 3, 0, nullptr, nullptr));
+      rp_seg = rpos_all_;
+    }
     for (size_t li = 0; li < layers_.size(); ++li) {
       Layer& L = layers_[li];
       for (int c = 0; c < nch; ++c) {
@@ -323,6 +335,10 @@ class Engine {
         if (!ple_views_.empty()) ple_emb_ = ple_views_[c];
         cur_T_ = chunk_T(c);
         pos = pos0 + c * max_chunk;
+        if (rp_seg) {
+          rpos_ = from(rp_seg, (size_t)c * max_chunk * 3 * 4);
+          use_rpos_ = 1;
+        }
         run_layer(L, cur_T_, chunk_Mp(c));
       }
       if (progress) {
@@ -353,6 +369,21 @@ class Engine {
     collect_profile();
     return logits_host_;
   }
+
+  // Image rows inside a token prompt (causal Qwen M-RoPE images): while set, forward() over tokens in
+  // base[0 .. n) takes row i from rows[i] when that is set (n_embd floats, as forward_embd takes them; the token id
+  // there is a placeholder; Flash Next: <|image_pad|> in its n-gram hash) and gives every row its rotary position
+  // rpos[3 i .. 3 i + 2] (t, h, w; a text row's three are its cache position + rope_shift). Text and images then go
+  // through the layers in one pass: a streamed MoE model reads its experts once, not once per piece of the prompt.
+  // Not with per-layer embeddings (Gemma E2B / E4B), an MTP block or a DFlash2 drafter (media_inline_ok).
+  bool media_inline_ok() const { return !hp.n_ple && !mtp_block_ && !dfl_; }
+  void set_media(const int* base, size_t n, const std::vector<const float*>* rows, const std::vector<int>* rpos) {
+    media_base_ = base;
+    media_n_ = n;
+    media_ = rows;
+    media_rpos_ = rpos;
+  }
+  void clear_media() { set_media(nullptr, 0, nullptr, nullptr); }
 
   // Feeds n rows of precomputed input embeddings (an image) at the current position as one chunk; with
   // non_causal the rows attend to each other in both directions in the sliding-window layers. Returns the logits
@@ -1469,6 +1500,28 @@ class Engine {
   int nc_lo_ = -1, nc_hi_ = -1;  // positions processed non-causally in the current forward (an image span)
   cl_mem rpos_ = nullptr;          // per-row (t, h, w) rotary positions of an image chunk (Qwen M-RoPE)
   int use_rpos_ = 0;
+  // set_media: image rows inside a token prompt (base[i] -> rows[i], rpos 3 per row)
+  const int* media_base_ = nullptr;
+  size_t media_n_ = 0;
+  const std::vector<const float*>* media_ = nullptr;
+  const std::vector<int>* media_rpos_ = nullptr;
+  // the media rows of tokens[0 .. T) when they lie in the set_media prompt (nullptr: none there)
+  cl_mem rpos_all_ = nullptr;  // (forward_layer_major's segment of positions)
+  const float* const* media_rows(const int* tokens, int T) const {
+    if (!media_ || tokens < media_base_ || tokens + T > media_base_ + media_n_) return nullptr;
+    const float* const* r = media_->data() + (tokens - media_base_);
+    for (int t = 0; t < T; ++t)
+      if (r[t]) return r;
+    return nullptr;
+  }
+  // the chunk tokens[0 .. T)'s rotary positions from the set_media prompt, for the next run_layer calls
+  void media_pos(const int* tokens, int T) {
+    if (!media_rpos_ || tokens < media_base_ || tokens + T > media_base_ + media_n_) return;
+    if (!rpos_) rpos_ = buf((size_t)max_chunk * 3 * 4);
+    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, rpos_, CL_TRUE, 0, (size_t)T * 3 * 4,
+                                  media_rpos_->data() + (size_t)(tokens - media_base_) * 3, 0, nullptr, nullptr));
+    use_rpos_ = 1;
+  }
   // Gemma 4: the layer whose KV cache layer il uses (its own, or llama.cpp's KV reuse rule)
   int g4_kv_layer(int il) const { return il >= hp.n_layer_kv ? hp.n_layer_kv - (hp.swa[il] ? 2 : 1) : il; }
   int swa_cap_ = 0, written_hi_ = 0;  // Gemma: sliding-window ring capacity, highest position written + 1
@@ -3523,13 +3576,32 @@ class Engine {
         dequant_row(tok_embd_->type, tok_embd_->data + (size_t)tokens[t] * row_bytes, E, r);
         for (int c = 1; c < hp.hc_n; ++c) memcpy(r + (size_t)c * E, r, (size_t)E * 4);
       }
+      const float* const* med = media_rows(tokens, T);
+      if (med)
+        for (int t = 0; t < T; ++t)
+          if (med[t])
+            for (int c = 0; c < hp.hc_n; ++c) std::copy(med[t], med[t] + E, &x_host_[(size_t)t * W + (size_t)c * E]);
       CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, (size_t)Mp * W * 4, x_host_.data(), 0, nullptr, nullptr));
-      if (hp.ple_layer >= 0) ple_embed(tokens, T);
+      if (hp.ple_layer >= 0) {
+        if (med) {  // (an image's rows: <|image_pad|> in the n-gram hash, as forward_embd)
+          std::vector<int> ids(tokens, tokens + T);
+          for (int t = 0; t < T; ++t)
+            if (med[t]) ids[t] = hp.ple_img >= 0 ? hp.ple_img : (int)hp.ple_eos;
+          ple_embed(ids.data(), T);
+        } else {
+          ple_embed(tokens, T);
+        }
+      }
       return;
     }
     std::fill(x_host_.begin(), x_host_.begin() + (size_t)Mp * hp.n_embd, 0.0f);
+    const float* const* med = media_rows(tokens, T);
 #pragma omp parallel for if (T > 64)
     for (int t = 0; t < T; ++t) {
+      if (med && med[t]) {  // (an image's row as given, as forward_embd copies it)
+        std::copy(med[t], med[t] + hp.n_embd, &x_host_[(size_t)t * hp.n_embd]);
+        continue;
+      }
       if (tokens[t] < 0 || tokens[t] >= hp.n_vocab) continue;
       dequant_row(tok_embd_->type, tok_embd_->data + (size_t)tokens[t] * row_bytes, hp.n_embd,
                   &x_host_[(size_t)t * hp.n_embd]);

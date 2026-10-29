@@ -348,7 +348,42 @@
       return sh;
     };
     eng_.rope_shift = shift_at(done);
+    // Qwen images inside the text (causal, M-RoPE): with the engine's set_media the text and the images go through
+    // the layers together, in the token path's chunks: Flash Next / the 35B read their streamed experts once, not once
+    // per text run and image (a 290-token prompt with a picture took 3-4 passes). ARC_MEDIA_PASSES=1: the old way
+    std::vector<const float*> media_rows;
+    std::vector<int> media_pos;
+    static const bool passes = getenv("ARC_MEDIA_PASSES") != nullptr;
+    const bool inline_media = !passes && !spans.empty() && eng_.media_inline_ok() && qvision_ &&
+                              std::all_of(spans.begin(), spans.end(), [&](const ImgSpan& s2) {
+                                return s2.causal && s2.gw > 0 && (int)(s2.embd->size() / s2.n) == eng_.hp.n_embd;
+                              });
+    if (inline_media) {
+      media_rows.assign(P.size(), nullptr);
+      media_pos.resize(P.size() * 3);
+      for (size_t i = 0; i < P.size(); ++i) {
+        const int t = (int)i + shift_at(i);  // (text: the three components alike, as the plain rotary position)
+        media_pos[3 * i] = media_pos[3 * i + 1] = media_pos[3 * i + 2] = t;
+      }
+      for (const auto& s2 : spans) {
+        const int t = (int)s2.start + shift_at(s2.start);
+        for (int r = 0; r < s2.n; ++r) {
+          const size_t i = s2.start + r;
+          media_rows[i] = s2.embd->data() + (size_t)r * eng_.hp.n_embd;
+          media_pos[3 * i] = t;
+          media_pos[3 * i + 1] = t + r / s2.gw;
+          media_pos[3 * i + 2] = t + r % s2.gw;
+        }
+      }
+    }
     auto feed = [&](size_t upto) {
+      if (inline_media && done < upto) {
+        eng_.set_media(P.data(), P.size(), &media_rows, &media_pos);
+        struct Clear { Engine& e; ~Clear() { e.clear_media(); } } clear{eng_};
+        const bool ok = feed_tokens(upto);
+        eng_.rope_shift = shift_at(done);
+        return ok;
+      }
       while (done < upto) {
         const ImgSpan* sp = nullptr;
         for (const auto& s2 : spans)
