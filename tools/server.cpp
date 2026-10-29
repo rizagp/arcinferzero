@@ -1555,10 +1555,41 @@ int main(int argc, char** argv) {
     } catch (...) {}
     throw std::runtime_error(opt + ": expected a number (got \"" + s + "\")");
   };
+  // the options and what each takes ("": a switch), for the messages of a missing value and of an unknown option
+  static const std::vector<std::pair<std::string, std::string>> kOpts = {
+      {"--model", "a .gguf file, e.g. -m \"C:\\models\\Qwen3.5-4B-UD-Q4_K_XL.gguf\""}, {"--host", "an address, e.g. 0.0.0.0"},
+      {"--port", "a port, 1..65535"}, {"--ctx", "a number of tokens, or auto"}, {"--chunk", "a number of tokens, 0 = auto"},
+      {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--no-stream", ""},
+      {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
+      {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--npu", "on, off or force"},
+      {"--mtp", ""}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
+      {"--draft", "auto, mtp or dflash"}, {"--mmproj", "an mmproj .gguf file"}, {"--no-mmproj", ""},
+      {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
+      {"--mtp-drafts", "a number, e.g. 3"}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
+      {"--kernels", "a folder"}, {"--session-cache-gb", "GiB, 0 = off"}, {"--session-dir", "a folder"},
+      {"--slots", "1..8"}, {"--no-swap", ""}, {"--no-web-tools", ""},
+      {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
+      {"--asr", "auto (or on), off, or a Qwen3-ASR .gguf file"}, {"--asr-slots", "1..4"},
+      {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""},
+      {"--no-prefix-cache", ""}, {"--prefix-cache-gb", "GiB"}, {"--list-models", ""}, {"--help", ""}};
+  auto takes = [&](std::string o) {  // (what option o takes, as " (...)")
+    if (o == "-m") o = "--model";
+    if (o == "-c") o = "--ctx";
+    for (const auto& [n, v] : kOpts)
+      if (n == o && !v.empty()) return " (" + v + ")";
+    return std::string();
+  };
   try {
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
-    auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
+    // (a missing value is a message, not an empty one: "--whisper" at the end gave "cannot open model.bin")
+    auto next = [&]() {
+      if (i + 1 >= argc) throw std::runtime_error(a + " needs a value" + takes(a));
+      const std::string v = argv[i + 1];
+      if (v.rfind("--", 0) == 0) throw std::runtime_error(a + " needs a value" + takes(a) + ", not the next option " + v);
+      ++i;
+      return v;
+    };
     if (a == "-m" || a == "--model") model = next();
     else if (a == "--host") host = next();
     else if (a == "--port") port = to_int(a, next());
@@ -1592,9 +1623,11 @@ int main(int argc, char** argv) {
     else if (a == "--budget") { so.eo.w8_budget_gb = to_double(a, next()); so.budget_given = true; }
     else if (a == "--attn-f32") so.eo.attn_int8 = false;
     else if (a == "--npu") {  // (kept by every model switch: so.eo)
-      const std::string v = next();
-      so.eo.npu = v == "on" ? 1 : v == "off" ? 0 : v == "force" ? 2 : -2;
-      if (so.eo.npu == -2) throw std::runtime_error("--npu: expected on, off or force");
+      std::string v = next();
+      for (char& c : v) c = (char)tolower((unsigned char)c);
+      so.eo.npu = v == "on" || v == "yes" || v == "true" || v == "1" ? 1 : v == "off" || v == "no" || v == "false" || v == "0" ? 0
+                : v == "force" ? 2 : -2;
+      if (so.eo.npu == -2) throw std::runtime_error("--npu: expected on, off or force (got \"" + v + "\")");
     }
     else if (a == "--mtp") so.eo.mtp = true;
     else if (a == "--dflash") { so.eo.dflash = next(); so.eo.mtp = true; }
@@ -1604,7 +1637,7 @@ int main(int argc, char** argv) {
       if (d == "mtp") so.eo.dflash.clear(), so.dflash_auto = false, so.eo.mtp_block = true;
       else if (d == "dflash") so.dflash_auto = true, so.eo.mtp_block = false;
       else if (d == "auto") so.dflash_auto = true, so.eo.mtp_block = true;
-      else throw std::runtime_error("--draft: auto, mtp or dflash");
+      else throw std::runtime_error("--draft: expected auto, mtp or dflash (got \"" + d + "\")");
     }
     else if (a == "--mmproj") so.mmproj = next();
     else if (a == "--no-mmproj") so.mmproj = "-";
@@ -1624,14 +1657,45 @@ int main(int argc, char** argv) {
     else if (a == "--asr-slots") so.asr_slots = std::clamp(to_int(a, next()), 1, 4);
     else if (a == "--whisper-device") {
       whisper_dev = next();
-      if (whisper_dev != "gpu" && whisper_dev != "npu") throw std::runtime_error("--whisper-device: gpu or npu");
+      if (whisper_dev != "gpu" && whisper_dev != "npu")
+        throw std::runtime_error("--whisper-device: expected gpu or npu (got \"" + whisper_dev + "\")");
     }
     else if (a == "--whisper-max-minutes") whisper_max_min = std::clamp(to_double(a, next()), 1.0, 600.0);
     else if (a == "--no-terminal") terminal = false;
     else if (a == "--no-prefix-cache") so.prefix_cache = false;
     else if (a == "--prefix-cache-gb") so.prefix_gb = std::clamp(to_double(a, next()), 0.0, 4096.0);
     else if (a == "--help" || a == "-h") help = true;
-    else throw std::runtime_error("unknown option " + a + " (--help lists them; --q2 and --v4 were removed 2026-10-22)");
+    else {
+      // (what was meant: a value without its option, one dash where two belong, or a typo)
+      if (a.empty() || a[0] != '-')
+        throw std::runtime_error("'" + a + "' is a value without an option before it (options start with --; a path with spaces "
+                                 "goes in quotes: \"C:\\My models\\model.gguf\")");
+      std::string b = a;
+      for (char& c : b) c = (char)tolower((unsigned char)c);
+      if (b.size() > 2 && b[1] != '-') b = "-" + b;
+      auto dist = [](const std::string& x, const std::string& y) {  // (edit distance)
+        std::vector<size_t> d(y.size() + 1);
+        for (size_t j = 0; j <= y.size(); ++j) d[j] = j;
+        for (size_t p = 1; p <= x.size(); ++p) {
+          size_t prev = d[0];
+          d[0] = p;
+          for (size_t j = 1; j <= y.size(); ++j) {
+            const size_t t = d[j];
+            d[j] = std::min({d[j] + 1, d[j - 1] + 1, prev + (x[p - 1] == y[j - 1] ? 0 : 1)});
+            prev = t;
+          }
+        }
+        return d[y.size()];
+      };
+      std::string best;
+      size_t bd = 3;
+      for (const auto& [n, v] : kOpts)
+        if (const size_t d = dist(b, n); d < bd) bd = d, best = n;
+      throw std::runtime_error("unknown option " + a +
+                               (best.empty() ? std::string(" (--help lists them)")
+                                : bd == 0    ? " (this server's options take two dashes: " + best + takes(best) + ")"
+                                             : " (did you mean " + best + takes(best) + "?)"));
+    }
   }
   if (!help) {
     if (port < 1 || port > 65535) throw std::runtime_error("--port: expected 1..65535 (got " + std::to_string(port) + ")");
@@ -1639,6 +1703,46 @@ int main(int argc, char** argv) {
     if (!so.ctx_auto && so.eo.ctx < 1) throw std::runtime_error("--ctx: expected 1 or more tokens (or auto)");
     if (so.eo.chunk < 0) throw std::runtime_error("--chunk: expected 0 (auto) or more tokens");
     if (so.eo.mtp_drafts < 0) throw std::runtime_error("--mtp-drafts: expected 0 or more");
+    // the files and folders given, checked now: what each must be, said here instead of a later, vaguer error
+    namespace fs = std::filesystem;
+    auto check = [](const std::string& opt, const std::string& p, bool folder, const std::string& holds) {
+      std::error_code ec;
+      if (p.find('"') != std::string::npos)
+        throw std::runtime_error(opt + ": '" + p + "' has a quote in it. A path written as \"C:\\folder\\\" (a backslash just "
+                                 "before the closing quote) reads as a quote: leave the last backslash out, \"C:\\folder\"");
+      if (!fs::exists(p, ec))
+        throw std::runtime_error(opt + ": no " + (folder ? "folder" : "file") + " '" + p + "'" +
+                                 (fs::path(p).is_relative() ? " (a relative path is from the folder the server starts in; "
+                                                              "give the full path, C:\\...)" : ""));
+      if (folder && !fs::is_directory(p, ec))
+        throw std::runtime_error(opt + ": '" + p + "' is a file: give the folder" +
+                                 (holds.empty() ? std::string() : " that holds " + holds) + ", " + fs::path(p).parent_path().string());
+      if (!folder && fs::is_directory(p, ec)) {
+        std::string inside;  // (the .gguf files there, as the hint)
+        int n = 0;
+        for (const auto& d : fs::directory_iterator(p, ec))
+          if (const std::string f = d.path().filename().string();  // (not the projectors and drafters beside a model)
+              d.path().extension() == ".gguf" && f.rfind("mmproj", 0) != 0 && f.rfind("mtp-", 0) != 0 && n++ < 3)
+            inside += "\n  " + d.path().string();
+        throw std::runtime_error(opt + ": '" + p + "' is a folder: give the " + holds + " file in it" +
+                                 (inside.empty() ? std::string(" (it has no .gguf file)") : ", e.g." + inside));
+      }
+      if (folder && !holds.empty() && !fs::exists(fs::path(p) / holds, ec))
+        throw std::runtime_error(opt + ": '" + p + "' holds no " + holds + ": give the folder that has it");
+      if (!folder && holds == ".gguf" && fs::path(p).extension() != ".gguf")
+        throw std::runtime_error(opt + ": '" + p + "' is no .gguf file");
+    };
+    auto word = [](std::string v) {  // (auto / on / off and the like)
+      for (char& c : v) c = (char)tolower((unsigned char)c);
+      return v == "auto" || v == "auto-quiet" || v == "default" || v == "on" || v == "off" || v == "yes" || v == "no" ||
+             v == "true" || v == "false" || v == "1" || v == "0";
+    };
+    if (!model.empty()) check("-m", model, false, ".gguf");
+    if (!so.mmproj.empty() && so.mmproj != "-") check("--mmproj", so.mmproj, false, ".gguf");
+    if (!so.eo.dflash.empty()) check("--dflash", so.eo.dflash, true, "model.safetensors");
+    if (!so.webui.empty()) check("--webui", so.webui, true, "index.html");
+    if (!word(whisper_opt)) check("--whisper", whisper_opt, true, "model.bin");
+    if (!word(asr_opt)) check("--asr", asr_opt, false, ".gguf");
   }
   } catch (const std::exception& e) {
     fprintf(stderr, "arcinferzero-server: %s\n", e.what());

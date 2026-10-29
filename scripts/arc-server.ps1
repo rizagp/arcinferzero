@@ -32,12 +32,12 @@ param(
   [double]$SessionCacheGb = 8,
   [int]$Port = 8090,
   [switch]$NoMtp,
-  [ValidateSet("", "on", "off")] [string]$Vision = "",
+  [string]$Vision = "",
   [switch]$NoStream,
   [int]$Slots = 0,
-  [ValidateSet("", "on", "off")] [string]$Npu = "",
+  [string]$Npu = "",
   [string]$Whisper = "",
-  [ValidateSet("", "gpu", "npu")] [string]$WhisperDevice = "",
+  [string]$WhisperDevice = "",
   [string]$Asr = "",
   [int]$WhisperMaxMinutes = 0,
   # the other server options (0 / empty / off = the server's default)
@@ -60,6 +60,62 @@ param(
   [switch]$Quiet
 )
 $ErrorActionPreference = "Stop"
+# (an option this script does not have went to $args and was ignored: "-Whispr on" started the server without
+#  speech. Now it stops, with the option meant: one dash or two, any case, the closest name)
+if ($args.Count) {
+  $names = @((Get-Command $PSCommandPath).Parameters.Keys | Where-Object { $_ -notin [Management.Automation.PSCmdlet]::CommonParameters })
+  $bad = [string]$args[0]
+  $key = ($bad -replace '^-+', '').ToLower()
+  function Edit-Distance([string]$x, [string]$y) {
+    $d = 0..$y.Length
+    for ($p = 1; $p -le $x.Length; $p++) {
+      $prev = $d[0]; $d[0] = $p
+      for ($j = 1; $j -le $y.Length; $j++) {
+        $t = $d[$j]; $d[$j] = [Math]::Min([Math]::Min($d[$j] + 1, $d[$j - 1] + 1), $prev + [int]($x[$p - 1] -ne $y[$j - 1])); $prev = $t
+      }
+    }
+    return $d[$y.Length]
+  }
+  $best = $names | Sort-Object { Edit-Distance $key ($_.ToLower() -replace '-', '') } | Select-Object -First 1
+  $hint = if ($best -and (Edit-Distance $key ($best.ToLower() -replace '-', '')) -le 3) { ": did you mean -$($best)?" } else { "" }
+  $what = if ($bad -like "-*") { "unknown option $bad" } else { "'$bad' is a value without an option before it (a path with spaces goes in quotes)" }
+  throw "arc-server: $what$hint (arc-server help lists the options)"
+}
+# on / off options: on, yes, true, 1 / off, no, false, 0 (any case); a wrong value says what is expected
+function Switch-Value([string]$name, [string]$v, [string[]]$more = @()) {
+  $l = "$v".Trim().ToLower()
+  if ($l -eq "") { return "" }
+  if ($l -in "on", "yes", "true", "1") { return "on" }
+  if ($l -in "off", "no", "false", "0") { return "off" }
+  if ($l -in $more) { return $l }
+  throw "-${name}: expected $((@("on", "off") + $more) -join ', ') (got '$v')"
+}
+$Vision = Switch-Value "Vision" $Vision
+$Npu = Switch-Value "Npu" $Npu
+$l = "$WhisperDevice".Trim().ToLower()
+if ($l -and $l -notin "gpu", "npu") { throw "-WhisperDevice: expected gpu or npu (got '$WhisperDevice')" }
+$WhisperDevice = $l
+# -Whisper / -Asr: a word (auto / on / off) or a path. A path's last backslash goes (written in quotes as "C:\folder\" it
+# turned the closing quote into part of the path for the server), and the path is checked here: a folder with
+# model.bin for -Whisper, a .gguf file for -Asr
+function Speech-Value([string]$name, [string]$v, [bool]$folder) {
+  $l = "$v".Trim().ToLower()
+  if ($l -in "", "auto", "off") { return $l }
+  if ($l -in "on", "yes", "true", "1") { return "auto" }
+  if ($l -in "no", "false", "0") { return "off" }
+  $p = "$v".Trim().Trim('"').TrimEnd('\', '/')
+  if (-not (Test-Path -LiteralPath $p)) { throw "-${name}: no $(if ($folder) { 'folder' } else { 'file' }) '$p' (auto, on, off or $(if ($folder) { 'a faster-whisper folder with model.bin' } else { 'a Qwen3-ASR .gguf file' }))" }
+  if ($folder) {
+    if (-not (Test-Path -LiteralPath $p -PathType Container)) { throw "-${name}: '$p' is a file: give the folder that holds model.bin, $(Split-Path $p)" }
+    if (-not (Test-Path -LiteralPath (Join-Path $p "model.bin"))) { throw "-${name}: '$p' holds no model.bin: give the faster-whisper folder itself (e.g. ...\models--Systran--faster-whisper-large-v3\snapshots\<hash>)" }
+  } else {
+    if (Test-Path -LiteralPath $p -PathType Container) { throw "-${name}: '$p' is a folder: give the .gguf file in it ($((Get-ChildItem -LiteralPath $p -Filter *.gguf | Where-Object { $_.Name -notlike 'mmproj*' } | Sort-Object { $_.Name -notmatch 'Q8' } | Select-Object -First 1).Name))" }
+    if ($p -notlike "*.gguf") { throw "-${name}: '$p' is no .gguf file" }
+  }
+  return (Resolve-Path -LiteralPath $p).Path
+}
+$Whisper = Speech-Value "Whisper" $Whisper $true
+$Asr = Speech-Value "Asr" $Asr $false
 # -Ctx: a number of tokens, or auto (which also restarts a server running a fixed context); not given (or 0): a
 # running server is kept as it is, a new one starts with auto
 $Ctx = "$Ctx".Trim().ToLower()
@@ -191,7 +247,8 @@ function Pick-Model($models, $runningPath, $runningAlias) {
 if ($Action -in "help", "--help", "-h") {
   Write-Host @"
 arc-server: the arcinferzero server in the background (port $Port), for Pi and other OpenAI-compatible clients.
-Options take one dash or two, any case: -Whisper auto, --whisper auto. Switches take on / off (or auto).
+Options take one dash or two, any case (-Whisper auto, --whisper auto); WRITING OPTIONS below says how to write
+values and paths, WHEN IT FAILS what an error means.
 
   arc-server start [options]     start, or switch to another model; waits until ready. Also brings Pi's model
                                  list up to date (a model deleted from the Hugging Face cache leaves it, a new
@@ -268,6 +325,48 @@ Options for start / restart:
   -SessionDir <folder>           where saved conversations go (default %USERPROFILE%\.arcinferzero\zero\sessions)
   -Quiet                         no messages
 A running server is kept when the model and every option given match; otherwise it is restarted with them.
+
+WRITING OPTIONS
+  dashes and case               -Whisper auto, --whisper auto and -whisper AUTO are the same here (and in pi-arc).
+                                bin\serverz.exe itself takes two dashes only: --whisper auto.
+  on / off                      on, yes, true, 1 or off, no, false, 0 (-Npu, -Vision; -Whisper on = -Whisper auto)
+  switches                      no value after them: -NoMtp (or --nomtp), -NoStream, -AttnF32 (pi-arc also takes
+                                --no-mtp, --no-stream)
+  paths                         in quotes when they have spaces: -Model "C:\My models\Qwen3.5-4B-UD-Q4_K_XL.gguf".
+                                Never end a quoted path with a backslash: "C:\folder\" turns the closing quote into
+                                part of the path; write "C:\folder". Forward slashes work too: C:/models/x.gguf.
+  what each path is             -Model       a .gguf FILE, not its folder (a model in parts: its -00001-of-0000N part)
+                                -Whisper     a FOLDER that holds model.bin and tokenizer.json (faster-whisper), e.g.
+                                             %USERPROFILE%\.cache\huggingface\hub\models--Systran--faster-whisper-large-v3\snapshots\<hash>
+                                -Asr         a Qwen3-ASR .gguf FILE (its mmproj-*.gguf next to it)
+                                -SessionDir  a folder (made when it is missing)
+                                Usually none is needed: shortcuts (-Model 35b) and auto find them in the Hugging Face
+                                cache, %USERPROFILE%\.arcinferzero\models and the folders in model-dirs.txt.
+
+WHEN IT FAILS (the message, then what to do)
+  -Whisper: no folder / holds no model.bin / is a file
+                                give the faster-whisper folder itself (the one with model.bin in it), or auto
+  -Asr: is a folder / is no .gguf file
+                                give the .gguf file, e.g. ...\Qwen3-ASR-1.7B-Q8_0.gguf, or auto
+  -Npu: expected on, off (got 'x')   and the like: the value after the option is not one it takes
+  unknown option -X: did you mean -Y?
+                                arc-server has no option X (a typo, or a bin\serverz.exe option that arc-server does
+                                not pass on): the closest one is named; the list is above
+  'x' is a value without an option before it
+                                a value in the wrong place, or a path with spaces outside quotes
+  Cannot convert value "x" to type "System.Int32"
+                                the option wants a number: -Slots 2, -Chunk 4096
+  'x' matches no model / matches N models
+                                the list printed with it has every id and shortcut: use one of them
+  The server stopped while loading. Last log lines: ...
+                                the server's own message, e.g. "-m: no file ...", "--whisper needs a value",
+                                "unknown option --wisper (did you mean --whisper ...?)", "... has a quote in it"
+                                (a path ending in a backslash), or the GPU memory: a smaller -Ctx, or -Vision off
+  The server did not become ready within 10 minutes
+                                the log ($log) says how far it got; the first start of a MoE model writes its
+                                expert file (35B ~2.5 min, Flash Next ~9.5 min)
+  the port is in use            another server runs there: arc-server stop, or -Port <another>
+
 
 A window for all of this: arc-launcher.cmd in the project folder (models with their memory and automatic
 context, every option filled in with the best value (speech to text too), Start / Stop, Record, the running server's memory and speeds).
@@ -392,9 +491,6 @@ if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra
   if (-not $Asr -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
   if ($WhisperMaxMinutes -le 0 -and "$($st.extra)" -match "--whisper-max-minutes ([0-9]+)") { $WhisperMaxMinutes = [int]$Matches[1] }
 }
-if ($Whisper -in "on", "yes", "true", "1") { $Whisper = "auto" }  # (as people type it: "-Whisper on" was a folder "on")
-if ($Whisper -in "no", "false", "0") { $Whisper = "off" }
-if ($Asr -in "on", "yes", "true", "1") { $Asr = "auto" }
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
 # the other options, as server arguments (also kept in the state file: a change restarts the server)

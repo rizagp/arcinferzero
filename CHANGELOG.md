@@ -10,6 +10,14 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **Option mistakes say what is expected** (serverz, arc-server, pi-arc): a value missing (`--whisper` at the end, or
+  followed by the next option), a file where a folder belongs or the other way round, a path with a stray quote (a
+  quoted path ending in a backslash), a .gguf that is not one, an unknown option (with the closest one: `--wisper`:
+  did you mean `--whisper`?; `-whisper` to serverz: it takes two dashes), each with the kind of value it takes.
+  arc-server no longer ignores an option it does not have (`-Whispr on` started the server without speech), checks
+  `-Whisper` / `-Asr` paths and drops a path's last backslash; pi-arc passes `--whisper`, `--asr`,
+  `--whisper-device` and `--whisper-max-minutes` to arc-server (they went to Pi). The helps of both have WRITING
+  OPTIONS (dashes, on / off, paths, what each path is) and WHEN IT FAILS (each message and what to do).
 - **`--whisper on`** was taken for a folder named "on" and stopped the server with "cannot open model.bin". on / yes / true / 1
   now mean auto (off / no / false / 0: off), for `--whisper` and `--asr` in serverz and in arc-server, and a folder
   without a model.bin is named in the message. arc-server's help says that options take one dash or two (`-Whisper`,

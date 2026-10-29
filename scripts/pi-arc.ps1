@@ -22,7 +22,20 @@ $shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "
 # (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
 function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
 $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
+$whisper = ""; $asr = ""; $whDev = ""; $whMax = 0
 $piArgs = New-Object System.Collections.Generic.List[string]
+# an option's value: there, and not the next option ("--think" at the end gave Pi an empty level); numbers checked
+function Need-Value([object[]]$all, [int]$k, [string]$name, [string]$what) {
+  if ($k + 1 -ge $all.Count -or "$($all[$k + 1])" -like "--*") { Write-Host "pi-arc: $name needs a value ($what)" -ForegroundColor Red; exit 1 }
+  return [string]$all[$k + 1]
+}
+function Need-Number([string]$name, [string]$v, [string]$what) {
+  $n = 0.0
+  if (-not [double]::TryParse($v, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$n)) {
+    Write-Host "pi-arc: $name takes $what (got '$v')" -ForegroundColor Red; exit 1
+  }
+  return $n
+}
 for ($i = 0; $i -lt $args.Count; $i++) {
   $a = [string]$args[$i]
   if ($a -in "--help-all", "-HelpAll") {
@@ -168,7 +181,7 @@ SERVER COMMANDS (arc-server)
                                  arc-server record-status
   arc-server help                its own options:
     -Model <shortcut|text|path>  -Ctx <N|auto>  -Chunk <N>  -SessionCacheGb <N>  -NoMtp  -Vision on|off  -NoStream
-    -Slots <N>  -Npu on|off  -Whisper auto|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
+    -Slots <N>  -Npu on|off  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
     -WhisperMaxMinutes <N>  (speech to text: Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; for the web
     UI's Transcripts / Meetings tabs, voice messages and /v1/audio/transcriptions; kept until stop)
     -Port <N> (default 8090)  -MtpDrafts <1..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
@@ -197,7 +210,8 @@ bin\serverz.exe --help)
   --attn-f32                     f32 attention (tests)   --budget <GB>       keep decoded weights resident up to GB
   --slots <N>                    hold N conversations at once, taking turns step by step
   --npu on|off|force             the NPU next to the GPU for prompt chunks (on: 27B, Gemma 4 12B; force: all)
-  --whisper auto|<dir>|off       speech to text (Whisper large-v3; turbo when large-v3 is not cached)
+  --whisper auto|on|<dir>|off    speech to text (Whisper large-v3; turbo when large-v3 is not cached; <dir>: the
+                                 folder that holds model.bin)
   --whisper-device gpu|npu       Whisper's encoder on the iGPU or the NPU
   --asr auto|<file>|off          Qwen3-ASR next to Whisper, the default speech model (needs --whisper)
   --whisper-max-minutes <N>      longest upload / chat clip (default 180; library files up to 6 hours)
@@ -209,6 +223,33 @@ bin\serverz.exe --help)
   API: http://127.0.0.1:8090/v1 (OpenAI chat completions), web UI http://127.0.0.1:8090/,
        /health, /props (also GPU memory by part and request stats), /tokenize, /sessions (GET size, DELETE clear),
        with --whisper: /v1/audio/transcriptions and /translations, /v1/transcripts (the library), /v1/live
+
+WRITING OPTIONS
+  dashes and case                pi-arc and arc-server take one dash or two, any case: --think off = -Thinking off,
+                                 --whisper auto = -Whisper auto. bin\serverz.exe itself takes two dashes only.
+                                 Pi's own options (-p, -c, -r, --tools ...) are written as Pi documents them.
+  order                          the model shortcut first, then launcher options, then Pi's options and message:
+                                 pi-arc 35b --think high -p "explain main.cpp"
+  on / off                       on, yes, true, 1 or off, no, false, 0 (--vision, --npu; --whisper on = auto)
+  paths                          in quotes when they have spaces: -Model "C:\My models\x.gguf". Never end a quoted
+                                 path with a backslash ("C:\folder\" makes the quote part of it): "C:\folder".
+                                 -Model: a .gguf FILE; --whisper: the FOLDER that holds model.bin; --asr: a .gguf
+                                 FILE. Usually not needed: shortcuts and auto find them (arc-server help: WRITING
+                                 OPTIONS has the exact folders).
+
+WHEN IT FAILS
+  the server stopped while loading, its last log lines below it
+                                 the server's message says what was wrong and what it expects, e.g.
+                                 "--whisper: '...' holds no model.bin: give the folder that has it",
+                                 "-m: '...' is a folder: give the .gguf file in it", "--npu: expected on, off or force
+                                 (got "maybe")", "unknown option --wisper (did you mean --whisper ...?)"
+  pi-arc: --think needs a value (...) / --chunk takes a number of tokens (got '...')
+                                 the option needs a value of that kind right after it
+  -Whisper / -Asr / -Npu: expected ... (got '...')
+                                 arc-server checked the value before starting: write one it names
+  'x' matches no model           the list printed with it has every id and shortcut
+  Pi says the model is unknown   pi-arc writes Pi's model list on every start; run pi-arc once more (or --pick)
+  arc-server help                the full list of server messages and what to do (WHEN IT FAILS)
 
 FILES
   %USERPROFILE%\.arcinferzero\server.log     server log: load time, context, per-request prompt / generation speed,
@@ -247,28 +288,43 @@ In Pi: /model switches the model (5-40 s), Esc stops the answer, /new starts a n
 shortens a long conversation (the details it drops are gone for the model).
 
   pi-arc --help-all              every option: models and variants, context, chunk size, caches, server
+                                 (and WRITING OPTIONS: dashes, on / off, paths; WHEN IT FAILS: what an error means)
 '@
     exit 0
   }
   elseif ((Test-Shortcut $a) -and $piArgs.Count -eq 0) { $model = $(if ($a.ToLower() -eq "35b-m") { "35b" } else { $a.ToLower() }) }
   elseif ($a -in "--pick", "-Pick") { $pick = $true }
-  elseif ($a -in "--session-cache", "-SessionCache") { $sessGb = [double]$args[++$i] }
-  elseif ($a -in "--think", "--thinking", "-Thinking") { $thinking = [string]$args[++$i] }
+  elseif ($a -in "--session-cache", "-SessionCache", "--session-cache-gb", "-SessionCacheGb") {
+    $sessGb = Need-Number $a (Need-Value $args $i $a "GB, 0 = off") "GB, 0 = off"; $i++
+  }
+  elseif ($a -in "--think", "--thinking", "-Thinking", "-Think") {
+    $thinking = (Need-Value $args $i $a "off, minimal, low, medium, high, xhigh or max").ToLower(); $i++
+    if ($thinking -notin "off", "none", "minimal", "low", "medium", "high", "xhigh", "max") {
+      Write-Host "pi-arc: $a takes off, minimal, low, medium, high, xhigh or max (got '$thinking')" -ForegroundColor Red; exit 1
+    }
+  }
   elseif ($a -in "--arc-model", "-Model", "--model-name", "--model") {  # (--model: Pi's own option, taken here so
-    $model = ([string]$args[++$i]) -replace '^arcinfer(zero)?/', ''   #  that Pi gets only the one pi-arc sets)
-  }
+    $model = (Need-Value $args $i $a "a shortcut, a model id or name, or a .gguf file") -replace '^arcinfer(zero)?/', ''; $i++
+  }  # (that Pi gets only the one pi-arc sets)
   elseif ($a -in "--ctx", "-Ctx") {
-    $ctx = ([string]$args[++$i]).Trim().ToLower()
-    if ($ctx -ne "auto" -and $ctx -notmatch '^\d+$') { Write-Host "pi-arc: --ctx takes a number of tokens or auto"; exit 1 }
+    $ctx = (Need-Value $args $i $a "a number of tokens or auto").Trim().ToLower(); $i++
+    if ($ctx -ne "auto" -and $ctx -notmatch '^\d+$') { Write-Host "pi-arc: --ctx takes a number of tokens or auto (got '$ctx')" -ForegroundColor Red; exit 1 }
   }
-  elseif ($a -in "--chunk", "-Chunk") { $chunk = [int]$args[++$i] }
+  elseif ($a -in "--chunk", "-Chunk") { $chunk = [int](Need-Number $a (Need-Value $args $i $a "a number of tokens") "a number of tokens"); $i++ }
   elseif ($a -in "--no-mtp", "-NoMtp") { $noMtp = $true }
   elseif ($a -in "--no-vision", "-NoVision") { $vision = "off" }
   elseif ($a -in "--vision", "-Vision" -and $i + 1 -lt $args.Count) { $i++; $vision = ([string]$args[$i]).ToLower() }
   elseif ($a -in "--preserve-thinking", "-PreserveThinking") { $preserve = $true }
   elseif ($a -in "--no-stream", "-NoStream") { $noStream = $true }
-  elseif ($a -in "--slots", "-Slots") { $slots = [int]$args[++$i] }  # (conversations the server holds at once)
-  elseif ($a -in "--npu", "-Npu") { $npu = ([string]$args[++$i]).ToLower() }  # (on / off: the NPU next to the GPU)
+  elseif ($a -in "--slots", "-Slots") { $slots = [int](Need-Number $a (Need-Value $args $i $a "1..8") "1..8"); $i++ }  # (conversations at once)
+  elseif ($a -in "--npu", "-Npu") { $npu = Need-Value $args $i $a "on or off"; $i++ }  # (the NPU next to the GPU; arc-server checks it)
+  # speech to text, passed to arc-server (which checks the values and paths): before, these went to Pi
+  elseif ($a -in "--whisper", "-Whisper") { $whisper = Need-Value $args $i $a "auto, on, off, or the folder that holds model.bin"; $i++ }
+  elseif ($a -in "--asr", "-Asr") { $asr = Need-Value $args $i $a "auto, off, or a Qwen3-ASR .gguf file"; $i++ }
+  elseif ($a -in "--whisper-device", "-WhisperDevice") { $whDev = Need-Value $args $i $a "gpu or npu"; $i++ }
+  elseif ($a -in "--whisper-max-minutes", "-WhisperMaxMinutes") {
+    $whMax = [int](Need-Number $a (Need-Value $args $i $a "minutes") "minutes"); $i++
+  }
   else { $piArgs.Add($a) }
 }
 # Which model: the one the server is running, else the one started last, else ask (--pick: always ask).
@@ -294,6 +350,10 @@ $sessArg = @{}; if ($null -ne $sessGb) { $sessArg.SessionCacheGb = $sessGb }  # 
 if ($preserve) { $sessArg.PreserveThinking = $true }  # (only when given: a plain start keeps the running server)
 if ($slots -gt 0) { $sessArg.Slots = $slots }  # (only when given, as above)
 if ($npu) { $sessArg.Npu = $npu }  # (not given: a running server keeps its setting, also on another model)
+if ($whisper) { $sessArg.Whisper = $whisper }  # (not given: a running server keeps its speech setting)
+if ($asr) { $sessArg.Asr = $asr }
+if ($whDev) { $sessArg.WhisperDevice = $whDev }
+if ($whMax -gt 0) { $sessArg.WhisperMaxMinutes = $whMax }
 & (Join-Path $PSScriptRoot "arc-server.ps1") start -Model $model -Ctx $ctx -Chunk $chunk @sessArg -NoMtp:$noMtp -Vision $vision -NoStream:$noStream
 if (-not $?) { exit 1 }
 
