@@ -52,13 +52,25 @@ inline Json audio_chat_body(const std::string& data, const std::string& ext, con
 // (asr_opt: "default" = auto when the cache has it, auto, a GGUF, off). Null with whisper_opt off; throws what is
 // wrong. The NPU's driver is initialized before the GPU runtime (which asks for GPUs only) when Whisper or the model
 // uses the NPU.
-inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt, const std::string& whisper_dev,
+inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt_in, const std::string& whisper_dev,
                                              std::string asr_opt, double max_minutes, ServeOpts& so) {
+  // (on / yes / true / 1: auto, as people type it; "--whisper on" was taken for a folder named "on")
+  auto onoff = [](std::string v) {
+    std::string l = v;
+    for (char& c : l) c = (char)tolower((unsigned char)c);
+    if (l == "on" || l == "yes" || l == "true" || l == "1" || l == "auto") return std::string("auto");
+    if (l == "no" || l == "false" || l == "0" || l == "off") return std::string("off");
+    return v;
+  };
+  const std::string whisper_opt = onoff(whisper_opt_in);
+  if (asr_opt != "default" && asr_opt != "auto-quiet") asr_opt = onoff(asr_opt);
   if (asr_opt == "default") asr_opt = whisper_opt == "off" ? "off" : "auto-quiet";  // (not in the cache: Whisper alone)
   if (asr_opt != "off" && whisper_opt == "off") throw std::runtime_error("--asr needs --whisper (the transcription service and its library)");
   if (whisper_opt == "off") return nullptr;
   const std::string dir = whisper_opt == "auto" ? whisper::find_model() : whisper_opt;
   if (dir.empty()) throw std::runtime_error("no faster-whisper model in the Hugging Face cache (hf download Systran/faster-whisper-large-v3)");
+  if (std::error_code ec; !std::filesystem::exists(std::filesystem::path(dir) / "model.bin", ec))
+    throw std::runtime_error("'" + dir + "' is no faster-whisper folder (no model.bin in it): --whisper auto | off | a folder");
   const bool npu_wanted = whisper_dev == "npu" || so.eo.npu > 0 || (getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0);
   if (npu_wanted && ze_load()) zeInit(0);
   const auto t0 = std::chrono::steady_clock::now();

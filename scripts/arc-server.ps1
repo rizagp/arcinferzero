@@ -191,6 +191,7 @@ function Pick-Model($models, $runningPath, $runningAlias) {
 if ($Action -in "help", "--help", "-h") {
   Write-Host @"
 arc-server: the arcinferzero server in the background (port $Port), for Pi and other OpenAI-compatible clients.
+Options take one dash or two, any case: -Whisper auto, --whisper auto. Switches take on / off (or auto).
 
   arc-server start [options]     start, or switch to another model; waits until ready. Also brings Pi's model
                                  list up to date (a model deleted from the Hugging Face cache leaves it, a new
@@ -235,7 +236,7 @@ Options for start / restart:
   -Npu on|off                    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
                                  the model changes (pi-arc, Pi's /model) and on a restart; off again after stop
-  -Whisper auto|off|<folder>     speech to text at /v1/audio/transcriptions (OpenAI's API) and the Transcripts tab:
+  -Whisper auto|on|off|<folder>  speech to text at /v1/audio/transcriptions (OpenAI's API) and the Transcripts tab:
                                  Qwen3-ASR (default), Gemma 4 E4B or Whisper large-v3 (turbo when large-v3 is not
                                  in the Hugging Face cache; <folder>: a faster-whisper folder); Whisper and Qwen3-ASR
                                  take ~8 GB of GPU memory off the context (docs/qwen3-asr.md). Kept like -Npu
@@ -391,6 +392,9 @@ if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra
   if (-not $Asr -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
   if ($WhisperMaxMinutes -le 0 -and "$($st.extra)" -match "--whisper-max-minutes ([0-9]+)") { $WhisperMaxMinutes = [int]$Matches[1] }
 }
+if ($Whisper -in "on", "yes", "true", "1") { $Whisper = "auto" }  # (as people type it: "-Whisper on" was a folder "on")
+if ($Whisper -in "no", "false", "0") { $Whisper = "off" }
+if ($Asr -in "on", "yes", "true", "1") { $Asr = "auto" }
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
 # the other options, as server arguments (also kept in the state file: a change restarts the server)

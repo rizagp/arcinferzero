@@ -10,6 +10,10 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **`--whisper on`** was taken for a folder named "on" and stopped the server with "cannot open model.bin". on / yes / true / 1
+  now mean auto (off / no / false / 0: off), for `--whisper` and `--asr` in serverz and in arc-server, and a folder
+  without a model.bin is named in the message. arc-server's help says that options take one dash or two (`-Whisper`,
+  `--whisper`).
 - **arc-server start without -Model and no console** (a script, a scheduled task, a tool with its input
   redirected, `-NonInteractive`): the model menu asked again on every empty answer, forever, at full CPU. Now a
   running server is kept, else the model used last starts (as Enter and pi-arc do), else it stops with a message.
