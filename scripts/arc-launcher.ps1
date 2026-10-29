@@ -457,12 +457,14 @@ function Show-List {
   Show-Detail
   Fill-Defaults
   Update-Status
+  After-List  # (scripts\launcher-firstrun.ps1: start what was just downloaded, or offer models when there are none)
 }
 
 # ---- start / stop through arc-server.ps1 (a separate process: the server outlives this window)
 function Start-Action([string[]]$argList) {
   if ($script:actProc -and -not $script:actProc.HasExited) { return }
   Remove-Item $script:actOut, $script:actErr -ErrorAction SilentlyContinue
+  $script:actWhat = $argList[0]
   $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$arcServer`"") + $argList + @("-Port", [int]$portBox.Value)
   $script:actProc = Start-Process -FilePath $shell -ArgumentList $a -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $script:actOut -RedirectStandardError $script:actErr
@@ -593,6 +595,9 @@ $timer.Add_Tick({
           $err = Get-Content $script:actErr -Raw -ErrorAction SilentlyContinue
           $tail = Get-Content $script:actOut -Tail 8 -ErrorAction SilentlyContinue
           [void][System.Windows.Forms.MessageBox]::Show("Failed:`n$(($tail -join "`n"))`n$err", "arcinferzero")
+        } elseif ($script:actWhat -eq "start" -and ($openWebChk.Checked -or $script:openWeb)) {
+          $script:openWeb = $false
+          Start-Process "$(Base)/"  # (the web UI, in the default browser)
         }
         $script:actProc = $null
         Update-Status
@@ -609,6 +614,12 @@ $timer.Add_Tick({
     if (($script:tick++ % 4) -eq 0) { Update-Status }
   })
 
-$form.Add_Shown({ Update-Status; Start-List; $timer.Start() })
+. (Join-Path $PSScriptRoot "launcher-firstrun.ps1")
+$form.Add_Shown({
+    Update-Status
+    if (-not (Test-GpuDriver)) { $msg.Text = "No Intel Arc GPU found through its driver: install Intel's graphics driver, restart, open this again." }
+    Start-List
+    $timer.Start()
+  })
 $form.Add_FormClosing({ $timer.Stop() })  # (a running server and a start in progress keep going)
 [void]$form.ShowDialog()

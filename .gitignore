@@ -33,3 +33,6 @@ __pycache__/
 
 # Local review notes (not part of the repository)
 deepseek-*.md
+
+# Ready-to-use packages (scripts\make-package.ps1)
+dist/

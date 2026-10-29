@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-29 (evening): a ready-to-use package for people who never open a terminal
+
+- **The launcher sets everything up**: unpack the zip, double-click `arc-launcher.cmd`. The first time, a window
+  offers a model in plain words (the one that suits the laptop's RAM ticked: 4B on 16 GB, the 35B on 32 GB), speech
+  to text as an add-on and a desktop shortcut; "Download and start" downloads it with a progress bar, starts it and
+  opens the web UI. "Get models" adds more later; "Open the web UI when started" opens it after every start. The
+  package's files are unblocked once (a zip from the internet marks them), and a missing Intel driver is named with
+  Intel's download page (scripts\launcher-firstrun.ps1).
+- **No compiler, no Python, no Visual C++ Redistributable**: `scripts\make-package.ps1` makes
+  `distrcinferzero-<version>-win64.zip` (6 MB: every tracked file, the built exes, `bin\PREBUILT.txt`); setup
+  keeps the shipped exes (`setup -Rebuild` builds them). The exes are built with `/MT` (the C++ runtime inside) and
+  classic `/openmp`, whose `vcomp140.dll` may be shipped (build.ps1 copies it into bin); `/openmp:llvm`'s
+  libomp140 may not. Logits bit-identical to the old build, speeds the same (4B: prompt 840-894 against 857-876 tok/s,
+  generation 18.6-18.7 against 18.0-18.4).
+- **Model downloads without Python**: `scripts\hf-get.ps1` (curl.exe, part of Windows: resumed after a cut, each
+  file's SHA256 checked, the Hugging Face cache layout the server reads; HF_TOKEN for gated repositories) and
+  `scripts\get-models.ps1` over one catalog for setup and the launcher (`scripts\model-catalog.ps1`). The 4B, 9B
+  and 27B come with their image projectors now; `35b` is Unsloth's UD-IQ4_XS (MTP, images, no conversion) and
+  `35b-gsq` the converted 2-bit file (the one step that still needs Python).
+
+
 ## 2026-10-29: the data folder is %USERPROFILE%\.arcinferzero; Qwen3-ASR keeps the language; Flash Next images
 
 - The data folder (kernel cache, model packages and expert files, caches, logs, settings, chats, transcripts,

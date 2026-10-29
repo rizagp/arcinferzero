@@ -1,20 +1,25 @@
 # arcinferzero setup: everything needed on this laptop, in one command. Safe to run again: done steps are skipped.
 #
 #   setup                        check the requirements, build, choose models to download, connect Pi
-#   setup -Models 27b,4b         download these without asking (27b 35b 9b 4b g12 e4b, all, none)
+#   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq 9b 4b g12 e4b whisper asr, all, none)
 #   setup -Tests                 also build the test tools and run the regression tests (needs the 4B model)
 #   setup -NoPi                  leave Pi alone
 #   setup -Yes                   do not ask (pip installs, downloads of the models given with -Models)
+#   setup -Rebuild               build the exes from source even in a ready-to-use package (needs Visual Studio)
 #   setup -Help                  all options
 #
-# Steps: 1 requirements (Windows, Intel Arc GPU, Visual Studio C++ compiler, Python, Pi)  2 build bin\serverz.exe,
-# runz.exe, clinfo.exe, transcribez.exe, arc_recorder.exe when missing or older than the sources  3 GPU check (OpenCL 3.0, DP4a, sub-groups, memory)
-# 4 models (Hugging Face cache; the 35B is converted)  5 Pi (pi-arc / arc-server commands, Pi's model list)
-# 6 regression tests (-Tests).
-param([string[]]$Models = @(), [switch]$Tests, [switch]$NoPi, [switch]$Yes, [switch]$Help)
+# Steps: 1 requirements (Windows, Intel Arc GPU, Visual Studio C++ compiler unless the package is prebuilt, Python for
+# 35b-gsq only, Pi)  2 build bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe, arc_recorder.exe when missing or
+# older than the sources (a ready-to-use package, bin\PREBUILT.txt: kept as shipped)  3 GPU check (OpenCL 3.0, DP4a,
+# sub-groups, memory)  4 models (Hugging Face cache, downloaded by scripts\hf-get.ps1: no Python; 35b-gsq converted)
+# 5 Pi (pi-arc / arc-server commands, Pi's model list)  6 regression tests (-Tests).
+param([string[]]$Models = @(), [switch]$Tests, [switch]$NoPi, [switch]$Yes, [switch]$Rebuild, [switch]$Help)
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $bin = Join-Path $root "bin"
+# a ready-to-use package (scripts\make-package.ps1) ships its exes built: no compiler, no build step (-Rebuild: build)
+$prebuiltFile = Join-Path $bin "PREBUILT.txt"
+$prebuilt = (Test-Path $prebuiltFile) -and -not $Rebuild
 $Models = @(($Models -join ",") -split "[,;\s]+" | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
 if ($Help -or ($Models | Where-Object { $_ -in "--help", "-h", "help", "/?", "-?" })) {
   Write-Host @'
@@ -22,34 +27,37 @@ setup: everything arcinferzero needs on this laptop, in one command. Safe to run
 
 USAGE
   setup                          check, build, ask which models to download, connect Pi
-  setup -Models 27b,4b           download these without asking: 27b 35b 9b 4b g12 e4b, whisper asr (speech to
-                                 text), or all / none
+  setup -Models 27b,4b           download these without asking: 27b 35b 35b-gsq 9b 4b g12 e4b, whisper asr
+                                 (speech to text), or all / none
   setup -Tests                   also build the test tools and run the regression tests (needs the 4B model)
   setup -NoPi                    leave Pi alone
   setup -Yes                     do not ask: pip installs and downloads go ahead (with -Models: those models;
                                  without: none are downloaded)
+  setup -Rebuild                 build the exes from source even in a ready-to-use package (needs Visual Studio)
   setup -Help, --help, -h        this text
 
 STEPS
-  1 requirements   64-bit Windows, an Intel Arc GPU and its driver, the Visual Studio C++ compiler (vswhere,
-                   $env:ARC_VCVARS = a vcvars64.bat overrides), Python 3.10+ (downloads), Pi (optional).
-                   Missing ones: where to get them.
+  1 requirements   64-bit Windows, an Intel Arc GPU and its driver, the Visual Studio C++ compiler (not for a
+                   ready-to-use package; vswhere, $env:ARC_VCVARS = a vcvars64.bat overrides), Python 3.10+ (only
+                   for 35b-gsq), Pi (optional). Missing ones: where to get them.
   2 build          bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe (Whisper), arc_recorder.exe (meetings)
-                   when missing or older than their sources; the compiler
+                   when missing or older than their sources (a ready-to-use package keeps its own); the compiler
                    output goes to %USERPROFILE%\.arcinferzero\build.log (shown when a build fails). A running server
                    is stopped first if serverz.exe has to be rebuilt.
   3 GPU check      bin\clinfo.exe: OpenCL device, DP4a (cl_khr_integer_dot_product), Intel sub-groups, GPU memory
-  4 models         into the Hugging Face cache (HF_HUB_CACHE / HF_HOME respected): Gemma with its drafter and
-                   image projector; the 35B downloaded and converted (tools\convert_gsq.py, with the 4B for its
-                   tokenizer) into %USERPROFILE%\.arcinferzero\models. huggingface_hub / numpy are installed with
-                   pip after asking; the free disk space is checked. Then: every model the server finds, with
-                   its context for the current GPU memory.
+  4 models         into the Hugging Face cache (HF_HUB_CACHE / HF_HOME respected) by scripts\hf-get.ps1: curl.exe,
+                   resumed after a cut, each file's SHA256 checked; no Python. Gemma with its drafter and image
+                   projector (Gemma asks you to accept its terms on huggingface.co: then set HF_TOKEN). 35b-gsq is
+                   converted with Python (tools\convert_gsq.py, the 4B for its tokenizer; huggingface_hub / numpy
+                   installed with pip after asking). The free disk space is checked. Then: every model the server
+                   finds, with its context for the current GPU memory.
   5 Pi             scripts\install-pi.ps1: the pi-arc and arc-server commands, Pi's model list
   6 tests          with -Tests: tests\run_tests.ps1 (unit tests, templates, accuracy vs f32, MTP / DFlash2, slots, API)
 
 MODELS
   27b  Qwen3.8 27B (ISTA-DASLab GSQ-RCO IQ3_S, MTP)        12.1 GB
-  35b  Qwen3.6 35B-A3B 2-bit GSQ (converted)              12.6 GB download, 11.7 GB converted
+  35b  Qwen3.6 35B-A3B (Unsloth UD-IQ4_XS, MTP) + image projector  19.1 GB
+  35b-gsq  Qwen3.6 35B-A3B 2-bit GSQ (converted with Python, no MTP)  12.6 GB download, 11.7 GB converted
   9b   Qwen3.5 9B (Unsloth UD-Q4_K_XL, MTP)                6.1 GB
   4b   Qwen3.5 4B (Unsloth UD-Q4_K_XL, MTP)                3.0 GB
   g12  Gemma 4 12B (Google QAT Q4_0) + image projector + drafter  7.4 GB
@@ -90,14 +98,15 @@ if (-not $gpus) { Bad "No Intel GPU found. arcinferzero needs an Intel Core Ultr
 foreach ($g in $gpus) { Ok "GPU: $($g.Name), driver $($g.DriverVersion)" }
 if (-not ($gpus | Where-Object { $_.Name -match "Arc" })) { Note "only Intel Arc integrated graphics (Xe-LPG tested; Xe2 / Xe3 reported to work) is supported" }
 
-# Visual Studio C++ compiler (the same search as build.ps1)
+# Visual Studio C++ compiler (the same search as build.ps1): not for a ready-to-use package
 . (Join-Path $PSScriptRoot "scripts\vcvars.ps1")
-$vcvars = Find-VcVars
-if ($null -eq $vcvars) {
+$vcvars = if ($prebuilt) { "" } else { Find-VcVars }
+if ($prebuilt) { Ok "C++ compiler: not needed (ready-to-use package: $((Get-Content $prebuiltFile -TotalCount 1).Trim()))" }
+elseif ($null -eq $vcvars) {
   Bad "No Visual Studio C++ compiler found." ("Install 'Build Tools for Visual Studio' (https://visualstudio.microsoft.com/downloads/, " +
     "under 'Tools for Visual Studio') with the workload 'Desktop development with C++', then run setup again.")
 }
-if ($vcvars) { Ok "C++ compiler: $(Split-Path (Split-Path (Split-Path (Split-Path $vcvars))))" }
+elseif ($vcvars) { Ok "C++ compiler: $(Split-Path (Split-Path (Split-Path (Split-Path $vcvars))))" }
 else { Ok "C++ compiler: cl from this Developer prompt ($env:VCToolsInstallDir)" }
 
 # Python (model downloads, 35B conversion)
@@ -110,7 +119,7 @@ foreach ($c in "python", "py -3") {
     if ($LASTEXITCODE -eq 0 -and $v -match '^3\.(\d+)' -and [int]$Matches[1] -ge 10) { $py = $parts; Ok "Python $v"; break }
   } catch {}
 }
-if (-not $py) { Note "Python 3.10+ not found: needed to download models (https://www.python.org/downloads/, tick 'Add to PATH')" }
+if (-not $py) { Ok "Python: not found (only the 35b-gsq conversion needs it; downloads do not)" }
 function Py { $rest = @($py | Select-Object -Skip 1); & $py[0] @rest @args }
 # (Windows PowerShell turns a native program's redirected stderr into errors, fatal under "Stop": local Continue)
 function PyHas($module) { $ErrorActionPreference = "Continue"; Py -c "import $module" 2>$null | Out-Null; return $LASTEXITCODE -eq 0 }
@@ -138,7 +147,8 @@ $newestHeader = (Get-ChildItem (Join-Path $root "src") -Filter *.h | Measure-Obj
 # (arcinferzero: zero\serverz.cpp is tools\server.cpp on zero\engine.h, so it depends on both and on zero\*.h)
 $newestZero = (Get-ChildItem (Join-Path $root "zero") -Filter *.h | Measure-Object LastWriteTime -Maximum).Maximum
 $need = @()
-foreach ($t in "tools\clinfo", "zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder") {
+if ($prebuilt) { Ok "ready-to-use package: the exes as shipped ($((Get-Content $prebuiltFile -TotalCount 1).Trim()); setup -Rebuild builds them)" }
+foreach ($t in $(if ($prebuilt) { @() } else { "tools\clinfo", "zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder" })) {
   $name = Split-Path $t -Leaf
   $exe = Join-Path $bin "$name.exe"
   $src = Get-Item (Join-Path $root "$t.cpp")
@@ -185,35 +195,13 @@ Head 4 "Models"
 $hub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } elseif ($env:HF_HOME) { Join-Path $env:HF_HOME "hub" } else { Join-Path $env:USERPROFILE ".cache\huggingface\hub" }
 $arcModels = Join-Path (Get-AppDir) "models"
 $gsq35 = Join-Path $arcModels "Qwen3.6-35B-A3B-GSQ2-arc.gguf"
-$catalog = @(
-  [pscustomobject]@{ key = "27b"; name = "Qwen3.8 27B (best answers, slowest; MTP)"; repo = "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"; gb = 12.1
-    files = @("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf") },
-  [pscustomobject]@{ key = "35b"; name = "Qwen3.6 35B-A3B 2-bit (fast mixture of experts; converted)"; repo = "ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ"; gb = 12.6
-    files = @() },
-  [pscustomobject]@{ key = "9b"; name = "Qwen3.5 9B (MTP)"; repo = "unsloth/Qwen3.5-9B-MTP-GGUF"; gb = 6.1
-    files = @("Qwen3.5-9B-UD-Q4_K_XL.gguf") },
-  [pscustomobject]@{ key = "4b"; name = "Qwen3.5 4B (fastest; MTP)"; repo = "unsloth/Qwen3.5-4B-MTP-GGUF"; gb = 3.0
-    files = @("Qwen3.5-4B-UD-Q4_K_XL.gguf") },
-  # Google's QAT Q4_0 release has no drafter: Unsloth's copy of the assistant drafter is put next to the model
-  [pscustomobject]@{ key = "g12"; name = "Gemma 4 12B (reads images; drafter)"; repo = "google/gemma-4-12B-it-qat-q4_0-gguf"; gb = 7.4
-    files = @("gemma-4-12b-it-qat-q4_0.gguf", "mmproj-gemma-4-12b-it-qat-q4_0.gguf", "mtp-gemma-4-12B-it.gguf")
-    drafter = @{ repo = "unsloth/gemma-4-12B-it-qat-GGUF"; file = "mtp-gemma-4-12B-it.gguf" } },
-  # (its projector: images and audio, also for transcripts with -Whisper)
-  [pscustomobject]@{ key = "e4b"; name = "Gemma 4 E4B (images, audio; drafter)"; repo = "google/gemma-4-E4B-it-qat-q4_0-gguf"; gb = 6.2
-    files = @("gemma-4-E4B_q4_0-it.gguf", "gemma-4-E4B-it-mmproj.gguf", "mtp-gemma-4-E4B-it.gguf")
-    drafter = @{ repo = "unsloth/gemma-4-E4B-it-qat-GGUF"; file = "mtp-gemma-4-E4B-it.gguf" } },
-  # speech to text (arc-server -Whisper auto): Whisper large-v3, and Qwen3-ASR, the default speech model
-  [pscustomobject]@{ key = "whisper"; name = "Whisper large-v3 (speech to text: words' times, live text)"; repo = "Systran/faster-whisper-large-v3"; gb = 3.1
-    files = @("model.bin", "config.json", "tokenizer.json", "preprocessor_config.json") },
-  [pscustomobject]@{ key = "asr"; name = "Qwen3-ASR 1.7B (speech to text: the default model)"; repo = "unslothai/Qwen3-ASR-1.7B-GGUF"; gb = 2.4
-    files = @("Qwen3-ASR-1.7B-Q8_0.gguf", "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf") }
-)
+. (Join-Path $root "scripts\model-catalog.ps1")  # (the models, shared with the launcher; downloads without Python)
+# (35b-gsq: the 2-bit GSQ file, converted with Python: smaller, no MTP; setup's own step)
+$catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6 35B-A3B 2-bit GSQ (converted; needs Python)"
+    repo = "ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ"; gb = 12.6; files = @() })
 function Present($m) {
-  if ($m.key -eq "35b") { return Test-Path $gsq35 }
-  $snaps = Join-Path $hub ("models--" + ($m.repo -replace "/", "--") + "\snapshots")
-  if (-not (Test-Path $snaps)) { return $false }
-  foreach ($f in $m.files) { if (-not (Get-ChildItem $snaps -Recurse -Filter $f -ErrorAction SilentlyContinue)) { return $false } }
-  return $true
+  if ($m.key -eq "35b-gsq") { return Test-Path $gsq35 }
+  return Test-ArcModel $m $hub
 }
 foreach ($m in $catalog) { $m | Add-Member have (Present $m) }
 foreach ($m in $catalog) {
@@ -223,28 +211,31 @@ $want = @()
 if ($Models) {
   if ($Models -contains "all") { $want = @($catalog | ForEach-Object { $_.key }) }
   elseif ($Models -notcontains "none") {
-    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 9b 4b g12 e4b whisper asr, all or none" } }
+    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 e4b whisper asr, all or none" } }
     $want = $Models
   }
 } elseif (-not $Yes) {
   $a = Read-Host "  Models to download (e.g. '27b 4b whisper asr'; Enter = none)"
   $want = @(($a -split "[,;\s]+") | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
-  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 9b 4b g12 e4b whisper asr" } }
+  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 e4b whisper asr" } }
 }
 $todo = @($catalog | Where-Object { $want -contains $_.key -and -not $_.have })
-if ($todo | Where-Object { $_.key -eq "35b" }) {  # its tokenizer comes from the 4B GGUF
+if ($todo | Where-Object { $_.key -eq "35b-gsq" }) {  # its tokenizer comes from the 4B GGUF
   $m4 = $catalog | Where-Object { $_.key -eq "4b" }
   $m4Queued = @($todo | Where-Object { $_.key -eq "4b" }).Count -gt 0
-  if (-not $m4.have -and -not $m4Queued) { Note "the 35B conversion takes its tokenizer from the 4B model: downloading it too" }
+  if (-not $m4.have -and -not $m4Queued) { Note "the 35B GSQ conversion takes its tokenizer from the 4B model: downloading it too" }
   # (the 4B first, also when it was asked for: the 35B step reads its GGUF)
   if (-not $m4.have) { $todo = @($m4) + @($todo | Where-Object { $_.key -ne "4b" }) }
 }
 if ($todo) {
-  if (-not $py) { Bad "downloading models needs Python 3.10+" "Install Python (https://www.python.org/downloads/, tick 'Add to PATH'), then run setup again." }
-  if (-not (PyHas "huggingface_hub")) {
-    if (-not (Ask "Install the Python package huggingface_hub (pip)?")) { Bad "huggingface_hub is needed to download models" }
-    Py -m pip install -U huggingface_hub
-    if ($LASTEXITCODE -ne 0) { Bad "pip install huggingface_hub failed" }
+  # (Python only for the 35B GSQ conversion; every other model downloads with scripts\hf-get.ps1)
+  if ($todo | Where-Object { $_.key -eq "35b-gsq" }) {
+    if (-not $py) { Bad "the 35b-gsq conversion needs Python 3.10+" "Install Python (https://www.python.org/downloads/, tick 'Add to PATH'), or take -Models 35b (no conversion)." }
+    if (-not (PyHas "huggingface_hub")) {
+      if (-not (Ask "Install the Python package huggingface_hub (pip), for the 35b-gsq conversion?")) { Bad "huggingface_hub is needed for 35b-gsq" }
+      Py -m pip install -U huggingface_hub
+      if ($LASTEXITCODE -ne 0) { Bad "pip install huggingface_hub failed" }
+    }
   }
   $gb = ($todo | Measure-Object gb -Sum).Sum
   $drive = Get-PSDrive ((Split-Path $hub -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
@@ -252,7 +243,7 @@ if ($todo) {
   if (-not $Yes -and -not $Models) { if (-not (Ask ("Download {0} ({1:N1} GB)?" -f (($todo | ForEach-Object { $_.key }) -join ", "), $gb))) { $todo = @() } }
   foreach ($m in $todo) {
     Write-Host "  downloading $($m.key): $($m.repo)"
-    if ($m.key -eq "35b") {
+    if ($m.key -eq "35b-gsq") {
       if (-not (PyHas "numpy")) { Py -m pip install -U numpy; if ($LASTEXITCODE -ne 0) { Bad "pip install numpy failed" } }
       $snap = Py -c "import sys; from huggingface_hub import snapshot_download; print(snapshot_download(sys.argv[1]))" $m.repo
       if ($LASTEXITCODE -ne 0) { Bad "download failed: $($m.repo)" }
@@ -263,16 +254,7 @@ if ($todo) {
       Py (Join-Path $root "tools\convert_gsq.py") $snap $gsq35 --vocab-from $vocab
       if ($LASTEXITCODE -ne 0) { Bad "conversion failed" }
     } else {
-      [string[]]$own = $m.files
-      if ($m.drafter) { $own = @($m.files | Where-Object { $_ -ne $m.drafter.file }) }
-      [string[]]$dl = @("-c", "import sys; from huggingface_hub import hf_hub_download; print([hf_hub_download(sys.argv[1], f) for f in sys.argv[2:]][0])", $m.repo) + $own
-      $first = Py @dl
-      if ($LASTEXITCODE -ne 0) { Bad "download failed: $($m.repo)" }
-      if ($m.drafter) {  # the engine looks for the drafter in the model's folder
-        $dpath = Py -c "import sys; from huggingface_hub import hf_hub_download; print(hf_hub_download(sys.argv[1], sys.argv[2]))" $m.drafter.repo $m.drafter.file
-        if ($LASTEXITCODE -ne 0) { Bad "download failed: $($m.drafter.repo)" }
-        Copy-Item (@($dpath)[-1].Trim()) (Join-Path (Split-Path (@($first)[-1].Trim())) $m.drafter.file) -Force
-      }
+      try { $null = Install-ArcModel $m } catch { Bad "download failed: $($m.repo)" "$_" }
     }
     Ok "$($m.key) downloaded"
   }
@@ -304,6 +286,7 @@ else {
 # ---------------------------------------------------------------- 6. regression tests
 Head 6 "Regression tests"
 if (-not $Tests) { Ok "skipped (setup -Tests runs them: kernels, tokenizer, templates, accuracy vs f32, MTP, API)" }
+elseif ($prebuilt) { Note "the tests build their own tools: setup -Rebuild -Tests (needs Visual Studio's C++ compiler)" }
 else {
   $m4 = (Get-ChildItem $hub -Recurse -Filter "Qwen3.5-4B-UD-Q4_K_XL.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
   if (-not $m4) { Note "the tests need the 4B model: setup -Models 4b -Tests" }

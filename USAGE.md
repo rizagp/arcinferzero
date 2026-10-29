@@ -14,14 +14,17 @@ Open PowerShell or Terminal in the arcinferzero folder, then run:
 ```
 
 The setup is safe to run again (steps that are already done are skipped): it checks the requirements, builds the
-programs, asks which models to download and connects Pi (the `pi-arc` and `arc-server` commands, callable from any
-folder). What it does and its options: [README, "Quick setup"](README.md#quick-setup).
+programs (a ready-to-use package keeps its own: no compiler needed), asks which models to download (no Python:
+`curl.exe`, resumed after a cut, SHA256 checked) and connects Pi (the `pi-arc` and `arc-server` commands, callable
+from any folder). What it does and its options: [README, "Ready-to-use package"](README.md#ready-to-use-package-no-compiler-no-python-no-terminal)
+and ["Quick setup"](README.md#quick-setup). One model's files by hand, the same way:
+`powershell -File scripts\hf-get.ps1 unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-UD-Q4_K_XL.gguf mmproj-F16.gguf`.
 
 Download a model by hand: see [README, section 6](README.md#6-download-models) (every model, its shortcut and the
-`hf download` command). `pi-arc 35b` is Qwen3.6 35B-A3B UD-IQ4_XS from Unsloth's MTP repository (MTP and images);
-the `35b` choice in `setup.cmd` downloads ISTA-DASLab's GSQ 2-bit version instead and converts it once (no MTP;
-[README, section 7](README.md#7-qwen36-35b-a3b-optional-convert-the-gsq-checkpoint)). Qwen3.8 Flash Next (`flash`)
-and the DFlash2 drafters are not downloaded by setup.
+`hf download` command). `35b` in `setup.cmd` and `pi-arc 35b` is Qwen3.6 35B-A3B UD-IQ4_XS from Unsloth's MTP
+repository (MTP and images, 19 GB); `35b-gsq` downloads ISTA-DASLab's GSQ 2-bit version instead and converts it once
+with Python (no MTP; [README, section 7](README.md#7-qwen36-35b-a3b-optional-convert-the-gsq-checkpoint)). Qwen3.8
+Flash Next (`flash`) and the DFlash2 drafters are not downloaded by setup.
 
 ## 2. Using Pi
 

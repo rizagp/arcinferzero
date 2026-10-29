@@ -104,21 +104,45 @@ If PowerShell refuses to run the scripts ("running scripts is disabled on this s
 `powershell -ExecutionPolicy Bypass -File <script> <arguments>`, or allow local scripts once for your user with
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
+### Ready-to-use package (no compiler, no Python, no terminal)
+
+The package (`arcinferzero-<version>-win64.zip`, 6 MB) holds the programs already built. On a laptop with an Intel
+Core Ultra (Arc graphics) and Intel's graphics driver, nothing else is needed:
+
+1. Unpack the zip anywhere (right-click, "Extract All...", e.g. to `C:\arcinferzero`).
+2. Double-click `arc-launcher.cmd`. Windows may ask once whether to run it (the zip came from the internet: "More
+   info", "Run anyway"); the launcher then unblocks its own files.
+3. The first time, a window offers a model: the one that suits the laptop's RAM is ticked (4B on 16 GB, the 35B on
+   32 GB), each with a line on what it is good at; speech to text (recordings, meetings, voice messages) is an
+   add-on, and a desktop shortcut is offered. "Download and start" fetches it with a progress bar (a cut connection
+   goes on where it stopped), starts it, and opens the web UI (`http://127.0.0.1:8090/`) in the browser.
+
+Later: double-click the shortcut (or `arc-launcher.cmd`), select a model, Start; "Get models" adds more. Without
+the Intel driver the launcher says so and offers Intel's download page.
+
+Behind it: the programs carry the C++ runtime inside (`/MT`) and ship the OpenMP runtime `vcomp140.dll` next to them
+(no Visual C++ Redistributable); models download with `scripts\get-models.ps1` / `scripts\hf-get.ps1` (`curl.exe`,
+part of Windows; every file's SHA256 checked) into the Hugging Face cache, from the list in
+`scripts\model-catalog.ps1`. `setup.cmd` works too (the same models, plus Pi); `bin\PREBUILT.txt` marks the package,
+so setup keeps the shipped programs (`setup.cmd -Rebuild` builds them from the sources in the package: step 3).
+The package is made with `scripts\make-package.ps1` (into `dist\`).
+
 ### Quick setup
 
-Once the graphics driver, Visual Studio Build Tools (C++), Python and optionally Pi are installed (steps 1–3 and
-9.1 below), one command does the rest:
+From the sources: once the graphics driver, Visual Studio Build Tools (C++) and optionally Pi are installed (steps
+1–3 and 9.1 below), one command does the rest:
 
 ```powershell
 .\setup.cmd                    # checks, builds, asks which models to download, connects Pi
-.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 9b 4b g12 e4b, whisper asr: speech to text; all, none)
+.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 35b-gsq 9b 4b g12 e4b, whisper asr: speech to text; all, none)
 .\setup.cmd -Tests             # also build the test tools and run the regression tests (needs the 4B)
 ```
 
 It checks the requirements (and says where to get what is missing), builds `bin\serverz.exe`, `runz.exe`,
 `clinfo.exe`, `transcribez.exe` and `arc_recorder.exe` when they are missing or older than the sources, checks the GPU (OpenCL 3.0, DP4a, sub-groups, GPU
-memory), downloads the chosen models into the Hugging Face cache (Gemma with its drafter and image projector; the
-35B is downloaded and converted), installs `huggingface_hub` / `numpy` with pip when needed (it asks first), and
+memory), downloads the chosen models into the Hugging Face cache without Python (Gemma with its drafter and image
+projector; `35b-gsq` is the one model converted with Python, then it installs `huggingface_hub` / `numpy` with pip
+after asking), and
 connects Pi (`pi-arc`, `arc-server`, Pi's model list with each model's context). Running it again only does what
 is missing. Steps 1–10 describe the same by hand.
 
@@ -131,8 +155,8 @@ is missing. Steps 1–10 describe the same by hand.
 | Memory | 16 GB works for the 4B / E4B models; 32 GB for the 12B–35B models and long contexts. The iGPU can use part of the RAM (`bin\clinfo.exe`, "global mem": set in Intel Graphics Software; 20.4 GiB of 32 GB on the test laptop now); arcinferzero uses all of it but 1.2 GiB for the driver, the rest of the RAM stays with Windows. Each model's context follows that setting. | 32 GB LPDDR5x-6400 |
 | CPU | AVX2 (every Core Ultra has it; the build uses `/arch:AVX2`) | |
 | Graphics driver | Intel Arc & Iris Xe graphics driver (it contains the OpenCL runtime; nothing else to install) | 32.0.101.9033 |
-| Compiler | Visual Studio 2026 Build Tools with the **Desktop development with C++** workload (MSVC + Windows SDK) | VS Build Tools 18 |
-| Python | Python 3.10 or newer with `huggingface_hub` (model downloads) and `numpy` (only for converting the 35B model) | Python 3.14, huggingface_hub 2.1 |
+| Compiler | Visual Studio 2026 Build Tools with the **Desktop development with C++** workload (MSVC + Windows SDK); not for the ready-to-use package | VS Build Tools 18 |
+| Python | only for the `35b-gsq` conversion (Python 3.10 or newer with `huggingface_hub` and `numpy`); downloads use `curl.exe` | Python 3.14 |
 | Pi (optional) | the Pi coding agent, which runs on Node.js | Node.js 24 |
 | Disk | 3–13 GB per model | |
 
