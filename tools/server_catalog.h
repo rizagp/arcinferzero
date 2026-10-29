@@ -276,7 +276,8 @@ static std::vector<ModelInfo> scan_models() {
           const int64_t ve = g.get_int("clip.vision.embedding_length", 0), vh = g.get_int("clip.vision.attention.head_count", 0);
           const bool g4v_ok = vh > 0 && ve % vh == 0 && VisionGemma4V::head_ok((int)(ve / vh));
           mmproj = m.arch == "gemma4" ? pt == "gemma4uv" || (pt == "gemma4v" && g4v_ok)
-                                      : (m.arch == "qwen35" || m.arch == "qwen35moe") && VisionQwen3VL::usable(g);
+                                      : (m.arch == "qwen35" || m.arch == "qwen35moe" || m.arch == "qwen4exp") &&  // (qwen4exp:
+                                            VisionQwen3VL::usable(g);  //  Flash Next, its projector found since 2026-10-29)
           // (audio: the encoders load_model loads, AudioGemma4A for gemma4a, AudioGemma4 for gemma4ua)
           const std::string at = g.get_str("clip.audio.projector_type", "");
           audio = mmproj && m.arch == "gemma4" && (at == "gemma4a" || at == "gemma4ua");

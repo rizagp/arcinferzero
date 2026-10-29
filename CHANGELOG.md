@@ -2,6 +2,9 @@
 
 ## 2026-10-29 (evening): a ready-to-use package for people who never open a terminal
 
+- **Flash Next starts with images through arc-server, the launcher and pi-arc**: the model list did not look for a
+  projector next to a `qwen4exp` model, so it listed Flash Next without images and arc-server passed --no-mmproj.
+  Now it lists `qwen3.8-flash-next-iq4_xs` (images, the default) and `...-std` (none).
 - **The launcher sets everything up**: unpack the zip, double-click `arc-launcher.cmd`. The first time, a window
   offers a model in plain words (the one that suits the laptop's RAM ticked: 4B on 16 GB, the 35B on 32 GB), speech
   to text as an add-on and a desktop shortcut; "Download and start" downloads it with a progress bar, starts it and
