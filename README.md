@@ -36,7 +36,7 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
 | Qwen3.6 35B-A3B UD-IQ4_XS (MoE, experts on the SSD) | 604 tok/s (32K prompt), 324 (128K) | 20.6 tok/s; code 49.9 with DFlash2; 12.6 at 128K depth | 0.004-0.008 |
 | Qwen3.8 27B IQ3_S (dense) | ~135 tok/s | 4.9 tok/s; code 18.1 with DFlash2 + MTP | 0.0003-0.0004 |
 | Qwen3.8 27B-AP IQ4_XS, GPU + NPU (`--npu on`, 2026-10-25) | 153.8 tok/s (2K; off 133.5), 152.6 (11K; off 132.7), 131.3 (34K; off 116.2) | unchanged (~3.8 tok/s) | 0.0028-0.0031 (off 0.00066) |
-| Qwen3.8 Flash Next IQ3_S (512 experts on the SSD) | ~164 tok/s (4K), 163 (32K), 123 (125K) | 6-7 tok/s | 0.0143 / 0.0147 (363 tokens); 0.0186 / 0.0177 at 3.5K (QSA); `ARC_FN_PRECISE=1` 0.0127 / 0.0132 (prompt / decode) |
+| Qwen3.8 Flash Next IQ3_S (512 experts on the SSD) | ~164 tok/s (4K), 163 (32K), 123 (125K) | 6-7 tok/s | 0.0143 / 0.0147 (363 tokens); 0.0186 / 0.0177 at 3.5K (QSA); `-Precise` 0.0127 / 0.0132 (prompt / decode) |
 | Qwen3.5 4B | 911 tok/s (2K) | 17.6 tok/s | 0.0021 |
 | Gemma 4 E4B (Google QAT) | 724 tok/s (4K), 615 (14K) | 32 tok/s with its drafter | 0.00088 |
 | Gemma 4 12B (Google QAT) | 137 tok/s (4K), 102 (14K); +10 % with `--npu on` | 19.0 tok/s with its drafter | 0.0002 (two-pass int8 activations) |
@@ -57,7 +57,7 @@ the Qwen encoders of the dense models run their matrix products on two int8 pass
 image 27B 1.26-1.35 s, 9B 1.28-1.30, 4B 0.96-0.97; the 35B and Flash Next keep the f16 encoder).
 KL is the divergence of the next-token distributions from the f32 reference (0 = identical); run-to-run int8
 rounding noise is ~0.0003. The limit kept for every model and change is KL < 0.015. Flash Next's default meets it on short prompts and
-is just above it at 3.5K; `ARC_FN_PRECISE=1` (BF16 hyper-connection rows and router, two int8 passes everywhere)
+is just above it at 3.5K; its precise mode (`arc-server -Precise`, `--precise`; BF16 hyper-connection rows and router, two int8 passes everywhere)
 stays under it at about half the prompt speed, opt-in (QUEUE.md item "Flash Next KL"). How each number was measured, every change with its before and after, and the
 consistency checks (56 of 56 regression runs bit-identical): **[docs/before-after.md](docs/before-after.md)**.
 

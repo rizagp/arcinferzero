@@ -36,6 +36,8 @@ param(
   [switch]$NoStream,
   [int]$Slots = 0,
   [string]$Npu = "",
+  [switch]$Precise,
+  [switch]$NoPrecise,
   [string]$Whisper = "",
   [string]$WhisperDevice = "",
   [string]$Asr = "",
@@ -293,6 +295,9 @@ Options for start / restart:
   -Npu on|off                    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
                                  the model changes (pi-arc, Pi's /model) and on a restart; off again after stop
+  -Precise / -NoPrecise          Qwen3.8 Flash Next's precise mode (BF16 hyper-connection rows and router, two int8
+                                 passes everywhere): KL 0.0186 -> 0.0127 at 3.5K tokens (under the 0.015 limit),
+                                 prompts about half as fast; other models are unchanged. Kept like -Npu
   -Whisper auto|on|off|<folder>  speech to text at /v1/audio/transcriptions (OpenAI's API) and the Transcripts tab:
                                  Qwen3-ASR (default), Gemma 4 E4B or Whisper large-v3 (turbo when large-v3 is not
                                  in the Hugging Face cache; <folder>: a faster-whisper folder); Whisper and Qwen3-ASR
@@ -392,6 +397,9 @@ switch ($Action) {
       if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
         Say "  NPU: on (-Npu on; kept when the model changes and on a restart, off after stop)"
       }
+      if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--precise") {
+        Say "  precise mode: on (-Precise; Flash Next; kept like -Npu, -NoPrecise turns it off)"
+      }
     } else { Say "arcinferzero server is not running." }
     $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
     Say ("Saved conversations: {0} ({1:N1} GiB) in {2}" -f $files.Count, (($files | Measure-Object Length -Sum).Sum / 1GB), $sessDir)
@@ -433,7 +441,12 @@ if (-not (Test-Path $exe)) { throw "$exe not found: build it with .\build.ps1 ze
 $running = Get-Running
 $st = if ($running -and (Test-Path $stateFile)) { Get-Content $stateFile -Raw | ConvertFrom-Json } else { $null }
 $models = Get-Models
-if (-not $Model) {
+if (-not $Model -and $Action -eq "restart" -and $running) {
+  # (restart without -Model: the running model again, with the options given; no menu)
+  $m = $models | Where-Object { $_.alias -eq $running } | Select-Object -First 1
+  if (-not $m -and $st) { $m = $models | Where-Object { Same-Path $_.path $st.path } | Select-Object -First 1 }
+  if (-not $m) { throw "the running model $running is not in the model list: arc-server restart -Model <id>" }
+} elseif (-not $Model) {
   # (no one to type a number: a script, a scheduled task or a tool with its input redirected, or -NonInteractive. The
   #  menu asked again on every empty answer, at full CPU, forever: now the running server stays, else the model used
   #  last starts, as Enter / pi-arc do)
@@ -483,6 +496,9 @@ if (-not $PSBoundParameters.ContainsKey("Slots") -and $st -and "$($st.extra)" -m
 # inside the server) and a restart keep a running server's setting (-Npu off turns it off); a start after stop is off
 # unless -Npu on is given (a restart dropped it: the 27B lost the NPU when -Whisper was added)
 if (-not $Npu -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--npu on") { $Npu = "on" }
+# -Precise: Flash Next's precise mode (serverz --precise), kept the same way (-NoPrecise turns it off)
+if (-not $Precise -and -not $NoPrecise -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--precise") { $Precise = [switch]$true }
+if ($NoPrecise) { $Precise = [switch]$false }
 # -Whisper: kept the same way (with its device; -Whisper off turns it off)
 if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--whisper ("[^"]*"|[^\s|]+)') {
   $Whisper = $Matches[1].Trim('"')
@@ -498,6 +514,7 @@ $extra = @()
 if ($MtpDrafts -gt 0) { $extra += @("--mtp-drafts", $MtpDrafts) }
 if ($Slots -gt 1) { $extra += @("--slots", $Slots) }
 if ($Npu -eq "on") { $extra += @("--npu", "on") }
+if ($Precise) { $extra += "--precise" }
 if ($Whisper -and $Whisper -ne "off") {
   $extra += @("--whisper", $(if ($Whisper -eq "auto") { "auto" } else { "`"$Whisper`"" }))
   if ($WhisperDevice -eq "npu") { $extra += @("--whisper-device", "npu") }
@@ -518,7 +535,7 @@ if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with
 $extraKey = "$($extra -join ' ')|think $ThinkBudget"
 # (compared with the running server's only when given: pi-arc's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and

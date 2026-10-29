@@ -113,6 +113,7 @@ $visionBox = New-Combo @("on", "off") 60
 $slotsBox = New-Num 1 8 1 0 60
 $npuBox = New-Combo @("off", "on") 60
 $noStreamChk = New-Check "every expert on the GPU (-NoStream: no SSD reads, smaller context)"
+$preciseChk = New-Check "precise mode (-Precise: Flash Next; KL 0.0186 -> 0.0127, prompts about half as fast)"
 $keepThinkChk = New-Check "earlier turns keep their reasoning (-PreserveThinking)"
 $whisperBox = New-EditCombo @("off", "auto") 170
 $asrBox = New-EditCombo @("auto", "off") 170
@@ -159,6 +160,7 @@ Add-Opt "MTP drafts per step" $draftBox
 Add-Opt "Thinking budget (tokens)" $thinkBox
 Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; 0 = off"
 Add-Opt "NPU" $npuBox "part of each prompt chunk on the NPU (27B, Gemma 12B); kept on a restart"
+Add-Opt "Accuracy" $preciseChk
 Add-Opt "" $netChk
 # ---- speech to text (-Whisper): the Transcripts / Meetings tabs, /v1/audio/transcriptions
 $speechHead = New-Label "Speech to text" $true
@@ -197,7 +199,7 @@ $fields = [ordered]@{
   port = $portBox; ctx = $ctxBox; chunk = $chunkBox; drafts = $draftBox; think = $thinkBox; img_min = $imgMinBox
   img_max = $imgMaxBox; budget = $budgetBox; prompt_cache = $sessBox; prompt_cache_dir = $sessDirBox
   prefix_cache = $prefixBox; no_prefix = $noPrefixChk; no_swap = $noSwapChk; network = $netChk; attn_f32 = $f32Chk
-  no_mtp = $noMtpChk; vision = $visionBox; slots = $slotsBox; npu = $npuBox; no_stream = $noStreamChk
+  no_mtp = $noMtpChk; vision = $visionBox; slots = $slotsBox; npu = $npuBox; no_stream = $noStreamChk; precise = $preciseChk
   preserve_think = $keepThinkChk; whisper = $whisperBox; asr = $asrBox; whisper_device = $whDevBox; whisper_max = $whMaxBox
 }
 function Get-Field($k) {
@@ -260,7 +262,7 @@ function Fill-Defaults {
     chunk = $(if ($d) { $d.chunk } else { 4096 }); drafts = $(if ($d -and $d.mtp_drafts) { $d.mtp_drafts } else { 2 })
     think = 8192; img_min = $(if ($d) { $d.image_min } else { 0 }); img_max = $(if ($d) { $d.image_max } else { 0 })
     budget = 0; prompt_cache = 8; prompt_cache_dir = ""; prefix_cache = 8; no_prefix = $false; no_swap = $false
-    network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; npu = "off"; no_stream = $false
+    network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; npu = "off"; no_stream = $false; precise = $false
     preserve_think = $false; whisper = "off"; asr = "auto"; whisper_device = "gpu"; whisper_max = 180
   }
   foreach ($k in $fields.Keys) {
@@ -270,6 +272,7 @@ function Fill-Defaults {
   $draftBox.Enabled = $noMtpChk.Enabled = [bool]($m -and $m.mtp)
   $imgMinBox.Enabled = $imgMaxBox.Enabled = $visionBox.Enabled = [bool]($m -and $m.vision)
   $noStreamChk.Enabled = [bool]($m -and $m.moe)
+  $preciseChk.Enabled = [bool]($m -and $m.arch -eq "qwen4exp")  # (only Flash Next has a precise mode)
   Update-Speech
 }
 
@@ -514,6 +517,7 @@ function Start-Selected {
       "vision" { if ($m.vision) { $a += @("-Vision", $v) } }
       "slots" { $a += @("-Slots", [int]$v) }
       "npu" { $a += @("-Npu", $v) }  # (off too: a running server's on is kept otherwise)
+      "precise" { if ($v) { $a += "-Precise" } else { $a += "-NoPrecise" } }  # (off too, as -Npu)
       "no_stream" { if ($v -and $m.moe) { $a += "-NoStream" } }
       "preserve_think" { if ($v) { $a += "-PreserveThinking" } }
       "whisper" { if ($v) { $a += @("-Whisper", $(if ($v -in "auto", "off") { $v } else { "`"$v`"" })) } }
@@ -536,7 +540,7 @@ if (Test-Path $settingsFile) {
     foreach ($p in $o.PSObject.Properties) { if ($fields.Contains($p.Name)) { $script:over[$p.Name] = $p.Value } }
   } catch {}
 }
-if (@($script:over.Keys | Where-Object { $_ -notin "ctx", "drafts", "think", "prompt_cache", "network", "npu", "whisper", "asr" }).Count) { $advChk.Checked = $true }
+if (@($script:over.Keys | Where-Object { $_ -notin "ctx", "drafts", "think", "prompt_cache", "network", "npu", "precise", "whisper", "asr" }).Count) { $advChk.Checked = $true }
 $defBtn.Add_Click({
     $script:over | ConvertTo-Json | Set-Content $settingsFile -Encoding utf8
     $n = $script:over.Count

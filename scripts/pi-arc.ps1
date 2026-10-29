@@ -21,7 +21,7 @@ $ErrorActionPreference = "Stop"
 $shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "g12", "e4b", "g26")
 # (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
 function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
-$model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
+$precise = ""; $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
 $whisper = ""; $asr = ""; $whDev = ""; $whMax = 0
 $piArgs = New-Object System.Collections.Generic.List[string]
 # an option's value: there, and not the next option ("--think" at the end gave Pi an empty level); numbers checked
@@ -143,6 +143,8 @@ LAUNCHER OPTIONS
   --npu on|off, -Npu             the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %; other models stay off). Kept when you switch
                                  models (/model, pi-arc on another model) and on a restart; off after arc-server stop
+  --precise, -Precise            Qwen3.8 Flash Next's precise mode: KL 0.0186 -> 0.0127 at 3.5K tokens (under the
+                                 0.015 limit), prompts about half as fast; kept like --npu (--no-precise: off)
   --help, -h, -?, /?, help       the short help;  --help-all: this text
 
   A launcher option that differs from what the running server uses restarts the server (loading takes
@@ -181,7 +183,7 @@ SERVER COMMANDS (arc-server)
                                  arc-server record-status
   arc-server help                its own options:
     -Model <shortcut|text|path>  -Ctx <N|auto>  -Chunk <N>  -SessionCacheGb <N>  -NoMtp  -Vision on|off  -NoStream
-    -Slots <N>  -Npu on|off  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
+    -Slots <N>  -Npu on|off  -Precise / -NoPrecise  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
     -WhisperMaxMinutes <N>  (speech to text: Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; for the web
     UI's Transcripts / Meetings tabs, voice messages and /v1/audio/transcriptions; kept until stop)
     -Port <N> (default 8090)  -MtpDrafts <1..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
@@ -317,6 +319,8 @@ shortens a long conversation (the details it drops are gone for the model).
   elseif ($a -in "--preserve-thinking", "-PreserveThinking") { $preserve = $true }
   elseif ($a -in "--no-stream", "-NoStream") { $noStream = $true }
   elseif ($a -in "--slots", "-Slots") { $slots = [int](Need-Number $a (Need-Value $args $i $a "1..8") "1..8"); $i++ }  # (conversations at once)
+  elseif ($a -in "--precise", "-Precise") { $precise = "on" }  # (Flash Next's precise mode; kept by arc-server)
+  elseif ($a -in "--no-precise", "-NoPrecise") { $precise = "off" }
   elseif ($a -in "--npu", "-Npu") { $npu = Need-Value $args $i $a "on or off"; $i++ }  # (the NPU next to the GPU; arc-server checks it)
   # speech to text, passed to arc-server (which checks the values and paths): before, these went to Pi
   elseif ($a -in "--whisper", "-Whisper") { $whisper = Need-Value $args $i $a "auto, on, off, or the folder that holds model.bin"; $i++ }
@@ -350,6 +354,7 @@ $sessArg = @{}; if ($null -ne $sessGb) { $sessArg.SessionCacheGb = $sessGb }  # 
 if ($preserve) { $sessArg.PreserveThinking = $true }  # (only when given: a plain start keeps the running server)
 if ($slots -gt 0) { $sessArg.Slots = $slots }  # (only when given, as above)
 if ($npu) { $sessArg.Npu = $npu }  # (not given: a running server keeps its setting, also on another model)
+if ($precise -eq "on") { $sessArg.Precise = $true } elseif ($precise -eq "off") { $sessArg.NoPrecise = $true }
 if ($whisper) { $sessArg.Whisper = $whisper }  # (not given: a running server keeps its speech setting)
 if ($asr) { $sessArg.Asr = $asr }
 if ($whDev) { $sessArg.WhisperDevice = $whDev }

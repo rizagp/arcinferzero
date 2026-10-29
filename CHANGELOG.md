@@ -2,6 +2,10 @@
 
 ## 2026-10-29 (evening): a ready-to-use package for people who never open a terminal
 
+- **Precise mode as an option**: `arc-server start -Precise` / `-NoPrecise`, `pi-arc --precise`, the launcher's
+  "Accuracy" box (Flash Next only) and the server's `--precise` (the same as `ARC_FN_PRECISE=1`, which works as
+  before); kept on a restart and a model switch like `-Npu`, reported by `arc-server status` and in the server log.
+  `arc-server restart` without `-Model` now restarts the running model (it kept the server without restarting it).
 - **Flash Next starts with images through arc-server, the launcher and pi-arc**: the model list did not look for a
   projector next to a `qwen4exp` model, so it listed Flash Next without images and arc-server passed --no-mmproj.
   Now it lists `qwen3.8-flash-next-iq4_xs` (images, the default) and `...-std` (none).

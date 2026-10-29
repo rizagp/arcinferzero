@@ -1533,7 +1533,7 @@ int main(int argc, char** argv) {
     if (std::string(argv[i]) == "--list-models") return list_models();
   std::string model, host = "127.0.0.1", alias;
   int port = 8080;
-  bool swap = true, help = false, web_tools = true, terminal = true;
+  bool swap = true, help = false, web_tools = true, terminal = true, precise = false;
   std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "default";  // (default: auto when Whisper is on)
   double whisper_max_min = 180;
   ServeOpts so;
@@ -1561,7 +1561,7 @@ int main(int argc, char** argv) {
       {"--port", "a port, 1..65535"}, {"--ctx", "a number of tokens, or auto"}, {"--chunk", "a number of tokens, 0 = auto"},
       {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
-      {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--npu", "on, off or force"},
+      {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--precise", ""}, {"--npu", "on, off or force"},
       {"--mtp", ""}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
       {"--draft", "auto, mtp or dflash"}, {"--mmproj", "an mmproj .gguf file"}, {"--no-mmproj", ""},
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
@@ -1622,6 +1622,7 @@ int main(int argc, char** argv) {
     else if (a == "--webui") so.webui = next();
     else if (a == "--budget") { so.eo.w8_budget_gb = to_double(a, next()); so.budget_given = true; }
     else if (a == "--attn-f32") so.eo.attn_int8 = false;
+    else if (a == "--precise") precise = true;
     else if (a == "--npu") {  // (kept by every model switch: so.eo)
       std::string v = next();
       for (char& c : v) c = (char)tolower((unsigned char)c);
@@ -1698,6 +1699,12 @@ int main(int argc, char** argv) {
     }
   }
   if (!help) {
+    // (--precise: Flash Next's precise mode, as ARC_FN_PRECISE=1, read by the engine when it first loads such a model;
+    //  for the whole process, so a model switch keeps it)
+    if (precise) {
+      _putenv_s("ARC_FN_PRECISE", "1");
+      fprintf(stderr, "precise mode: on (Qwen3.8 Flash Next: BF16 hyper-connection rows and router, two int8 passes)\n");
+    }
     if (port < 1 || port > 65535) throw std::runtime_error("--port: expected 1..65535 (got " + std::to_string(port) + ")");
     if (host.empty()) throw std::runtime_error("--host: an address or name is required");
     if (!so.ctx_auto && so.eo.ctx < 1) throw std::runtime_error("--ctx: expected 1 or more tokens (or auto)");
@@ -1805,6 +1812,9 @@ int main(int argc, char** argv) {
             "                        the original GGUF can be moved away (e.g. to a USB disk)\n"
             "  --no-stream           every expert on the GPU (no SSD streaming; MoE models then get less context)\n"
             "  --attn-f32            f32 attention (tests)\n"
+            "  --precise             Qwen3.8 Flash Next's precise mode (as ARC_FN_PRECISE=1): BF16 hyper-connection rows and\n"
+            "                        router, two int8 passes everywhere: KL 0.0186 -> 0.0127 at 3.5K tokens, prompts about\n"
+            "                        half as fast; other models are unchanged\n"
             "  GPU: picked at start: Xe2 / Xe3 GPUs (no 8-lane sub-groups) get 16-lane kernels, and XMX for the prompt\n"
             "  GEMMs when their results match the DP4a kernels' on a test (ARC_NO_XMX=1: DP4a; ARC_NO_SG8=1: 16 lanes)\n"
             "  --kernels DIR         kernel folder (default zero\\kernels);  --webui DIR  web UI folder\n"

@@ -228,9 +228,12 @@ same folder (or use `pi-arc flash` / `arc-server start -Model flash`). The first
 to `%USERPROFILE%\.arcinferzero\zero\` (~9.5 minutes); later loads through the server take ~21–26 s. It writes ~6–7
 tokens/s (the expert cache holds about a fifth of the experts at 131K); prompts: 166 tokens/s at 4K, ~145-163 at
 9-32K, ~123 at 125K. The automatic context is 131,072; up to 262,144 with `--ctx`. The difference from the CPU
-reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. `ARC_FN_PRECISE=1` (set before starting
-the server) makes it more exact (0.0127 at 3.5K) at about half the prompt speed. This model has no MTP block and
-cannot read images; the packaged single file in `%USERPROFILE%\.arcinferzero\zero\models` works too.
+reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. Its precise mode makes it more exact
+(0.0127 at 3.5K, under the 0.015 limit) at about half the prompt speed: `arc-server start -Model flash -Precise`
+(`pi-arc flash --precise`, the launcher's "Accuracy" box; kept on a restart and a model switch like `-Npu`,
+`-NoPrecise` turns it off; the server's own option `--precise`, or `ARC_FN_PRECISE=1`). This model has no MTP block;
+it reads images with its projector next to it (bartowski's `mmproj-Qwen3.8-Flash-Next-f16.gguf`); the packaged single
+file in `%USERPROFILE%\.arcinferzero\zero\models` works too.
 
 Stop the server (`arc-server stop`) before using the laptop for other heavy GPU work (games, video editing), or
 before moving or rebuilding the arcinferzero folder.
