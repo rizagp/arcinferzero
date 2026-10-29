@@ -6,8 +6,14 @@
   recordings) is now `%USERPROFILE%\.arcinferzero`, a dot folder like the other tools' folders in the user's profile
   (`.cache`, `.pi`, `.vscode`). The first exe or script that finds only the old `%USERPROFILE%\arcinferzero` (or an
   older `%LOCALAPPDATA%` one) moves it: a rename on the same drive, instant, nothing is copied. The paths in
-  `last-model.txt`, `launcher.json`, `ctx-auto.txt` and now also `server.json` follow it. `ARC_DATA_DIR` still
-  overrides the place.
+  `last-model.txt`, `launcher.json`, `server.json` and `zero\ctx-auto.txt` follow it, in any case (the context
+  cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
+  the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
+- The help's file lists line up again after the longer folder name.
+- **Qwen3-ASR BF16** (`Qwen3-ASR-1.7B-bf16.gguf`) loads: the stacked Q / K / V and gate / up matrices refused BF16 /
+  F16 / F32 matrices; they are now requantized to Q8_0 row by row, as a single matrix already was. The transcript is
+  word for word the one of the Q8_0 file (the engine holds both as Q8_0), the load takes 17.6 s instead of 5.4 s, so
+  the BF16 file brings nothing over Q8_0.
 
 ## 2026-10-28: the launcher, setup and the docs brought up to date
 

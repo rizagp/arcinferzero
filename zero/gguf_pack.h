@@ -1,9 +1,9 @@
 // arcinferzero model packages: a MoE model kept without its original GGUF.
 //
-//   %USERPROFILE%\.arcinferzero\zero\models\<name>\<name>.gguf      every tensor except the routed experts, all metadata
+//   %USERPROFILE%\.arcinferzero\zero\models\<name>\<name>.gguf     every tensor except the routed experts, all metadata
 //                                                              (the experts listed as virtual tensors: name, type,
 //                                                              shape) and "arcinferzero.package" = 1
-//   %USERPROFILE%\.arcinferzero\zero\models\<name>\<name>.experts  the routed experts in the expert file layout
+//   %USERPROFILE%\.arcinferzero\zero\models\<name>\<name>.experts the routed experts in the expert file layout
 //                                                              (expert_store.h), built from the source GGUF
 //
 // make_package() reads the source GGUF (one file or split parts, from any drive: a USB disk is fine) once and writes

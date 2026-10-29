@@ -2181,18 +2181,31 @@ class Engine {
   // Two matrices with the same K stacked by rows, requantized to Q8_0 (the tiny DeltaNet gate projections).
   // Matrices of one quantized type and row length as one stack of rows, their GGUF blocks copied as they are (the
   // values unchanged; a row's result does not depend on the others): one GEMV / GEMM instead of one per matrix.
+  // BF16 / F16 / F32 matrices (Qwen3-ASR's BF16 file) are requantized to Q8_0 row by row, as a single one is.
   GpuWeight load_w_stack(std::initializer_list<std::string> names) {
     const GgufTensor& t0 = f_.get(*names.begin());
+    const bool flt = t0.type == GGML_F32 || t0.type == GGML_F16 || t0.type == GGML_BF16;
+    const int K = (int)t0.dims[0];
     std::vector<uint8_t> cat;
+    std::vector<float> v;
     int N = 0;
     for (const std::string& n : names) {
       const GgufTensor& t = f_.get(n);
-      if (t.type != t0.type || t.dims[0] != t0.dims[0] || t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16)
+      if (t.type != t0.type || t.dims[0] != t0.dims[0])
         throw std::runtime_error("load_w_stack: matrices of different shapes or types: " + n);
-      cat.insert(cat.end(), t.data, t.data + t.nbytes);
+      if (flt) {
+        v.resize((size_t)(N + t.dims[1]) * K);
+        dequant_row(t.type, t.data, (int)(t.dims[1] * K), v.data() + (size_t)N * K);
+      } else {
+        cat.insert(cat.end(), t.data, t.data + t.nbytes);
+      }
       N += (int)t.dims[1];
     }
-    return make_weight(t0.type, cat.data(), cat.size(), N, (int)t0.dims[0], weight_role(*names.begin()));
+    if (flt) {
+      auto q8 = quantize_rows_q8_0(v.data(), N, K);
+      return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K, weight_role(*names.begin()));
+    }
+    return make_weight(t0.type, cat.data(), cat.size(), N, K, weight_role(*names.begin()));
   }
   GpuWeight load_q8_concat(const std::string& a, const std::string& b) {
     const GgufTensor &ta = f_.get(a), &tb = f_.get(b);

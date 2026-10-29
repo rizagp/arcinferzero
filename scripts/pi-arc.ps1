@@ -211,18 +211,18 @@ bin\serverz.exe --help)
        with --whisper: /v1/audio/transcriptions and /translations, /v1/transcripts (the library), /v1/live
 
 FILES
-  %USERPROFILE%\.arcinferzero\server.log      server log: load time, context, per-request prompt / generation speed,
+  %USERPROFILE%\.arcinferzero\server.log     server log: load time, context, per-request prompt / generation speed,
                                           system-prompt cache loads and saves
-  %USERPROFILE%\.arcinferzero\server.json     what arc-server started (model, context, chunk)
-  %USERPROFILE%\.arcinferzero\last-model.txt  the model started last (pi-arc starts it again by default)
-  %USERPROFILE%\.arcinferzero\kernels         compiled GPU kernels (cache)
-  %USERPROFILE%\.arcinferzero\zero\          arcinferzero's data:
+  %USERPROFILE%\.arcinferzero\server.json    what arc-server started (model, context, chunk)
+  %USERPROFILE%\.arcinferzero\last-model.txt the model started last (pi-arc starts it again by default)
+  %USERPROFILE%\.arcinferzero\kernels        compiled GPU kernels (cache)
+  %USERPROFILE%\.arcinferzero\zero\         arcinferzero's data:
     ctx-auto.txt                          computed contexts per model and GPU memory
     sessions                              saved conversations (--session-cache)
     prefix                                saved system prompts, per project folder (Pi's differs per
                                           project: it contains the folder and its AGENTS.md)
     *.experts / *.lru                     MoE expert files (written once per model) and their cache state
-  %USERPROFILE%\.arcinferzero\build.log       compiler output of the last setup.cmd build
+  %USERPROFILE%\.arcinferzero\build.log      compiler output of the last setup.cmd build
 '@
     exit 0
   }
