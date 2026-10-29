@@ -1621,6 +1621,7 @@ int main(int argc, char** argv) {
     else if (a == "--no-web-tools") web_tools = false;
     else if (a == "--whisper") whisper_opt = next();
     else if (a == "--asr") asr_opt = next();
+    else if (a == "--asr-slots") so.asr_slots = std::clamp(to_int(a, next()), 1, 4);
     else if (a == "--whisper-device") {
       whisper_dev = next();
       if (whisper_dev != "gpu" && whisper_dev != "npu") throw std::runtime_error("--whisper-device: gpu or npu");
@@ -1726,6 +1727,8 @@ int main(int argc, char** argv) {
             "                        transcripts and chat audio go to it unless they name Whisper (docs/qwen3-asr.md);\n"
             "                        auto = Qwen3-ASR-1.7B GGUF from the Hugging Face cache (its mmproj next to it);\n"
             "                        default: auto with --whisper when the cache has it, else Whisper alone\n"
+            "  --asr-slots N         Qwen3-ASR parts of a long clip decoded together, 1-4 (each ~0.7 GB of GPU memory;\n"
+            "                        default: up to 4 while the extra ones take at most 15 %% of the GPU share)\n"
             "  --no-terminal       no POST /v1/tools/run_command (the web UI's terminal tool: PowerShell in the\n"
             "                        chat's folder after the user allows it; default: on, this computer only)\n"
             "  A client that closes its connection (Pi: Esc) cancels its request: prompt processing stops within a\n"

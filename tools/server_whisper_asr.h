@@ -19,8 +19,14 @@
   // (a meeting's tracks: each cut at pauses into parts of about this long, so their segments interleave by time
   //  instead of 4-minute monologues one track after the other)
   static constexpr double kAsrTrackPartSeconds = 25;
+  // (parts of a clip decoded together, a slot each: every step reads the weights once for all of them; a slot is a KV
+  //  cache of kAsrCtx, ~0.66 GiB. The 14:09 recording in 4 parts: decoding 105.0 -> 55.4 s, the same text)
+  static constexpr int kAsrSlots = 4;
   std::string asr_id;  // "qwen3-asr-1.7b"; empty: not loaded
-  void load_asr(const std::string& gguf, const std::string& kernel_dir) {
+  int asr_parts() const { return asr_eng_ ? q3asr::batch_parts(*asr_eng_) : 0; }
+  // slots: parts decoded together (1-kAsrSlots; 0: up to kAsrSlots while the slots past the first take at most 15 % of
+  // the GPU share less Engine::kDriverSlack, the rest is the chat model's)
+  void load_asr(const std::string& gguf, const std::string& kernel_dir, int slots = 0) {
     if (q3asr::find_mmproj(gguf).empty()) throw std::runtime_error("no Qwen3-ASR mmproj (projector qwen3a) next to " + gguf);
     EngineOptions eo;
     eo.ctx = kAsrCtx;
@@ -32,6 +38,13 @@
     // (kept only once all of it loaded: a throw frees what was made, the service goes on with Whisper alone)
     auto eng = std::make_unique<Engine>(gguf, eo);
     if (!eng->hp.qwen3) throw std::runtime_error(gguf + ": not a Qwen3-ASR text model");
+    int ns = slots > 0 ? std::min(slots, kAsrSlots) : kAsrSlots;
+    if (slots <= 0) {
+      const double share = (double)eng->device_mem() - Engine::kDriverSlack;
+      const double per = (double)(eng->slot_bytes(eng->ctx) - eng->snapshot_bytes());
+      while (ns > 1 && (ns - 1) * per > 0.15 * share) --ns;
+    }
+    if (ns > 1) eng->add_slots(ns);
     const std::string mm = q3asr::find_mmproj(gguf, eng->hp.n_embd);  // (several: the one as wide as the model first)
     auto enc = std::make_unique<AudioQwen3A>(mm, *eng);
     if (enc->out_dim() != eng->hp.n_embd)
@@ -68,6 +81,7 @@
   std::string chat_asr_id;  // its model id ("gemma-4-e4b..."); empty: none
   std::function<std::string(const std::string& wav, double secs, const std::string& language, const std::string& context)>
       chat_asr;
+  std::function<int()> chat_asr_slots;  // (the server's --slots: chat_run's parts at a time; none: 1)
   bool names_chat_asr(std::string m) const {
     for (char& c : m) c = (char)tolower((unsigned char)c);
     return !m.empty() && (m == chat_asr_id || m == "e4b" || m == "gemma-4-e4b" || m == "gemma4-e4b");
@@ -78,9 +92,10 @@
   // as Indonesian when the request's languages have id and not ms: the model often names Indonesian speech Malay);
   // the progress callback after each part and about once a second while it decodes (false stops it: the text so far
   // is kept). The engine's calls take the Whisper engine's turn and the GPU lock, as Whisper's windows do; the engine
-  // itself is held a part at a time (asr_turn: a queued job lets a waiting clip or /v1/audio request in between its
-  // parts). pause_parts > 0: parts cut at pauses once about that long (a meeting's track). A part that fails is tried
-  // once more; then, with error, the segments so far are returned and error says what failed (else it throws).
+  // itself is held a group of parts at a time (asr_parts() of them decoded together, q3asr::transcribe_ranges; asr_turn:
+  // a queued job lets a waiting clip or /v1/audio request in between its groups). pause_parts > 0: parts cut at pauses
+  // once about that long (a meeting's track). A group that fails is tried once more from its first part not yet given
+  // to on_part; then, with error, the segments so far are returned and error says what failed (else it throws).
   whisper::Result asr_run(const std::vector<float>& audio, const whisper::Options& opt, const whisper::Progress& cb,
                           bool queued = false, std::string* error = nullptr, double pause_parts = 0) {
     using clk = std::chrono::steady_clock;
@@ -91,7 +106,6 @@
       return l.find("," + std::string(code) + ",") != std::string::npos;
     };
     q3asr::Options o;
-    o.max_seconds = kAsrPartSeconds + 10;  // (each call below gets one part of the cuts here)
     std::string context = opt.terms;
     if (!opt.initial_prompt.empty()) context += (context.empty() ? "" : "\n") + opt.initial_prompt;
     if (std::vector<int> ids = asr_tok_->encode(context, false); (int)ids.size() > kAsrContextTokens) {
@@ -108,18 +122,20 @@
     }
     o.context = context;
     o.gpu = [this](const std::function<void()>& f) { turn_.run(false, [&] { gpu_turn(f); }); };
-    double done = 0, off = 0;  // (off: the part's start in the clip)
+    double done = 0;
     bool stop = false;
+    size_t next = 0;  // (the first part not given to on_part yet)
     auto last = clk::now();
     o.on_part = [&](const q3asr::Part& p) {
-      done = off + p.end;
+      ++next;
+      done = p.end;
       if (p.cut)
         fprintf(stderr, "asr: %.1f-%.1f s: no room left to decode (%d audio tokens, %d tokens): its text's end is lost\n",
-                off + p.start, off + p.end, p.audio_tokens, p.tokens);
+                p.start, p.end, p.audio_tokens, p.tokens);
       if (!p.text.empty()) {
         whisper::Segment g;
-        g.start = off + p.start;
-        g.end = off + p.end;
+        g.start = p.start;
+        g.end = p.end;
         g.text = " " + p.text;
         g.lang = q3asr::language_code(p.language);
         if (g.lang == "ms" && has("id") && !has("ms")) g.lang = "id";
@@ -142,24 +158,25 @@
       fprintf(stderr, "asr: %.1f s of audio, %d parts%s: encoder %.0f ms, prompt %.0f ms (%d audio tokens), %d tokens in %.0f ms\n",
               r.duration, (int)parts.size(), cut ? " (some cut: see above)" : "", enc_ms, pre_ms, audio_tok, tokens, dec_ms);
     };
-    for (const auto& [a, b] : parts) {
-      if (stop) break;
-      off = a / 16000.0;
-      const std::vector<float> clip(audio.begin() + a, audio.begin() + b);
+    const size_t B = (size_t)std::max(1, asr_parts());
+    while (next < parts.size() && !stop) {
+      const size_t g1 = std::min(parts.size(), next + B);
       q3asr::Result q;
-      for (int attempt = 0;; ++attempt) {
+      for (int attempt = 0; next < g1; ++attempt) {
+        const std::vector<std::pair<size_t, size_t>> group(parts.begin() + next, parts.begin() + g1);
+        const double a = group.front().first / 16000.0, b = group.back().second / 16000.0;
         try {
           asr_turn(queued, [&] {
             last = clk::now();
-            q = q3asr::transcribe(*asr_eng_, *asr_enc_, *asr_tok_, clip, o);
+            q = q3asr::transcribe_ranges(*asr_eng_, *asr_enc_, *asr_tok_, audio, group, o);
           });
           break;
         } catch (const std::exception& e) {
-          fprintf(stderr, "asr: %.1f-%.1f s failed%s: %s\n", a / 16000.0, b / 16000.0, attempt ? "" : " (trying once more)", e.what());
+          fprintf(stderr, "asr: %.1f-%.1f s failed%s: %s\n", a, b, attempt ? "" : " (trying once more)", e.what());
           if (attempt == 0) continue;
           if (!error) throw;
           char at[64];
-          snprintf(at, sizeof at, "at %.0f-%.0f s: ", a / 16000.0, b / 16000.0);
+          snprintf(at, sizeof at, "at %.0f-%.0f s: ", a, b);
           *error = at + std::string(e.what());
           report();
           return r;
@@ -196,9 +213,10 @@
   }
 
   // Gemma 4 E4B on 16 kHz samples (chat_asr) as a whisper::Result: parts of up to kChatPartSeconds, a segment each
-  // (language: the request's when it names one); the progress callback after each part (false stops before the next).
-  // A part that fails is tried once more; then, with error, the segments so far are returned and error says what
-  // failed (else it throws).
+  // (language: the request's when it names one); the progress callback after each part (false stops before the next
+  // group). With the server's --slots N, up to N parts at a time (a thread each: the server batches them in its
+  // slots), joined in part order. A part that fails is tried once more; then, with error, the segments before it are
+  // returned and error says what failed (else it throws).
   whisper::Result chat_run(const std::vector<float>& audio, const whisper::Options& opt, const whisper::Progress& cb,
                            std::string* error = nullptr) {
     whisper::Result r;
@@ -206,7 +224,12 @@
     const std::string lang = opt.language == "auto" || opt.language.find(',') != std::string::npos ? "" : opt.language;
     std::string context = opt.terms;
     if (!opt.initial_prompt.empty()) context += (context.empty() ? "" : "\n") + opt.initial_prompt;
-    for (const auto& [a, b] : q3asr::split(audio, kChatPartSeconds)) {
+    struct Job {
+      whisper::Segment g;
+      std::string err;  // (the second attempt's error; empty: done)
+    };
+    // one part: its WAV, then chat_asr (tried twice)
+    auto one = [&](size_t a, size_t b, Job& j) {
       std::string wav = "RIFF0000WAVEfmt ";  // (16 kHz 16-bit mono PCM)
       auto u32 = [&](uint32_t v) { wav.append((const char*)&v, 4); };
       auto u16 = [&](uint16_t v) { wav.append((const char*)&v, 2); };
@@ -216,29 +239,49 @@
       for (size_t i = a; i < b; ++i) u16((uint16_t)(int16_t)std::lround(std::clamp(audio[i], -1.0f, 1.0f) * 32767));
       const uint32_t riff = (uint32_t)wav.size() - 8;
       memcpy(&wav[4], &riff, 4);
-      whisper::Segment g;
+      whisper::Segment& g = j.g;
       g.start = a / 16000.0;
       g.end = b / 16000.0;
+      g.lang = lang;
       for (int attempt = 0;; ++attempt) {
         try {
           g.text = whisper::trim_copy(chat_asr(wav, g.end - g.start, lang, context));
-          break;
+          return;
         } catch (const std::exception& e) {
           fprintf(stderr, "e4b: %.1f-%.1f s failed%s: %s\n", g.start, g.end, attempt ? "" : " (trying once more)", e.what());
           if (attempt == 0) continue;
-          if (!error) throw;
-          char at[64];
-          snprintf(at, sizeof at, "at %.0f-%.0f s: ", g.start, g.end);
-          *error = at + std::string(e.what());
-          return r;
+          j.err = e.what();
+          if (j.err.empty()) j.err = "failed";
+          return;
         }
       }
-      g.lang = lang;
-      if (!g.text.empty()) {
-        g.text = " " + g.text;
-        r.segments.push_back(std::move(g));
+    };
+    const auto cuts = q3asr::split(audio, kChatPartSeconds);
+    const size_t n = (size_t)std::clamp(chat_asr_slots ? chat_asr_slots() : 1, 1, 8);
+    for (size_t g0 = 0; g0 < cuts.size(); g0 += n) {
+      std::vector<Job> jobs(std::min(cuts.size(), g0 + n) - g0);
+      if (jobs.size() == 1) {
+        one(cuts[g0].first, cuts[g0].second, jobs[0]);
+      } else {
+        std::vector<std::thread> th;
+        for (size_t k = 0; k < jobs.size(); ++k) th.emplace_back(one, cuts[g0 + k].first, cuts[g0 + k].second, std::ref(jobs[k]));
+        for (std::thread& t : th) t.join();
       }
-      if (cb && !cb(b / 16000.0, r.duration, r.segments)) break;
+      for (Job& j : jobs) {
+        if (!j.err.empty()) {
+          if (!error) throw std::runtime_error(j.err);
+          char at[64];
+          snprintf(at, sizeof at, "at %.0f-%.0f s: ", j.g.start, j.g.end);
+          *error = at + j.err;
+          return r;
+        }
+        const double end = j.g.end;
+        if (!j.g.text.empty()) {
+          j.g.text = " " + j.g.text;
+          r.segments.push_back(std::move(j.g));
+        }
+        if (cb && !cb(end, r.duration, r.segments)) return r;
+      }
     }
     return r;
   }

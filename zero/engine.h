@@ -3402,7 +3402,9 @@ class Engine {
       // 27B, 8 rows (bench/gemv_bench): IQ3_XXS gate 23.4 -> 42.9 GB/s with 4 rows per sub-group, IQ3_S down (now
       // gemv_mt_v) 22.6 -> 38.9 with 2; Q6_K one row (it spills with more)
       const int tb = cur_T_;
-      const bool vk = gemv_v_ok(w) || w.type == GGML_IQ3_S;
+      // (Qwen3-ASR's Q8_0 in two-pass mode, 2-4 rows (batched parts): gemv_mt_v, both passes over one read of the
+      //  weights (gemv_mt has no -DQ2F: two launches, every matrix read twice))
+      const bool vk = gemv_v_ok(w) || w.type == GGML_IQ3_S || (hp.qwen3 && w.type == GGML_Q8_0 && q2_fuse_ && a <= 1);
       int gr = vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : 4;
       // Below 6 tokens (MTP verification of prose: 2-3 rows) 4 rows per sub-group for the codebook types and for long
       // rows (K >= 8192, the FFN down projection), Q4_K / IQ4_XS short rows 2: 27B, bench/gemv_bench, 3 tokens: gate

@@ -11,6 +11,8 @@
 //   --ctx N        context (default: what the clip needs)
 //   --budget GB    keep the GEMM form of the weights resident up to GB (default 0: decoded just in time)
 //   --chunk N      prompt rows per step (default 512)
+//   --max-part S   parts of at most S seconds (default 1200, Qwen's; the server: 240)
+//   --slots N      decode up to N parts together, a slot each (default 1: one part after another)
 #include "asr_qwen3.h"
 #include "../src/audio.h"
 #include <cstdio>
@@ -18,9 +20,9 @@
 int main(int argc, char** argv) {
   if (argc < 4) { fprintf(stderr, "usage: asr_testz model.gguf mmproj.gguf audio [--ref F] [--enc-out F] [--seconds S] [--lang L] [--context T] [--no-text]\n"); return 1; }
   std::string ref, enc_out, lang, context, save_wav;
-  double seconds = 0, start = 0, parts = 0;
+  double seconds = 0, start = 0, parts = 0, max_part = 1200;
   bool text = true;
-  int ctx = 0, chunk = 512;
+  int ctx = 0, chunk = 512, slots = 1;
   double budget = 0;  // (as the server: the GEMM form just in time, docs/qwen3-asr.md)
   for (int i = 4; i < argc; ++i) {
     const std::string a = argv[i];
@@ -36,6 +38,8 @@ int main(int argc, char** argv) {
     else if (a == "--ctx") ctx = atoi(next().c_str());
     else if (a == "--budget") budget = atof(next().c_str());
     else if (a == "--chunk") chunk = atoi(next().c_str());
+    else if (a == "--max-part") max_part = atof(next().c_str());
+    else if (a == "--slots") slots = atoi(next().c_str());
     else if (a == "--no-text") text = false;
     else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 1; }
   }
@@ -74,13 +78,17 @@ int main(int argc, char** argv) {
       }
     }
     EngineOptions eo;
-    eo.ctx = ctx > 0 ? ctx : std::max(1024, AudioQwen3A::tokens(s.size()) + 1024);
+    // (the longest part: split may cut 5 s past max_part)
+    const size_t longest = std::min(s.size(), (size_t)((std::max(30.0, max_part) + 5) * 16000));
+    eo.ctx = ctx > 0 ? ctx : std::max(1024, AudioQwen3A::tokens(longest) + 1024);
     if (budget >= 0) eo.w8_budget_gb = budget;
     if (chunk > 0) eo.chunk = chunk;
+    eo.slots = std::clamp(slots, 1, 8);
     Engine eng(argv[1], eo);
     AudioQwen3A enc(argv[2], eng);
-    printf("model loaded in %.1f s, ctx %d, chunk %d, %s, GPU %.2f GiB\n", eng.load_ms / 1000, eng.ctx, eng.max_chunk,
-           eng.w8_resident ? "GEMM form resident" : "GEMM form just in time", eng.gpu_bytes / 1073741824.0);
+    printf("model loaded in %.1f s, ctx %d, chunk %d, %s, %d parts at a time, GPU %.2f GiB\n", eng.load_ms / 1000, eng.ctx,
+           eng.max_chunk, eng.w8_resident ? "GEMM form resident" : "GEMM form just in time", q3asr::batch_parts(eng),
+           eng.gpu_bytes / 1073741824.0);
     int n_tok = 0;
     std::vector<float> e = enc.encode(s, n_tok);  // (the first run builds the kernels)
     eng.profile = getenv("ARC_PROF") != nullptr;
@@ -130,8 +138,9 @@ int main(int argc, char** argv) {
     if (!lang.empty() && o.language.empty()) throw std::runtime_error("not a Qwen3-ASR language: " + lang);
     o.context = context;
     o.part_seconds = parts;
+    o.max_seconds = max_part;
     const q3asr::Result res = q3asr::transcribe(eng, enc, tok, s, o);
-    for (const q3asr::Part& p : res.parts) printf("[%.1f-%.1f s] raw: %s\n", p.start, p.end, p.raw.c_str());
+    for (const q3asr::Part& p : res.parts) printf("[%.1f-%.1f s] %d tokens%s, raw: %s\n", p.start, p.end, p.tokens, p.cut ? " (cut)" : "", p.raw.c_str());
     printf("language: %s\ntext: %s\n", res.language().c_str(), res.text().c_str());
     printf("times: encoder %.0f ms, prompt %.0f ms (%d audio tokens), %d tokens in %.0f ms (%.1f tok/s); total %.1f s for %.1f s of audio\n",
            res.encode_ms, res.prefill_ms, res.audio_tokens, res.tokens, res.decode_ms,

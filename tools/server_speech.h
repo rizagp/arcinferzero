@@ -73,8 +73,9 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt, con
       fprintf(stderr, "asr: no Qwen3-ASR GGUF in the Hugging Face cache: Whisper transcribes (docs/qwen3-asr.md)\n");
     } else {
       try {
-        wh->load_asr(f, so.eo.kernel_dir);
-        fprintf(stderr, "asr: %s (Whisper and Qwen3-ASR %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->gpu_bytes() / 1073741824.0);
+        wh->load_asr(f, so.eo.kernel_dir, so.asr_slots);
+        fprintf(stderr, "asr: %s, %d parts at a time (Whisper and Qwen3-ASR %.2f GiB GPU)\n", wh->asr_id.c_str(),
+                wh->asr_parts(), wh->gpu_bytes() / 1073741824.0);
       } catch (const std::exception& e) {
         if (!quiet) throw;  // (asked for: the server says why and stops)
         fprintf(stderr, "asr: %s could not be loaded (%s): Whisper transcribes (docs/qwen3-asr.md)\n", f.c_str(), e.what());
@@ -101,7 +102,8 @@ inline void attach_e4b(srvwh::Service& wh, const std::vector<ModelInfo>& catalog
   if (e4b.empty() && cur && cur->srv && cur->srv->has_audio() && is_e4b(cur->alias)) e4b = cur->alias;
   if (e4b.empty()) return;
   wh.chat_asr_id = e4b;
-  wh.chat_asr = [&dispatch, e4b](const std::string& wav, double secs, const std::string& lang, const std::string& context) {
+  wh.chat_asr_slots = [&so] { return so.eo.slots; };  // (--slots, also for the model loaded later; POST /slots changes it)
+  wh.chat_asr =[&dispatch, e4b](const std::string& wav, double secs, const std::string& lang, const std::string& context) {
     HttpRequest rq;
     rq.method = "POST";
     rq.path = "/v1/chat/completions";

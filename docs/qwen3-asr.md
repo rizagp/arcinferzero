@@ -41,9 +41,19 @@ The GGUF conversion of [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-A
   logged (`no room left to decode`). Added here: decoding stops once the text ends in a pattern repeated 40 times
   (the model looping over background sound; Qwen's fix would keep one copy anyway, 40 leaves real repetition such
   as "tes tes tes ..." untouched).
-- **In the server** the engine is held one part at a time: a voice clip from a chat or a `/v1/audio/*` request
-  waiting for it goes before the next part of a Transcripts job. A part that fails is tried once more; if it fails
-  again the job is `failed` with the error, and the transcript of the parts before it is saved. A meeting recorded
+- **Parts decoded together** (`q3asr::transcribe_ranges`): the engine has up to 4 slots (a 6,144-token KV cache
+  each, ~0.66 GiB); a group of parts is encoded and prefilled one part per slot, then every greedy step of the parts
+  still decoding is one batched pass (`Engine::forward_batch`: the matmuls once for all rows, the float attention per
+  slot on its own cache), so the weights are read once for up to 4 tokens. Each part stops at its own `<|im_end|>`,
+  loop or room limit; the text of every part is the same, token for token, as decoding one part at a time. The
+  server's `--asr-slots N` (1-4) sets the slots; by default as many as fit while the slots past the first take at most
+  15 % of the GPU share (4 on the 22 GB share here). `asr_testz --slots N --max-part 240` does the same on the command
+  line.
+- **In the server** the engine is held one group of parts at a time: a voice clip from a chat or a `/v1/audio/*`
+  request waiting for it goes before the next group of a Transcripts job. A group that fails is tried once more from its first part not
+  yet transcribed; if it fails again the job is `failed` with the error, and the transcript of the parts before it is
+  saved. Gemma 4 E4B transcripts send up to `--slots` parts at once (a request each), so the server's slots batch
+  them; one slot: one part after another. A meeting recorded
   with two tracks is cut at pauses into parts of about 25 s per track (a segment each), so the two speakers' turns
   interleave by time instead of coming out as one long monologue per track (Gemma 4 E4B still takes 2-minute
   parts there).
@@ -70,7 +80,9 @@ under it by little, so two passes are the default.
 | Encoder | 1.45 s for 153.6 s of audio (1,997 tokens) |
 | The 2:34 recording end to end, `asr_testz` (best of two) | 23.2 s (encoder 1.4 s, prompt 2.6 s, 507 tokens 19.2 s), ~6.6x real time |
 | ... through the server (`/v1/audio/transcriptions`, curl's time) | 25.2 s (the server's log: encoder 1.6 s, prompt 2.6 s, tokens 19.8 s) |
-| GPU memory of Qwen3-ASR (6,144-token context, with the encoder) | 3.72 GiB (raw Q8_0 rows 2.1, float KV cache 1.0, encoder 0.6 + buffers); with Whisper turbo in the server 5.31 GiB together |
+| A 20:49 file in 6 parts (<= 240 s), `asr_testz --max-part 240 --ctx 6144` (best of two) | one part at a time 194.9 s (decoding 158.8 s); 4 slots **136.2 s (decoding 98.7 s)**; the 14-minute file (4 parts) 128.8 -> 80.3 s; through the server 256 -> 169 s |
+| Batched step, `runz --bench-batch 4 --ctx 6144 --budget 0` | 1 / 2 / 3 / 4 rows 31.0 / 32.5 / 35.9 / 39.6 ms (4 rows: 3.2x the tokens per second of one) |
+| GPU memory of Qwen3-ASR (6,144-token context, with the encoder) | 3.72 GiB (raw Q8_0 rows 2.1, float KV cache 1.0, encoder 0.6 + buffers); with Whisper turbo in the server 5.31 GiB together; 3 more slots (4 parts at a time) +1.97 GiB |
 
 The GEMM form of the weights is decoded just in time for each 512-token prompt chunk (`w8_budget_gb` 0, `chunk`
 512) instead of being kept next to the raw rows: 5.09 -> 3.72 GiB (server with Whisper 6.68 -> 5.31 GiB). The prompt
@@ -181,7 +193,7 @@ text as in one piece (36.7 s).
 Command line ([zero/asr_testz.cpp](../zero/asr_testz.cpp)):
 
 ```
-asr_testz Qwen3-ASR-1.7B-Q8_0.gguf mmproj-Qwen3-ASR-1.7B-Q8_0.gguf recording.mp3 [--lang id] [--start S] [--seconds S]
+asr_testz Qwen3-ASR-1.7B-Q8_0.gguf mmproj-Qwen3-ASR-1.7B-Q8_0.gguf recording.mp3 [--lang id] [--start S] [--seconds S] [--max-part 240] [--slots 4]
           [--context "names, terms"] [--parts S] [--ref encoder.ref] [--no-text]
 ```
 

@@ -242,78 +242,47 @@ inline bool looping(const std::string& text) {
   return false;
 }
 
-// Transcribes 16 kHz samples. The engine is reset before each part.
-inline Result transcribe(Engine& eng, AudioQwen3A& enc, const Tokenizer& tok, const std::vector<float>& s16k,
-                         const Options& o) {
+// How many parts transcribe_ranges decodes together: the engine's slots (Engine::add_slots), as far as a batched pass
+// takes them; 1 without slots.
+inline int batch_parts(const Engine& eng) {
+  return eng.batch_ok() ? std::max(1, std::min(eng.slot_count(), eng.batch_rows())) : 1;
+}
+
+// Transcribes the parts [a, b) of 16 kHz samples (times in the clip), in groups of batch_parts(eng): each part of a
+// group encoded, then its system turn, audio and prompt prefilled in a slot of its own (reset first), then greedy steps
+// of the group's parts still decoding in one batched pass (Engine::forward_batch: per row the same logits, bit for bit,
+// as one part alone; a single part: forward). Each part stops at its own <|im_end|>, loop or room; on_part in the order
+// of the parts (each once it and those before it are done); a cancel ends the parts decoding (their text so far) and
+// the parts after them. on_text: the first part still decoding. Slot 0 is bound at the end.
+inline Result transcribe_ranges(Engine& eng, AudioQwen3A& enc, const Tokenizer& tok, const std::vector<float>& s16k,
+                                const std::vector<std::pair<size_t, size_t>>& ranges, const Options& o) {
   using clk = std::chrono::steady_clock;
   auto ms = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
   Result r;
   auto gpu = [&](const std::function<void()>& f) { o.gpu ? o.gpu(f) : f(); };
   const int im_end = tok.special.count("<|im_end|>") ? tok.special.at("<|im_end|>") : -1;
   const int eot = tok.special.count("<|endoftext|>") ? tok.special.at("<|endoftext|>") : -1;
-  const auto parts = parts_at_pauses(s16k, o.part_seconds, std::max(30.0, o.max_seconds));
-  for (const auto& [a, b] : parts) {
+  const int E = enc.out_dim(), V = eng.hp.n_vocab, B = batch_parts(eng);
+  if (E != eng.hp.n_embd)
+    throw std::runtime_error("the audio encoder gives rows of " + std::to_string(E) + ", the text model takes " +
+                             std::to_string(eng.hp.n_embd) + " (an mmproj of another Qwen3-ASR size)");
+  const std::vector<int> pre = tok.encode("<|im_start|>system\n" + o.context + "<|im_end|>\n<|im_start|>user\n<|audio_start|>", true);
+  std::string post = "<|audio_end|><|im_end|>\n<|im_start|>assistant\n";
+  if (!o.language.empty()) post += "language " + o.language + "<asr_text>";
+  const std::vector<int> post_ids = tok.encode(post, true);
+  struct Run {
     Part p;
-    p.start = a / 16000.0;
-    p.end = b / 16000.0;
-    const std::vector<float> clip(s16k.begin() + a, s16k.begin() + b);
-    auto t0 = clk::now();
-    int n_tok = 0;
-    std::vector<float> emb;
-    gpu([&] { emb = enc.encode(clip, n_tok); });
-    r.encode_ms += ms(t0);
-    const std::vector<int> pre = tok.encode("<|im_start|>system\n" + o.context + "<|im_end|>\n<|im_start|>user\n<|audio_start|>", true);
-    std::string post = "<|audio_end|><|im_end|>\n<|im_start|>assistant\n";
-    if (!o.language.empty()) post += "language " + o.language + "<asr_text>";
-    const std::vector<int> post_ids = tok.encode(post, true);
-    if ((size_t)n_tok + pre.size() + post_ids.size() + 16 > (size_t)eng.ctx)
-      throw std::runtime_error("the audio needs " + std::to_string(n_tok + pre.size() + post_ids.size()) +
-                               " tokens of context, the model has " + std::to_string(eng.ctx));
-    const int E = enc.out_dim();
-    if (E != eng.hp.n_embd)
-      throw std::runtime_error("the audio encoder gives rows of " + std::to_string(E) + ", the text model takes " +
-                               std::to_string(eng.hp.n_embd) + " (an mmproj of another Qwen3-ASR size)");
-    t0 = clk::now();
-    std::vector<float> l;
-    gpu([&] {
-      eng.reset();
-      eng.forward(pre.data(), (int)pre.size());
-      for (int r0 = 0; r0 < n_tok; r0 += eng.max_chunk) {
-        const int n = std::min(eng.max_chunk, n_tok - r0);
-        eng.forward_embd(emb.data() + (size_t)r0 * E, n, false, false);
-      }
-      l = eng.forward(post_ids.data(), (int)post_ids.size());
-    });
-    r.prefill_ms += ms(t0);
-    t0 = clk::now();
+    int slot = 0, room = 0;
     std::vector<int> out;
-    const int room = std::min(o.max_new, eng.ctx - eng.pos - 1);
-    bool ended = false;  // (<|im_end|>, the loop stop or a cancel: else the room ran out)
-    for (int i = 0; i < room; ++i) {
-      if (o.cancelled && o.cancelled()) {
-        r.cancelled = ended = true;
-        break;
-      }
-      const int t = (int)(std::max_element(l.begin(), l.end()) - l.begin());
-      if (t == im_end || t == eot) {
-        ended = true;
-        break;
-      }
-      out.push_back(t);
-      const std::string so_far = tok.decode(out);
-      if (o.on_text) o.on_text(so_far);
-      if (looping(so_far)) {
-        ended = true;
-        break;
-      }
-      gpu([&] { l = eng.forward(&t, 1); });
-    }
-    r.decode_ms += ms(t0);
-    p.cut = !ended;
-    p.audio_tokens = n_tok;
-    p.tokens = (int)out.size();
-    p.raw = tok.decode(out);
-    // parse_asr_output
+    std::vector<float> l;   // (the logits of its next token)
+    bool done = false, ended = false;  // (ended: <|im_end|>, the loop stop or a cancel; done without it: no room left)
+  };
+  // parse_asr_output
+  auto finish = [&](Run& u) {
+    Part& p = u.p;
+    p.cut = !u.ended;
+    p.tokens = (int)u.out.size();
+    p.raw = tok.decode(u.out);
     const std::string s = fix_repetitions(p.raw);
     if (!o.language.empty()) {
       p.language = o.language;
@@ -342,9 +311,99 @@ inline Result transcribe(Engine& eng, AudioQwen3A& enc, const Tokenizer& tok, co
     r.tokens += p.tokens;
     if (o.on_part) o.on_part(p);
     r.parts.push_back(std::move(p));
-    if (r.cancelled) break;
+  };
+  for (size_t g0 = 0; g0 < ranges.size() && !r.cancelled; g0 += B) {
+    std::vector<Run> runs(std::min(ranges.size(), g0 + B) - g0);
+    for (size_t k = 0; k < runs.size(); ++k) {  // (each part: encoded, then prefilled in slot k)
+      Run& u = runs[k];
+      const auto [a, b] = ranges[g0 + k];
+      u.slot = (int)k;
+      u.p.start = a / 16000.0;
+      u.p.end = b / 16000.0;
+      const std::vector<float> clip(s16k.begin() + a, s16k.begin() + b);
+      auto t0 = clk::now();
+      int n_tok = 0;
+      std::vector<float> emb;
+      gpu([&] { emb = enc.encode(clip, n_tok); });
+      r.encode_ms += ms(t0);
+      if ((size_t)n_tok + pre.size() + post_ids.size() + 16 > (size_t)eng.ctx)
+        throw std::runtime_error("the audio needs " + std::to_string(n_tok + pre.size() + post_ids.size()) +
+                                 " tokens of context, the model has " + std::to_string(eng.ctx));
+      u.p.audio_tokens = n_tok;
+      t0 = clk::now();
+      gpu([&] {
+        eng.bind(u.slot);
+        eng.reset();
+        eng.forward(pre.data(), (int)pre.size());
+        for (int r0 = 0; r0 < n_tok; r0 += eng.max_chunk) {
+          const int n = std::min(eng.max_chunk, n_tok - r0);
+          eng.forward_embd(emb.data() + (size_t)r0 * E, n, false, false);
+        }
+        u.l = eng.forward(post_ids.data(), (int)post_ids.size());
+        u.room = std::min(o.max_new, eng.ctx - eng.pos - 1);
+      });
+      r.prefill_ms += ms(t0);
+    }
+    const auto t0 = clk::now();
+    size_t emitted = 0;
+    auto emit = [&] {  // (the parts done, in order)
+      while (emitted < runs.size() && runs[emitted].done) finish(runs[emitted++]);
+    };
+    for (;;) {
+      if (o.cancelled && o.cancelled()) {
+        for (Run& u : runs)
+          if (!u.done) u.done = u.ended = r.cancelled = true;
+        break;
+      }
+      std::vector<int> sl, tk;
+      std::vector<Run*> rows;
+      bool first = true;
+      for (Run& u : runs) {
+        if (u.done) continue;
+        if ((int)u.out.size() >= u.room) {  // (no room left: its text's end lost)
+          u.done = true;
+          continue;
+        }
+        const int t = (int)(std::max_element(u.l.begin(), u.l.end()) - u.l.begin());
+        if (t == im_end || t == eot) {
+          u.done = u.ended = true;
+          continue;
+        }
+        u.out.push_back(t);
+        const std::string so_far = tok.decode(u.out);
+        if (o.on_text && first) o.on_text(so_far);
+        first = false;
+        if (looping(so_far)) {
+          u.done = u.ended = true;
+          continue;
+        }
+        sl.push_back(u.slot);
+        tk.push_back(t);
+        rows.push_back(&u);
+      }
+      emit();
+      if (rows.empty()) break;
+      gpu([&] {
+        if (rows.size() == 1) {
+          eng.bind(sl[0]);
+          rows[0]->l = eng.forward(&tk[0], 1);
+        } else {
+          const std::vector<float>& lv = eng.forward_batch(sl, tk);
+          for (size_t b = 0; b < rows.size(); ++b) rows[b]->l.assign(lv.begin() + b * V, lv.begin() + (b + 1) * V);
+        }
+      });
+    }
+    r.decode_ms += ms(t0);
+    emit();
+    gpu([&] { eng.bind(0); });
   }
   return r;
+}
+
+// Transcribes 16 kHz samples (parts_at_pauses, then transcribe_ranges).
+inline Result transcribe(Engine& eng, AudioQwen3A& enc, const Tokenizer& tok, const std::vector<float>& s16k,
+                         const Options& o) {
+  return transcribe_ranges(eng, enc, tok, s16k, parts_at_pauses(s16k, o.part_seconds, std::max(30.0, o.max_seconds)), o);
 }
 
 // A Qwen3-ASR GGUF in the Hugging Face cache (unsloth's or ggml-org's conversion: the model and an mmproj-*.gguf next
