@@ -1774,10 +1774,12 @@ async function streamTurn(el, st, onOverflow, job) {
   }
   const reader = res.body.getReader(), dec = new TextDecoder();
   kick();
-  let buf = "", first = true, frame = 0, painted = 0;
+  let buf = "", first = true, frame = 0, painted = 0, gap = 120, shown = null;
   // the screen follows at most every 120 ms (a long answer re-rendered per token made streaming slow down, and while
   // the model runs on the same iGPU the browser gets little GPU time to draw: parts of the page stayed blank), and
-  // the thinking text only while its box is open (filled when it is opened)
+  // the thinking text only while its box is open (filled when it is opened). The answer is rendered whole each time,
+  // so a long one costs more per paint: the gap grows to 8x the last paint's time (a paint takes at most ~1/8 of the
+  // browser's time), and an answer that did not change is not rendered again
   const paint = (all) => {
     frame = 0;
     if (!all && !onScreen(job)) return;  // (another chat on screen: its bubbles are drawn when it comes back, and at the end)
@@ -1790,13 +1792,17 @@ async function streamTurn(el, st, onOverflow, job) {
         if (atEnd) thinkText.scrollTop = thinkText.scrollHeight;
       }
     }
-    content.innerHTML = markdown(st.answer);
+    if (all || st.answer !== shown) {
+      content.innerHTML = markdown(st.answer);
+      shown = st.answer;
+    }
     scroll();
+    gap = Math.min(2000, Math.max(120, 8 * (performance.now() - painted)));
   };
   thinkBox.ontoggle = () => { if (thinkBox.open) { thinkText.textContent = st.reasoning; thinkText.scrollTop = thinkText.scrollHeight; } };
   const later = () => {
     // (a plain timer: an animation frame waits while the tab is hidden, and a frame that never came stopped all later ones)
-    if (!frame) frame = setTimeout(paint, Math.max(0, 120 - (performance.now() - painted)));
+    if (!frame) frame = setTimeout(paint, Math.max(0, gap - (performance.now() - painted)));
   };
   try {
   while (true) {
@@ -3140,13 +3146,18 @@ function trState(x) {
   }
 }
 function trFillRow(r, x) {
+  const s = trState(x);
+  // (a row whose shown values did not change is left alone: every poll rewrote every row)
+  const sig = [x.id === tr.sel, x.status, x.ext, x.name, s.text, !!s.err, s.p === undefined ? "" : (100 * s.p).toFixed(1)].join("\u0001");
+  if (r.trSig === sig) return;
+  r.trSig = sig;
   r.className = "trrow" + (x.id === tr.sel ? " on" : "");
   const th = r.querySelector(".thumb");
   if (x.status === "live") { if (!th.querySelector(".dot")) th.innerHTML = '<span class="dot"></span>'; }
   else th.textContent = String(x.ext || "").slice(0, 4);
   r.querySelector(".fname").textContent = x.name;
   r.querySelector(".fname").title = x.name;
-  const s = trState(x), meta = r.querySelector(".fmeta");
+  const meta = r.querySelector(".fmeta");
   meta.textContent = s.text;
   meta.title = s.text;
   meta.classList.toggle("err", !!s.err);
@@ -3425,7 +3436,10 @@ function trTick() {
 }
 $("trvideo").addEventListener("timeupdate", trTick);
 $("trvideo").addEventListener("seeked", trTick);
-(function frame() { if (!$("trvideo").paused) trTick(); requestAnimationFrame(frame); })();
+// (every frame only while it plays: a loop running all the time kept the page from ever going idle)
+let trFrame = 0;
+function trFrames() { trTick(); trFrame = $("trvideo").paused ? 0 : requestAnimationFrame(trFrames); }
+$("trvideo").addEventListener("play", () => { if (!trFrame) trFrame = requestAnimationFrame(trFrames); });
 // a segment's new text: words kept (with their times) where the old words line up with the new ones, the others
 // timed between their neighbours
 function trSetText(g, text) {

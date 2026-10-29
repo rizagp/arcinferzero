@@ -10,6 +10,11 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **Web UI lighter on the browser**: the transcript player's word highlight runs a frame loop only while the media
+  plays (it ran 60 times a second all the time, so the page never went idle); a streaming answer is rendered again
+  only when its text changed, at a gap that grows with the render's cost (8x its time, at least 120 ms, so a very
+  long answer no longer takes the browser's time quadratically); the transcript list's rows are rewritten only
+  when what they show changed.
 - **Image prompts in one pass** (Qwen images on models without an MTP block or DFlash2 drafter, so Flash Next):
   the text and the image rows go through the layers together instead of a pass per piece, so the streamed experts
   are read once: prompt time -8 to -24 % (290-798 tokens with a picture), the same answers. `ARC_MEDIA_PASSES=1`:
