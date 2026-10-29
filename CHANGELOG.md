@@ -9,7 +9,7 @@
   package's files are unblocked once (a zip from the internet marks them), and a missing Intel driver is named with
   Intel's download page (scripts\launcher-firstrun.ps1).
 - **No compiler, no Python, no Visual C++ Redistributable**: `scripts\make-package.ps1` makes
-  `distrcinferzero-<version>-win64.zip` (6 MB: every tracked file, the built exes, `bin\PREBUILT.txt`); setup
+  `dist\arcinferzero-<version>-win64.zip` (6 MB: every tracked file, the built exes, `bin\PREBUILT.txt`); setup
   keeps the shipped exes (`setup -Rebuild` builds them). The exes are built with `/MT` (the C++ runtime inside) and
   classic `/openmp`, whose `vcomp140.dll` may be shipped (build.ps1 copies it into bin); `/openmp:llvm`'s
   libomp140 may not. Logits bit-identical to the old build, speeds the same (4B: prompt 840-894 against 857-876 tok/s,
