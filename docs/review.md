@@ -478,7 +478,7 @@ The ones that shaped the design:
   buffers. Not solved.
 - **27B generation** stays at ~72 % of the bandwidth: the IQ3 / IQ2 codebook decoding is not hidden behind the
   memory reads.
-- **Flash Next**: no MTP block and no image input; generation depends on the SSD (cache 12–22 % of the experts);
+- **Flash Next**: no MTP block; images with its image projector next to it (read right since 2026-10-29); generation depends on the SSD (cache 12–22 % of the experts);
   its KL is 0.0143 on short prompts and 0.0186 at 3,584 tokens with QSA (`ARC_FN_PRECISE=1`: 0.0127, at about
   half the prompt speed, opt-in); longer prompts are not measured.
 - **Register spills left**: `gdn_conv` 1 KB and `moe_gateup_q` 2 KB (256 registers remove them but are not faster).

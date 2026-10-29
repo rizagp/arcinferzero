@@ -131,6 +131,20 @@ arc-server help                # every option
 
 The server log is `%USERPROFILE%\.arcinferzero\server.log`. The server uses port 8090.
 
+**Writing the options** (`arc-server help` and `pi-arc --help-all` have the full list, under WRITING OPTIONS and
+WHEN IT FAILS):
+- `arc-server` and `pi-arc` take one dash or two, in any case: `-Whisper auto`, `--whisper auto` and
+  `-whisper AUTO` are the same. `bin\serverz.exe` itself takes two dashes only (`--whisper auto`).
+- On / off values: `on`, `yes`, `true`, `1` or `off`, `no`, `false`, `0`; `-Whisper on` is `-Whisper auto`.
+- Paths with spaces go in quotes, and a quoted path never ends in a backslash (`"C:\folder\"` makes the closing
+  quote part of the path; write `"C:\folder"`). `-Model` takes a `.gguf` **file**, `-Whisper` the **folder** that
+  holds `model.bin`, `-Asr` a `.gguf` **file**; usually none is needed (shortcuts and `auto` find them).
+- A wrong option or value stops before anything loads, with what it expects: `unknown option -Whispr: did you mean
+  -Whisper?`, `-Npu: expected on, off (got 'maybe')`, `-Whisper: '...\model.bin' is a file: give the folder that
+  holds model.bin, ...`, `--whisper needs a value (auto (or on), off, or a faster-whisper folder with model.bin)`.
+- `arc-server start` without `-Model` shows the numbered list in a console. Where no one can type a number (a
+  script, a scheduled task, a redirected input), it keeps the running server, else starts the model used last.
+
 **arcinferzero (the engine):** the server runs through Level Zero (Intel's GPU driver). For
 MoE models (Qwen3.6 35B) the experts are kept on the SSD and only the frequently used experts are in GPU memory (a
 cache): the context can reach 262K together with images and MTP. The automatic context reserves 128K tokens, then
@@ -498,6 +512,8 @@ Only the `pi-arc` / `arc-server` shortcut commands store the folder location; ev
 | Generation gets slower after a few minutes | The laptop throttles under sustained load (5–10 %); plug in the charger and use a performance power mode. |
 | `web_search` in Pi answers "No results found" or never finishes | Its default search engines are DuckDuckGo and Startpage; DuckDuckGo is blocked in Indonesia, so neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or with the `/search-config` command in Pi). |
 | A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. The server log shows it (`system-prompt cache: saved / loaded ... for <folder>`). |
+| `unknown option ...`, `... needs a value`, `expected ... (got ...)`, `is a folder` / `is a file`, `has a quote in it` | An option was written wrong; the message names what it takes (section 3, "Writing the options"; `arc-server help`, WHEN IT FAILS). A path ending in a backslash inside quotes gives "has a quote in it": leave the last backslash out. |
+| Flash Next does not read images | Its image projector is not in the model's folder: `hf download bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf`, copied next to the model (or its package in `%USERPROFILE%\.arcinferzero\zero\models\<name>\`). |
 | "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [README, section 6](README.md#6-download-models)). |
 | Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\.arcinferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated), e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first, so a model kept in both places loads from there. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, such as a backup on another drive, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |

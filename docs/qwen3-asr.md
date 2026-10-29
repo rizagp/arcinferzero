@@ -184,7 +184,8 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
   `--whisper off` there is no speech service: naming `whisper` or `qwen3-asr` gives 400, a chat model that hears
   audio transcribes.
 - `--asr auto` takes the Q8_0 file when the cache has several; the mmproj whose output width matches the text model
-  (1.7B: 2048, 0.6B: 1024). In the default (`--asr` not given) a Qwen3-ASR that cannot be loaded is logged and the
+  (1.7B: 2048, 0.6B: 1024). The BF16 file loads too (since 2026-10-29), but the engine holds its matrices as Q8_0:
+  its transcript of a 2:43 recording was word for word the Q8_0 file's, and it loads in 17.6 s instead of 5.4 s. In the default (`--asr` not given) a Qwen3-ASR that cannot be loaded is logged and the
   server goes on with Whisper alone.
 - Voice messages and audio files in a chat: written by Qwen3-ASR (unless the setting "The model hears it" is on and
   the chat's model hears audio).

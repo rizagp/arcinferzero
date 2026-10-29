@@ -1792,6 +1792,8 @@ int main(int argc, char** argv) {
             "                        per token, default 256; Gemma 4 12B: 48x48 pixels, default 1120)\n"
             "  --image-max-tokens N  at most N tokens per image (larger images are scaled down; Qwen default 2048, Gemma\n"
             "                        4 12B 2048, above the 1120 it was trained with)\n"
+            "                        A Qwen image goes through the layers with its prompt's text in one pass (models\n"
+            "                        without an MTP block or drafter, e.g. Flash Next; ARC_MEDIA_PASSES=1: a pass each)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
             "MoE models (experts read from the SSD into a GPU cache; expert file in\n"
             "%%USERPROFILE%%\\.arcinferzero\\zero, made on the first start, safe to delete):\n"

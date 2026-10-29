@@ -12,6 +12,15 @@ generation 6-7 tok/s. incoai's DFlash2 drafter (trained on layers 5 / 15 / 25 / 
 streams) works with `--dflash DIR` (F21.16): the greedy text equals plain decoding, ~79 % of the drafts are accepted,
 but generation is no faster here (SSD-bound: a verification pass reads the experts of all its rows).
 
+Images (2026-10-29): the Qwen3-VL encoder of an `mmproj-*.gguf` next to the model (bartowski's
+`mmproj-Qwen3.8-Flash-Next-f16.gguf`; 27 layers of 1152, output 2560, f16 matrices). An image's rows enter as every
+token's do: `hc_n` copies, one per residual stream, and the PLE n-gram rows of `<|image_pad|>`
+(`ple.image_token_id` = 248056; llama.cpp qwen4exp reads it too). Before that fix `forward_embd` wrote them one stream
+wide (four image rows in one row's streams) and the PLE block read the previous text's rows: colours and shapes came
+through, text in a picture did not ("PFILIKO 2013" for "PROFIL RISIKO 2026"). Prompts with images go through in one
+pass with the text (`Engine::set_media`), so the experts are read once: prompt time -8 to -24 %. The encoder stays
+f16 (two int8 passes: 26-28 % faster at KL up to 0.0098; tiles of 8 keys: no faster). docs/before-after.md, 10-29.
+
 ## Hyperparameters (GGUF metadata)
 
 | Key | Value |

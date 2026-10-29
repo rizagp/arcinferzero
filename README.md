@@ -216,7 +216,7 @@ in the same folder as the model: download them from the same repository in the s
 | `35b` | Qwen3.6 35B-A3B UD-IQ4_XS (Unsloth's MTP repository: MTP block + image projector) | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-BF16.gguf` | 18.2 GB + projector |
 | `35b-mtp` | Qwen3.6 35B-A3B UD-Q3_K_M of the same repository | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-Q3_K_M.gguf mmproj-BF16.gguf` | |
 | (`35b`) | Qwen3.6 35B-A3B, 2-bit GSQ, no MTP (what `setup.cmd -Models 35b` downloads) | see step 7 (download 12.6 GB, then convert) | 11.7 GB |
-| `flash` | Qwen3.8 Flash Next (arcinferzero only) | `hf download ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF --include "IQ3_S/*"` | 54.8 + 28.8 GB |
+| `flash` | Qwen3.8 Flash Next (arcinferzero only); images: an image projector copied into the model's folder (the server looks only next to the model; with a package: next to the package) | `hf download ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF --include "IQ3_S/*"`; projector `hf download bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf` | 54.8 + 28.8 GB + 0.9 GB |
 | | DFlash2 drafters (optional, see `--dflash` below) | `hf download z-lab/Qwen3.8-27B-DFlash2` / `hf download incoai/Qwen3.6-35B-A3B-DFlash2` | 3.85 / 1.05 GB |
 | | Speech to text (optional, `arc-server start -Whisper auto`): Whisper large-v3, and Qwen3-ASR 1.7B (the default speech model; its mmproj next to it) | `hf download Systran/faster-whisper-large-v3` and `hf download unslothai/Qwen3-ASR-1.7B-GGUF --include "*Q8_0*" "*mmproj*"` | 2.9 + 2.4 GB |
 
