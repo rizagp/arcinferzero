@@ -334,8 +334,20 @@ $running = Get-Running
 $st = if ($running -and (Test-Path $stateFile)) { Get-Content $stateFile -Raw | ConvertFrom-Json } else { $null }
 $models = Get-Models
 if (-not $Model) {
-  $m = Pick-Model $models $(if ($st) { $st.path } else { $null }) $running
-  if (-not $m) { Say "Keeping $running."; return }
+  # (no one to type a number: a script, a scheduled task or a tool with its input redirected, or -NonInteractive. The
+  #  menu asked again on every empty answer, at full CPU, forever: now the running server stays, else the model used
+  #  last starts, as Enter / pi-arc do)
+  $noConsole = [Console]::IsInputRedirected -or (@([Environment]::GetCommandLineArgs()) -match '^-noni').Count -gt 0
+  if ($noConsole) {
+    if ($running) { Say "No -Model given: keeping $running."; return }
+    $lp = if (Test-Path $lastFile) { (Get-Content $lastFile -Raw).Trim() } else { "" }
+    $m = if ($lp) { $models | Where-Object { $_.supported -and (Same-Path $_.path $lp) } | Select-Object -First 1 } else { $null }
+    if (-not $m) { throw "No -Model given and no console to choose one in: arc-server start -Model <shortcut, id or file> (run 'arc-server start' in a console for the list)" }
+    Say "No -Model given: starting the model used last, $($m.alias)"
+  } else {
+    $m = Pick-Model $models $(if ($st) { $st.path } else { $null }) $running
+    if (-not $m) { Say "Keeping $running."; return }
+  }
 } elseif (Test-Path $Model -PathType Leaf) {
   $full = (Resolve-Path $Model).Path
   $m = $models | Where-Object { Same-Path $_.path $full } | Select-Object -First 1

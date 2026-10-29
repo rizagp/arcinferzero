@@ -10,6 +10,9 @@
   cache's keys are lower case; until now that file was not rewritten, so an earlier move left its entries behind and
   the contexts were computed again). `ARC_DATA_DIR` still overrides the place.
 - The help's file lists line up again after the longer folder name.
+- **arc-server start without -Model and no console** (a script, a scheduled task, a tool with its input
+  redirected, `-NonInteractive`): the model menu asked again on every empty answer, forever, at full CPU. Now a
+  running server is kept, else the model used last starts (as Enter and pi-arc do), else it stops with a message.
 - **Web UI on a phone**: tapping a chat in the list did not open it: the row's delete button appeared on hover, and a
   touch screen (iOS) takes the first tap that shows something as the hover alone. Touch screens now show the delete
   button (and a message's menu button) all the time; with a mouse they appear on hover as before.
