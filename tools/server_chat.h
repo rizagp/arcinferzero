@@ -262,7 +262,8 @@
     const size_t sys_cut = system_end(P);
     switch_conversation(P);
     load_prefix(P, sys_cut, folder);
-    const size_t start = prepare_prefix(P);    cur_saved_ = false;
+    const size_t start = prepare_prefix(P);
+    cur_saved_ = false;
     // start of the last turn header "<|im_start|>assistant\n" (Gemma: "<|turn>model\n"). The next request of the
     // conversation diverges after it (the reply as the template renders it) or, after an aborted or failed reply that
     // the client drops (Pi does), right inside it: a snapshot here serves both.
