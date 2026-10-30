@@ -25,7 +25,9 @@ foreach ($src in $Sources) {
   #  OpenMP runtime vcomp140.dll, which may be shipped next to them (copied into bin below). The LLVM OpenMP of
   #  /openmp:llvm has no redistributable DLL. Logits bit-identical, speeds the same (2026-10-29))
   $pre = if ($vcvars) { "`"$vcvars`" >nul && " } else { "" }  # ("": a Developer prompt, cl already set up)
-  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 $fp /EHsc /bigobj /MT /W4 /permissive- /Zc:__cplusplus /external:I`"$root\third_party`" /external:W0 /openmp /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
+  # (/d1trimfile: __FILE__ in error messages relative to the source folder, so the exes hold no user's path; the
+  #  doubled backslash keeps the closing quote a quote)
+  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 $fp /EHsc /bigobj /MT /W4 /permissive- /Zc:__cplusplus /d1trimfile:`"$root\\`" /external:I`"$root\third_party`" /external:W0 /openmp /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
          "/Fe`"$out\$name.exe`" /Fo`"$out\\`" `"$full`" " +
          "/link /MANIFEST:EMBED /MANIFESTINPUT:`"$root\tools\utf8.manifest`""  # (UTF-8 code page: paths with any characters)
   cmd /c $cmd
