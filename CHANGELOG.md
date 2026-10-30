@@ -7,6 +7,13 @@
   40 MB one (a prompt chunk), GPU to GPU directly and through host memory, on the compute queue and the copy engine.
   Its numbers decide how a multi-GPU arcinferzero splits the work. On this laptop (one GPU, to itself): 20 KB 5 us
   on the compute queue, 70 us on the copy engine; through host memory 11 us.
+- **bench\gemm_sweep.ps1**: sweeps the prompt GEMM's settings (XMX on / off, tokens per sub-group, row groups,
+  work-group height, split-K, chunk size) one at a time from the defaults with `runz --bench-pp`, then the best of
+  each together, and prints which path ran (XMX, or DP4a when the XMX check failed). For B-series owners to report
+  what their GPU prefers: the XMX kernel was written without an XMX GPU at hand (on a B60 the 27B's prompt runs at
+  ~12 % of the card's int8 peak). Reading it for this: each DPAS sums only 32 values before the per-token unpack and
+  the per-16 / per-32 scales, and the per-16 layouts fill half of every DPAS tile with zeros, so the large gain on
+  XMX needs a kernel that accumulates longer runs, beyond what these settings reach.
 - **runz compares its GB/s with the GPU it runs on**: it measures the GPU's read bandwidth (Engine::read_gbs, a
   256 MB block-read stream) instead of assuming this laptop's ~75 GB/s (measured here: 70 GB/s).
 
