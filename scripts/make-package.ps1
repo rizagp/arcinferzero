@@ -11,7 +11,8 @@ $root = Split-Path $PSScriptRoot
 Set-Location $root
 $exes = @("zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder", "tools\clinfo")
 if (-not $NoBuild) {
-  & (Join-Path $root "build.ps1") @($exes | ForEach-Object { "$_.cpp" })
+  $srcs = @($exes | ForEach-Object { "$_.cpp" })  # (splatted from a variable: @(...) inline is one argument)
+  & (Join-Path $root "build.ps1") @srcs
   if (-not $?) { throw "build failed" }
 }
 $commit = (git rev-parse --short HEAD).Trim()
