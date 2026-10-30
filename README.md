@@ -106,7 +106,8 @@ If PowerShell refuses to run the scripts ("running scripts is disabled on this s
 
 ### Ready-to-use package (no compiler, no Python, no terminal)
 
-The package (`arcinferzero-<version>-win64.zip`, 6 MB) holds the programs already built. On a laptop with an Intel
+The package (`arcinferzero-<version>-win64.zip`, 6 MB, **download: https://github.com/rizagp/arcinferzero/releases/latest**)
+holds the programs already built. On a laptop with an Intel
 Core Ultra (Arc graphics) and Intel's graphics driver, nothing else is needed:
 
 1. Unpack the zip anywhere (right-click, "Extract All...", e.g. to `C:\arcinferzero`).
