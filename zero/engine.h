@@ -282,9 +282,13 @@ class Engine {
     }
     const bool by_layer = cancel && !w8_resident;  // a chunk takes seconds: stop after any layer
     struct NoRpos { int& u; ~NoRpos() { u = 0; } } no_rpos{use_rpos_};  // (set_media's positions: this call only)
-    for (int c0 = 0; c0 < n; c0 += max_chunk) {
+    // just-in-time weights: a chunk decodes every matrix first (27B: ~2 s whatever its size), a pass of up to 8 rows
+    // reads them directly (~0.35 s), so up to 40 tokens (a tool result's tail, a short message) go in passes of 8
+    // (27B, 10 tokens: 2.0 -> 0.65 s; 40: 2.1 -> 1.7 s; 49: 2.15 -> 2.5 s)
+    const int step = !w8_resident && !stream_ && n <= 40 && max_chunk >= 64 ? 8 : max_chunk;
+    for (int c0 = 0; c0 < n; c0 += step) {
       if (c0 > 0 && cancelled()) throw Cancelled();  // between chunks the state is complete
-      const int T = std::min(max_chunk, n - c0);
+      const int T = std::min(step, n - c0);
       // pad to a multiple of 128 tokens so GEMM work-groups always get 8 token tiles (rows beyond T are zero)
       const int Mp = T >= 128 ? std::min((T + 127) / 128 * 128, max_chunk) : (T + 15) / 16 * 16;
       if (by_layer) keep_block();

@@ -309,10 +309,12 @@
     if (it == dfl_tl_.end() || pos + T <= dfl_cap_lo_ || pos < dfl_cap_base_) return;
     const int v = (pos - dfl_cap_base_) / max_chunk, li = (int)(it - dfl_tl_.begin());
     if (v >= (int)dfl_acc_.size()) return;
+    // (a prompt in passes of 8 rows, see forward: each pass at its rows of the chunk's accumulator)
+    const int r = pos - dfl_cap_base_ - v * max_chunk;
     const int a32 = act32_for(false);
     if (hp.hc) hc_mean(T);
     quant_rows(hp.hc ? hco_ : x_, hp.n_embd, Mp, T, a32);
-    matmul("dfl_fc", dfl_fc_[li], Mp, dfl_acc_[v], hp.n_embd, 0, li > 0 ? 1 : 0, a32);
+    matmul("dfl_fc", dfl_fc_[li], Mp, from(dfl_acc_[v], (size_t)r * hp.n_embd * 4), hp.n_embd, 0, li > 0 ? 1 : 0, a32);
   }
   // the context K / V of rows r0 .. r0 + n of accumulator v (positions p0 ..) into every drafter layer's ring
   void dfl_commit(int v, int r0, int n, int p0, cl_mem src = nullptr) {

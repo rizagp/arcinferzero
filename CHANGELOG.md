@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-30 (evening): faster tool-call turns on the 27B
+
+- **Short prompts of just-in-time models in passes of 8 rows**: a chunk of a model whose weights are decoded just in
+  time (the 27B) decoded every matrix first, ~2 s however few tokens it held, so every tool-call turn waited ~2 s
+  before its first token. Up to 40 new tokens now go through the generation's multi-row GEMVs (~0.35 s per 8):
+  a tool turn's prompt 2.3 -> 1.3-1.4 s. DFlash2's capture writes each pass at its own rows (it overwrote the first
+  rows and the drafter fell back to MTP).
+
 ## 2026-10-30 (afternoon): a progress bar while the model loads
 
 - **arc-server and the launcher show how far the load is**: the server writes `progress: P % <step>` lines to its
