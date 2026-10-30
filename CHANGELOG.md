@@ -13,6 +13,11 @@
   Whisper too).
 - `asr_testz --kl-files P` and `ref_forward` `REF_EMB` for the Qwen models: the encoder's effect on the text model's
   KL.
+- **The web UI shows the model the server has loaded**: a server started on another model than the one used last
+  (arc-server, pi-arc, Pi) still showed the earlier one, because opening a chat took the model saved with it (the
+  page reopens the last chat), and the next message then switched the server back to that model. The page now
+  follows the loaded model unless a model is picked in its menu (that pick stays until the server loads another
+  one), and asks the server again whenever the page is shown again.
 - **Whisper large-v3 in 3.94 GiB instead of 4.39** (NPU mode 3.28): the decoder layers' cross keys / values share one
   f32 buffer before they are packed to f16 (it was one per layer); logits and transcripts byte-identical.
 

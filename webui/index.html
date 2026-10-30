@@ -534,6 +534,9 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 const $ = (id) => document.getElementById(id);
 const thread = $("thread"), input = $("input"), app = $("app");
 let history = [], controller = null, modelId = "", loadedId = "";
+// (the model the user picked in this page's menu; until then the page follows the model the server has loaded, as
+//  arc-server / pi-arc / Pi started it: a chat's own model or the page's last one no longer switched the server back)
+let pickedId = "";
 let ctxLen = 0, used = 0;  // the server's context size; tokens the conversation took at the last reply
 // the loaded model's controls (/props): its thinking switch, Qwen3.8's effort levels, its default sampling
 let caps = { thinking: true, efforts: [], sampling: null, stt: "", slots: 1 };
@@ -630,7 +633,14 @@ async function refreshModel() {
     const j = await (await fetch("/v1/models")).json();
     models = j.data || [];
     const cur = models.find((m) => m.loaded) || models[0];
-    if (cur) { loadedId = cur.id; if (!modelId || !models.some((m) => m.id === modelId)) modelId = cur.id; ctxLen = cur.context_length || ctxLen; }
+    if (cur) {
+      // (the server's model changed under the page (another model started outside it): the pick is dropped too)
+      if (loadedId && cur.id !== loadedId && pickedId === loadedId) pickedId = "";
+      loadedId = cur.id;
+      if (pickedId && !models.some((m) => m.id === pickedId)) pickedId = "";
+      if (!jobs.size) modelId = pickedId || cur.id;
+      ctxLen = cur.context_length || ctxLen;
+    }
   } catch (e) { $("model").textContent = "server not reachable"; return; }
   try {
     const p = await (await fetch("/props")).json();
@@ -683,7 +693,7 @@ $("modelbtn").addEventListener("click", (e) => {
     const s = document.createElement("small");
     s.textContent = m.id + (m.loaded ? " · loaded" + (m.context_length ? ", context " + k1(m.context_length) : "") : "");
     b.appendChild(s);
-    b.addEventListener("click", () => { modelId = m.id; menu.hidden = true; showModel(); });
+    b.addEventListener("click", () => { modelId = pickedId = m.id; menu.hidden = true; showModel(); });
     menu.appendChild(b);
   }
   menu.hidden = false;
@@ -2314,7 +2324,7 @@ async function openConv(id) {
   } else used = history.length ? estTokens(history) : 0;  // (an estimate until the next answer: compaction before it if needed)
   if (!history.length && !job) showEmpty("New conversation");
   if (job) modelId = job.model;  // (an answer running: the model it answers with)
-  else if (c.model && models.some((x) => x.id === c.model)) modelId = c.model;
+  else modelId = pickedId || loadedId || modelId;  // (not the chat's own model: that switched the server back to it)
   showModel();
   renderConvs();
   app.classList.add("chatting");
@@ -3920,6 +3930,8 @@ $("trdocx").addEventListener("click", () => trMinutes("docx"));
 $("trpdf").addEventListener("click", () => trMinutes("pdf"));
 
 refreshModel();
+// (the page shown again: the server may have been restarted with another model meanwhile)
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !jobs.size) refreshModel(); });
 </script>
 </body>
 </html>
