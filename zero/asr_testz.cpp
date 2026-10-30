@@ -13,13 +13,16 @@
 //   --chunk N      prompt rows per step (default 512)
 //   --max-part S   parts of at most S seconds (default 1200, Qwen's; the server: 240)
 //   --slots N      decode up to N parts together, a slot each (default 1: one part after another)
+//   --kl-files P   (one part) P.ids: the prompt and the answer, P.emb: the encoder rows with REF_EMB's header, for
+//                  tools/ref_forward (REF_EMB=P.emb REF_ALL=1): the encoder's effect on the text model's KL
+//   (ARC_ASR_Q2=1: the encoder's matrix products on two int8 passes, zero/audio_qwen3a.h)
 #include "asr_qwen3.h"
 #include "../src/audio.h"
 #include <cstdio>
 
 int main(int argc, char** argv) {
   if (argc < 4) { fprintf(stderr, "usage: asr_testz model.gguf mmproj.gguf audio [--ref F] [--enc-out F] [--seconds S] [--lang L] [--context T] [--no-text]\n"); return 1; }
-  std::string ref, enc_out, lang, context, save_wav;
+  std::string ref, enc_out, lang, context, save_wav, kl_files;
   double seconds = 0, start = 0, parts = 0, max_part = 1200;
   bool text = true;
   int ctx = 0, chunk = 512, slots = 1;
@@ -41,6 +44,7 @@ int main(int argc, char** argv) {
     else if (a == "--max-part") max_part = atof(next().c_str());
     else if (a == "--slots") slots = atoi(next().c_str());
     else if (a == "--no-text") text = false;
+    else if (a == "--kl-files") kl_files = next();
     else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 1; }
   }
   try {
@@ -141,6 +145,24 @@ int main(int argc, char** argv) {
     o.max_seconds = max_part;
     const q3asr::Result res = q3asr::transcribe(eng, enc, tok, s, o);
     for (const q3asr::Part& p : res.parts) printf("[%.1f-%.1f s] %d tokens%s, raw: %s\n", p.start, p.end, p.tokens, p.cut ? " (cut)" : "", p.raw.c_str());
+    if (!kl_files.empty()) {  // (one part: its prompt and answer as ids for tools/ref_forward, the encoder rows as REF_EMB)
+      if (res.parts.size() != 1) throw std::runtime_error("--kl-files: the clip must be one part (--seconds)");
+      const std::vector<int> pre = tok.encode("<|im_start|>system\n" + context + "<|im_end|>\n<|im_start|>user\n<|audio_start|>", true);
+      std::vector<int> ids = pre;
+      ids.insert(ids.end(), n_tok, 0);  // (the audio rows: REF_EMB puts the encoder's rows there)
+      const std::vector<int> post = tok.encode("<|audio_end|><|im_end|>\n<|im_start|>assistant\n" + res.parts[0].raw, true);
+      ids.insert(ids.end(), post.begin(), post.end());
+      FILE* f = fopen((kl_files + ".ids").c_str(), "wb");
+      for (size_t i = 0; i < ids.size(); ++i) fprintf(f, "%s%d", i ? "," : "", ids[i]);
+      fclose(f);
+      f = fopen((kl_files + ".emb").c_str(), "wb");
+      const int hd[3] = {n_tok, enc.out_dim(), (int)pre.size()};
+      fwrite(hd, 4, 3, f);
+      fwrite(e.data(), 4, e.size(), f);
+      fclose(f);
+      printf("kl files: %zu ids, audio rows %zu..%zu, text from %zu\n", ids.size(), pre.size(), pre.size() + n_tok,
+             pre.size() + n_tok + 1);
+    }
     printf("language: %s\ntext: %s\n", res.language().c_str(), res.text().c_str());
     printf("times: encoder %.0f ms, prompt %.0f ms (%d audio tokens), %d tokens in %.0f ms (%.1f tok/s); total %.1f s for %.1f s of audio\n",
            res.encode_ms, res.prefill_ms, res.audio_tokens, res.tokens, res.decode_ms,

@@ -1008,6 +1008,14 @@ int main(int argc, char** argv) {
 
   std::vector<float> x((size_t)T * E), h, y, y2, y3;
   for (int t = 0; t < T; ++t) dequant_row(te.type, te.data + (size_t)toks[t] * (te.nbytes / V), E, &x[(size_t)t * E]);
+  // REF_EMB for the Qwen models too (Qwen3-ASR's audio rows, zero/asr_testz --kl-files): the rows as they are
+  if (const char* ef = getenv("REF_EMB"); ef && A != "gemma4") {
+    FILE* fe = fopen(ef, "rb");
+    int hd[3] = {0, 0, 0};
+    if (!fe || fread(hd, 4, 3, fe) != 3 || hd[1] != E || hd[2] < 0 || hd[2] + hd[0] > T) { fprintf(stderr, "REF_EMB: bad file\n"); exit(1); }
+    if (fread(&x[(size_t)hd[2] * E], 4, (size_t)hd[0] * E, fe) != (size_t)hd[0] * E) { fprintf(stderr, "REF_EMB: short file\n"); exit(1); }
+    fclose(fe);
+  }
 
   if (A == "gemma4") gemma4_layers(toks, x);
   if (A == "qwen4exp") qwen4exp_layers(toks, x);

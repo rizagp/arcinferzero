@@ -407,6 +407,17 @@ predicating the loads gave 905 -> 843 ms, bit-identical. Check bit identity afte
 
 ## 11. Later lessons (24 October 2026)
 
+- (30 October) **A program-wide define overrides the one a caller passes.** The engine appends its two-pass offsets
+  (`-DQ2_AQ ...`) to every build of `ops.cl` in two-pass mode; an encoder that built `vit_quant_pad` with its own
+  offsets got the engine's, so the residual landed inside its first pass: a few tokens 50-90 % off, different on
+  every run (which kernel finished first). Ask the build log (`ARC_ZE_KPROPS` prints the options) before trusting
+  that your `-D` is the one in effect, and treat "wrong on a few rows, different each run" as two writers on one
+  buffer, not as precision.
+- (30 October) **Requantizing Q8_0 weights to Q8_0 is exact.** Qwen3-ASR's encoder ships Q8_0; turning it into f16
+  for an f16 GEMM rounds it (0.059 % off the f32 encoder), while the int8 two-pass GEMM on the same 32-value blocks
+  reproduces them bit for bit (0.037 %, and 34 % faster). For a quantized file, the int8 path can be the more
+  accurate one.
+
 (Flint, the model behind two of these lessons, is no longer supported since 25 October; the lessons stand.)
 
 - **In a mixture of experts with a sigmoid router, the KL comes from expert choices that are near ties.** Flint's

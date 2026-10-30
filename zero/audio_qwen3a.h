@@ -69,7 +69,14 @@ class AudioQwen3A : public GemmaAudioEncoder {
     const size_t C = 480, W = kWinChunks, Mp = (size_t)kGroupWins * W * kChunkTok;
     const size_t conv = W * 50 * 64 * C * 4 + W * 800 * C * 9 * 4 + W * 800 * C * 4 + W * 208 * C * 4;
     const size_t per = C * 16 * 4 + E * 4 * 3 + std::max(3 * E, F) * 4 + E * 2 * 3 + 2048 * 4;
-    return enc_weight_bytes(g, {"a.", "mm.a."}, {"a.conv2d.1.weight", "a.position_embd.weight"}) + conv + Mp * per;
+    size_t w = enc_weight_bytes(g, {"a.", "mm.a."}, {"a.conv2d.1.weight", "a.position_embd.weight"});
+    if (int8_on()) {  // (the blocks' and the projector's matrices as Q8_0 rows (34 bytes per 32) instead of f16, plus
+                      //  the two passes' activations and the just-in-time GEMM form of the largest: ~16 MB)
+      for (const auto& t : g.tensors)
+        if (t.dims.size() >= 2 && (t.name.rfind("a.blk.", 0) == 0 || t.name.rfind("mm.a.", 0) == 0)) w -= t.nelements() * 2 - t.nelements() * 34 / 32;
+      w += 16u << 20;
+    }
+    return w + conv + Mp * per;
   }
 
   // 16 kHz samples -> n_tok x n_out embeddings.
@@ -97,10 +104,23 @@ class AudioQwen3A : public GemmaAudioEncoder {
  private:
   GgufFile f_;
   Engine& e_;
-  struct FW {
+  struct FW {  // an f16 weight [N][K] on the GPU, or (i8_) Q8_0 rows with K padded to whole superblocks
     cl_mem w = nullptr;
     int N = 0, K = 0;
+    GpuWeight q8;
   };
+  // (the blocks' and the projector's matrix products on the engine's int8 GEMM in two passes, as the Qwen vision
+  //  encoders': Q8_0 weights (the mmproj's own Q8_0 blocks again, exactly), the activations quantized per 32 values
+  //  plus their rounding residual. 2026-10-30, 60 s of a recording: 0.037 % from the f32 encoder (f16 weights: 0.059 %),
+  //  the f32 text model's KL over the transcript max 0.000002 (f16: 0.000003), the same text; the encoder 35 % faster,
+  //  0.26 GiB less. The convolutions stay f16 (24 MB): on int8 one token of the clip was 30 % off.
+  //  ARC_ASR_Q2=0: all f16)
+  bool i8_ = false;
+  static bool int8_on() { return !(getenv("ARC_ASR_Q2") && atoi(getenv("ARC_ASR_Q2")) == 0); }
+  cl_mem vaq_ = nullptr, vasc_ = nullptr, vab_ = nullptr;
+  int q2_rows_ = 0, q2_kp_ = 0;
+  std::string q2defs_;
+  size_t q2_off_[3] = {0, 0, 0};  // the residual pass's offsets (bytes) in vaq_ / vasc_ / vab_
   struct Layer {
     cl_mem ln1w, ln1b, ln2w, ln2b, qkv_b, out_b, up_b, down_b;
     FW q, k, v, out, up, down;
@@ -124,6 +144,18 @@ class AudioQwen3A : public GemmaAudioEncoder {
   cl_mem f32(const std::vector<float>& v) { return e_.buf(v.size() * 4, v.data()); }
   cl_mem f32(const std::string& name) { return f32(host(name)); }
   FW f16(const std::vector<float>& v, int N, int K) {
+    if (i8_) {
+      const int Kp = (K + 255) / 256 * 256;
+      std::vector<float> p((size_t)N * Kp, 0.0f);
+      for (int n = 0; n < N; ++n) memcpy(&p[(size_t)n * Kp], &v[(size_t)n * K], (size_t)K * 4);
+      const auto q = quantize_rows_q8_0(p.data(), N, Kp);
+      FW w;
+      w.q8 = e_.make_weight(GGML_Q8_0, q.data(), q.size(), N, Kp);
+      w.N = N;
+      w.K = K;
+      q2_kp_ = std::max(q2_kp_, Kp);
+      return w;
+    }
     std::vector<uint16_t> h(v.size());
     for (size_t i = 0; i < v.size(); ++i) h[i] = f32_to_fp16(v[i]);
     FW w;
@@ -135,11 +167,20 @@ class AudioQwen3A : public GemmaAudioEncoder {
   FW f16(const std::string& name) {  // a matrix [N][K] (an [3, 3, IC, OC] convolution: K = IC * 9)
     const GgufTensor& t = f_.get(name);
     const int N = (int)t.dims.back();
-    return f16(host(name), N, (int)(t.nelements() / N));
+    // (ARC_ASR_Q2 for checks: 1 (default) the blocks and the projector on int8, the convolutions f16; 2 every matrix;
+    //  3 the blocks only, 4 the projector only, 5 the convolutions only; 0 none)
+    const int sel = getenv("ARC_ASR_Q2") ? atoi(getenv("ARC_ASR_Q2")) : 1;
+    const bool conv = name.rfind("a.conv", 0) == 0, proj = name.rfind("mm.", 0) == 0;
+    const bool keep = i8_;
+    i8_ = i8_ && ((sel == 1 && !conv) || sel == 2 || (sel == 3 && !conv && !proj) || (sel == 4 && proj) || (sel == 5 && conv));
+    FW w = f16(host(name), N, (int)(t.nelements() / N));
+    i8_ = keep;
+    return w;
   }
 
   void load() {
     if (loaded_) return;
+    i8_ = int8_on();
     c1w_ = host("a.conv2d.1.weight");
     c1b_ = host("a.conv2d.1.bias");
     c2_ = f16("a.conv2d.2.weight");
@@ -186,6 +227,32 @@ class AudioQwen3A : public GemmaAudioEncoder {
     mm2b_ = f32("mm.a.mlp.2.bias");
     if (c2_.K != n_conv * 9 || c3_.K != n_conv * 9 || mm1_.K != n_embd || mm2_.K != mm1_.N)
       throw std::runtime_error("mmproj: unexpected Qwen3-ASR audio shapes");
+    if (i8_) {  // the two passes' activations for chunks of the engine's chunk size: [pass][rows][K], per-32 scales
+      e_.ensure_stage();  // (the GEMM form of Q8_0 rows decoded just in time: staging for these sizes)
+      q2_rows_ = (e_.max_chunk + 127) / 128 * 128;
+      if (e_.q2mm_) {
+        // (Qwen3-ASR's engine runs two passes itself, and its ops program carries its residual offsets (-DQ2_AQ ...):
+        //  vit_quant_pad writes the residual there whatever is asked, so these buffers take the engine's layout, with
+        //  fewer rows per piece where the encoder's rows are longer than the engine's widest (conv_out: 7,680). With
+        //  this encoder's own offsets the residual overwrote part of the first pass: a few tokens 50-90 % off, varying)
+        q2_rows_ = std::min<int>(q2_rows_, (int)(e_.q2_aq_ / q2_kp_) / 128 * 128);
+        q2_off_[0] = e_.q2_aq_;
+        q2_off_[1] = e_.q2_sc_;
+        q2_off_[2] = e_.q2_ab_;
+        vaq_ = e_.buf(2 * q2_off_[0]);
+        vasc_ = e_.buf(2 * q2_off_[1]);
+        vab_ = e_.buf(2 * q2_off_[2]);
+      } else {
+        const size_t aq = (size_t)q2_rows_ * q2_kp_, sc = (size_t)q2_rows_ * (q2_kp_ / 32), ab = (size_t)q2_rows_ * (q2_kp_ / 16);
+        vaq_ = e_.buf(2 * aq);
+        vasc_ = e_.buf(2 * sc * 4);
+        vab_ = e_.buf(2 * ab * 2);
+        q2defs_ = "-DQ2_AQ=" + std::to_string(aq) + " -DQ2_SC=" + std::to_string(sc) + " -DQ2_AB=" + std::to_string(ab);
+        q2_off_[0] = aq;
+        q2_off_[1] = sc * 4;
+        q2_off_[2] = ab * 2;
+      }
+    }
     const size_t C = n_conv, W = kWinChunks;
     a1_ = e_.buf(W * 50 * 64 * C * 4);
     im_ = e_.buf(W * 800 * C * 9 * 4);
@@ -335,6 +402,42 @@ class AudioQwen3A : public GemmaAudioEncoder {
     e_.run("q3a_conv", k, 2, g, nullptr);
   }
   void gemm(cl_mem A, int lda, const FW& w, cl_mem C, int ldc, int c_off, bool acc, int M, int n) {
+    if (w.q8.raw) {  // two int8 passes on the engine's GEMM, rows in equal chunks of at most q2_rows_ (as vision_qwen3vl.h)
+      const int nch = (n + q2_rows_ - 1) / q2_rows_, rows = ((n + nch - 1) / nch + 127) / 128 * 128;
+      cl_kernel kq = kern("vit_quant_pad", q2defs_);
+      const int saved = e_.cur_T_;
+      const cl_mem a0 = e_.aq_, s0 = e_.asc_, b0 = e_.absum_;
+      struct Restore {
+        Engine& e;
+        cl_mem a, s, b;
+        int t;
+        ~Restore() { e.aq_ = a; e.asc_ = s; e.absum_ = b; e.cur_T_ = t; }
+      } rst{e_, a0, s0, b0, saved};
+      for (int r0 = 0; r0 < n; r0 += rows) {
+        const int nv = std::min(rows, n - r0), Mp = std::min(rows, M - r0);
+        int ld = lda, kv = w.K, kp = w.q8.K, mm = Mp, mv = nv;
+        set_args(kq, 0, e_.from(A, (size_t)r0 * lda * 4), ld, kv, kp, mm, mv, vaq_, vasc_, vab_);
+        size_t g[2] = {256, (size_t)Mp}, lw[2] = {256, 1};
+        e_.run("q3a_gemm", kq, 2, g, lw);
+        e_.cur_T_ = nv;
+        const cl_mem out = e_.from(C, (size_t)r0 * ldc * 4);
+        e_.aq_ = vaq_;
+        e_.asc_ = vasc_;
+        e_.absum_ = vab_;
+        e_.matmul("q3a_gemm", w.q8, Mp, out, ldc, c_off, acc ? 1 : 0, true);
+        if (!e_.q2mm_) {  // (an engine in two-pass mode adds the residual's pass itself, at the same offsets)
+          e_.aq_ = e_.from(vaq_, q2_off_[0]);
+          e_.asc_ = e_.from(vasc_, q2_off_[1]);
+          e_.absum_ = e_.from(vab_, q2_off_[2]);
+          e_.matmul("q3a_gemm", w.q8, Mp, out, ldc, c_off, 1, true);
+        }
+        e_.aq_ = a0;
+        e_.asc_ = s0;
+        e_.absum_ = b0;
+      }
+      return;
+    }
+    // (16 rows per work-item: 8 (-DVTM=8) was 36 % slower on this encoder's GEMMs, 2026-10-30; no spills either way)
     cl_kernel k = e_.kernel("ops", "-DVIT -cl-intel-256-GRF-per-thread", "vit_gemm_f16");
     int ld = lda, K = w.K, lc = ldc, co = c_off, ac = acc ? 1 : 0, mv = n;
     set_args(k, 0, A, ld, w.w, K, C, lc, co, ac, mv);

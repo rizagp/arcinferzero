@@ -42,6 +42,7 @@ param(
   [string]$WhisperDevice = "",
   [string]$Asr = "",
   [int]$WhisperMaxMinutes = 0,
+  [int]$AsrSlots = 0,
   # the other server options (0 / empty / off = the server's default)
   [int]$MtpDrafts = 0,
   [int]$ThinkBudget = 8192,
@@ -306,7 +307,9 @@ Options for start / restart:
   -Asr auto|off|<file.gguf>      Qwen3-ASR, the default speech model (auto: from the Hugging Face cache when it is
                                  there; off: Whisper alone). Without -Whisper: Qwen3-ASR alone (~3.7 GB of GPU
                                  memory instead of ~9.8; no translations, no live text, no word times). Kept like -Npu
-  -WhisperMaxMinutes <N>         the longest upload or chat clip (default 180); the Transcripts library takes files up
+  -AsrSlots <1-4>                Qwen3-ASR parts of a clip longer than 4 minutes decoded together (default 1; each
+                                 more ~0.6 GB of GPU memory; 4: a 14-minute file 129 -> 80 s). Kept like -Asr
+  -WhisperMaxMinutes <N>        the longest upload or chat clip (default 180); the Transcripts library takes files up
                                  to 6 hours, or N when it is more
   -NoStream                      every expert on the GPU: no expert file, no SSD reads; MoE models then get a
                                  smaller context. Without it, MoE models (35B, Flash Next, Gemma 4 26B) keep their
@@ -509,6 +512,8 @@ if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra
 }
 # -Asr: kept the same way, with or without Whisper (without it: Qwen3-ASR alone); -Asr off turns it off
 if (-not $Asr -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
+if ($AsrSlots -le 0 -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--asr-slots ([0-9]+)") { $AsrSlots = [int]$Matches[1] }
+if ($AsrSlots -lt 0 -or $AsrSlots -gt 4) { throw "-AsrSlots: expected 1 to 4 (got $AsrSlots)" }
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
 # the other options, as server arguments (also kept in the state file: a change restarts the server)
@@ -524,6 +529,7 @@ if ($Whisper -and $Whisper -ne "off") {
 if ($Asr -and ($Asr -ne "off" -or ($Whisper -and $Whisper -ne "off"))) { $extra += @("--asr", $(if ($Asr -in "auto", "off") { $Asr } else { "`"$Asr`"" })) }
 if (($Whisper -and $Whisper -ne "off") -or ($Asr -and $Asr -ne "off")) {
   if ($WhisperMaxMinutes -gt 0) { $extra += @("--whisper-max-minutes", $WhisperMaxMinutes) }
+  if ($AsrSlots -gt 1) { $extra += @("--asr-slots", $AsrSlots) }
 }
 if ($ImageMinTokens -gt 0) { $extra += @("--image-min-tokens", $ImageMinTokens) }
 if ($ImageMaxTokens -gt 0) { $extra += @("--image-max-tokens", $ImageMaxTokens) }
@@ -539,7 +545,7 @@ if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with
 $extraKey = "$($extra -join ' ')|think $ThinkBudget"
 # (compared with the running server's only when given: pi-arc's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and

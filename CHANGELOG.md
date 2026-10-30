@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-30 (later): Qwen3-ASR in 3.15 GiB
+
+- **Qwen3-ASR's encoder on two int8 passes** (its blocks and projector; the convolutions stay f16): 0.037 % from
+  the f32 encoder instead of 0.059 % (the int8 GEMM reproduces the mmproj's Q8_0 blocks exactly, f16 rounded them),
+  34 % faster, 0.26 GiB less; the f32 text model's KL over a transcript max 0.000002, the same text. `ARC_ASR_Q2=0`:
+  f16. On the way: in two-pass engines the encoder's quantization wrote its residual at the engine's offsets (the
+  ops program carries them), so the encoder now uses the engine's layout there.
+- **One Qwen3-ASR slot by default** (`--asr-slots N`, new `arc-server -AsrSlots N`, 1-4, kept like `-Asr`): each
+  slot past the first ~0.6 GiB, faster only for clips over 4 minutes (a 14-minute file 129 s with one, 80 s with 4).
+  Qwen3-ASR alone in the server: 5.37 -> 3.15 GiB; the 35B keeps 55 % of its experts cached (40 % before, 10 % with
+  Whisper too).
+- `asr_testz --kl-files P` and `ref_forward` `REF_EMB` for the Qwen models: the encoder's effect on the text model's
+  KL.
+
 ## 2026-10-30: Qwen3-ASR without Whisper; the terminal asks once
 
 - **Qwen3-ASR alone**: `--asr auto` (or a GGUF) without `--whisper` (`arc-server start -Asr auto`) starts the speech

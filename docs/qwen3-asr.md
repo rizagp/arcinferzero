@@ -46,8 +46,8 @@ The GGUF conversion of [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-A
   still decoding is one batched pass (`Engine::forward_batch`: the matmuls once for all rows, the float attention per
   slot on its own cache), so the weights are read once for up to 4 tokens. Each part stops at its own `<|im_end|>`,
   loop or room limit; the text of every part is the same, token for token, as decoding one part at a time. The
-  server's `--asr-slots N` (1-4) sets the slots; by default as many as fit while the slots past the first take at most
-  15 % of the GPU share (4 on the 22 GB share here). `asr_testz --slots N --max-part 240` does the same on the command
+  server's `--asr-slots N` (1-4) sets the slots; one by default since 2026-10-30 (until then as many as fit while the
+  slots past the first took at most 15 % of the GPU share, 4 here). `asr_testz --slots N --max-part 240` does the same on the command
   line.
 - **In the server** the engine is held one group of parts at a time: a voice clip from a chat or a `/v1/audio/*`
   request waiting for it goes before the next group of a Transcripts job. A group that fails is tried once more from its first part not
@@ -83,6 +83,16 @@ under it by little, so two passes are the default.
 | A 20:49 file in 6 parts (<= 240 s), `asr_testz --max-part 240 --ctx 6144` (best of two) | one part at a time 194.9 s (decoding 158.8 s); 4 slots **136.2 s (decoding 98.7 s)**; the 14-minute file (4 parts) 128.8 -> 80.3 s; through the server 256 -> 169 s |
 | Batched step, `runz --bench-batch 4 --ctx 6144 --budget 0` | 1 / 2 / 3 / 4 rows 31.0 / 32.5 / 35.9 / 39.6 ms (4 rows: 3.2x the tokens per second of one) |
 | GPU memory of Qwen3-ASR (6,144-token context, with the encoder) | 3.72 GiB (raw Q8_0 rows 2.1, float KV cache 1.0, encoder 0.6 + buffers); with Whisper turbo in the server 5.31 GiB together; 3 more slots (4 parts at a time) +1.97 GiB |
+
+**GPU memory, 2026-10-30.** The encoder's 24 blocks and projector run on two int8 passes (Q8_0 weights: the
+mmproj's own Q8_0 blocks again, exactly; the activations and their rounding residual per 32 values; the convolutions
+stay f16, 24 MB, where int8 left one token of a clip 30 % off). 60 s of a recording: 0.037 % from the f32 encoder
+(f16: 0.059 %), encoder 767 -> 503 ms, 0.26 GiB less; the f32 text model fed the f32, f16 and int8 encoder rows
+(`asr_testz --kl-files`, `ref_forward` with `REF_EMB`), 167 transcript positions: KL max 0.000003 (f16) / 0.000002
+(int8), the top token the same everywhere. `ARC_ASR_Q2=0`: the f16 encoder. The server now keeps **one slot** by
+default (`--asr-slots N`, `arc-server -AsrSlots N`, 1-4; each more ~0.6 GiB, faster only for clips over 4 minutes):
+Qwen3-ASR alone 3.15 GiB in the server. No register spills in the encoder's kernels (the driver's `ARC_ZE_KPROPS`
+and ocloc 2026.1); 8 rows per GEMM tile instead of 16 was slower (int8 +7 %, f16 +36 %).
 
 The GEMM form of the weights is decoded just in time for each 512-token prompt chunk (`w8_budget_gb` 0, `chunk`
 512) instead of being kept next to the raw rows: 5.09 -> 3.72 GiB (server with Whisper 6.68 -> 5.31 GiB). The prompt
@@ -177,8 +187,8 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
   command line in between 18.9-25.1 s (the laptop's own variation; one 24.1-s server run was that too). Whisper
   large-v3 loaded before or after it on the command line: +2 % at most.
 - **Qwen3-ASR alone** (2026-10-30): `--asr auto` without `--whisper` (`arc-server start -Asr auto`) loads only
-  Qwen3-ASR: 5.37 GiB with its 4 parts at a time instead of 9.76 GiB with Whisper (the 35B then kept 40 % of its
-  experts cached instead of 10 %). Everything above goes to it; what needs Whisper says so: translations and a
+  Qwen3-ASR: 3.15 GiB (one slot, the int8 encoder below; 5.37 GiB with 4 slots and the f16 encoder) instead of
+  9.76 GiB with Whisper (the 35B then kept 55 % of its experts cached instead of 10 %). Everything above goes to it; what needs Whisper says so: translations and a
   request naming Whisper get 400, a live recording has no text while recording (the pass after Stop writes it), no
   word times. `/props` shows `"whisper": {"model": "qwen3-asr-1.7b", "whisper": false, ...}` and the web UI hides
   "Model: Whisper".
@@ -217,5 +227,6 @@ Checks: `ref_qwen3a mmproj.gguf audio out.ref [seconds]` writes the f32 encoder 
 ## Left to do
 
 - Timestamps (Qwen3-ForcedAligner-0.6B, or cutting at pauses done better than here).
-- Memory: the encoder's f16 weights (0.6 GiB) could be int8 as the vision encoders' two-pass path has them.
+- Memory: done 2026-10-30 (the encoder's blocks and projector on two int8 passes, one slot by default; see "GPU
+  memory" above).
 - Streaming (the user's friend runs it in vLLM for voice calls; Qwen's package feeds 2-s chunks).

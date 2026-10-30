@@ -27,7 +27,9 @@ struct ServeOpts {
   bool dflash_auto = true;       // arcinferzero, with MTP: a DFlash2 drafter found for the model drafts too (--no-dflash: not)
   size_t whisper_bytes = 0;      // GPU memory of the Whisper engine loaded before the model (--whisper): kept free
   Json whisper_props;            // its /props entry
-  int asr_slots = 0;             // --asr-slots: Qwen3-ASR parts decoded together (0 = as many as fit, up to 4)
+  // --asr-slots: Qwen3-ASR parts decoded together (1-4; each slot past the first ~0.55 GiB of GPU memory, faster only
+  // for clips of more than 4 minutes: the 14-minute file 129 -> 80 s with 4; 1 by default since 2026-10-30)
+  int asr_slots = 1;
 };
 struct Loaded {  // destroyed in reverse order: the server before the tokenizer and engine it refers to
   std::unique_ptr<Engine> eng;
