@@ -13,6 +13,8 @@
   Whisper too).
 - `asr_testz --kl-files P` and `ref_forward` `REF_EMB` for the Qwen models: the encoder's effect on the text model's
   KL.
+- **Whisper large-v3 in 3.94 GiB instead of 4.39** (NPU mode 3.28): the decoder layers' cross keys / values share one
+  f32 buffer before they are packed to f16 (it was one per layer); logits and transcripts byte-identical.
 
 ## 2026-10-30: Qwen3-ASR without Whisper; the terminal asks once
 

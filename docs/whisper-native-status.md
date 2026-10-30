@@ -40,6 +40,14 @@ Greedy is 2.27x OpenVINO's speed (1.8x before W1); beam 5 (as accurate on the ha
 faster than OpenVINO's greedy. faster-whisper writes "orang -orang" as two words where arcinferzero writes "orang-orang": joined
 before counting (the channel's compare.py counts them as errors: 13.7 / 15.1 % there).
 
+**GPU memory of large-v3 (2026-10-30)**: 4.39 -> 3.94 GiB (NPU mode 3.28): the decoder layers' cross keys / values
+are computed in f32 and packed to f16 one layer after the other, so they share one f32 buffer instead of one per layer
+(0.46 GiB for 32). Logits of the first window (greedy, beam 5) and a 2:43 recording's beam-5 JSON / SRT / TXT
+byte-identical. What is left: the decoder's self-attention KV cache in f32 for 5 sequences (1.37 GiB; f16 would
+halve it, a change of the numbers to check against the f32 reference first), the weights in Q8_0 (~1.5 GiB), the
+f16 cross keys / values of a window and of a part (0.46 GiB). No register spills in the Whisper kernels (the driver's
+`ARC_ZE_KPROPS`).
+
 **W1 (2026-10-28)**, the 14-minute file greedy 30.8 -> 25.1 s, beam 5 38.2 -> 32.2 s (the earlier runs of the table
 were slower: 31.8 / 39.3); decoder logits KL against the f32 reference 0.00039 -> 0.00040, top tokens 64 / 64 (NPU
 mode 0.00053, two int8 passes 0.00035):

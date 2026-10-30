@@ -107,13 +107,15 @@ class WhisperEngine : public whisper::Backend {
       L.fc1_b = half_buf(p + "ffn/linear_0/bias");
       L.fc2 = weight(p + "ffn/linear_1/weight", 0, true);
       L.fc2_b = half_buf(p + "ffn/linear_1/bias");
-      L.ckv_buf = buf((size_t)Ap_ * 2 * D * 4);
       L.ck16 = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);  // (the window's keys / values, f16, head-major)
       L.cv16 = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
       L.ck16b = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
       L.cv16b = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
       dec_.push_back(L);
     }
+    // (one f32 buffer for every layer's cross keys / values before wh_ckv_pack makes them f16: it was one per layer,
+    //  0.46 GiB for large-v3's 32; the layers are packed one after the other on the in-order queue)
+    ckv_buf_ = buf((size_t)Ap_ * 2 * D * 4);
     dec_lng_ = half_buf("decoder/layer_norm/gamma");
     dec_lnb_ = half_buf("decoder/layer_norm/beta");
     emb_ = half_buf("decoder/embeddings/weight");
@@ -295,10 +297,10 @@ class WhisperEngine : public whisper::Backend {
     const int D = hp_.d;
     quant(hn_, D, Ap, A);
     for (DecL& L : dec_) {
-      gemm(L.ckv, Ap, L.ckv_buf, 2 * D);
+      gemm(L.ckv, Ap, ckv_buf_, 2 * D);
       cl_kernel k = wk("wh_ckv_pack");
       int d = D, ap = Ap_;
-      set_args(k, 0, L.ckv_buf, L.ckv_b, d, ap, part ? L.ck16b : L.ck16, part ? L.cv16b : L.cv16);
+      set_args(k, 0, ckv_buf_, L.ckv_b, d, ap, part ? L.ck16b : L.ck16, part ? L.cv16b : L.cv16);
       size_t g[2] = {(size_t)D, (size_t)A};
       run("ckv_pack", k, 2, g, nullptr);
     }
@@ -369,7 +371,7 @@ class WhisperEngine : public whisper::Backend {
     GW qkv, out, fc1, fc2;
   };
   struct DecL {
-    cl_mem ln1g, ln1b, qkv_b, out_b, ln2g, ln2b, cq_b, ckv_b, cout_b, ln3g, ln3b, fc1_b, fc2_b, ckv_buf, ck16, cv16;
+    cl_mem ln1g, ln1b, qkv_b, out_b, ln2g, ln2b, cq_b, ckv_b, cout_b, ln3g, ln3b, fc1_b, fc2_b, ck16, cv16;
     cl_mem ck16b, cv16b;  // (encode_part's keys / values: the window's stay)
     GW qkv, out, cq, ckv, cout, fc1, fc2;
   };
@@ -381,6 +383,7 @@ class WhisperEngine : public whisper::Backend {
   ClRt cl_;
   std::string gemm_src_, ops_src_, wh_src_, dec_src_;
   cl_mem tabs_ = nullptr;  // (decode.cl's tables: its GEMV takes them, Q8_0 reads none)
+  cl_mem ckv_buf_ = nullptr;  // (cross_kv: a layer's keys / values in f32, before they are packed)
   std::map<std::string, cl_kernel> kc_map_;
   std::vector<cl_program> progs_;
   std::vector<cl_mem> mems_;
