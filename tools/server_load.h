@@ -69,7 +69,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   }
   if (so.ctx_auto) {
     const size_t enc = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;
-    if (enc) fprintf(stderr, "--ctx auto: %.2f GiB kept for the image / audio encoders%s\n", enc / 1073741824.0, so.whisper_bytes ? " and Whisper" : "");
+    if (enc) fprintf(stderr, "--ctx auto: %.2f GiB kept for the image / audio encoders%s\n", enc / 1073741824.0, so.whisper_bytes ? " and speech to text" : "");
     AutoCtx a = auto_ctx(model, eo, so.budget_given, enc);
     if (dfl_auto && eo.mtp_block && a.ctx < kDflashMinCtx) {  // (a drafter that leaves little context: the MTP block only)
       fprintf(stderr, "DFlash2 drafter not used: it would leave %d tokens of context (--dflash DIR: use it anyway)\n", a.ctx);

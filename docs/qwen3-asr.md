@@ -176,6 +176,12 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
   Qwen3-ASR decodes as fast as on the command line: the 2:34 recording's 507 tokens in 19.1-19.2 s three times, the
   command line in between 18.9-25.1 s (the laptop's own variation; one 24.1-s server run was that too). Whisper
   large-v3 loaded before or after it on the command line: +2 % at most.
+- **Qwen3-ASR alone** (2026-10-30): `--asr auto` without `--whisper` (`arc-server start -Asr auto`) loads only
+  Qwen3-ASR: 5.37 GiB with its 4 parts at a time instead of 9.76 GiB with Whisper (the 35B then kept 40 % of its
+  experts cached instead of 10 %). Everything above goes to it; what needs Whisper says so: translations and a
+  request naming Whisper get 400, a live recording has no text while recording (the pass after Stop writes it), no
+  word times. `/props` shows `"whisper": {"model": "qwen3-asr-1.7b", "whisper": false, ...}` and the web UI hides
+  "Model: Whisper".
 - `POST /v1/audio/transcriptions`: no `model`, OpenAI's `whisper-1` or `qwen3-asr` -> Qwen3-ASR; `gemma4-e4b` /
   `e4b` -> Gemma 4 E4B (in parts of up to 2 minutes cut at quiet points, a segment each; the server loads E4B as its
   chat model when another one is loaded); `whisper` or its id -> Whisper large-v3 (word times); any other chat model:

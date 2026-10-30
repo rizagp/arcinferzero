@@ -131,7 +131,10 @@ class Service {
   double max_seconds = 180 * 60;
   LockedBackend::Turn gpu_turn = [](const std::function<void()>& f) { f(); };
 
+  // dir empty: no Whisper (--whisper off --asr ...): Qwen3-ASR alone (load_asr next) transcribes; translations, the
+  // live text while recording and word times need Whisper
   Service(const std::string& dir, bool on_npu, const std::string& kernel_dir) : npu(on_npu) {
+    if (dir.empty()) return;
     m_ = std::make_unique<whisper::Model>(dir);
     eng_ = std::make_unique<WhisperEngine>(*m_, kernel_dir, 5, on_npu);
     std::string name = std::filesystem::path(dir).filename().string();
@@ -143,10 +146,12 @@ class Service {
     if (name.size() > 4 && name.compare(name.size() - 4, 4, "-ct2") == 0) name.resize(name.size() - 4);
     id = name;
   }
-  size_t gpu_bytes() const { return eng_->gpu_bytes + asr_bytes_; }
+  bool has_whisper() const { return eng_ != nullptr; }
+  size_t gpu_bytes() const { return (eng_ ? eng_->gpu_bytes : 0) + asr_bytes_; }
   Json props() const {
     Json p = Json::object();
-    p.set("model", id);
+    p.set("model", eng_ ? id : asr_id);
+    if (!eng_) p.set("whisper", false);  // (Qwen3-ASR alone: no translations, no live text, no word times)
     p.set("device", npu ? "npu" : "gpu");
     p.set("max_minutes", max_seconds / 60);
     if (!asr_id.empty()) p.set("asr", asr_id);
@@ -162,6 +167,14 @@ class Service {
     // the speech model: Qwen3-ASR unless the request names another one (Gemma 4 E4B, or Whisper itself); Whisper
     // when Qwen3-ASR is not loaded and for translations
     const std::string mdl = apic::strip_tag(field("model"));  // (gemma4-e4b:latest, as audio_route)
+    if (!eng_ && translate) {
+      bad = "translations need Whisper (this server runs Qwen3-ASR alone: start it with --whisper auto)";
+      return false;
+    }
+    if (!eng_ && names_whisper(mdl)) {
+      bad = "model: Whisper is not loaded (this server runs Qwen3-ASR alone: start it with --whisper auto)";
+      return false;
+    }
     if (names_chat_asr(mdl)) {
       if (chat_asr_id.empty() || !chat_asr) {
         bad = "model: no Gemma 4 E4B with its audio encoder among this server's models";
@@ -190,7 +203,8 @@ class Service {
       }
       for (size_t a = 0; lang != "auto";) {  // (every code one the model knows)
         const size_t b = std::min(lang.find(',', a), lang.size());
-        if (m_->sp.lang_token(lang.substr(a, b - a)) < 0) {
+        const std::string code = lang.substr(a, b - a);
+        if (m_ ? m_->sp.lang_token(code) < 0 : q3asr::language_name(code).empty()) {
           bad = "language: unknown code '" + lang.substr(a, b - a) + "'";
           return false;
         }
@@ -279,10 +293,9 @@ class Service {
     if (stream) rs.sse_begin();
     auto event = [&](const Json& e) { return rs.sse_event(e.dump()); };
     try {
-      LockedBackend be(*eng_, gpu_turn);
-      whisper::Transcriber tr(*m_, be);
+      Whisper w(*this);
       auto run = [&](const std::vector<float>& a, const whisper::Options& o, const whisper::Progress& cb) {
-        return o.engine.empty() ? tr.run(a, o, cb) : o.engine == "e4b" ? chat_run(a, o, cb) : asr_run(a, o, cb);
+        return o.engine.empty() ? w.tr().run(a, o, cb) : o.engine == "e4b" ? chat_run(a, o, cb) : asr_run(a, o, cb);
       };
       r = run(audio, opt, [&](double done, double total, const std::vector<whisper::Segment>& segs) {
         if (!stream) return !rs.client_gone();
@@ -1154,14 +1167,13 @@ class Service {
     whisper::Options o;
     o.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
     if (!asr_id.empty()) o.engine = "qwen3-asr";  // (the default speech model: Qwen3-ASR when loaded)
-    LockedBackend be(*eng_, gpu_turn);
-    whisper::Transcriber tr(*m_, be);
+    Whisper w(*this);
     bool left = false;
     const whisper::Progress cb = [&](double, double, const std::vector<whisper::Segment>&) {
       left = gone && gone();
       return !left;
     };
-    const whisper::Result r = o.engine.empty() ? tr.run(a, o, cb) : asr_run(a, o, cb);
+    const whisper::Result r = o.engine.empty() ? w.tr().run(a, o, cb) : asr_run(a, o, cb);
     if (left) throw std::runtime_error("the client left");
     for (const whisper::Segment& g : r.segments) text += g.text;
     text = whisper::trim_copy(text);
@@ -1334,14 +1346,16 @@ class Service {
       } done{turn_};
       std::vector<whisper::Segment> segs;
       try {
-        LockedBackend be(*eng_, gpu_turn);
-        whisper::Transcriber tr(*m_, be);
-        whisper::Options o = s.opt;
-        if (t.partial) {  // (text only, one pass: it is replaced)
-          o.word_timestamps = false;
-          o.temperatures = {0.0f};
+        // (Qwen3-ASR alone: no text while recording; the pass after Stop writes it)
+        if (eng_) {
+          Whisper w(*this);
+          whisper::Options o = s.opt;
+          if (t.partial) {  // (text only, one pass: it is replaced)
+            o.word_timestamps = false;
+            o.temperatures = {0.0f};
+          }
+          segs = w.tr().run(t.x, o).segments;
         }
-        segs = tr.run(t.x, o).segments;
       } catch (const std::exception& e) {
         fprintf(stderr, "whisper live: %s\n", e.what());
       }
@@ -1658,8 +1672,7 @@ class Service {
     bool stopped = false;
     std::string part_err;  // (a part of Qwen3-ASR / E4B failed twice: the text so far is saved, the job failed)
     try {
-      LockedBackend be(*eng_, gpu_turn);
-      whisper::Transcriber tr(*m_, be);
+      Whisper w(*this);
       double before = 0;  // (the tracks done)
       for (size_t k = 0; k < audio.size() && !stopped && part_err.empty(); ++k) {
         const whisper::Progress cb = [&](double done, double, const std::vector<whisper::Segment>& segs) {
@@ -1678,7 +1691,7 @@ class Service {
           stopped = cancel_running_ || stop_;
           return !stopped;
         };
-        whisper::Result rk = opt.engine.empty()   ? tr.run(audio[k], opt, cb)
+        whisper::Result rk = opt.engine.empty()   ? w.tr().run(audio[k], opt, cb)
                              : opt.engine == "e4b" ? chat_run(audio[k], opt, cb, &part_err)
                                                    : asr_run(audio[k], opt, cb, true, &part_err,
                                                              audio.size() > 1 ? kAsrTrackPartSeconds : 0);
@@ -1809,6 +1822,24 @@ class Service {
 
 #include "server_whisper_asr.h"  // (Qwen3-ASR and Gemma 4 E4B: their public and private part)
 
+  // Whisper's transcriber on its engine (with gpu_turn); none when the service runs Qwen3-ASR alone, whose requests
+  // read_options sends to it (tr() then throws instead of reaching a null engine)
+  class Whisper {
+   public:
+    explicit Whisper(Service& s) {
+      if (!s.eng_) return;
+      be_ = std::make_unique<LockedBackend>(*s.eng_, s.gpu_turn);
+      tr_ = std::make_unique<whisper::Transcriber>(*s.m_, *be_);
+    }
+    whisper::Transcriber& tr() {
+      if (!tr_) throw std::runtime_error("Whisper is not loaded (Qwen3-ASR alone)");
+      return *tr_;
+    }
+
+   private:
+    std::unique_ptr<LockedBackend> be_;
+    std::unique_ptr<whisper::Transcriber> tr_;
+  };
   std::unique_ptr<whisper::Model> m_;
   std::unique_ptr<WhisperEngine> eng_;
   EngineTurn turn_;

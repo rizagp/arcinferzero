@@ -65,16 +65,21 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt_in, 
   const std::string whisper_opt = onoff(whisper_opt_in);
   if (asr_opt != "default" && asr_opt != "auto-quiet") asr_opt = onoff(asr_opt);
   if (asr_opt == "default") asr_opt = whisper_opt == "off" ? "off" : "auto-quiet";  // (not in the cache: Whisper alone)
-  if (asr_opt != "off" && whisper_opt == "off") throw std::runtime_error("--asr needs --whisper (the transcription service and its library)");
-  if (whisper_opt == "off") return nullptr;
-  const std::string dir = whisper_opt == "auto" ? whisper::find_model() : whisper_opt;
-  if (dir.empty()) throw std::runtime_error("no faster-whisper model in the Hugging Face cache (hf download Systran/faster-whisper-large-v3)");
-  if (std::error_code ec; !std::filesystem::exists(std::filesystem::path(dir) / "model.bin", ec))
-    throw std::runtime_error("'" + dir + "' is no faster-whisper folder (no model.bin in it): --whisper auto | off | a folder");
-  const bool npu_wanted = whisper_dev == "npu" || so.eo.npu > 0 || (getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0);
+  // (--whisper off --asr auto / a GGUF: Qwen3-ASR alone, ~3.7 GiB of GPU instead of ~9.8 with Whisper: the service
+  //  without Whisper; translations, the live text while recording and word times need Whisper)
+  const bool asr_alone = whisper_opt == "off" && asr_opt != "off";
+  if (whisper_opt == "off" && !asr_alone) return nullptr;
+  std::string dir;
+  if (!asr_alone) {
+    dir = whisper_opt == "auto" ? whisper::find_model() : whisper_opt;
+    if (dir.empty()) throw std::runtime_error("no faster-whisper model in the Hugging Face cache (hf download Systran/faster-whisper-large-v3)");
+    if (std::error_code ec; !std::filesystem::exists(std::filesystem::path(dir) / "model.bin", ec))
+      throw std::runtime_error("'" + dir + "' is no faster-whisper folder (no model.bin in it): --whisper auto | off | a folder");
+  }
+  const bool npu_wanted = (!asr_alone && whisper_dev == "npu") || so.eo.npu > 0 || (getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0);
   if (npu_wanted && ze_load()) zeInit(0);
   const auto t0 = std::chrono::steady_clock::now();
-  auto wh = std::make_unique<srvwh::Service>(dir, whisper_dev == "npu", so.eo.kernel_dir);
+  auto wh = std::make_unique<srvwh::Service>(dir, !asr_alone && whisper_dev == "npu", so.eo.kernel_dir);
   wh->max_seconds = max_minutes * 60;
   if (asr_opt != "off") {  // (Qwen3-ASR: its own engine, in the service; before the model as Whisper)
     const bool quiet = asr_opt == "auto-quiet";
@@ -86,8 +91,8 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt_in, 
     } else {
       try {
         wh->load_asr(f, so.eo.kernel_dir, so.asr_slots);
-        fprintf(stderr, "asr: %s, %d parts at a time (Whisper and Qwen3-ASR %.2f GiB GPU)\n", wh->asr_id.c_str(),
-                wh->asr_parts(), wh->gpu_bytes() / 1073741824.0);
+        fprintf(stderr, "asr: %s, %d parts at a time (%s %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->asr_parts(),
+                asr_alone ? "alone, no Whisper:" : "Whisper and Qwen3-ASR", wh->gpu_bytes() / 1073741824.0);
       } catch (const std::exception& e) {
         if (!quiet) throw;  // (asked for: the server says why and stops)
         fprintf(stderr, "asr: %s could not be loaded (%s): Whisper transcribes (docs/qwen3-asr.md)\n", f.c_str(), e.what());
@@ -96,8 +101,9 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt_in, 
   }
   so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
   so.whisper_props = wh->props();
-  fprintf(stderr, "whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",
-          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), wh->gpu_bytes() / 1073741824.0);
+  if (!asr_alone)
+    fprintf(stderr, "whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), wh->gpu_bytes() / 1073741824.0);
   return wh;
 }
 

@@ -359,9 +359,10 @@ While the server is running:
   program keeps running after its command. The terminal belongs to the chat: it is still there when the chat is opened
   again. **The model may use it too** (`run_command`, shown in the panel as AI), and **opens it itself** when it is
   closed (to make a `.venv` and install a package, say): that first command waits in its card for **Run** / **Don't
-  run**, and the panel opens once you allow it. **Settings > Terminal**: **Ask each time** (every command waits for
-  Run), **Run without asking** (only the first command of each terminal session asks), or **Model never** (the model
-  neither opens nor uses it). Asked only to open, hide or exit the terminal, the model does that alone
+  run**, and the panel opens once you allow it. **Settings > Terminal**: **Ask once per terminal session** (the
+  default: only the first command of each session waits for Run; the other commands of that answer wait for your
+  answer instead of asking too), **Ask before every command**, or **Model never** (the model neither opens nor uses
+  it). Asked only to open, hide or exit the terminal, the model does that alone
   (`terminal_panel`; "close" hides it, the session goes on). The model is told the shell and Windows version in the
   session's first result, so it writes commands for Windows PowerShell 5.1 rather than bash. **Exit** (the power
   button) ends it: a command still running (yours or the model's, also one waiting for Run) is stopped, and the next

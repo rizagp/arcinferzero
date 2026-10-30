@@ -420,7 +420,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown, Excel XLSX) that appear in its answer</small></div>
             <label class="switch"><input type="checkbox" id="ftools"><span></span></label></div>
           <div class="opt"><div class="lab">Terminal<small>The model may run PowerShell commands in the chat's terminal (the Terminal button above the chat), opening it itself when closed: ask each time, run without asking (the first command of a terminal still asks), or never</small></div>
-            <select id="term" aria-label="Terminal"><option value="ask">Ask each time</option><option value="auto">Run without asking</option><option value="off">Model never</option></select></div>
+            <select id="term" aria-label="Terminal"><option value="ask">Ask once per terminal session</option><option value="each">Ask before every command</option><option value="off">Model never</option></select></div>
           <div class="opt"><div class="lab">Web search<small>The model may search the web and read pages (web_search / web_fetch on this server)</small></div>
             <label class="switch"><input type="checkbox" id="web"><span></span></label></div>
         </div>
@@ -551,8 +551,9 @@ if (prefs.think === undefined) prefs.think = prefs.thinking === false ? "off" : 
 function loadPrefs() {
   $("web").checked = !!prefs.web;
   $("ftools").checked = prefs.ftools !== false;  // (on unless turned off)
-  // (term2: the model's access to an open chat terminal, "ask" unless set; the old term setting was off by default)
-  $("term").value = ["ask", "auto", "off"].includes(prefs.term2) ? prefs.term2 : prefs.term === "auto" ? "auto" : "ask";
+  // (term2: the model's access to the chat's terminal: "ask" (the first command of each session waits for Run, the
+  //  default), "each" (every command), "off"; the earlier "ask" asked every time and "auto" once, so both are "ask")
+  $("term").value = ["each", "off"].includes(prefs.term2) ? prefs.term2 : "ask";
   if (prefs.ttsrate) $("ttsrate").value = prefs.ttsrate;
   $("tempon").checked = !!prefs.tempon;
   if (prefs.temp !== undefined && prefs.tempon) $("temp").value = prefs.temp;
@@ -641,7 +642,9 @@ async function refreshModel() {
     caps = { thinking: p.thinking !== false, efforts: Array.isArray(p.reasoning_effort) ? p.reasoning_effort : [], sampling: p.sampling || null,
       stt: stt ? (typeof stt === "object" && stt.model ? String(stt.model) : "whisper") : "", slots: p.stats?.slots || 1,
       asr: stt && typeof stt === "object" && stt.asr ? String(stt.asr) : "",  // (Qwen3-ASR next to Whisper, --asr)
-      chatAsr: stt && typeof stt === "object" && stt.chat_asr ? String(stt.chat_asr) : "" };  // (Gemma 4 E4B)
+      chatAsr: stt && typeof stt === "object" && stt.chat_asr ? String(stt.chat_asr) : "",  // (Gemma 4 E4B)
+      // (false: Qwen3-ASR alone, --asr without --whisper: no Whisper to choose, no live text while recording)
+      whisper: !!stt && !(typeof stt === "object" && stt.whisper === false) };
     $("slots").value = String(caps.slots);
     $("slothelp").textContent = slotHelp();
   } catch (e) {}
@@ -1493,7 +1496,10 @@ async function runTermTool(args, card, signal, job) {
   }
   // (a closed terminal: the model opens it, after the user's Run on this first command; like Claude Code's own
   //  terminal, every session starts with one approval, so a command never runs on this computer unasked)
-  const t = termOf(chat), opening = !t.open, ac = new AbortController(), stop = () => ac.abort();
+  const t = termOf(chat);
+  // (a round's calls run at once: while one waits for Run, the others wait for its answer instead of asking too)
+  while (t.asking && $("term").value !== "each" && !signal?.aborted) await t.asking.catch(() => {});
+  const opening = !t.open, ac = new AbortController(), stop = () => ac.abort();
   if (opening) card.status.textContent = "· opens the terminal";
   if (signal?.aborted) ac.abort();
   else signal?.addEventListener("abort", stop);
@@ -1504,20 +1510,29 @@ async function runTermTool(args, card, signal, job) {
   };
   let j, e = null;
   try {
-    if ($("term").value !== "auto" || opening || !t.allowed) {
-      card.status.textContent = opening ? "· opens the terminal: waiting for you" : "· waiting for you";
-      if (job) { job.asking = true; renderConvs(); }
-      let ok;
-      try { ok = await askRun(card.el, ac.signal); } finally { if (job) { job.asking = false; renderConvs(); } }
-      if (!ok) {
-        card.status.textContent = "· not run";
-        return "error: the user did not allow this command" + (opening ? " (the terminal stays closed)" : "");
+    if ($("term").value === "each" || opening || !t.allowed) {
+      // (the other calls of the round wait for this gate: the answer, the terminal opened, allowed set)
+      let release;
+      const gate = new Promise((r) => (release = r));
+      if ($("term").value !== "each") t.asking = gate;
+      try {
+        card.status.textContent = opening ? "· opens the terminal: waiting for you" : "· waiting for you";
+        if (job) { job.asking = true; renderConvs(); }
+        let ok;
+        try { ok = await askRun(card.el, ac.signal); } finally { if (job) { job.asking = false; renderConvs(); } }
+        if (!ok) {
+          card.status.textContent = "· not run";
+          return "error: the user did not allow this command" + (opening ? " (the terminal stays closed)" : "");
+        }
+        if (opening ? !t.open && !(await termOpen(chat, false)) : !termUsable(chat)) {
+          if (opening) { card.status.textContent = "· the terminal did not open"; return "error: the terminal could not be opened"; }
+          return closed();
+        }
+        t.allowed = true;
+      } finally {
+        if (t.asking === gate) t.asking = null;
+        release();
       }
-      if (opening ? !t.open && !(await termOpen(chat, false)) : !termUsable(chat)) {
-        if (opening) { card.status.textContent = "· the terminal did not open"; return "error: the terminal could not be opened"; }
-        return closed();
-      }
-      t.allowed = true;
     }
     card.status.textContent = "· running…";
     e = termAdd(chat, { by: "ai", cmd });
@@ -1622,7 +1637,7 @@ async function termOpen(id = ensureConv(), focus = true) {
   t.hidden = false;
   if (!t.open) {
     t.open = true;
-    t.allowed = false;  // (a new session: the model's first command in it waits for Run, Settings > Terminal "auto" too)
+    t.allowed = false;  // (a new session: the model's first command in it waits for Run)
     t.shellSaid = false;  // (and its first result to the model carries the shell note)
     t.cwd = t.venv = "";
     if (t.log.length) t.log.push({ by: "sep", out: "new terminal · " + hhmm(Date.now()) });
@@ -3016,15 +3031,18 @@ const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, d
 $("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
 function trCaps() {
   $("trbtn").disabled = $("mtbtn").disabled = $("trside").disabled = !caps.stt;
-  $("trbtn").title = caps.stt ? "Transcripts: audio and video files to text and subtitles (Whisper on this server)"
-    : "Transcripts need Whisper on the server (start it with --whisper auto)";
-  $("mtbtn").title = caps.stt ? "Meetings: recorded with your microphone and the meeting's sound, transcribed as Me / Others, summarized"
-    : "Meetings need Whisper on the server (start it with --whisper auto)";
+  $("trbtn").title = caps.stt ? "Transcripts: audio and video files to text and subtitles (" + (caps.whisper ? "Whisper" : "Qwen3-ASR") + " on this server)"
+    : "Transcripts need speech to text on the server (start it with --asr auto or --whisper auto)";
+  $("mtbtn").title = caps.stt ? "Meetings: recorded with your microphone and the meeting's sound, transcribed as Me / Others, summarized" +
+      (caps.whisper ? "" : " (Qwen3-ASR alone: the text comes after Stop, none while recording)")
+    : "Meetings need speech to text on the server (start it with --asr auto or --whisper auto)";
   // (the transcript models this server has: Qwen3-ASR, Gemma 4 E4B, Whisper under its own name; the first the default)
   const sel = $("trmodel");
   sel.querySelector('[value="qwen3-asr"]').hidden = !caps.asr;
   sel.querySelector('[value="e4b"]').hidden = !caps.chatAsr;
-  sel.querySelector('[value="whisper"]').textContent = "Model: " + (/large-v3$/.test(caps.stt) ? "Whisper large-v3" : caps.stt || "Whisper");
+  const wopt = sel.querySelector('[value="whisper"]');
+  wopt.hidden = wopt.disabled = !caps.whisper;  // (Qwen3-ASR alone: no Whisper to pick)
+  wopt.textContent = "Model: " + (/large-v3$/.test(caps.stt) ? "Whisper large-v3" : caps.stt || "Whisper");
   sel.hidden = !caps.asr && !caps.chatAsr;
   if (sel.selectedOptions[0]?.hidden || !sel.value) sel.value = caps.asr ? "qwen3-asr" : "whisper";
   trBeamShown();
@@ -3657,6 +3675,7 @@ const live = {
       sent: 0, fails: 0, retryAt: 0, behind: false });
     // (a share ended from the browser's own bar ends the recording)
     streams.forEach((s) => s.getAudioTracks().forEach((t) => t.addEventListener("ended", () => this.stop())));
+    if (!caps.whisper) trNote("recording: Qwen3-ASR alone on this server writes the text after Stop (none while recording)", 12000);
     this.timer = setInterval(() => this.send(), 500);
     this.clock = setInterval(() => {
       if (tr.sel === this.id) $("trsub").innerHTML = '<span class="dot"></span>Recording ' + trClock((performance.now() - this.t0) / 1000) +

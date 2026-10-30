@@ -69,7 +69,8 @@
   // a "model" field naming Whisper itself ("whisper", its id); OpenAI's generic "whisper-1" is not: it takes the default
   bool names_whisper(std::string m) const {
     for (char& c : m) c = (char)tolower((unsigned char)c);
-    return m == "whisper" || m == id || m.rfind("whisper-large", 0) == 0 || m.rfind("faster-whisper", 0) == 0;
+    // (id is empty with Qwen3-ASR alone: a request without a model is not one naming Whisper)
+    return m == "whisper" || (!id.empty() && m == id) || m.rfind("whisper-large", 0) == 0 || m.rfind("faster-whisper", 0) == 0;
   }
 
   // ---------------------------------------------------------------- Gemma 4 E4B as a transcript model

@@ -303,8 +303,9 @@ Options for start / restart:
                                  in the Hugging Face cache; <folder>: a faster-whisper folder); Whisper and Qwen3-ASR
                                  take ~8 GB of GPU memory off the context (docs/qwen3-asr.md). Kept like -Npu
   -WhisperDevice gpu|npu         Whisper's encoder on the iGPU (default) or the NPU
-  -Asr auto|off|<file.gguf>      with -Whisper: Qwen3-ASR, the default speech model (auto: from the Hugging Face cache
-                                 when it is there; off: Whisper alone). Kept like -Whisper
+  -Asr auto|off|<file.gguf>      Qwen3-ASR, the default speech model (auto: from the Hugging Face cache when it is
+                                 there; off: Whisper alone). Without -Whisper: Qwen3-ASR alone (~3.7 GB of GPU
+                                 memory instead of ~9.8; no translations, no live text, no word times). Kept like -Npu
   -WhisperMaxMinutes <N>         the longest upload or chat clip (default 180); the Transcripts library takes files up
                                  to 6 hours, or N when it is more
   -NoStream                      every expert on the GPU: no expert file, no SSD reads; MoE models then get a
@@ -504,9 +505,10 @@ if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra
   $Whisper = $Matches[1].Trim('"')
   # ([^\s|]: the state's extra ends "...|think N", which "npu|think" did not match as npu: Whisper went back to the GPU)
   if (-not $WhisperDevice -and "$($st.extra)" -match "--whisper-device ([^\s|]+)") { $WhisperDevice = $Matches[1] }
-  if (-not $Asr -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
   if ($WhisperMaxMinutes -le 0 -and "$($st.extra)" -match "--whisper-max-minutes ([0-9]+)") { $WhisperMaxMinutes = [int]$Matches[1] }
 }
+# -Asr: kept the same way, with or without Whisper (without it: Qwen3-ASR alone); -Asr off turns it off
+if (-not $Asr -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
 $ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
 # the other options, as server arguments (also kept in the state file: a change restarts the server)
@@ -518,7 +520,9 @@ if ($Precise) { $extra += "--precise" }
 if ($Whisper -and $Whisper -ne "off") {
   $extra += @("--whisper", $(if ($Whisper -eq "auto") { "auto" } else { "`"$Whisper`"" }))
   if ($WhisperDevice -eq "npu") { $extra += @("--whisper-device", "npu") }
-  if ($Asr) { $extra += @("--asr", $(if ($Asr -in "auto", "off") { $Asr } else { "`"$Asr`"" })) }
+}
+if ($Asr -and ($Asr -ne "off" -or ($Whisper -and $Whisper -ne "off"))) { $extra += @("--asr", $(if ($Asr -in "auto", "off") { $Asr } else { "`"$Asr`"" })) }
+if (($Whisper -and $Whisper -ne "off") -or ($Asr -and $Asr -ne "off")) {
   if ($WhisperMaxMinutes -gt 0) { $extra += @("--whisper-max-minutes", $WhisperMaxMinutes) }
 }
 if ($ImageMinTokens -gt 0) { $extra += @("--image-min-tokens", $ImageMinTokens) }

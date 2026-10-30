@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-10-30: Qwen3-ASR without Whisper; the terminal asks once
+
+- **Qwen3-ASR alone**: `--asr auto` (or a GGUF) without `--whisper` (`arc-server start -Asr auto`) starts the speech
+  service without Whisper: 5.37 GiB of GPU memory with its 4 parts at a time instead of 9.76 with Whisper, so the 35B
+  kept 40 % of its experts cached instead of 10 %. Transcription requests, the Transcripts and Meetings tabs and chat
+  audio go to Qwen3-ASR (a 2:43 voice note in 29 s, SRT included). What needs Whisper says so: translations and a
+  request naming Whisper get 400; a live recording keeps recording and gets its text from the pass after Stop (none
+  while recording; the web UI notes it). The web UI hides and disables "Model: Whisper" then (`/props` "whisper":
+  {"whisper": false}). arc-server keeps `-Asr` on a restart with or without `-Whisper`.
+- **The web UI's terminal asks once per session**: Settings > Terminal is now **Ask once per terminal session** (the
+  default: the first command of a session waits for Run), **Ask before every command** or **Model never**. The old
+  default asked before every command, and "Run without asking" in fact asked once: both saved choices become the
+  first. The calls of one answer that run at once wait for the first one's Run instead of each asking (three
+  `run_command` calls in one answer: one Run, all three ran; the next answer's command ran without asking).
+
 ## 2026-10-30: Qwen's reasoning with a presence penalty
 
 - **Qwen models reason with presence_penalty 1.5** (Qwen's recommendation for thinking) when the request sets none:
