@@ -13,6 +13,7 @@
 #include "../src/gguf.h"
 #include "../src/quants.h"
 #include "../src/json.h"
+#include "../src/load_progress.h"
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -190,7 +191,19 @@ class Engine {
       xmx_ = xmx_check();
       if (xmx_) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)\n");
     }
-    load_weights();
+    {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
+      // (kept on the host and read row by row: the token embedding when the model has its own output head, Gemma 4
+      //  E2B / E4B's per-layer embeddings; E4B's bar stalled at ~60 % and jumped with them counted)
+      const bool tied = !f_.find("output.weight");
+      double total = 0;
+      for (const GgufTensor& t : f_.tensors)
+        if (!(stream_ && t.name.find("_exps.") != std::string::npos) && !(t.name == "token_embd.weight" && !tied) &&
+            t.name != "per_layer_token_embd.weight")
+          total += (double)t.nbytes;
+      if (!opt.dry) loadp::begin(total);
+      load_weights();
+      if (!opt.dry) loadp::step(loadp::st().what, total, total);
+    }
     {
       const size_t g0 = gpu_bytes;
       alloc_buffers();
@@ -2108,6 +2121,7 @@ class Engine {
       gpu_bytes += total;
       return nullptr;
     }
+    loadp::add((double)nbytes);
     cl_int err;
     cl_mem m = clCreateBuffer(cl_.ctx, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR, total, nullptr, &err);
     CL_CHECK(err);

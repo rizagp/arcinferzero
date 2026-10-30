@@ -321,9 +321,15 @@ $msg.Dock = "Bottom"; $msg.Height = 24; $msg.Padding = New-Object System.Windows
 $msg.ForeColor = [System.Drawing.Color]::DimGray
 $msg.Text = "Reading the model list..."
 
+# loading progress: the server's "progress: P % <step>" lines in its log (src/load_progress.h) while a start runs
+$loadBar = New-Object System.Windows.Forms.ProgressBar
+$loadBar.Dock = "Top"; $loadBar.Height = 14; $loadBar.Minimum = 0; $loadBar.Maximum = 100; $loadBar.Visible = $false
+$loadBar.MarqueeAnimationSpeed = 30
+
 $form.Controls.Add($split)
 $form.Controls.Add($buttons)
 $form.Controls.Add($msg)
+$form.Controls.Add($loadBar)  # (docked under the status line: the later Add docks first)
 $form.Controls.Add($status)
 $form.Add_Load({ $split.SplitterDistance = [int]($split.Height * 0.45) })
 
@@ -468,6 +474,7 @@ function Start-Action([string[]]$argList) {
   if ($script:actProc -and -not $script:actProc.HasExited) { return }
   Remove-Item $script:actOut, $script:actErr -ErrorAction SilentlyContinue
   $script:actWhat = $argList[0]
+  $script:actStart = Get-Date  # (the server's log counts only once rewritten by this start: not the last run's lines)
   $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$arcServer`"") + $argList + @("-Port", [int]$portBox.Value)
   $script:actProc = Start-Process -FilePath $shell -ArgumentList $a -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $script:actOut -RedirectStandardError $script:actErr
@@ -580,6 +587,32 @@ $recBtn.Add_Click({
 $recStopBtn.Add_Click({ $msg.Text = "Ending the recording (the server transcribes it: the Meetings tab)..."; Start-Rec @("record-stop") })
 
 # ---- timer: collect background results; the server state every 2 s
+# the bar from the server's last "progress:" line, once arc-server has started the new server (it writes server.json
+# right after: a switch first stops the running server, whose log still holds its own load and gets its shutdown
+# lines, so the log's own time says nothing); the step in the message line under the list
+function Show-LoadBar {
+  $line = $null
+  try {
+    $sf = Get-Item $stateFile -ErrorAction Stop
+    if ($sf.LastWriteTime -ge $script:actStart) {
+      $line = Get-Content $serverLog -Tail 40 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^progress: ' } | Select-Object -Last 1
+    }
+  } catch {}
+  $loadBar.Visible = $true
+  $secs = [int]((Get-Date) - $script:actStart).TotalSeconds
+  if ($line -match '^progress: (-?\d+) % (.*)$') {
+    $pct = [int]$Matches[1]
+    if ($pct -ge 0) {
+      $loadBar.Style = "Continuous"; $loadBar.Value = [math]::Min(100, $pct)
+      $msg.Text = "Loading: $($Matches[2])  ($pct %, $secs s)"
+    } else {
+      $loadBar.Style = "Marquee"
+      $msg.Text = "Loading: $($Matches[2])  ($secs s)"
+    }
+  } else {
+    $loadBar.Style = "Marquee"
+  }
+}
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 500
 $script:tick = 0
@@ -594,7 +627,9 @@ $timer.Add_Tick({
     if ($script:actProc) {
       $last = if (Test-Path $script:actOut) { Get-Content $script:actOut -Tail 1 -ErrorAction SilentlyContinue } else { $null }
       if ($last) { $msg.Text = "$last" }
+      if ($script:actWhat -eq "start" -and -not $script:actProc.HasExited) { Show-LoadBar }
       if ($script:actProc.HasExited) {
+        $loadBar.Visible = $false
         if ($script:actProc.ExitCode -ne 0) {
           $err = Get-Content $script:actErr -Raw -ErrorAction SilentlyContinue
           $tail = Get-Content $script:actOut -Tail 8 -ErrorAction SilentlyContinue

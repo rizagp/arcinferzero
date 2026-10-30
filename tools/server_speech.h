@@ -90,15 +90,20 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt_in, 
       fprintf(stderr, "asr: no Qwen3-ASR GGUF in the Hugging Face cache: Whisper transcribes (docs/qwen3-asr.md)\n");
     } else {
       try {
+        loadp::label("Qwen3-ASR");
         wh->load_asr(f, so.eo.kernel_dir, so.asr_slots);
         fprintf(stderr, "asr: %s, %d parts at a time (%s %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->asr_parts(),
                 asr_alone ? "alone, no Whisper:" : "Whisper and Qwen3-ASR", wh->gpu_bytes() / 1073741824.0);
       } catch (const std::exception& e) {
         if (!quiet) throw;  // (asked for: the server says why and stops)
+        loadp::label("model");  // (its engine threw before taking the label)
         fprintf(stderr, "asr: %s could not be loaded (%s): Whisper transcribes (docs/qwen3-asr.md)\n", f.c_str(), e.what());
       }
     }
   }
+  // (Qwen3-ASR alone and not loaded, e.g. --asr auto-quiet given by hand: a service with no model would advertise
+  //  speech to text and fail every request)
+  if (asr_alone && wh->asr_id.empty()) throw std::runtime_error("--asr: Qwen3-ASR could not be loaded and there is no Whisper (--whisper auto)");
   so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
   so.whisper_props = wh->props();
   if (!asr_alone)

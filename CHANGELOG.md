@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-30 (afternoon): a progress bar while the model loads
+
+- **arc-server and the launcher show how far the load is**: the server writes `progress: P % <step>` lines to its
+  log while it loads (src/load_progress.h): Qwen3-ASR's and the model's weights (the bytes uploaded, without the
+  experts streamed from the SSD), Whisper's layers, the expert file written on a first start, the expert cache filled
+  from the SSD, and the kernels' warm-up (no percentage: a busy bar). `arc-server start` draws them as a PowerShell
+  progress bar with the seconds so far; the launcher has a bar under its status line and the step in the message
+  line (a switch reads the log only once the new start has rewritten it, not the stopped server's lines). The
+  command-line tools (runz, transcribez, asr_testz) print none.
+- Self audit of today's changes, fixed: the web UI no longer follows Gemma 4 E4B when the speech service loads it for
+  a transcript (the chat keeps its model); `--asr` without Whisper that cannot load Qwen3-ASR stops the server with
+  the reason instead of advertising speech to text with no model behind it; the expert file's per-layer line is
+  back for the command-line tools; the weights bar leaves out the tensors kept on the host (E4B's stalled at ~60 %).
+
 ## 2026-10-30 (later): Qwen3-ASR in 3.15 GiB
 
 - **Qwen3-ASR's encoder on two int8 passes** (its blocks and projector; the convolutions stay f16): 0.037 % from

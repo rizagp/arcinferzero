@@ -9,6 +9,7 @@
 #include <atomic>
 #include "../src/app_dir.h"
 #include "../src/gguf.h"
+#include "../src/load_progress.h"
 #include "../src/quants.h"
 #include <chrono>
 #include <cstring>
@@ -259,6 +260,8 @@ struct ExpertStore {
       put(hb, first);
     }
     const int G = 32;  // experts converted per batch (in parallel)
+    size_t n_done = 0, n_all = 0;  // (layers with experts: the progress)
+    for (const std::string& p : prefixes) n_all += !p.empty();
     for (size_t l = 0; l < prefixes.size(); ++l) {
       if (prefixes[l].empty()) continue;
       const LayerInfo& L = layers[l];
@@ -302,9 +305,11 @@ struct ExpertStore {
       }
       // the layer's GGUF pages leave the working set (they stay in the standby list, which Windows can reuse)
       SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-      fprintf(stderr, "\r  layer %zu / %zu", l + 1, prefixes.size());
+      ++n_done;
+      if (loadp::st().on) loadp::step("writing the expert file (once per model)", (double)n_done, (double)n_all);
+      else fprintf(stderr, "\r  layer %zu / %zu", n_done, n_all);  // (the command-line tools: their own line)
     }
-    fprintf(stderr, "\n");
+    if (!loadp::st().on) fprintf(stderr, "\n");
     CloseHandle(out.h);
     out.h = INVALID_HANDLE_VALUE;
     if (!MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))  // (an old file of the same name: replaced)

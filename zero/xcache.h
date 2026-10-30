@@ -428,6 +428,10 @@ struct XCache {
       }
       fclose(f);
     }
+    double fill = 0;  // (the progress bar's whole: every slot filled)
+    for (const Pool& P : pools) fill += (double)P.n * P.rec;
+    const char* what = "filling the expert cache from the SSD";
+    loadp::step(what, 0, fill);
     for (size_t p = 0; p < pools.size(); ++p) {
       Pool& P = pools[p];
       std::vector<uint8_t> have((size_t)NL * NE, 0);
@@ -463,9 +467,11 @@ struct XCache {
           ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, P.addr[order[j]], stage[h] + (j - b0) * stage_rec, P.rec,
                                                  nullptr, 0, nullptr));
         warm_bytes += reqs.size() * P.rec;
+        loadp::step(what, (double)warm_bytes, fill);
       }
       zrt::sync();
     }
+    loadp::step(what, fill, fill);
     warm_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   }
 

@@ -1866,6 +1866,7 @@ int main(int argc, char** argv) {
 
   // the speech service before the model: --ctx auto then leaves its GPU memory free (tools/server_speech.h)
   std::unique_ptr<srvwh::Service> wh;
+  loadp::st().on = true;  // ("progress: P % ..." lines while loading: arc-server's and the launcher's progress bar)
   try {
     wh = srvsp::start(whisper_opt, whisper_dev, asr_opt, whisper_max_min, so);
   } catch (const std::exception& e) {

@@ -634,8 +634,11 @@ async function refreshModel() {
     models = j.data || [];
     const cur = models.find((m) => m.loaded) || models[0];
     if (cur) {
-      // (the server's model changed under the page (another model started outside it): the pick is dropped too)
-      if (loadedId && cur.id !== loadedId && pickedId === loadedId) pickedId = "";
+      // (the server's model changed under the page: another model started outside it, the pick is dropped too; or
+      //  Gemma 4 E4B loaded by the speech service for a transcript, not the user's choice: the page keeps its model)
+      const speech = loadedId && cur.id !== loadedId && caps.chatAsr && cur.id === caps.chatAsr;
+      if (speech) pickedId = pickedId || modelId;
+      else if (loadedId && cur.id !== loadedId && pickedId === loadedId) pickedId = "";
       loadedId = cur.id;
       if (pickedId && !models.some((m) => m.id === pickedId)) pickedId = "";
       if (!jobs.size) modelId = pickedId || cur.id;

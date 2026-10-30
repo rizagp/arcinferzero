@@ -585,17 +585,37 @@ Set-Content $lastFile $m.path -Encoding utf8
   ConvertTo-Json | Set-Content $stateFile -Encoding utf8
 
 $t0 = Get-Date
+# the server's "progress: P % <step>" lines (src/load_progress.h) as a progress bar while it loads
+$barActivity = "Loading $($m.alias)"
+$script:lastProgress = $null  # (kept: more than 40 other lines after it would hide it from the tail)
+$showBar = -not [Console]::IsOutputRedirected  # (the launcher runs this hidden, its output in a file: its own bar)
+function Show-LoadProgress {
+  if (-not $showBar) { return }
+  $line = Get-Content $log -Tail 40 -ErrorAction SilentlyContinue | Where-Object { $_ -match '^progress: ' } | Select-Object -Last 1
+  if ($line) { $script:lastProgress = $line } else { $line = $script:lastProgress }
+  $secs = [int]((Get-Date) - $t0).TotalSeconds
+  if ($line -match '^progress: (-?\d+) % (.*)$') {
+    $pct = [int]$Matches[1]
+    if ($pct -ge 0) { Write-Progress -Activity $barActivity -Status "$($Matches[2])  ($pct %, $secs s)" -PercentComplete ([math]::Min(100, $pct)) }
+    else { Write-Progress -Activity $barActivity -Status "$($Matches[2])  ($secs s)" }
+  } else {
+    Write-Progress -Activity $barActivity -Status "starting the server  ($secs s)"
+  }
+}
 while ($true) {
   Start-Sleep -Milliseconds 700
+  Show-LoadProgress
   if ($p.HasExited) {
+    Write-Progress -Activity $barActivity -Completed
     Write-Host "The server stopped while loading. Last log lines:" -ForegroundColor Red
-    Get-Content $log -Tail 15 | ForEach-Object { Write-Host "  $_" }
+    Get-Content $log -Tail 60 | Where-Object { $_ -notmatch '^progress: ' } | Select-Object -Last 15 | ForEach-Object { Write-Host "  $_" }
     Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
     exit 1
   }
   try { if ((Invoke-RestMethod "$base/health" -TimeoutSec 2).status -eq "ok") { break } } catch {}
-  if (((Get-Date) - $t0).TotalSeconds -gt 600) { throw "The server did not become ready within 10 minutes; see $log" }
+  if (((Get-Date) - $t0).TotalSeconds -gt 600) { Write-Progress -Activity $barActivity -Completed; throw "The server did not become ready within 10 minutes; see $log" }
 }
+Write-Progress -Activity $barActivity -Completed
 $nctx = (Invoke-RestMethod "$base/props" -TimeoutSec 5).n_ctx
 Say ("Ready after {0:N0} s: {1}, context {2:N0} (web UI {3}/)" -f ((Get-Date) - $t0).TotalSeconds, $m.alias, $nctx, $base)
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"

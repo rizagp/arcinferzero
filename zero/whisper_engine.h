@@ -4,6 +4,7 @@
 // The decoder runs every token through the same GEMM kernel with the rows padded to 16 (its weights are read once
 // per pass: beams and samples share it). docs/whisper-native.md.
 #pragma once
+#include "../src/load_progress.h"
 #include "../src/quants.h"
 #include "../src/whisper.h"
 #include "clrt.h"
@@ -58,6 +59,9 @@ class WhisperEngine : public whisper::Backend {
     const int F = m.file->get("encoder/layer_0/ffn/linear_0/weight").shape[0];
     F_ = F;
     // weights: Q8_0 GEMM form; biases f16 (the encoder's only when it runs here)
+    const double nl = (npu ? 0 : hp_.enc_layers) + hp_.dec_layers;  // (the scripts' progress bar: layers loaded)
+    const char* what = "loading Whisper";
+    loadp::step(what, 0, nl);
     if (!npu) {
     conv1_ = weight_conv("encoder/conv1/weight", K1p_ = 512);
     conv1_b_ = half_buf("encoder/conv1/bias");
@@ -80,6 +84,7 @@ class WhisperEngine : public whisper::Backend {
       L.fc2 = weight(p + "ffn/linear_1/weight");
       L.fc2_b = half_buf(p + "ffn/linear_1/bias");
       enc_.push_back(L);
+      loadp::step(what, l + 1, nl);
     }
     enc_lng_ = half_buf("encoder/layer_norm/gamma");
     enc_lnb_ = half_buf("encoder/layer_norm/beta");
@@ -112,6 +117,7 @@ class WhisperEngine : public whisper::Backend {
       L.ck16b = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
       L.cv16b = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 64);
       dec_.push_back(L);
+      loadp::step(what, (npu ? 0 : hp_.enc_layers) + l + 1, nl);
     }
     // (one f32 buffer for every layer's cross keys / values before wh_ckv_pack makes them f16: it was one per layer,
     //  0.46 GiB for large-v3's 32; the layers are packed one after the other on the in-order queue)

@@ -90,6 +90,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
           eng.max_chunk, eng.gpu_bytes / 1073741824.0, eng.w8_resident ? "W8 resident" : "W8 just-in-time");
   {  // compile kernels before serving (all of the generation's after an update)
     const auto tw = std::chrono::steady_clock::now();
+    loadp::busy("warming up the kernels (first start after an update: up to a minute)");
     if (eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt))
       fprintf(stderr, "kernels warmed up for this model in %.1f s (once after an update)\n",
               std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
