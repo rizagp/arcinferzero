@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-30: Qwen's reasoning with a presence penalty
+
+- **Qwen models reason with presence_penalty 1.5** (Qwen's recommendation for thinking) when the request sets none:
+  the Qwen3.6 35B, asked in the web UI to turn a sprite sheet into a GIF, circled its plan ("Let's run.", "Wait, ...")
+  for 7,000 tokens without closing `</think>`, so its `run_command` call never came (17 minutes with Whisper and
+  Qwen3-ASR loaded beside it). `</think>` was never held back: at those points it was the most likely token (~50 %),
+  and temperature 1.0 drew another. The penalty applies to the reasoning only; the answer and its tool calls keep
+  the request's value (0 by default), so code is not penalized for reusing its tokens. A request's own
+  `presence_penalty` applies to both, as before. Gemma 4 unchanged.
+
 ## 2026-10-29 (evening): a ready-to-use package for people who never open a terminal
 
 - **Downloads in a Windows PowerShell started from PowerShell 7** (GitHub issue #3: "The term 'Get-FileHash' is not

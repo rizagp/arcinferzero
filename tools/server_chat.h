@@ -72,6 +72,10 @@
     }
     if (body["min_p"].is_number()) sp.min_p = (float)body["min_p"].as_number();
     if (body["presence_penalty"].is_number()) sp.presence_penalty = (float)body["presence_penalty"].as_number();
+    // Qwen's reasoning: presence_penalty 1.5 unless the request sets one (Qwen's recommendation for thinking, against
+    // endless reasoning: the 35B once circled "Let's run." for 7,000 tokens without closing </think>); the answer and
+    // its tool calls keep the request's value (0: code is not penalized for reusing its tokens)
+    const float think_pp = !gemma_ && !body["presence_penalty"].is_number() ? 1.5f : sp.presence_penalty;
     if (body["frequency_penalty"].is_number()) sp.frequency_penalty = (float)body["frequency_penalty"].as_number();
     if (body["repeat_penalty"].is_number()) sp.repeat_penalty = (float)body["repeat_penalty"].as_number();
     if (body["repeat_last_n"].is_number()) sp.repeat_last_n = (int)body["repeat_last_n"].as_clamped(64, -1, INT_MAX);
@@ -585,6 +589,7 @@
     } gen_leave{*this};
     for (int i = 0; i < max_tokens; ++i) {
       int t;
+      sampler.set_presence_penalty(in_think ? think_pp : sp.presence_penalty);
       if (!forced.empty()) {
         t = forced.front();
         forced.erase(forced.begin());

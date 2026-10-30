@@ -36,6 +36,7 @@ class Sampler {
   explicit Sampler(const SamplingParams& p) : p_(p), rng_(p.has_seed || p.seed ? p.seed : std::random_device{}()) {
     for (const auto& [t, b] : p_.logit_bias) bans_ = bans_ || b <= -100.0f;
   }
+  void set_presence_penalty(float v) { p_.presence_penalty = v; }  // (the server: Qwen's reasoning has its own)
   int sample(const std::vector<float>& raw, const std::vector<int>& recent) {
     if (raw.empty()) throw std::runtime_error("sampler: no logits");  // (the candidates below would be empty)
     const std::vector<float>& logits = adjusted(raw, recent);
