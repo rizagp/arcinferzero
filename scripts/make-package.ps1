@@ -2,14 +2,15 @@
 # arc-launcher.cmd) runs without Visual Studio or Python: the exes come built (static C++ runtime, the OpenMP
 # runtime vcomp140.dll next to them), bin\PREBUILT.txt tells setup to keep them, and models download with
 # scripts\hf-get.ps1. What it holds: every file git tracks (sources too, so setup -Rebuild still builds; nothing
-# untracked: no recordings, reports or models), plus bin\ with serverz, runz, transcribez, arc_recorder, clinfo.
-#   powershell -File scripts\make-package.ps1            build the five exes, then the zip
+# untracked: no recordings, reports or models), plus bin\ with serverz, runz, transcribez, arc_recorder, clinfo,
+# mgpu_probe.
+#   powershell -File scripts\make-package.ps1            build the six exes, then the zip
 #   powershell -File scripts\make-package.ps1 -NoBuild   the exes as they are in bin\
 param([switch]$NoBuild)
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot
 Set-Location $root
-$exes = @("zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder", "tools\clinfo")
+$exes = @("zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder", "tools\clinfo", "zero\mgpu_probe")
 if (-not $NoBuild) {
   $srcs = @($exes | ForEach-Object { "$_.cpp" })  # (splatted from a variable: @(...) inline is one argument)
   & (Join-Path $root "build.ps1") @srcs

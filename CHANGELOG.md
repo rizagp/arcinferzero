@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-30 (night): multi-GPU groundwork
+
+- **bin\mgpu_probe.exe** (zero/mgpu_probe.cpp, in the package): lists the GPUs and measures what moving data between
+  them costs: peer access, a 20 KB transfer (a tensor-parallel sync of token generation, ~128 per 27B token) and a
+  40 MB one (a prompt chunk), GPU to GPU directly and through host memory, on the compute queue and the copy engine.
+  Its numbers decide how a multi-GPU arcinferzero splits the work. On this laptop (one GPU, to itself): 20 KB 5 us
+  on the compute queue, 70 us on the copy engine; through host memory 11 us.
+- **runz compares its GB/s with the GPU it runs on**: it measures the GPU's read bandwidth (Engine::read_gbs, a
+  256 MB block-read stream) instead of assuming this laptop's ~75 GB/s (measured here: 70 GB/s).
+
 ## 2026-10-30 (evening): faster tool-call turns on the 27B
 
 - **Short prompts of just-in-time models in passes of 8 rows**: a chunk of a model whose weights are decoded just in

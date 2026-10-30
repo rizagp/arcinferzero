@@ -113,8 +113,43 @@ class Engine {
   // the rotary position by max(gw, gh) instead of gw * gh); kept by the caller with the conversation
   int rope_shift = 0;
   bool profile = false, w8_resident = false, has_mtp = false;
-  // weight bytes the GEMVs read (token generation; bin/runz.exe reports GB/s against the measured ~75 GB/s)
+  // weight bytes the GEMVs read (token generation; bin/runz.exe reports GB/s against read_gbs())
   uint64_t rd_bytes = 0;
+  // this GPU's read bandwidth in GB/s: the best of 5 streams of a 256 MB buffer (block reads, 16 lanes; this laptop's
+  // iGPU ~75, a discrete card several times that), so runz's "% of" fits the machine it runs on
+  double read_gbs() {
+    static const char* src = R"CLC(
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void rd_block(__global const uint* p, __global uint* out, int per_item) {
+  __global const uint* q = p + get_global_id(0) / 16 * (size_t)per_item * 16;
+  uint acc = 0;
+  for (int i = 0; i < per_item; i += 8) {
+    const uint8 v = intel_sub_group_block_read8(q + (size_t)i * 16);
+    acc ^= v.s0 ^ v.s1 ^ v.s2 ^ v.s3 ^ v.s4 ^ v.s5 ^ v.s6 ^ v.s7;
+  }
+  if (acc == 0x12345678u) out[0] = acc;
+})CLC";
+    const size_t bytes = (size_t)256 << 20;
+    const int per_item = 1024;  // uints each sub-group lane strip covers: 64 KB per sub-group
+    cl_program p = cl_.build(src, "-cl-std=CL3.0");
+    progs_.push_back(p);
+    cl_kernel k = cl_.kernel(p, "rd_block");
+    cl_mem b = buf(bytes), o = buf(64);
+    double best = 1e30;
+    for (int r = 0; r < 6; ++r) {
+      set_args(k, 0, b, o, per_item);
+      size_t gws[1] = {bytes / 4 / per_item}, lws[1] = {256};
+      clFinish(cl_.queue);
+      const auto t0 = std::chrono::steady_clock::now();
+      run("read_gbs", k, 1, gws, lws);
+      clFinish(cl_.queue);
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      if (r > 0) best = std::min(best, ms);  // (the first: warm-up)
+    }
+    free_buf(b);
+    free_buf(o);
+    return bytes / 1e6 / best;
+  }
   static uint64_t raw_bytes(const GpuWeight& w) { return (uint64_t)w.N * (w.K / 256) * gguf_sb_bytes(w.type); }
   std::map<std::string, double> prof_ms;
   std::map<std::string, int> prof_n;

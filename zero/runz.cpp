@@ -54,6 +54,18 @@ static void warn_gpu_neighbours() {
                     "measured now are not representative.\n", found.c_str());
 }
 
+// " (P % of this GPU's measured N GB/s)": the read bandwidth measured once on this machine (Engine::read_gbs)
+static std::string peak_note(Engine& eng, double gbs) {
+  static double peak = -1;
+  if (peak < 0) {
+    try { peak = eng.read_gbs(); } catch (const std::exception&) { peak = 0; }  // (no room left for its buffer)
+  }
+  if (peak <= 0) return "";
+  char s[96];
+  snprintf(s, sizeof(s), " (%.0f %% of this GPU's measured %.0f GB/s)", gbs / peak * 100, peak);
+  return s;
+}
+
 static int run_main(int argc, char** argv);
 int main(int argc, char** argv) {
   full_speed_process();
@@ -609,8 +621,8 @@ static int run_main(int argc, char** argv) {
       printf("\n");
     }
     const double gb = (eng.rd_bytes - b0) / 1e9;
-    printf("weights read: %.0f MB per token, %.1f GB/s (%.0f %% of ~75 GB/s)\n", gb * 1000 / n_gen, gb / ms * 1000,
-           gb / ms * 1000 / 75 * 100);
+    printf("weights read: %.0f MB per token, %.1f GB/s%s\n", gb * 1000 / n_gen, gb / ms * 1000,
+           peak_note(eng, gb / ms * 1000).c_str());
   } else {
     if (toks.empty()) { fprintf(stderr, "no tokens\n"); return 1; }
     if (kl_decode) {
@@ -786,8 +798,9 @@ static int run_main(int argc, char** argv) {
     if (!eng.expert_stats().empty()) printf("%s\n", eng.expert_stats().c_str());
     {
       const double gb = (eng.rd_bytes - rb0) / 1e9;
-      printf("weights read: %.0f MB per pass, %.1f GB/s (%.0f %% of ~75 GB/s; drafter weights not counted)\n",
-             gb * 1000 / std::max<size_t>(1, steps ? (size_t)steps : gen.size()), gb / gms * 1000, gb / gms * 1000 / 75 * 100);
+      printf("weights read: %.0f MB per pass, %.1f GB/s%s (drafter weights not counted)\n",
+             gb * 1000 / std::max<size_t>(1, steps ? (size_t)steps : gen.size()), gb / gms * 1000,
+             peak_note(eng, gb / gms * 1000).c_str());
     }
     if (steps) printf("MTP: %d drafts, %d accepted (%.1f %%), %.2f tokens per main-model pass (%d passes)\n", drafted,
                       accepted, 100.0 * accepted / std::max(drafted, 1), (double)gen.size() / steps, steps);
