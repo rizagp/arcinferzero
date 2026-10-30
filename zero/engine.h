@@ -283,9 +283,12 @@ class Engine {
     const bool by_layer = cancel && !w8_resident;  // a chunk takes seconds: stop after any layer
     struct NoRpos { int& u; ~NoRpos() { u = 0; } } no_rpos{use_rpos_};  // (set_media's positions: this call only)
     // just-in-time weights: a chunk decodes every matrix first (27B: ~2 s whatever its size), a pass of up to 8 rows
-    // reads them directly (~0.35 s), so up to 40 tokens (a tool result's tail, a short message) go in passes of 8
-    // (27B, 10 tokens: 2.0 -> 0.65 s; 40: 2.1 -> 1.7 s; 49: 2.15 -> 2.5 s)
-    const int step = !w8_resident && !stream_ && n <= 40 && max_chunk >= 64 ? 8 : max_chunk;
+    // reads them directly (~0.35 s), so short prompts (a tool result's tail, a short message) go in passes of 8:
+    // up to 40 tokens (27B, 10 tokens: 2.0 -> 0.65 s; 40: 2.1 -> 1.7 s; 49: 2.15 -> 2.5 s), up to 32 with two-pass
+    // matmuls, whose passes cost more (Gemma 4 12B, ~11 / 22 / 27 tokens 1.1 / 1.2 / 1.25 -> 0.6 / 0.85 / 1.1 s;
+    // ~40: 1.25 -> 1.4)
+    const int few = q2mm_ ? 32 : 40;
+    const int step = !w8_resident && !stream_ && n <= few && max_chunk >= 64 ? 8 : max_chunk;
     for (int c0 = 0; c0 < n; c0 += step) {
       if (c0 > 0 && cancelled()) throw Cancelled();  // between chunks the state is complete
       const int T = std::min(step, n - c0);

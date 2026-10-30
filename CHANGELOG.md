@@ -7,6 +7,9 @@
   before its first token. Up to 40 new tokens now go through the generation's multi-row GEMVs (~0.35 s per 8):
   a tool turn's prompt 2.3 -> 1.3-1.4 s. DFlash2's capture writes each pass at its own rows (it overwrote the first
   rows and the drafter fell back to MTP).
+- **Gemma 4 12B the same up to 32 tokens** (its two-pass passes cost more; past ~32 the chunk is faster again): 16 /
+  22 / 27 new tokens 1.1 / 1.2 / 1.2 -> 0.6 / 0.7 / 0.9 s, replies byte-identical. Qwen 9B (resident weights) and
+  the 4B, E4B and MoE models are unaffected.
 
 ## 2026-10-30 (afternoon): a progress bar while the model loads
 
