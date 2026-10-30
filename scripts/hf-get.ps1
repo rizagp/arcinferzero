@@ -10,6 +10,14 @@ function Get-HfHub {
   if ($env:HF_HOME) { return (Join-Path $env:HF_HOME "hub") }
   return (Join-Path $env:USERPROFILE ".cache\huggingface\hub")
 }
+# a file's SHA256 by .NET, not Get-FileHash: a Windows PowerShell started from PowerShell 7 can inherit a module path
+# under which that cmdlet is missing ("The term 'Get-FileHash' is not recognized", GitHub issue #3)
+function Get-Sha256([string]$path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $fs = [System.IO.File]::Open($path, "Open", "Read", "Read")
+  try { return (($sha.ComputeHash($fs) | ForEach-Object { $_.ToString("x2") }) -join "") }
+  finally { $fs.Dispose(); $sha.Dispose() }
+}
 function Get-HfToken {
   if ($env:HF_TOKEN) { return $env:HF_TOKEN }
   $f = Join-Path $env:USERPROFILE ".cache\huggingface\token"
@@ -60,7 +68,7 @@ function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)
     if ((Get-Item $part).Length -ne $size) { throw "$f is $((Get-Item $part).Length) bytes, the repository says ${size}: run this again" }
     if ($e.lfs -and $e.lfs.oid) {
       Write-Host "    checking $f (SHA256)..."
-      $h = (Get-FileHash $part -Algorithm SHA256).Hash.ToLower()
+      $h = Get-Sha256 $part
       if ($h -ne $e.lfs.oid.ToLower()) { Remove-Item $part; throw "$f arrived damaged (SHA256 differs): run this again to download it anew" }
     }
     Move-Item $part $dst -Force

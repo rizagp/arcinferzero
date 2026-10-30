@@ -2,6 +2,9 @@
 
 ## 2026-10-29 (evening): a ready-to-use package for people who never open a terminal
 
+- **Downloads in a Windows PowerShell started from PowerShell 7** (GitHub issue #3: "The term 'Get-FileHash' is not
+  recognized" at the SHA256 check): the hash is computed with .NET, and setup.cmd, arc-launcher.cmd and the pi-arc /
+  arc-server commands clear the inherited PSModulePath, so Windows PowerShell loads its own modules.
 - **setup (the installer from the sources)**: a model the server already finds outside the Hugging Face cache (a
   package in `.arcinferzero\zero\models`, a `model-dirs.txt` folder) counts as there (the packaged 35B was offered for
   download again); `setup.cmd` ends with setup's exit code (it said 0 after a failure) and, double-clicked, keeps its

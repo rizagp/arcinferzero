@@ -29,6 +29,7 @@ else { Write-Host "Pi models: none yet (download a model, then run this again or
 # 3. commands on PATH
 foreach ($name in "pi-arc", "arc-server") {
   $target = Join-Path $root "scripts\$name.ps1"
-  "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$target`" %*`r`n" | Set-Content (Join-Path $binDir "$name.cmd") -Encoding ascii -NoNewline
+  # (set PSModulePath=: Windows PowerShell with its own modules, not a path PowerShell 7 left behind: GitHub #3)
+  "@echo off`r`nset `"PSModulePath=`"`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$target`" %*`r`n" | Set-Content (Join-Path $binDir "$name.cmd") -Encoding ascii -NoNewline
 }
 Write-Host "Commands installed: pi-arc, arc-server  ($binDir)"

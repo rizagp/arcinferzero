@@ -4,5 +4,6 @@ where pwsh >nul 2>nul
 if %errorlevel%==0 (
   start "" pwsh -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "%~dp0scripts\arc-launcher.ps1"
 ) else (
+  set "PSModulePath="
   start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -STA -File "%~dp0scripts\arc-launcher.ps1"
 )
