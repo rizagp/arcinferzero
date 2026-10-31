@@ -397,11 +397,13 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <select id="trbeam" aria-label="Accuracy" title="Whisper only: Accurate: beam search (5 candidates, ~25 % slower); Fast: greedy (Qwen3-ASR and Gemma 4 E4B are always greedy)">
           <option value="5">Accurate (beam 5)</option><option value="1">Fast (greedy)</option>
         </select>
-        <select id="trkeep" aria-label="Recordings kept as" title="How a live recording is kept once transcribed: WAV is lossless (best for transcribing it again with another model), ~5.5 MB a minute a track; MP3 per minute: 96 kbps ~0.7 MB, 128 ~0.96, 192 ~1.4, 320 ~2.4 (one track, a microphone: at most 128, Windows' MP3 encoder takes no higher for mono; two tracks, a meeting: all of them)">
+        <select id="trkeep" aria-label="Recordings kept as" title="How a live recording is kept once transcribed: WAV is lossless (best for transcribing it again with another model), ~5.5 MB a minute a track; MP3 per minute: 96 kbps ~0.7 MB, 128 ~0.96, 192 ~1.4, 320 ~2.4 (one track, a microphone: at most 128, Windows' MP3 encoder takes no higher for mono; two tracks, a meeting: all of them); M4A (AAC) sounds better than MP3 at the same bitrate, 96-192 kbps, mono and stereo alike">
           <option value="wav">Keep recordings as WAV</option><option value="96">Keep as MP3 96 kbps</option>
           <option value="128">Keep as MP3 128 kbps</option><option value="160">Keep as MP3 160 kbps</option>
           <option value="192">Keep as MP3 192 kbps</option><option value="256">Keep as MP3 256 kbps</option>
           <option value="320">Keep as MP3 320 kbps</option>
+          <option value="m4a96">Keep as M4A (AAC) 96 kbps</option><option value="m4a128">Keep as M4A (AAC) 128 kbps</option>
+          <option value="m4a160">Keep as M4A (AAC) 160 kbps</option><option value="m4a192">Keep as M4A (AAC) 192 kbps</option>
         </select>
         <select id="trch" aria-label="Mono or stereo" title="Recordings of one source (the microphone, or a tab's sound): Mono, one channel (half the size); Stereo keeps left and right when the source has them (music, a video; a stereo microphone, recorded then without echo and noise suppression). The text is the same: it is made from the mono mix. The Meetings tab: one mono track per source">
           <option value="mono">Mono</option><option value="stereo">Stereo (when the source has it)</option>
@@ -3700,7 +3702,8 @@ const live = {
         body: JSON.stringify({ name: (meeting ? "Meeting " : "Recording ") + when, language: $("trlang").value, beam_size: +$("trbeam").value,
           terms: $("trterms").value.trim(), tracks: this.stereo ? 1 : this.n, channels: this.stereo ? 2 : 1, rate: this.ctx.sampleRate, kind: tr.kind,
           ...(!$("trmodel").hidden ? { model: $("trmodel").value } : {}),
-          mp3_kbps: $("trkeep").value === "wav" ? 0 : +$("trkeep").value,
+          mp3_kbps: $("trkeep").value === "wav" ? 0 : +$("trkeep").value.replace("m4a", ""),
+          keep: $("trkeep").value.startsWith("m4a") ? "m4a" : "mp3",
           speakers: this.n === 2 && !this.stereo ? ["Me", "Others"] : [""] }) });
       rec = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(rec.error?.message || "HTTP " + r.status);

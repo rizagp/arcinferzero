@@ -498,7 +498,8 @@ class Service {
         sweep.push_back(tid);
         continue;
       }
-      if (m["ext"].str() == "mp3" && m["recording"].as_bool()) fs::remove(e.path() / "source.wav", ec);  // (a WAV a player held)
+      if ((m["ext"].str() == "mp3" || m["ext"].str() == "m4a") && m["recording"].as_bool())
+        fs::remove(e.path() / "source.wav", ec);  // (a WAV a player held)
       if (st == "uploading") {  // (the server stopped during the upload: the browser has let the file go)
         m.set("status", "failed");
         m.set("error", "the upload did not finish before the server stopped");
@@ -859,7 +860,8 @@ class Service {
   // transcript's source.wav) and cut into utterances per track at its pauses; each utterance is transcribed at once
   // (greedy, word timestamps; before the queue's windows) into the draft. Stopping queues the accurate pass over the
   // recording (its options: beam 5 by default; each track alone with its speaker, merged by time), which replaces the
-  // draft; the recording is then kept as MP3 (192 kbps unless mp3_kbps says otherwise; 0: kept as WAV).
+  // draft; the recording is then kept as MP3 (192 kbps unless mp3_kbps says otherwise; 0: kept as WAV), or as AAC
+  // in an .m4a file with keep: "m4a" (mp3_kbps its bitrate then, 96-192).
   //   POST /v1/live                    {name, language, terms, beam_size, tracks: 1 | 2, channels: 1 | 2 (one track
   //                                     in stereo: a tab's sound kept as it plays, transcribed as its mono mix), rate, speakers: [..],
   //                                     mp3_kbps} -> the record (status "live")
@@ -950,7 +952,9 @@ class Service {
       if (in["kind"].str() == "meeting") m.set("kind", "meeting");
       // (0: kept as the WAV it is written as: lossless for a later pass by another model, ~5.5 MB a minute a track)
       const double kbps = in["mp3_kbps"].as_number(192);  // (below 1: what the int cast made 0)
-      m.set("mp3_kbps", kbps < 1 ? 0.0 : (double)(int)std::clamp(kbps, 96.0, 320.0));
+      const bool m4a = in["keep"].str() == "m4a";
+      m.set("mp3_kbps", kbps < 1 ? 0.0 : (double)(int)std::clamp(kbps, 96.0, m4a ? 192.0 : 320.0));
+      if (m4a) m.set("keep", "m4a");
       m.set("marks", Json::array());
       {
         std::lock_guard<std::mutex> lk(lib_mu_);
@@ -1761,22 +1765,24 @@ class Service {
     m.set("elapsed_s", el);
     m.set("x_realtime", el > 0 ? (stopped || !part_err.empty() ? m["done_s"].as_number() : all_s) / el : 0.0);
     save_meta(tid);
-    // a live recording kept as MP3 once transcribed (the WAV it was written as is ~10x larger), unless mp3_kbps is 0
+    // a live recording kept as MP3 (or M4A, keep "m4a") once transcribed (the WAV it was written as is ~10x larger),
+    // unless mp3_kbps is 0
     if (stopped || !part_err.empty() || m["ext"].str() != "wav" || !m["recording"].as_bool()) return;
     const int kbps = (int)m["mp3_kbps"].as_number(192);
+    const std::string kx = m["keep"].str() == "m4a" ? "m4a" : "mp3", KX = kx == "m4a" ? "M4A" : "MP3";
     if (kbps <= 0) return;
     lk.unlock();
     std::string err;
-    bool ok = audio::encode_mp3(src, dir / "source.mp3", kbps, err);
+    bool ok = kx == "m4a" ? audio::encode_m4a(src, dir / "source.m4a", kbps, err) : audio::encode_mp3(src, dir / "source.mp3", kbps, err);
     if (ok) {  // (the WAV goes only for an MP3 as long as it: a short one would lose the rest for good)
-      const double mp3_s = audio::duration_seconds(dir / "source.mp3");
+      const double mp3_s = audio::duration_seconds(dir / ("source." + kx));
       if (std::fabs(mp3_s - r.duration) > std::max(2.0, 0.002 * r.duration)) {
         ok = false;
         char b[96];
-        snprintf(b, sizeof b, "the MP3 is %.1f s long, the recording %.1f s: the WAV is kept", mp3_s, r.duration);
+        snprintf(b, sizeof b, "the %s is %.1f s long, the recording %.1f s: the WAV is kept", KX.c_str(), mp3_s, r.duration);
         err = b;
         std::error_code ec;
-        fs::remove(dir / "source.mp3", ec);
+        fs::remove(dir / ("source." + kx), ec);
       }
     }
     lk.lock();
@@ -1785,9 +1791,9 @@ class Service {
     if (ok) {
       // (the WAV kept kWavKeep for a player reading it, ?f=wav; then deleted by the worker, or at the next start)
       old_wavs_.push_back({src, std::chrono::steady_clock::now()});
-      it->second.set("ext", "mp3");
+      it->second.set("ext", kx);
       std::error_code ec2;
-      it->second.set("size", (double)fs::file_size(dir / "source.mp3", ec2));
+      it->second.set("size", (double)fs::file_size(dir / ("source." + kx), ec2));
     } else {
       it->second.set("mp3_error", err);
     }

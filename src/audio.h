@@ -698,9 +698,12 @@ inline std::vector<std::vector<float>> decode_16k_wav_channels(const std::filesy
   return out;
 }
 
-// a 16-bit PCM WAV as MP3 (Windows' own MP3 encoder through Media Foundation; 32 / 44.1 / 48 kHz): kbps 96-320.
-// False and the reason when it cannot (the WAV is then kept)
-inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::path& mp3, int kbps, std::string& err) {
+// a 16-bit PCM WAV as MP3 or as AAC in an .m4a file (Windows' own encoders through Media Foundation, on the CPU:
+// audio encoding is sequential and light, and the GPU has no audio unit). MP3: 32 / 44.1 / 48 kHz, kbps 96-320 (one
+// channel at most 128); AAC: 44.1 / 48 kHz, kbps 96 / 128 / 160 / 192. A bitrate the encoder refuses: the next lower
+// one. False and the reason when it cannot (the WAV is then kept)
+inline bool encode_compressed(const std::filesystem::path& wav, const std::filesystem::path& mp3, int kbps, bool aac,
+                              std::string& err) {
   try {
     std::ifstream f(wav, std::ios::binary);
     if (!f) throw std::runtime_error("cannot read " + wav.string());
@@ -718,19 +721,21 @@ inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::
     // (the encoder takes only some bitrates for a channel count: mono at 192 kbps is refused; the next lower one tried)
     ComPtr<IMFSinkWriter> sw;
     DWORD stream = 0;
-    const int top = std::clamp(kbps, 96, 320);
+    const int top = std::clamp(kbps, 96, aac ? 192 : 320);
     bool set = false;
     for (int b : {top, 160, 128, 112, 96}) {
+      if (aac && b == 112) continue;  // (AAC: 96 / 128 / 160 / 192 only)
       if (b > top) continue;
       if (sw.p) { sw.p->Release(); sw.p = nullptr; }
       ComPtr<IMFMediaType> out, in;
       mf_check(MFCreateSinkWriterFromURL(std::filesystem::absolute(mp3).wstring().c_str(), nullptr, nullptr, &sw), "MP3 file");
       mf_check(MFCreateMediaType(&out), "media type");
       out->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-      out->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_MP3);
+      out->SetGUID(MF_MT_SUBTYPE, aac ? MFAudioFormat_AAC : MFAudioFormat_MP3);
       out->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)w.rate);
       out->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, (UINT32)w.ch);
       out->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)b * 1000 / 8);
+      if (aac) out->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);  // (the AAC encoder's output type asks for it)
       if (FAILED(sw->AddStream(out.p, &stream))) continue;
       mf_check(MFCreateMediaType(&in), "media type");
       in->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
@@ -743,8 +748,9 @@ inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::
       in->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
       if (SUCCEEDED(sw->SetInputMediaType(stream, in.p, nullptr))) { set = true; break; }
     }
-    if (!set) throw std::runtime_error("the MP3 encoder takes no bitrate for " + std::to_string(w.ch) + " channel(s) at " +
-                                       std::to_string(w.rate) + " Hz (32 / 44.1 / 48 kHz)");
+    if (!set) throw std::runtime_error(std::string(aac ? "the AAC encoder" : "the MP3 encoder") + " takes no bitrate for " +
+                                       std::to_string(w.ch) + " channel(s) at " + std::to_string(w.rate) + " Hz (" +
+                                       (aac ? "44.1 / 48 kHz" : "32 / 44.1 / 48 kHz") + ")");
     mf_check(sw->BeginWriting(), "begin");
     const size_t frame = (size_t)2 * w.ch, block = (size_t)w.rate / 2;  // (half a second a sample)
     std::vector<uint8_t> raw(frame * block);
@@ -778,6 +784,12 @@ inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::
     std::filesystem::remove(mp3, ec);
     return false;
   }
+}
+inline bool encode_mp3(const std::filesystem::path& wav, const std::filesystem::path& mp3, int kbps, std::string& err) {
+  return encode_compressed(wav, mp3, kbps, false, err);
+}
+inline bool encode_m4a(const std::filesystem::path& wav, const std::filesystem::path& m4a, int kbps, std::string& err) {
+  return encode_compressed(wav, m4a, kbps, true, err);
 }
 
 }  // namespace audio
