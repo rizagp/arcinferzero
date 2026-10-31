@@ -23,7 +23,18 @@
     if (!messages.is_array() || messages.size() == 0) return rs.send(400, "application/json", err("messages required").dump());
     const std::string folder = prompt_folder(messages);  // Pi: the project folder (its system-prompt cache)
     Json tools = body["tools"];
-    if (body["tool_choice"].str() == "none") tools = Json();
+    // tool_choice "none": the tools stay in the prompt (it is the same as the turns before, so the prompt cache holds:
+    // the web UI's last answer after its tool rounds processed the whole chat again without them), and the call's
+    // open marker is never drawn (no_call_tok, below)
+    const bool no_calls = body["tool_choice"].str() == "none";
+    int no_call_tok = -1;
+    if (no_calls && tools.is_array() && tools.size()) {
+      const std::vector<int> o = tok_.encode(gemma_ ? "<|tool_call>" : "<tool_call>", true);
+      if (o.size() == 1) no_call_tok = o[0];
+      else tools = Json();  // (not one token: the tools left out, as before)
+    } else if (no_calls) {
+      tools = Json();
+    }
     // tool_choice "required" / a named function: the answer starts with a tool call (to that function)
     std::string force_tool;
     bool force_tool_on = false;
@@ -50,7 +61,7 @@
     std::unique_ptr<tcon::ToolCon> tcc;
     {
       const char* e = getenv("ARC_TOOL_CONSTRAINT");
-      if (tools.is_array() && tools.size() && !(e && std::string(e) == "0")) {
+      if (tools.is_array() && tools.size() && !no_calls && !(e && std::string(e) == "0")) {
         if (gemma_) tcc = std::make_unique<tcon::GemmaCall>(tools);
         else tcc = std::make_unique<tcon::QwenCall>(tools);
         if (tcc && tcc->empty()) tcc.reset();
@@ -598,6 +609,7 @@
         t = forced.front();
         forced.erase(forced.begin());
       } else {
+        if (no_call_tok >= 0 && (size_t)no_call_tok < logits.size()) logits[(size_t)no_call_tok] = -1e30f;  // (tool_choice none; not -INFINITY: fast math)
         // the answer has begun: no reasoning, or the reasoning block is closed
         const size_t tclose = co.enable_thinking ? text.find(think_close_) : 0;
         const bool answering = tclose != std::string::npos;
@@ -684,7 +696,10 @@
       text += tok_.piece(t);
       if (tcc) {  // the open tool call, followed piece by piece (the markers are single tokens; a little slack anyway)
         const size_t from = before > 16 ? before - 16 : 0;
-        if (call_from == std::string::npos) {
+        // (Qwen: a <tool_call> its reasoning writes is no call: taken as one, the answer after </think> failed the
+        //  constraint at every token, each a scan of the whole vocabulary, and the real call went unchecked)
+        const bool thinking = !gemma_ && co.enable_thinking && text.find(think_close_) == std::string::npos;
+        if (call_from == std::string::npos && !thinking) {
           const size_t o = text.find(tcc->open(), from);
           if (o != std::string::npos) call_from = o + strlen(tcc->open());
         }

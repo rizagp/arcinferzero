@@ -815,6 +815,8 @@ class Server {
 //                    a document the model wrote: its source (to make a corrected version); images, audio: metadata.
 //                    A PDF's scanned pages (images without a text layer) read by pages: the loaded model transcribes
 //                    them from their images first, up to 4 a call, when it has an image encoder (FileVision)
+//   digest_file {file_id, focus, chat_id}: a document longer than one read, read part by part by the loaded model
+//                    (its own requests), notes of every part saved as "<name> (notes).md" and returned
 //   search_file {query, file_id, chat_id, top_k}: the passages of a document (or of every document of the chat)
 //                    that fit the query best (BM25 over chunks of ~2,400 characters), with their section and pages
 //   read_file / search_file also take "chat:<id>" (another chat: a section per exchange) and "transcript:<id>"
@@ -836,6 +838,8 @@ class Server {
 struct FileVision {
   std::function<std::string()> model;  // the loaded model's name when it has an image encoder, else ""
   std::function<std::string(const std::string& bytes, const std::string& mime)> see;  // an image -> its text
+  // a prompt of words -> the loaded model's answer (no thinking, up to max_tokens; digest_file)
+  std::function<std::string(const std::string& prompt, int max_tokens)> ask;
 };
 static constexpr const char* kTranscribe =
     "Transcribe all the text on this scanned page exactly as written, in reading order and in its own language. Use "
@@ -924,10 +928,14 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
     if (rq.path == "/v1/tools/list_files") {
       const std::string kind = files::lower(a["kind"].str()), q = files::lower(a["name_contains"].str()), chat = a["chat_id"].str();
       const double hours = a["within_hours"].as_number(0);
-      const int limit = (int)std::clamp(a["limit"].as_number(50), 1.0, 200.0);
+      // (20 by default, and no more than one read of the model's context: 50 entries of ~170 characters stayed in
+      //  every later prompt of a small context)
+      const int limit = (int)std::clamp(a["limit"].as_number(20), 1.0, 200.0);
       const auto uses = st.uses();
       const int64_t now = (int64_t)std::time(nullptr);
       Json d = Json::array();
+      size_t given = 0;
+      bool more = false;
       for (const files::Info& i : st.list()) {
         if (!kind.empty() && i.kind != kind) continue;
         if (!q.empty() && files::lower(i.name).find(q) == std::string::npos) continue;
@@ -954,12 +962,15 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         std::string src;
         j.set("written_by_model", st.source(i.id, src));
         j.set("chats", (double)std::max(held.size(), u == uses.end() ? size_t(0) : u->second.size()));
+        const size_t sz = j.dump().size();
+        if ((int)d.size() >= limit || (d.size() && given + sz > files::read_budget(ctx))) { more = true; break; }
+        given += sz;
         d.push(j);
-        if ((int)d.size() >= limit) break;
       }
       Json r = Json::object();
       r.set("files", d);
       r.set("count", (double)d.size());
+      if (more) r.set("note", "more files than these (newest first): narrow with name_contains, kind or within_hours, or a larger limit");
       return reply(200, r);
     }
     // the call's file: by its id, or by its name (models often pass the name they see: the newest file of that
@@ -1078,6 +1089,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       if (doc::trim(q).empty()) {
         const size_t limit = (size_t)std::clamp(a["limit"].as_number(20), 1.0, 100.0);
         Json d = Json::array();
+        size_t given = 0;  // (no more than one read of the model's context, as list_files)
         for (const C& c : cs) {
           if (d.size() >= limit) break;
           files::VirtualDoc v;
@@ -1088,6 +1100,9 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
           if (files::virtual_doc("chat:" + c.id, v)) j.set("exchanges", (double)v.parts);
           if (!c.model.empty()) j.set("model", c.model);
           if (!c.snippet.empty()) j.set("snippet", c.snippet);
+          const size_t sz = j.dump().size();
+          if (d.size() && given + sz > files::read_budget(ctx)) break;
+          given += sz;
           d.push(j);
         }
         Json r = Json::object();
@@ -1130,6 +1145,220 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       r.set("results", res);
       r.set("chats_searched", (double)cs.size());
       if (res.size() == 0) r.set("note", "no exchange has these words: try other words, or search_chats without a query (the chats, newest first)");
+      return reply(200, r);
+    }
+    // digest_file {file_id, focus, chat_id}: a document longer than the model's context, read for it part by part. The
+    // model's tool rounds ran out on such a document read in parts (2026-10-31), and a chat's compaction keeps no read
+    // position; so the server takes the turns: each part (as much as the context takes, at paragraph ends) goes to the
+    // loaded model as a request of its own, "notes of this part" (focus: what the user asked); the notes go into
+    // "<name> (notes).md" in the chat's folder (a later call with the same file and focus reads them from there, an
+    // unfinished one goes on from its last part), and come back as the result, combined again while they are longer
+    // than one read. A document that fits one read comes whole, as read_file gives it.
+    if (rq.path == "/v1/tools/digest_file") {
+      files::Info i;
+      if (files::is_virtual(a["file_id"].str())) return fail(400, "digest_file reads saved files; a chat or transcript: read_file");
+      if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+      auto ix = files::doc_index(i);
+      if (!ix) return fail(500, "cannot read the file");
+      if (ix->doc.paras.empty()) return fail(400, ix->doc.note.empty() ? "no text in the file" : ix->doc.note);
+      const size_t n = ix->doc.paras.size(), budget = files::read_budget(ctx);
+      const std::string focus = a["focus"].str().substr(0, 600);
+      Json r = Json::object();
+      r.set("file_id", i.id);
+      r.set("filename", i.name);
+      const std::string all = ix->text(0, n);
+      r.set("total_tokens", (double)files::tokens_of(all.size()));
+      if (ctx > 0 && all.size() <= budget) {
+        r.set("content", all);
+        r.set("note", "the whole document (it fits your context): no notes needed");
+        return reply(200, r);
+      }
+      if (!vis.ask) return fail(503, "no model is loaded to read the parts");
+      // the parts: up to ~45 % of the context each (characters ~3.5 a token), ending before a section's heading when
+      // one is in the part's second half (a section whole in one part), else before a page's heading, else at a
+      // paragraph's end; a part that starts inside a section is told which one it goes on with
+      const size_t part = std::clamp<size_t>(ctx > 0 ? (size_t)ctx * 3 / 2 : 24000, 4000, 60000);
+      auto page_head = [&](size_t k) {
+        int x = 0, y = 0;
+        return ix->doc.paras[k].level > 0 && sscanf(ix->doc.paras[k].text.c_str(), "Page %d / %d", &x, &y) == 2;
+      };
+      // a source file has no headings: a paragraph that starts at column 0 (not a closing brace or a comment's end)
+      // begins a top-level definition, Python's def / class, a C / JS function, so a function stays in one part
+      static const std::set<std::string> kCode = {"py", "js", "mjs", "ts", "tsx", "jsx", "c", "cc", "cpp", "cxx", "h", "hpp",
+                                                  "cs", "java", "go", "rs", "rb", "php", "kt", "swift", "ps1", "psm1", "sh",
+                                                  "bash", "lua", "sql", "scala", "dart", "vb", "r", "m", "pl"};
+      const bool code = kCode.count(rdoc::lower_ext(i.name)) > 0;
+      auto top_level = [&](size_t k) {
+        const std::string& t = ix->doc.paras[k].text;
+        return code && !t.empty() && !isspace((unsigned char)t[0]) && t[0] != '}' && t[0] != ')' && t[0] != ']' &&
+               t.rfind("*/", 0) != 0 && t.rfind("end", 0) != 0;
+      };
+      auto section_head = [&](size_t k) { return (ix->doc.paras[k].level > 0 && !page_head(k)) || top_level(k); };
+      std::vector<std::pair<size_t, size_t>> parts;
+      for (size_t from = 0; from < n;) {
+        size_t k = from, sz = 0;
+        while (k < n && (k == from || sz + ix->doc.paras[k].text.size() + 2 <= part)) sz += ix->doc.paras[k++].text.size() + 2;
+        size_t cut = k;
+        if (k < n) {
+          const size_t half = from + (k - from) / 2 + 1;
+          for (bool sec : {true, false}) {
+            size_t j = k;
+            while (j > half && !(sec ? section_head(j) : page_head(j))) --j;
+            if (j > half) { cut = j; break; }
+          }
+        }
+        parts.push_back({from, cut});
+        from = cut;
+      }
+      // each part's text; one paragraph longer than a part (a long function without a blank line, a big table) is
+      // cut at its lines, so no part's prompt goes past the context
+      struct Part { size_t first, last; std::string text; };
+      std::vector<Part> pts;
+      for (const auto& [f, l] : parts) {
+        std::string t = ix->text(f, l);
+        if (t.size() <= part + part / 4) { pts.push_back({f, l, std::move(t)}); continue; }
+        for (size_t at = 0; at < t.size();) {
+          size_t end = std::min(t.size(), at + part);
+          if (end < t.size()) {
+            const size_t nl = t.rfind('\n', end);
+            if (nl != std::string::npos && nl > at + part / 2) end = nl + 1;
+            while (end < t.size() && end > at && ((unsigned char)t[end] & 0xC0) == 0x80) --end;  // (not inside a character)
+          }
+          pts.push_back({f, l, t.substr(at, end - at)});
+          at = end;
+        }
+      }
+      // the section a part goes on with (its heading in a part before), or ""
+      auto continues = [&](size_t f) {
+        if (section_head(f)) return std::string();
+        for (size_t k = f; k-- > 0;)
+          if (section_head(k)) return ix->doc.paras[k].text.substr(0, 120);
+        return std::string();
+      };
+      // a part's pages: a PDF's own, else an OCR .md's "Page N / M" headings
+      auto pages_of = [&](size_t f, size_t l) {
+        int a0 = 0, b0 = 0;
+        for (size_t k = f; k < l; ++k) {
+          int p = 0, m = 0;
+          if (ix->doc.pages > 1) p = ix->doc.paras[k].page;
+          else if (ix->doc.paras[k].level && sscanf(ix->doc.paras[k].text.c_str(), "Page %d / %d", &p, &m) < 1) p = 0;
+          if (p <= 0) continue;
+          if (!a0) a0 = p;
+          b0 = p;
+        }
+        return !a0 ? std::string() : a0 == b0 ? std::to_string(a0) : std::to_string(a0) + "-" + std::to_string(b0);
+      };
+      // the notes file "<file name> (notes).md" (the extension kept: report.pdf and report.docx have their own): its
+      // first line names the file's id, the part size and the focus it was made with. Finished notes of the same file
+      // are used whatever the focus or part size (a later turn's focus in other words, a context that changed: the
+      // notes were thrown away and the document read again, minutes); unfinished ones go on with the same part size
+      const std::string chat = a["chat_id"].str();
+      std::filesystem::path notes_path;
+      if (files::valid_id(chat)) notes_path = std::filesystem::path(st.chat_dir_make(chat)) / (i.name + " (notes).md");
+      const std::string same_file = "<!-- digest of " + i.id + ",", same_parts = same_file + " parts of " + std::to_string(part) + " characters,";
+      std::string mark = same_parts + " focus: ";
+      for (char c : focus) mark += c == '\n' ? ' ' : c == '-' ? '_' : c;  // (no "-->" inside the comment)
+      mark += " -->";
+      std::string notes, old;
+      size_t done = 0, done_parts = pts.size();
+      bool reused = false;
+      if (!notes_path.empty() && files::Store::read(notes_path.string(), old) && old.rfind(same_file, 0) == 0) {
+        const size_t eol = old.find("-->");
+        const bool finished = old.find("\n<!-- done -->") != std::string::npos;
+        if (finished || old.rfind(same_parts, 0) == 0) {
+          notes = eol == std::string::npos ? std::string() : old.substr(eol + 3);
+          for (size_t p = notes.find("\n## Part "); p != std::string::npos; p = notes.find("\n## Part ", p + 1)) ++done;
+          if (finished) { done_parts = done; done = pts.size(); reused = true; }
+        }
+      }
+      if (!notes_path.empty() && notes.empty()) std::ofstream(notes_path, std::ios::binary | std::ios::trunc) << mark;
+      const int max_tok = std::clamp(ctx > 0 ? ctx / 8 : 1024, 300, 1500);
+      const auto t0 = std::chrono::steady_clock::now();
+      for (size_t p = done; p < pts.size(); ++p) {
+        if (rs.client_gone()) return;  // (the web UI's Stop: the notes so far stay, the next call goes on)
+        const std::string pg = pages_of(pts[p].first, pts[p].last);
+        const std::string head = "Part " + std::to_string(p + 1) + " of " + std::to_string(pts.size()) + (pg.empty() ? "" : " (pages " + pg + ")");
+        // (a piece of one long paragraph after the first: it goes on with that paragraph)
+        const std::string sec = p > 0 && pts[p].first == pts[p - 1].first ? ix->doc.paras[pts[p].first].text.substr(0, 120)
+                                                                           : continues(pts[p].first);
+        const std::string prompt =
+            "Here is " + head + " of the document \"" + i.name + "\".\n" +
+            (sec.empty() || code ? "" : "It begins in the middle of the section \"" + sec + "\", which started in the part "
+                                        "before: note its points here as that section's.\n") +
+            (sec.empty() || !code ? "" : "It begins inside the definition that starts with \"" + sec.substr(0, sec.find('\n')) +
+                                         "\", in the part before.\n") +
+            (focus.empty() ? "" : "What the user wants from the whole document: " + focus + "\n") +
+            (code ? "Write notes of this part of the source file, to answer from later without the file: each function, "
+                    "class or type with its signature and what it does, the important constants and settings, what it "
+                    "calls in other parts, and whatever bears on what the user wants. Bullet points, at most about 350 "
+                    "words. Only what this part holds: no introduction, no conclusion."
+                  : "Write notes of this part, to answer from later without the document: its main points, facts, numbers, "
+                    "names, dates, decisions, requirements, and whatever bears on what the user wants. Bullet points, in "
+                    "the document's own language, at most about 350 words. Only what this part says: no introduction, no "
+                    "conclusion.") +
+            "\n\n---\n\n" + pts[p].text;
+        std::string got;
+        try {
+          got = vis.ask(prompt, max_tok);
+        } catch (const std::exception& e) {
+          return fail(502, "part " + std::to_string(p + 1) + ": " + e.what() + " (the notes so far are kept: call again to go on)");
+        }
+        const std::string piece = "\n\n## " + head + "\n\n" + got;
+        notes += piece;
+        if (!notes_path.empty()) std::ofstream(notes_path, std::ios::binary | std::ios::app) << piece;
+        fprintf(stderr, "digest_file: %s, %s read (%.0f s so far)\n", i.name.c_str(), head.c_str(),
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+      }
+      if (!notes_path.empty() && notes.find("\n<!-- done -->") == std::string::npos) {
+        std::ofstream(notes_path, std::ios::binary | std::ios::app) << "\n\n<!-- done -->\n";
+        st.refresh();  // (in the Files panel)
+      }
+      // notes longer than one read: combined again, a few parts' notes at a time
+      std::string out = notes;
+      const size_t dn = out.find("\n<!-- done -->");
+      if (dn != std::string::npos) out.erase(dn);
+      // (until they fit one read; a level that does not shrink them ends it, and what is still too long is cut below)
+      for (int level = 0; ctx > 0 && out.size() > budget && level < 6; ++level) {
+        std::string next;
+        for (size_t at = 0; at < out.size();) {
+          size_t end = std::min(out.size(), at + part);
+          if (end < out.size()) {
+            const size_t cut = out.rfind("\n## ", end);
+            if (cut != std::string::npos && cut > at) end = cut;
+          }
+          if (rs.client_gone()) return;
+          try {
+            next += "\n\n" + vis.ask("Combine these notes of the document \"" + i.name + "\" into shorter notes, keeping " +
+                                         "every fact, number and name that matters" +
+                                         (focus.empty() ? "" : " (what the user wants: " + focus + ")") +
+                                         ", and the part / page labels. Bullet points, in the notes' own language.\n\n---\n\n" +
+                                         out.substr(at, end - at),
+                                     max_tok);
+          } catch (const std::exception& e) {
+            return fail(502, std::string("combining the notes: ") + e.what());
+          }
+          at = end;
+        }
+        const bool shrank = next.size() < out.size() * 9 / 10;
+        out = next;
+        if (!shrank) break;
+      }
+      std::string cut_note;
+      if (ctx > 0 && out.size() > budget) {  // (never past one read: the result goes into the model's context)
+        size_t end = budget;
+        while (end > 0 && ((unsigned char)out[end] & 0xC0) == 0x80) --end;
+        out.resize(end);
+        cut_note = "; the notes are cut here to fit your context" + std::string(notes_path.empty() ? "" : ", all of them are in " +
+                   notes_path.filename().string() + " (read_file it by offset)");
+      }
+      r.set("parts", (double)(reused ? done_parts : pts.size()));
+      if (!notes_path.empty()) r.set("notes_file", notes_path.filename().string());
+      r.set("content", out);
+      r.set("note", "notes of every part of the document, made from its whole text" +
+                        std::string(reused ? " (from the notes file made before: no part read again)"
+                                    : done ? " (" + std::to_string(done) + " part(s) from the notes file made before)" : "") +
+                        ": answer from them, say which part / pages a point comes from; for exact wording read_file those pages" +
+                        cut_note);
       return reply(200, r);
     }
     if (rq.path == "/v1/tools/read_file") {
@@ -1292,15 +1521,18 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         // a long document: its outline first; one the model's context takes in a single read comes whole (the OCR
         // .md of 56 pages, 25K tokens, for a 262K-token Qwen 3.5 4B: section after section ran out of tool rounds)
         whole = fits(data);
-        if (data.size() > files::kInlineChars && !whole && !a["offset"].is_number()) {
+        // (the outline also for a text under kInlineChars that one read cannot hold: a small context read it in parts
+        //  without knowing its sections, 4 rounds for a 20K-character document)
+        if ((data.size() > files::kInlineChars || (ctx > 0 && data.size() > files::read_budget(ctx))) && !whole &&
+            !a["offset"].is_number()) {
           r.set("total_tokens", (double)files::tokens_of(data.size()));
           r.set("outline", files::outline_json(*ix));
           size_t cut = std::min(data.size(), (size_t)2000);
           while (cut < data.size() && cut > 0 && ((unsigned char)data[cut] & 0xC0) == 0x80) --cut;
           r.set("beginning", data.substr(0, cut));
           r.set("note", "a long document: read the sections the question needs (read_file with section: N, or pages: \"A-B\" "
-                        "for a range of pages in one call), or find passages with search_file; offset: 0 reads it from the "
-                        "start in parts");
+                        "for a range of pages in one call), or find passages with search_file; for all of it (a summary, "
+                        "a review): digest_file, which has you read it part by part and returns notes of every part");
           return reply(200, r);
         }
       }
@@ -1322,7 +1554,8 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         r.set("next_offset", (double)end);
         r.set("note", "a part of " + std::to_string(files::tokens_of(data.size())) + " tokens" +
                           (mx < asked ? " (as much as the model's context takes at once)" : "") +
-                          ": read on with offset: " + std::to_string(end) + " only when the question needs the rest");
+                          ": read on with offset: " + std::to_string(end) + " only when the question needs the rest (all of "
+                          "it, for a summary or a review: digest_file)");
       }
       return reply(200, r);
     }
@@ -1973,7 +2206,7 @@ int main(int argc, char** argv) {
       return files_api(rq, rs);
     if (rq.method == "POST" && (rq.path == "/v1/tools/create_file" || rq.path == "/v1/tools/list_files" ||
                                 rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/search_file" ||
-                                rq.path == "/v1/tools/search_chats" ||
+                                rq.path == "/v1/tools/search_chats" || rq.path == "/v1/tools/digest_file" ||
                                 rq.path == "/v1/tools/run_command")) {
       int ctx = 0;  // (the loaded model's context; not waited for during a model switch: then the usual limits)
       {
@@ -2017,6 +2250,40 @@ int main(int argc, char** argv) {
         rs.on_send = [&](int st, const std::string& b) { status = st; out = b; };
         {
           struct Unhook { HttpResponse& r; ~Unhook() { r.on_send = nullptr; } } unhook{rs};  // (also on a throw)
+          dispatch(rq2, rs);
+        }
+        Json j;
+        Json::try_parse(out, j);
+        if (status != 200) throw std::runtime_error(j["error"]["message"].str("HTTP " + std::to_string(status)));
+        return j["choices"][0]["message"]["content"].str();
+      };
+      vis.ask = [&](const std::string& prompt, int max_tokens) {
+        std::string alias;
+        {
+          std::shared_lock<std::shared_mutex> lk(swap_mu);
+          if (cur) alias = cur->alias;
+        }
+        Json msg = Json::object(), msgs = Json::array(), kw = Json::object(), body = Json::object();
+        msg.set("role", "user");
+        msg.set("content", prompt);
+        msgs.push(msg);
+        kw.set("enable_thinking", false);
+        body.set("model", alias);
+        body.set("messages", msgs);
+        body.set("temperature", 0.2);
+        body.set("max_tokens", max_tokens);
+        body.set("stream", false);
+        body.set("chat_template_kwargs", kw);
+        HttpRequest rq2 = rq;
+        rq2.method = "POST";
+        rq2.path = "/v1/chat/completions";
+        rq2.query.clear();
+        rq2.body = body.dump();
+        int status = 0;
+        std::string out;
+        rs.on_send = [&](int st, const std::string& b) { status = st; out = b; };
+        {
+          struct Unhook { HttpResponse& r; ~Unhook() { r.on_send = nullptr; } } unhook{rs};
           dispatch(rq2, rs);
         }
         Json j;

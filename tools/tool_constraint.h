@@ -326,7 +326,25 @@ class QwenCall : public ToolCon {
       static const Json any = Json::object();
       const Json& vs = props[key].is_null() ? (addl.is_object() ? addl : any) : props[key];
       const bool is_str = vs["type"].is_string() && vs["type"].str() == "string";
+      // a string with an enum: one of its values, raw text as any string here (it was any text: list_files'
+      // scope "this chat" passed, and the server took it as "all")
+      std::vector<std::string> opts;
+      if (is_str)
+        for (const Json& o : vs["enum"].items())
+          if (o.is_string()) opts.push_back(o.str());
       if (e == std::string::npos) {
+        if (!opts.empty()) {
+          const std::string sofar = s.substr(i);
+          static const std::string closing = "\n" + kend;
+          for (const std::string& o : opts) {
+            if (o.compare(0, sofar.size(), sofar) == 0) return PARTIAL;  // (the value being written)
+            if (sofar.compare(0, o.size(), o) == 0) {  // (written, its </parameter> coming)
+              const std::string tail = sofar.substr(o.size());
+              if (closing.compare(0, tail.size(), tail) == 0 || kend.compare(0, tail.size(), tail) == 0) return PARTIAL;
+            }
+          }
+          return FAIL;
+        }
         if (is_str || !vs.has("type")) return PARTIAL;
         // a JSON value so far, possibly followed by the start of "\n</parameter>"
         const std::string v = s.substr(i);
@@ -340,6 +358,7 @@ class QwenCall : public ToolCon {
       }
       std::string v = s.substr(i, e - i);
       if (!v.empty() && v.back() == '\n') v.pop_back();
+      if (!opts.empty() && std::find(opts.begin(), opts.end(), v) == opts.end()) return FAIL;
       // (checked as a value that has ended: a number at the text's end is PARTIAL to jcon, "12" may become "123", which
       //  refused every token after an integer's </parameter> to the call's end, each draw a scan of the whole
       //  vocabulary: 7 tokens of every read_file with a section, Qwen 3.5 4B's tool calls at ~14 tok/s instead of ~18)

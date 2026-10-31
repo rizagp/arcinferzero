@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-10-31 (late night): digest_file, tool-call fixes from an audit, a shorter prompt
+
+- **`digest_file {file_id, focus}`** (Files on): a document longer than one read, for all of it (a summary, a review,
+  its weak points). The server reads it part by part with the loaded model, each part a request of its own (no
+  compaction, no tool rounds used), and returns notes of every part with their pages.
+  - Parts end before a section's heading (a function's start in source files), else a page's heading, else a
+    paragraph's end; a paragraph longer than a part is cut at its lines; a part that starts inside a section is
+    told which one it goes on with.
+  - The notes are saved as `<name> (notes).md` in the chat's files: a later call reads them at once (whatever its
+    focus), an unfinished one goes on from its last part (Stop keeps the notes so far).
+  - Notes longer than one read are combined again until they fit, and never come back longer than one read.
+  - Checked with Qwen3.5 4B at 16K context: README.md (57 KB) 3 parts in 177 s; `tools/server_ocr.h` (30 KB) 3 parts in
+    85-92 s; the same call again 0 s.
+- **Fixed** (an audit of the tool-call path):
+  - Qwen: a `<tool_call>` written in the reasoning was taken as an open call, so after `</think>` every token failed
+    the constraint (a scan of the whole vocabulary each) and the real call went unchecked.
+  - Qwen: string parameters with an `enum` (list_files' `scope` / `kind`, create_file's `page`, terminal_panel's
+    `action`) took any text; now one of their values.
+  - `tool_choice: "none"` keeps the tools in the prompt and only stops the call's open marker, so the web UI's last
+    answer after 8 tool rounds no longer processes the whole chat again (the prompt is the same 2,680 tokens; three
+    tries answered in words).
+  - A chat answer that no longer fits in the middle of its tool rounds shortens its own earlier rounds' results
+    before it gives up (a compaction keeps them).
+  - `list_files` 20 files by default and `search_chats` without a query: at most one read of the context.
+  - `read_file`: the outline for any text one read cannot hold (it was only over 24,000 characters), and its parts
+    point to `digest_file`.
+- **Shorter tool texts:** what a system text and a tool's description both said is said once (the sheet and slide
+  layout, the terminal's session rules, digest_file's use), and two texts that disagreed on who allows a command now
+  agree. The prompt with every tool on: 2,870 -> 2,680 tokens (Files alone 2,132 -> 1,995).
+
 ## 2026-10-31 (night): reading an OCR .md with a chat model
 
 - **`read_file` reads a document whole** when the model's context takes it in one read (`files::read_budget`) and

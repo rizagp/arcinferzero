@@ -354,10 +354,14 @@ While the server is running:
   PPTX (one heading per slide, with its speaker notes), text, Markdown, CSV; "read all the files I uploaded today" works; a spreadsheet reads as one heading per sheet and one
   line per row, "Nama: Budi | Nilai: 80" when it has a header row, dates as yyyy-mm-dd, formulas as their values) and write files (`create_file`: DOCX, PDF, DOC, RTF and XLSX made from Markdown; any
   text format, such as HTML, SVG, CSS, JS, Python, JSON, CSV or TXT, saved as written; a saved HTML / SVG file's card
-  opens the page sandboxed; binary formats such as PPTX, PNG or ZIP are refused). A **long document** (more
-  than ~6K tokens, e.g. a report of 100+ pages) is not put into the prompt whole, which would take minutes: the model
-  gets its outline (chapters with pages) and reads the chapters or pages the question needs, or searches it
-  (`search_file`: the passages with the question's words, with their pages), and says where its answer comes from.
+  opens the page sandboxed; binary formats such as PPTX, PNG or ZIP are refused). A document the model's context
+  takes in one read (about a sixth of it: ~40K tokens for Qwen 3.5 4B's 262K) comes whole. A **longer document** gets
+  its outline (chapters with pages): the model reads the chapters or pages the question needs (`pages: "1-20"` in one
+  call), or searches it (`search_file`: the passages with the question's words, with their pages), and says where its
+  answer comes from. For all of it (a summary, a review) **`digest_file`** has the server read it part by part with
+  the loaded model, each section or function kept whole, and returns notes of every part with their pages; the notes
+  are saved in the chat's files as `<name> (notes).md`, so a later question reads them at once (a 57 KB README with a
+  16K context: 3 parts, 3 minutes on Qwen 3.5 4B).
   **Scanned PDFs** (pages that are images, without text) are read by the loaded model when it sees images (Qwen 3.5
   4B / 9B, Gemma 4 E4B / 12B / 26B with their mmproj): `read_file` with `pages` has it transcribe those pages from
   their images first, up to 4 a call (10-60 s a page: ~1,000 image tokens, then the text), and the text is kept with

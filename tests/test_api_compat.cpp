@@ -223,6 +223,17 @@ int main() {
       expect(qc.check("\n<function=read>\n<parameter=path>\nf\n</parameter>\n<parameter=offset>\n1.5\n</parameter>") == jcon::FAIL,
              "qwen call: not an integer, refused at </parameter>");
     }
+    {  // (a string enum: one of its values; any text passed before, 2026-10-31)
+      const std::string qe = "\n<function=browser_navigate>\n<parameter=action>\nreload\n</parameter>\n</function>\n</tool_call>";
+      bool qen = true;
+      for (size_t n = 0; n < qe.size(); ++n) qen = qen && qc.check(qe.substr(0, n)) == jcon::PARTIAL;
+      expect(qen && qc.check(qe) == jcon::DONE, "qwen call: an enum value, every prefix partial");
+      expect(qc.check("\n<function=browser_navigate>\n<parameter=action>\nrelo") == jcon::PARTIAL &&
+                 qc.check("\n<function=browser_navigate>\n<parameter=action>\nrefresh") == jcon::FAIL &&
+                 qc.check("\n<function=browser_navigate>\n<parameter=action>\nreloadx") == jcon::FAIL &&
+                 qc.check("\n<function=browser_navigate>\n<parameter=action>\nrel\n</parameter>") == jcon::FAIL,
+             "qwen call: string enums enforced");
+    }
     expect(qc.check("\n<function=xyz>") == jcon::FAIL && qc.check("\n<function=re") == jcon::PARTIAL &&
                qc.check("\n<function=read>\n<parameter=nope>") == jcon::FAIL, "qwen call: only the request's tools and keys");
     expect(qc.check("\n<function=read>\n<parameter=path>\nline 1\n<b>{x}</b> \"q\"\n</parameter>\n</function>\n</tool_call>") == jcon::DONE &&
