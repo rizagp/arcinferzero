@@ -266,7 +266,8 @@ library's files take up to 6 hours, or this when it is more); `arc-server -Whisp
   (Qwen3-ASR, Whisper when Qwen3-ASR is off) when the loaded model does not hear audio, or with `"speech": "whisper"`; `"speech": "model"` keeps
   it as audio for Gemma 4 E4B / 12B. A long transcript (12,000+ characters) goes in as a text file (a document).
 - **Live recordings** (the Transcripts tab's Live, the Meetings tab): `POST /v1/live` `{name, language, terms,
-  beam_size, tracks: 1 | 2, rate, speakers, kind, mp3_kbps}` -> a transcript record with status `live`;
+  beam_size, tracks: 1 | 2, channels: 1 | 2 (one track in stereo), rate, speakers, kind, mp3_kbps, keep: "mp3" |
+  "m4a"}` -> a transcript record with status `live`;
   `POST /v1/live/<id>/audio?since=N` 16-bit PCM, the tracks interleaved -> `{segments, partial, count, heard_s,
   pending}`; `POST /v1/live/<id>/mark` `{t}`; `POST /v1/live/<id>/stop` (the accurate pass is queued, then the
   recording becomes MP3). `kind: "meeting"` puts a transcript in the Meetings tab; `PUT /v1/transcripts/<id>`
@@ -360,5 +361,12 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 - Recordings are kept after their transcript, as MP3 (2026-10-27): WAV while recording (nothing lost in a crash),
   converted to MP3 with Windows' Media Foundation encoder after the accurate pass, at 192 kbps by default (~86 MB per
   hour per track), configurable: Settings in the web UI, `recorder.json`, `arc-transcribe --mp3-kbps` (96-320 kbps,
-  or keep the WAV). 192 kbps needs MPEG-1 Layer III (32 / 44.1 / 48 kHz; 16 kHz stops at 160 kbps): the recording keeps the
+  or keep the WAV). Since 2026-10-31:
+  - the Transcripts tab's format menu: WAV, MP3 96 / 128 / 160 / 192 / 256 / 320 kbps, or M4A (AAC, Windows' encoder)
+    96 / 128 / 160 / 192 kbps. AAC sounds better at the same bitrate, and one track takes up to 192 kbps (MP3 up to
+    128: higher choices give 128);
+  - its Mono / Stereo choice: Stereo keeps left and right of one source (a tab's music or video; a stereo
+    microphone, asked for without the browser's echo and noise suppression), and the transcript is made from its mono
+    mix;
+  - the Meetings tab keeps one mono track per source. 192 kbps needs MPEG-1 Layer III (32 / 44.1 / 48 kHz; 16 kHz stops at 160 kbps): the recording keeps the
   device's own rate (48 kHz), Whisper resamples it to 16 kHz.

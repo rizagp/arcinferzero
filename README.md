@@ -77,6 +77,7 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 - Results and the story of the build: [docs/review.md](docs/review.md)
 - Speed by date, long contexts, the 4-bit V cache: [docs/speed-progress.md](docs/speed-progress.md)
 - The NPU next to the GPU for prompts (`--npu on`): [docs/npu-experiment.md](docs/npu-experiment.md)
+- One model over several GPUs (`runz --gpus N`, dense Qwen): [docs/multi-gpu.md](docs/multi-gpu.md)
 - arcinferzero development log: [docs/archive/arcinferzero-log.md](docs/archive/arcinferzero-log.md)
 - Speech to text: [docs/qwen3-asr.md](docs/qwen3-asr.md) (the default model), [docs/whisper-native.md](docs/whisper-native.md)
   (Whisper, transcripts, meetings; its status: [docs/whisper-native-status.md](docs/whisper-native-status.md))
@@ -368,6 +369,9 @@ test uses port 8091 and needs the GPU memory.
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.arcinferzero\models, model-dirs.txt), as JSON
 ```
 
+- **Speech to text only**: `serverz -m none` (`arc-server start -Model none`, the launcher's **Speech only**
+  button) loads Qwen3-ASR alone (~3.2 GB of GPU memory; `--whisper auto` adds Whisper) for the Transcripts tab and
+  `POST /v1/audio/transcriptions`. A chat model loads later, when a chat asks for one.
 - Web UI: http://127.0.0.1:8080/: chats with images, audio and files (one folder per chat, kept by the server),
   voice messages and **Talk**, web search, documents the model reads and writes, a terminal, and with `--whisper` the
   **Transcripts** and **Meetings** tabs: [USAGE.md, section 4](USAGE.md#4-web-ui-and-other-apps).
@@ -521,6 +525,18 @@ effort the Qwen3.8 template thinks at `xhigh`, which can take very long on a lap
 
 `--mtp` turns on speculative decoding, `--ctx N` sets the context; with `ARC_PROF_LAYERS=8` the profile is split
 into groups of 8 layers.
+
+Several GPUs and GPU tuning:
+
+```powershell
+.\bin\runz.exe model.gguf --bench-pp 512 --n 64 --gpus 2     # a dense Qwen model split over 2 GPUs (2, 3, 4, ...)
+.\bin\mgpu_probe.exe                                         # the GPUs, and what moving data between them costs
+.\bench\gemm_sweep.ps1 -Models model.gguf                     # the prompt GEMM's settings swept on this GPU
+```
+
+`--gpus N` splits the model's heads and FFN columns over N GPUs, and each reads 1/N of the weights per token. The
+server does not use it yet; see [docs/multi-gpu.md](docs/multi-gpu.md). `ARC_TP_SIM=1` runs the split on one GPU
+(a correctness test).
 
 ## How it works
 

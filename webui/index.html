@@ -665,7 +665,10 @@ async function refreshModel() {
       asr: stt && typeof stt === "object" && stt.asr ? String(stt.asr) : "",  // (Qwen3-ASR next to Whisper, --asr)
       chatAsr: stt && typeof stt === "object" && stt.chat_asr ? String(stt.chat_asr) : "",  // (Gemma 4 E4B)
       // (false: Qwen3-ASR alone, --asr without --whisper: no Whisper to choose, no live text while recording)
-      whisper: !!stt && !(typeof stt === "object" && stt.whisper === false) };
+      whisper: !!stt && !(typeof stt === "object" && stt.whisper === false),
+      ocr: !!p.ocr };  // (an OCR model: the server asks it with its own task prompts, tools/server_ocr.h)
+    $("input").placeholder = caps.ocr ? "OCR: add an image and send (its text), or name the task: dokumen, tabel, rumus, json + the fields"
+      : "Type a message (@ attaches a saved file)";
     $("slots").value = String(caps.slots);
     $("slothelp").textContent = slotHelp();
   } catch (e) {}

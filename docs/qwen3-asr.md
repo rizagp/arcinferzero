@@ -186,6 +186,11 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
   Qwen3-ASR decodes as fast as on the command line: the 2:34 recording's 507 tokens in 19.1-19.2 s three times, the
   command line in between 18.9-25.1 s (the laptop's own variation; one 24.1-s server run was that too). Whisper
   large-v3 loaded before or after it on the command line: +2 % at most.
+- **Speech to text without a chat model** (2026-10-31): `serverz -m none` (`arc-server start -Model none`, the
+  launcher's **Speech only** button) starts Qwen3-ASR alone when no speech option is given. `/health`, `/props`,
+  `/v1/models` and the web UI answer without a chat model, and the first chat request naming a model loads it.
+  The encoder's weights and kernels load at start: the first transcript is as fast as the next ones (60 s of audio:
+  encoder 0.49 s instead of 4.1).
 - **Qwen3-ASR alone** (2026-10-30): `--asr auto` without `--whisper` (`arc-server start -Asr auto`) loads only
   Qwen3-ASR: 3.15 GiB (one slot, the int8 encoder below; 5.37 GiB with 4 slots and the f16 encoder) instead of
   9.76 GiB with Whisper (the 35B then kept 55 % of its experts cached instead of 10 %). Everything above goes to it; what needs Whisper says so: translations and a

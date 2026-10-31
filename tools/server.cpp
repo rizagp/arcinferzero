@@ -160,6 +160,8 @@ class Server {
     defaults_.top_p = (float)g.get_float("general.sampling.top_p", 0.95);
     defaults_.top_k = (int)g.get_int("general.sampling.top_k", 20);
     defaults_.min_p = (float)g.get_float("general.sampling.min_p", 0.0);
+    ocr_ = ocr_model(g, model_id_);  // (tools/server_ocr.h)
+    if (ocr_) fprintf(stderr, "OCR mode: requests with an image get this model's own task prompts (tools/server_ocr.h)\n");
     gemma_ = e.hp.gemma;
     rings_ = e.hp.swa_rings;
     if (gemma_) {
@@ -276,6 +278,7 @@ class Server {
       r.set("chunk", eng_.max_chunk);
       r.set("weights", eng_.w8_resident ? "w8-resident" : "w8-just-in-time");
       r.set("vision", has_vision());
+      r.set("ocr", ocr_);  // (OCR mode: the web UI shows its tasks)
       Json mod = Json::object();  // (llama-server's form)
       mod.set("vision", has_vision());
       mod.set("audio", has_audio());
@@ -788,6 +791,7 @@ class Server {
 #include "server_cache.h"  // (saved state: prefix cache, sessions)
 
 #include "server_chat.h"  // (the chat endpoint)
+#include "server_ocr.h"  // (OCR models: asked with their own task prompts)
 };
 
 #include "server_catalog.h"  // (model catalog, --ctx auto)

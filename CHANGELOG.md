@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-10-31 (evening): OCR mode
+
+- **OCR models get their own task prompts** (`tools/server_ocr.h`). Xiaomi-OCR-0 (Qwen3.5 0.8B with an image
+  encoder, converted to GGUF with llama.cpp's `convert_hf_to_gguf.py`, model + mmproj) knows a few English task
+  prompts only:
+  - from the web UI (a long system prompt, tools, thinking, sampling) it answered in Chinese;
+  - asked in Indonesian it wrote a letter's title only.
+
+  A model whose name says "OCR" is now asked the way it was trained:
+  - its last turn with the image and the task its words name (text by default; `dokumen` / `document`, `tabel` /
+    `table`, `rumus` / `formula`, `json` + fields);
+  - no system prompt, tools or thinking, greedy;
+  - fields named in Indonesian become the model's English keys (`tanggal` -> date, `nama toko` -> seller_name).
+
+  Checked with a chat client's long system prompt, a tool, thinking and temperature 0.8:
+  - an Indonesian letter: word for word (similarity 1.000), also with no text at all; as a document 0.995;
+  - the README's receipt: `json: tanggal, total, nama toko, alamat toko, pajak` all right;
+  - the repo's examples: 0.975 / 0.988 to its outputs.
+
+  The web UI's message box shows the tasks.
+
 ## 2026-10-31 (afternoon): multi-GPU audit, uneven splits
 
 - **Self audit** (docs/self-audit-2026-10-31.md):

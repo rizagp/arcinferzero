@@ -105,7 +105,9 @@ server processes (times on the 27B; how the caches work: [README, "Run the serve
   `--no-swap`, f32 attention) appear after ticking "Show advanced options";
 - monitoring of the running server: model, filled context, GPU memory per part (weights, context, MTP, buffers,
   encoders), number of requests, the last prompt and answer speed, the percentage of MTP drafts accepted;
-- Start / Stop, refresh, the web UI and the log.
+- Start / Stop, refresh, the web UI and the log;
+- **Speech only**: the server with Qwen3-ASR and no chat model (`arc-server start -Model none`; Whisper too when
+  the Speech field says `auto`), for transcripts. Pick a model in the web UI later and the first chat loads it.
 
 All fields are filled in automatically with the best values for the selected model (what the server picks itself),
 so just choose a model and press Start. Fields you change turn yellow and only those are sent to the server. "Set
@@ -284,8 +286,19 @@ While the server is running:
   ("what did we decide in the chat about the budget?": it searches them and reads the exchange it needs) and
   into the recordings and meetings of the Transcripts / Meetings tabs. `@` in the message box lists them next to
   the saved files: picking one attaches it like a document (a long one as its outline, read in parts).
+- **OCR models** (Xiaomi-OCR-0 and others whose name says "OCR"; convert one to GGUF with model + mmproj): add an
+  image and send. The server asks the model with its own task prompt, so just name the task, in Indonesian or
+  English:
+  - nothing: the text;
+  - `dokumen`: Markdown, tables as OTSL, formulas as LaTeX;
+  - `tabel` or `rumus`;
+  - `json:` and the fields, e.g. `json: tanggal, total, nama toko`.
+
+  The text keeps the image's language. For questions about a document, use Qwen3.5 4B / 9B or Gemma 4 instead
+  ([tools/server_ocr.h](tools/server_ocr.h)).
 - **Web UI: Transcripts and Meetings** (the left rail's second and third buttons; the server started with
-  `--whisper auto`, or `arc-server start -Whisper auto`; [docs/whisper-native.md](docs/whisper-native.md)).
+  `--whisper auto`, or `arc-server start -Whisper auto`, or with no chat model: `arc-server start -Model none`, the
+  launcher's Speech only; [docs/whisper-native.md](docs/whisper-native.md)).
   - **Transcripts**: drop audio or video files (MP3, M4A, WAV, Ogg / Opus voice notes, MP4, MOV, MKV, WebM, AVI,
     WMV) or choose them; they upload and wait their turn, each with its progress. Pick the **language** (Indonesian, the
     default, English, **Indonesian + English mixed**, or detect; with Qwen3-ASR Indonesian keeps the English words
@@ -301,7 +314,14 @@ While the server is running:
     the subtitle shape, then **Export**. Everything is kept in `%USERPROFILE%\.arcinferzero\transcripts\`.
   - **Live**: choose the microphone or a tab's / the screen's sound (Chrome asks what to share: tick "Share tab
     audio") and press **Live**: the text comes about 2 s behind, grey while a sentence is still being said;
-    **★ Mark** marks a moment. **Stop**: the whole recording is transcribed again accurately, then kept as MP3.
+    **★ Mark** marks a moment. **Stop**: the whole recording is transcribed again accurately, then kept in the
+    format of the format menu:
+    - **WAV** (lossless);
+    - **MP3** 96-320 kbps (one track at most 128);
+    - **M4A** (AAC) 96-192 kbps, which sounds better than MP3 at the same bitrate.
+
+    **Mono / Stereo**: Stereo keeps left and right of a tab's sound (music, a video) or of a stereo microphone; the
+    text is the same either way.
   - **Meetings**: **Start a meeting** records your microphone as "Me" and the meeting's sound (the tab of Meet /
     Zoom web / Teams web, or the screen) as "Others"; use headphones, so the microphone does not hear the others
     too. Afterwards **Summarize** (the loaded chat model writes the summary, decisions, action items and open
