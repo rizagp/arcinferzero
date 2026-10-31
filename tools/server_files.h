@@ -229,6 +229,11 @@ class Store {
     save_index(dir, chat);
     return i;
   }
+  // files written into a chat's folder by the server itself (an OCR model's .md): taken in now
+  void refresh() {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    rescan();
+  }
   // a saved file into chat's folder as well (a copy: no hard link, see the top); false: no such file
   bool link(const std::string& id, const std::string& chat) {
     std::lock_guard<std::recursive_mutex> g(mu_);

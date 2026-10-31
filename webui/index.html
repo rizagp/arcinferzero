@@ -194,6 +194,9 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .stats { font-size: 11.5px; color: var(--muted); margin-top: 4px; }
 .progress { height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; margin: 6px 0 2px; }
 .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+.ocrbar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 2px 0 4px; }
+.ocrbar > div { height: 100%; background: var(--accent); transition: width .3s; }
+.ocrlab, .ocrnote { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
 .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 .msg.user .imgs img { max-height: 200px; max-width: 260px; border-radius: 6px; display: block; }
 .msg.user .imgs audio, .att audio { height: 36px; max-width: 260px; }
@@ -1818,7 +1821,8 @@ async function streamTurn(el, st, onOverflow, job) {
       chat_template_kwargs: { enable_thinking: think.on } };
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
-    if (caps.stt) body.speech = sttOn(job.model) ? "whisper" : "model";  // (audio attached: the server's Whisper writes it, or the model hears it)
+    if (caps.stt) body.speech = sttOn(job.model) ? "whisper" : "model";
+    if (caps.ocr && ocrSaveFor.get(job.id)) { body.ocr_save = true; body.chat_id = job.id; }  // (into this chat's .md, see ocrView)  // (audio attached: the server's Whisper writes it, or the model hears it)
     if (toolsOn(job.id) && !job.noTools) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termOffered(job.id) ? TERM_TOOLS : [])];
     kick();
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
@@ -1852,7 +1856,8 @@ async function streamTurn(el, st, onOverflow, job) {
       }
     }
     if (all || st.answer !== shown) {
-      content.innerHTML = markdown(st.answer);
+      content.innerHTML = caps.ocr && ocrSaveFor.has(job.id) && /## Page \d+ \/ \d+/.test(st.answer) ? ocrView(st.answer, ocrSaveFor.get(job.id))
+        : markdown(st.answer);
       shown = st.answer;
     }
     scroll();
@@ -1967,6 +1972,27 @@ function estTokens(h) {
   return Math.ceil(n);
 }
 
+// ---- an OCR model reading a PDF (tools/server_ocr.h): the server reads up to 50 pages a turn and ends with
+// "[OCR: N more page(s); ...]", which this page answers with "lanjut" by itself until the last page. Saved to a file
+// ("ocr_save", asked when the PDF is sent): the text goes into "<the PDF's name>.md" in the chat's files, and the bubble
+// shows only the page read last under a bar of the pages done; the chat keeps that page and the closing note (enough
+// for the next turn to go on from), not hundreds of pages it would have to compact.
+const ocrSaveFor = new Map();  // chat id -> the PDF's text is saved to its .md
+const OCR_MORE = /\[OCR: \d+ more page/;
+function ocrView(a, saving) {
+  const heads = [...a.matchAll(/## Page (\d+) \/ (\d+)/g)], h = heads[heads.length - 1];
+  const note = (a.match(/\[OCR:[^\]]*\]/) || [""])[0];
+  const page = (h ? a.slice(h.index) : a).replace(/\[OCR:[^\]]*\]/, "").trim();
+  const n = h ? +h[1] : 0, total = h ? +h[2] : 0;
+  return (total ? '<div class="ocrbar"><div style="width:' + (100 * n / total).toFixed(1) + '%"></div></div><div class="ocrlab">' +
+    "page " + n + " / " + total + " read" + (saving ? " · the text goes into the .md in this chat's files" : "") + "</div>" : "") +
+    markdown(page) + (note ? '<div class="ocrnote">' + esc(note) + "</div>" : "");
+}
+function ocrCompact(a) {  // (the page read last and the closing note)
+  const heads = [...a.matchAll(/## Page \d+ \/ \d+/g)], h = heads[heads.length - 1];
+  return h ? a.slice(h.index) : a;
+}
+
 let epoch = 0;  // (another chat on screen: an upload still running stays out of its message box)
 async function send() {
   if (rec.on && !controller) return sendVoice();
@@ -2000,6 +2026,12 @@ async function send() {
                 used: used || estTokens(history), slot: false, waiting: false, model: modelId, voice: voice.on };  // (voice: asked in Talk)
   if (!convs.some((c) => c.id === job.id))  // (in the list at once, also while it waits for a slot)
     convs.unshift({ id: job.id, title: titleOf([userMsg]), at, model: modelId, snippet: "" });
+  if (caps.ocr && sent.some((m) => /\.pdf$/i.test(m.name || "")) && !ocrSaveFor.has(job.id)) {
+    const pdf = sent.find((m) => /\.pdf$/i.test(m.name || "")).name;
+    ocrSaveFor.set(job.id, confirm("Save the text read from \"" + pdf + "\" to \"" + pdf.replace(/\.pdf$/i, ".md") +
+      "\" in this chat's files?\n\nEach page is added to the file as it is read, the chat shows the page read last, and the " +
+      "next pages are read by themselves until the last one."));
+  }
   jobs.set(job.id, job);
   controller = job.controller;
   const signal = job.controller.signal;
@@ -2108,7 +2140,8 @@ async function send() {
   const last = job.history[job.history.length - 1];
   for (const c of last.tool_calls || []) job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: stopped by the user" });
   if (!inHistory) {
-    const reply = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, at: Date.now() };
+    const reply = { role: "assistant", content: caps.ocr && ocrSaveFor.get(job.id) ? ocrCompact(st.answer) : st.answer,
+      reasoning_content: st.reasoning, at: Date.now() };
     job.history.push(reply);
     el._h = reply;
     answerFiles(el, job.made);
@@ -2126,6 +2159,9 @@ async function send() {
       if (!voice.talking && !voice.speaking) voice.status("listening…");
     }
     setTimeout(bgDeliver, 0);  // (background results that came while this answer ran)
+    // an OCR model's PDF with pages left, not stopped by the user: the next pages (see ocrView)
+    if (caps.ocr && OCR_MORE.test(st.answer) && !job.controller.signal.aborted)
+      setTimeout(() => { if (!controller && !input.value.trim() && !pending.length && convId === job.id) { input.value = "lanjut"; send(); } }, 500);
   }
   renderConvs();
 }

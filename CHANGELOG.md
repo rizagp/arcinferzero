@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-31 (late night): long PDFs for OCR models
+
+- **Every page, by itself**: a PDF is read 50 pages a turn. An answer with pages left ends with
+  `[OCR: N more page(s); "lanjut" reads pages A-B]`, and the web UI sends "lanjut" itself until the last page
+  (Stop ends it). The words may also name pages (`halaman 51-100`, `page 7`). A "lanjut" goes on with the same
+  PDF and task after the highest `## Page N` of the answers so far.
+- **Saved to a file**: when a PDF is sent to an OCR model, the web UI offers to save its text to
+  `<the PDF's name>.md` in the chat's files (`ocr_save`, `chat_id`).
+  - Each page is appended once read, and the file shows in the Files panel.
+  - The answer then shows only the page read last, under a bar of the pages done, and the chat keeps that page only
+    (no hundreds of pages to compact).
+  - Checked on a 450-page service manual: pages 1-2, then 449-450 appended to the same file; in the web UI the bar
+    counted on, the bubble held one page, and "lanjut" went by itself.
+
 ## 2026-10-31 (night): faster BF16 models (the OCR model)
 
 - **Float matrices stacked as quantized ones are** (`zero/engine.h`):

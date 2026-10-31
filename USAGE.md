@@ -294,7 +294,10 @@ While the server is running:
   - `tabel` or `rumus`;
   - `json:` and the fields, e.g. `json: tanggal, total, nama toko`.
 
-  A PDF works too: each page (up to 50) is read in turn and comes under its own `## Page N / M` heading.
+  A PDF works too: each page is read in turn and comes under its own `## Page N / M` heading, 50 pages a turn.
+  The web UI then sends "lanjut" by itself until the last page (Stop ends it); `halaman 51-100` picks pages.
+  When you send a PDF, it offers to save the text to `<the PDF's name>.md` in the chat's files (each page added as
+  it is read). The chat then shows only the page read last and a bar of the pages done.
 
   The text keeps the image's language. For questions about a document, use Qwen3.5 4B / 9B or Gemma 4 instead
   ([tools/server_ocr.h](tools/server_ocr.h)).

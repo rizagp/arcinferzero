@@ -14,43 +14,109 @@
   static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; more: a note at the end)
   // A PDF in the request's last user turn (a web UI file part): every page rendered by Windows (tools/pdf_render.h)
   // and read as an image with the turn's words, page after page, each under "## Page N / M" (streamed as each page
-  // is done). False when the turn has no PDF. Before, a PDF went in as its text layer: no image in the turn, and the
-  // follow-up rule took the conversation's last image instead, an earlier file (2026-10-31, the user's LPO reports).
+  // is done). False when the conversation has no PDF to read. Before, a PDF went in as its text layer: no image in
+  // the turn, and the follow-up rule took the conversation's last image instead, an earlier file (2026-10-31, the
+  // user's LPO reports).
+  //   pages: at most 50 a request, from page 1; the words may name others ("halaman 51-100", "page 7"). A turn of
+  //   words alone after a PDF ("lanjut") goes on with the same PDF and task from the page after the last "## Page N"
+  //   the answers so far hold; an answer that leaves pages ends with "[OCR: N more page(s) ...]", which the web UI
+  //   answers with "lanjut" by itself until the last page (a 450-page manual in 9 turns).
+  //   "ocr_save": true (the web UI asks when a PDF is sent): the pages also go into "<the PDF's name>.md" in the
+  //   chat's folder (its Files panel), the first page of the file starting it, each page appended once read.
   bool ocr_pdf(const HttpRequest& rq, const Json& body, HttpResponse& rs) {
     const Json& msgs = body["messages"];
     int last = -1;
     for (int i = 0; i < (int)msgs.size(); ++i)
       if (msgs[i]["role"].str() == "user") last = i;
     if (last < 0) return false;
+    auto text_of = [](const Json& m) {
+      std::string w = m["content"].is_string() ? m["content"].str() : std::string();
+      for (const Json& p : m["content"].items())
+        if (p["type"].str() == "text" || p["type"].str() == "input_text") w += (w.empty() ? "" : "\n") + p["text"].str();
+      return w;
+    };
+    auto pdf_of = [](const Json& m, files::Info& out) {
+      for (const Json& p : m["content"].items()) {
+        if (p["type"].str() != "file" && p["type"].str() != "input_file") continue;
+        files::Info i;
+        const std::string fid = p["file"]["file_id"].str(p["file_id"].str());
+        if (files::store().get(fid, i) && files::lower(i.name).size() > 4 &&
+            files::lower(i.name).rfind(".pdf") == files::lower(i.name).size() - 4) {
+          out = i;
+          // (the name the chat gave it: one file in several chats is one entry under whichever name came first)
+          if (p["file"]["filename"].is_string() && !p["file"]["filename"].str().empty()) out.name = p["file"]["filename"].str();
+          return true;
+        }
+      }
+      return false;
+    };
+    auto has_parts = [](const Json& m) {  // (a turn that brought a file, an image or audio: about that, not an earlier PDF)
+      for (const Json& p : m["content"].items())
+        if (p["type"].str() != "text" && p["type"].str() != "input_text") return true;
+      return false;
+    };
     files::Info pdf;
-    std::string words;
-    for (const Json& p : msgs[last]["content"].items()) {
-      const std::string ty = p["type"].str();
-      if (ty == "text" || ty == "input_text") words += (words.empty() ? "" : "\n") + p["text"].str();
-      if (ty != "file" && ty != "input_file") continue;
-      files::Info i;
-      const std::string id = p["file"]["file_id"].str(p["file_id"].str());
-      if (pdf.path.empty() && files::store().get(id, i) && files::lower(i.name).size() > 4 &&
-          files::lower(i.name).rfind(".pdf") == files::lower(i.name).size() - 4)
-        pdf = i;
+    int at = -1;  // (the turn that brought the PDF)
+    for (int i = last; i >= 0 && at < 0; --i) {
+      if (msgs[i]["role"].str() != "user") continue;
+      if (pdf_of(msgs[i], pdf)) at = i;
+      else if (i == last && has_parts(msgs[i])) break;
     }
-    if (pdf.path.empty()) return false;
+    if (at < 0) return false;
+    const std::string words = text_of(msgs[last]), task = text_of(msgs[at]);  // (a continuation keeps the PDF's task)
     std::string err;
     const int pages = pdfr::pdf_page_count(pdf.path, err);
     if (pages < 0) {
       rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("cannot read the PDF: " + err).dump() + "}}");
       return true;
     }
-    const int n = std::min(pages, kOcrMaxPages);
+    int first = 1, upto = 0;
+    ocr_pages_asked(words, first, upto);
+    if (upto == 0 && at < last) {  // (a continuation: after the last page the answers so far read)
+      int done = 0;
+      for (int i = at + 1; i < (int)msgs.size(); ++i)
+        if (msgs[i]["role"].str() == "assistant") done = std::max(done, ocr_last_page(text_of(msgs[i])));
+      first = done + 1;
+    }
+    first = std::max(1, first);
+    const int n = std::min(pages, upto ? upto : first + kOcrMaxPages - 1);
     const bool stream = body["stream"].as_bool(false);
     const std::string id = "chatcmpl-arc" + std::to_string(++counter_);
     const long long created = (long long)time(nullptr);
     if (stream) rs.sse_begin();
     std::string all;
     int64_t ptok = 0, ctok = 0;
-    fprintf(stderr, "OCR mode: %s, %d page(s)%s\n", pdf.name.c_str(), pages, pages > n ? " (the first 50)" : "");
-    for (int p = 1; p <= n && !rs.client_gone(); ++p) {
-      std::string piece = (p > 1 ? "\n\n" : "") + std::string("## Page ") + std::to_string(p) + " / " + std::to_string(pages) + "\n\n";
+    // the .md next to the chat's files (started over with page 1, else appended)
+    std::filesystem::path md;
+    if (body["ocr_save"].as_bool(false)) {
+      std::string stem = std::filesystem::path(pdf.name).stem().string();
+      for (char& c : stem)
+        if (strchr("<>:\"/\\|?*", c) || (unsigned char)c < 32) c = '_';
+      // (in the asking chat's folder: the PDF's copy found may be another chat's)
+      const std::string chat = body["chat_id"].str();
+      md = std::filesystem::path(files::valid_id(chat) ? files::store().chat_dir_make(chat) : std::filesystem::path(pdf.path).parent_path().string()) /
+           (stem + ".md");
+      if (first == 1) std::ofstream(md, std::ios::binary | std::ios::trunc) << "# " << pdf.name << "\n\n";
+    }
+    auto save = [&](const std::string& piece) {
+      if (md.empty()) return;
+      std::ofstream(md, std::ios::binary | std::ios::app) << piece;
+      files::store().refresh();  // (in the Files panel with its new size)
+    };
+    fprintf(stderr, "OCR mode: %s, pages %d-%d of %d%s\n", pdf.name.c_str(), first, n, pages,
+            md.empty() ? "" : (", saved to " + md.filename().string()).c_str());
+    if (first > pages) {
+      const std::string note = "[OCR: every page of " + pdf.name + " is read (" + std::to_string(pages) + ")]";
+      if (stream) {
+        Json d = Json::object();
+        d.set("content", note);
+        rs.sse_event(chunk(id, created, d, Json()).dump());
+      } else {
+        all = note;
+      }
+    }
+    for (int p = first; p <= n && !rs.client_gone(); ++p) {
+      std::string piece = (p > first ? "\n\n" : "") + std::string("## Page ") + std::to_string(p) + " / " + std::to_string(pages) + "\n\n";
       const std::string png = pdfr::pdf_render_page(pdf.path, p, 150, err);
       if (png.empty()) {
         piece += "[the page could not be rendered: " + err + "]";
@@ -61,7 +127,7 @@
         img.set("type", "image_url");
         img.set("image_url", url);
         txt.set("type", "text");
-        txt.set("text", words);
+        txt.set("text", task);
         content.push(img);
         content.push(txt);
         msg.set("role", "user");
@@ -83,6 +149,7 @@
         ptok += j["usage"]["prompt_tokens"].as_int();
         ctok += j["usage"]["completion_tokens"].as_int();
       }
+      save((p > 1 && p == first ? "\n\n" : "") + piece);
       if (stream) {
         Json d = Json::object();
         d.set("content", piece);
@@ -91,8 +158,10 @@
         all += piece;
       }
     }
-    if (pages > n) {
-      const std::string note = "\n\n[" + std::to_string(pages - n) + " more page(s) not read: at most " + std::to_string(kOcrMaxPages) + " per request]";
+    if (pages > n && n >= first) {
+      const int a = n + 1, b = std::min(pages, n + kOcrMaxPages);
+      const std::string note = "\n\n[OCR: " + std::to_string(pages - n) + " more page(s); \"lanjut\" reads pages " +
+                               std::to_string(a) + "-" + std::to_string(b) + (md.empty() ? "" : ", added to " + md.filename().string()) + "]";
       if (stream) {
         Json d = Json::object();
         d.set("content", note);
@@ -133,6 +202,39 @@
     std::string n = g.get_str("general.name") + " " + id;
     for (char& c : n) c = (char)tolower((unsigned char)c);
     return n.find("ocr") != std::string::npos;
+  }
+  // pages the user's words name: "halaman 51-100" / "pages 51 to 100" (first, upto), "page 7" (first, upto = first);
+  // nothing: both left as they are
+  static void ocr_pages_asked(const std::string& w, int& first, int& upto) {
+    std::string t;
+    for (char c : w) t += (char)tolower((unsigned char)c);
+    for (const char* key : {"halaman", "hal.", "hal ", "pages", "page"}) {
+      const size_t k = t.find(key);
+      if (k == std::string::npos) continue;
+      const char* p = t.c_str() + k + strlen(key);
+      while (*p == ' ' || *p == ':') ++p;
+      if (!isdigit((unsigned char)*p)) continue;
+      const int a = atoi(p);
+      while (isdigit((unsigned char)*p)) ++p;
+      while (*p == ' ') ++p;
+      int b = a;
+      if (*p == '-' || !strncmp(p, "sampai", 6) || !strncmp(p, "to", 2) || !strncmp(p, "s/d", 3) || !strncmp(p, "\xE2\x80\x93", 3)) {
+        p += *p == '-' ? 1 : !strncmp(p, "sampai", 6) ? 6 : !strncmp(p, "\xE2\x80\x93", 3) ? 3 : !strncmp(p, "s/d", 3) ? 3 : 2;
+        while (*p == ' ') ++p;
+        if (isdigit((unsigned char)*p)) b = atoi(p);
+      }
+      if (a >= 1 && b >= a) {
+        first = a;
+        upto = std::min(b, a + kOcrMaxPages - 1);
+      }
+      return;
+    }
+  }
+  // the highest "## Page N" an answer holds (0: none)
+  static int ocr_last_page(const std::string& s) {
+    int best = 0;
+    for (size_t p = s.find("## Page "); p != std::string::npos; p = s.find("## Page ", p + 8)) best = std::max(best, atoi(s.c_str() + p + 8));
+    return best;
   }
   // the model's task prompts (its README): name, prompt
   static const std::vector<std::pair<std::string, std::string>>& ocr_tasks() {
