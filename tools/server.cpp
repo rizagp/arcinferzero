@@ -1227,6 +1227,19 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       if (ix->doc.pages > 0) r.set("pages", (double)ix->doc.pages);
       std::string data;  // (what this call reads: a section, pages, or the whole text)
       const size_t n = ix->doc.paras.size();
+      // a text without pages of its own whose headings are "Page N / M" (an OCR model's .md, tools/server_ocr.h): its
+      // pages are those sections, from page `from`'s heading up to the heading after page `to` (2026-10-31: pages
+      // "26-30" of such a file said "no text", and Qwen 3.5 4B read it a page-section at a time, 8 tool rounds)
+      size_t md_first = n, md_last = n;
+      bool whole = false;  // (the whole text in this read: see below)
+      if (by_pages && ix->doc.pages <= 1) {
+        for (const rdoc::Section& s : ix->outline) {
+          int k = 0, m = 0;
+          if (sscanf(s.title.c_str(), "Page %d / %d", &k, &m) != 2) continue;
+          if (k >= from && k <= to) md_first = std::min(md_first, s.first);
+          else if (k > to && md_first < n) { md_last = s.first; break; }
+        }
+      }
       if (a["section"].is_number()) {
         const size_t k = (size_t)a["section"].as_clamped(1, 1, 1 << 30) - 1;  // (clamped before the cast)
         if (k >= ix->outline.size()) return fail(400, "no section " + std::to_string(k + 1) + " (the outline has " + std::to_string(ix->outline.size()) + ")");
@@ -1246,6 +1259,9 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         size_t next = k + 1;
         while (next < ix->outline.size() && ix->outline[next].first < s.span) ++next;
         if (next < ix->outline.size()) r.set("next_section", (double)(next + 1));
+      } else if (by_pages && md_first < n) {
+        data = ix->text(md_first, md_last);
+        r.set("pages_read", pg);
       } else if (by_pages) {
         size_t first = n, last = 0;
         for (size_t k = 0; k < n; ++k)
@@ -1266,19 +1282,23 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         r.set("pages_read", pg);
       } else {
         data = ix->text(0, n);
-        if (data.size() > files::kInlineChars && !a["offset"].is_number()) {  // (a long document: its outline first)
+        // a long document: its outline first; one the model's context takes in a single read comes whole (the OCR
+        // .md of 56 pages, 25K tokens, for a 262K-token Qwen 3.5 4B: section after section ran out of tool rounds)
+        whole = ctx > 0 && data.size() <= files::read_budget(ctx) && !a["max_chars"].is_number() && !a["offset"].is_number();
+        if (data.size() > files::kInlineChars && !whole && !a["offset"].is_number()) {
           r.set("total_tokens", (double)files::tokens_of(data.size()));
           r.set("outline", files::outline_json(*ix));
           size_t cut = std::min(data.size(), (size_t)2000);
           while (cut < data.size() && cut > 0 && ((unsigned char)data[cut] & 0xC0) == 0x80) --cut;
           r.set("beginning", data.substr(0, cut));
-          r.set("note", "a long document: read the sections the question needs (read_file with section: N, or pages: \"A-B\"), "
-                        "or find passages with search_file; offset: 0 reads it from the start in parts");
+          r.set("note", "a long document: read the sections the question needs (read_file with section: N, or pages: \"A-B\" "
+                        "for a range of pages in one call), or find passages with search_file; offset: 0 reads it from the "
+                        "start in parts");
           return reply(200, r);
         }
       }
       // (a part at a time: max_chars, and never more than the model's context takes in one read)
-      const size_t asked = (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
+      const size_t asked = whole ? data.size() : (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
       const size_t off = (size_t)a["offset"].as_clamped(0, 0, (int64_t)data.size()), mx = std::min(asked, files::read_budget(ctx));
       size_t end = std::min(data.size(), off + mx);
       if (end < data.size()) {  // (cut at a paragraph's end, else a line's or a space, when one is in the last third)

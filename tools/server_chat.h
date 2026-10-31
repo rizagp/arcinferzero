@@ -612,13 +612,26 @@
           // inside a tool call: the most likely tokens that keep the call valid (a refused first choice is counted)
           const std::string call = text.substr(call_from);
           bool first = true;
+          int refused = -1;  // (the first choice, when it was refused)
           t = sampler.sample_allowed(logits, gen, [&](int tok) {
             const std::string pc = tok_.piece(tok);
             bool ok = !pc.empty() && (!tok_.is_special(tok) || tcc->special_ok(pc)) && tcc->check(call + pc) != jcon::FAIL;
-            if (first && !ok) ++n_tool_fixed;
+            if (first && !ok) { ++n_tool_fixed; refused = tok; }
             first = false;
             return ok;
           });
+          // ARC_DEBUG_TOOLFIX=1: each refused first choice in the log, with the call's last characters and the token
+          // taken instead (to see what the constraint refuses)
+          static const bool dbg_fix = getenv("ARC_DEBUG_TOOLFIX") != nullptr;
+          if (dbg_fix && refused >= 0) {
+            auto vis = [](std::string x) {
+              std::string o;
+              for (char c : x) o += c == '\n' ? std::string("\\n") : std::string(1, c);
+              return o;
+            };
+            fprintf(stderr, "tool fix: ...%s | refused [%s] took [%s]\n", vis(call.substr(call.size() > 60 ? call.size() - 60 : 0)).c_str(),
+                    vis(tok_.piece(refused)).c_str(), t >= 0 ? vis(tok_.piece(t)).c_str() : "-");
+          }
           ++n_tool_tok;
           if (t < 0) t = sampler.sample(logits, gen);
         } else if (answering && jc) {

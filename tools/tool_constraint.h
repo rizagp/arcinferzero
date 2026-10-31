@@ -340,7 +340,10 @@ class QwenCall : public ToolCon {
       }
       std::string v = s.substr(i, e - i);
       if (!v.empty() && v.back() == '\n') v.pop_back();
-      if (!is_str && vs.has("type") && jcon::Checker(vs, false).check(v) != DONE) return FAIL;
+      // (checked as a value that has ended: a number at the text's end is PARTIAL to jcon, "12" may become "123", which
+      //  refused every token after an integer's </parameter> to the call's end, each draw a scan of the whole
+      //  vocabulary: 7 tokens of every read_file with a section, Qwen 3.5 4B's tool calls at ~14 tok/s instead of ~18)
+      if (!is_str && vs.has("type") && jcon::Checker(vs, false).check(v + "\n") != DONE) return FAIL;
       i = e + kend.size();
     }
   }

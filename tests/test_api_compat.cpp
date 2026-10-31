@@ -214,6 +214,15 @@ int main() {
                qc.check("\n<function=read>\n<parameter=offset>\nabc") == jcon::FAIL &&
                qc.check("\n<function=read>\n<parameter=path>\nf\n</parameter>\n<parameter=offset>\n10\n</par") == jcon::PARTIAL,
            "qwen call: integer parameters as JSON");
+    {  // (an integer before </parameter>: every prefix to the call's end partial; jcon took "12" as a number that may go
+       //  on, and refused every token after </parameter, 2026-10-31)
+      const std::string qi = "\n<function=read>\n<parameter=path>\nf\n</parameter>\n<parameter=offset>\n12\n</parameter>\n</function>\n</tool_call>";
+      bool qint = true;
+      for (size_t n = 0; n < qi.size(); ++n) qint = qint && qc.check(qi.substr(0, n)) == jcon::PARTIAL;
+      expect(qint && qc.check(qi) == jcon::DONE, "qwen call: an integer parameter, then the call's end");
+      expect(qc.check("\n<function=read>\n<parameter=path>\nf\n</parameter>\n<parameter=offset>\n1.5\n</parameter>") == jcon::FAIL,
+             "qwen call: not an integer, refused at </parameter>");
+    }
     expect(qc.check("\n<function=xyz>") == jcon::FAIL && qc.check("\n<function=re") == jcon::PARTIAL &&
                qc.check("\n<function=read>\n<parameter=nope>") == jcon::FAIL, "qwen call: only the request's tools and keys");
     expect(qc.check("\n<function=read>\n<parameter=path>\nline 1\n<b>{x}</b> \"q\"\n</parameter>\n</function>\n</tool_call>") == jcon::DONE &&

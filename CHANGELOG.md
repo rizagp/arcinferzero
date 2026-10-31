@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-31 (night): reading an OCR .md with a chat model
+
+- **`read_file` without arguments reads a document whole** when the model's context takes it in one read
+  (`files::read_budget`); a longer one still gets its outline. Qwen3.5 4B (262K context) read the 56-page OCR `.md`
+  (98 KB, 25K tokens) a page-section at a time and ran out of its 8 tool rounds; now one call.
+- **`pages: "A-B"` in a Markdown file with `## Page N / M` headings** (an OCR model's `.md`): those pages' sections
+  in one call ("26-30" said "no text" before). The web UI's `read_file` description says so.
+- **Qwen tool calls with a number argument** (`section: 12`): every token after its `</parameter` was refused by the
+  call's constraint, each one a scan of the whole vocabulary, so tool calls ran at ~13.5 tok/s instead of ~18.
+  Fixed in `tools/tool_constraint.h` (a closed value is checked as one that has ended); details in
+  [docs/before-after.md](docs/before-after.md). `ARC_DEBUG_TOOLFIX=1` logs each refused first choice.
+
 ## 2026-10-31 (late evening): saved OCR text stays in the file
 
 - **Saved to a .md**, the OCR answer shows only the bar of the pages done ("reading page N / M…": the server now
