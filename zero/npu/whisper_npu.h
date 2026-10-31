@@ -23,7 +23,7 @@ class WhisperNpuEncoder {
   // (Level Zero must have been initialized for every driver type first: zeInit(0) before the GPU runtime)
   explicit WhisperNpuEncoder(const whisper::Model& m) : m_(m), hp_(m.hp) {
     rt_ = std::make_unique<npu::Rt>();
-    if (!rt_->init()) throw std::runtime_error("whisper: no NPU (Level Zero graph extension) found");
+    if (!rt_->init()) throw std::runtime_error("whisper: no NPU (Level Zero graph extension) found: " + rt_->why);
     const auto t0 = std::chrono::steady_clock::now();
     const int D = hp_.d, A = hp_.n_audio_ctx, C = hp_.n_mels, T = whisper::kWindowFrames;
     F_ = m.file->get("encoder/layer_0/ffn/linear_0/weight").shape[0];

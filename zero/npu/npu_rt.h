@@ -49,6 +49,7 @@ struct Rt {
   std::vector<void*> hosts_;  // (host allocations of host())
   std::vector<ze_graph_handle_t> graphs_;
   uint32_t driver_version = 0;
+  std::string why;  // (init false: what was missing)
   Rt() = default;
   Rt(const Rt&) = delete;
   Rt& operator=(const Rt&) = delete;
@@ -77,7 +78,17 @@ struct Rt {
       zeDeviceGetProperties(x, &p);
       if (p.type == 5) { drv = d; dev = x; }
     }
-    if (!dev || !getExt || getExt(drv, "ZE_extension_graph_1_8", (void**)&g) != 0 || !g) return false;
+    if (!dev || !getExt) {
+      why = "no NPU device in Level Zero (the Intel NPU driver installed? Device Manager: Neural processors, Intel AI Boost)";
+      return false;
+    }
+    // (the 1.8 table, or a newer driver's: each version's table is the one before with functions added at its end)
+    for (int v = 8; v <= 20 && !g; ++v)
+      if (getExt(drv, ("ZE_extension_graph_1_" + std::to_string(v)).c_str(), (void**)&g) != 0) g = nullptr;
+    if (!g) {
+      why = "the NPU driver has no graph extension 1.8 or newer (an old driver: update the Intel NPU driver)";
+      return false;
+    }
     {  // (the driver's version: part of the blob cache's key, so a driver update compiles the graphs again)
       struct DriverProps { uint32_t stype; void* pNext; uint8_t uuid[16]; uint32_t driverVersion; } dp{0x1u, nullptr, {}, 0};
       auto getProps = (ze_result_t(*)(ze_driver_handle_t, DriverProps*))(void*)GetProcAddress(GetModuleHandleA("ze_loader.dll"),

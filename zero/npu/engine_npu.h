@@ -103,7 +103,7 @@ void npu_setup() {
   const auto t0 = std::chrono::steady_clock::now();
   npu_ = std::make_unique<npu::Rt>();
   if (!npu_->init()) {
-    fprintf(stderr, "ARC_NPU: no NPU (Level Zero graph extension) found; off\n");
+    fprintf(stderr, "ARC_NPU: no NPU (Level Zero graph extension) found: %s; off\n", npu_->why.c_str());
     npu_.reset();
     return;
   }

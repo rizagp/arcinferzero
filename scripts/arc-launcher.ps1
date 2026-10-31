@@ -341,29 +341,29 @@ function Show-Detail {
   $m = $grid.SelectedRows[0].Tag
   $L = New-Object System.Collections.Generic.List[string]
   $L.Add("$($m.name)")
-  $L.Add("file    $($m.file)  ({0:N1} GB)" -f ($m.bytes / 1e9))
+  $L.Add(("file    $($m.file)  ({0:N1} GB)" -f ($m.bytes / 1e9)))
   $L.Add("arch    $($m.arch)  -  " + $(if ($m.supported) { "supported by arcinferzero" } else { "NOT supported by arcinferzero" }))
   $L.Add("id      $($m.alias)" + $(if ($m.short) { "   (shortcut: pi-arc $($m.short))" } else { "" }))
   $L.Add("variant $(if ($m.tags) { $m.tags } else { '-' })")
   $L.Add("MTP / drafter: $(if ($m.mtp) { 'yes (drafts checked by the main model: same output, faster)' } else { 'no' })")
   $L.Add("images: $(if ($m.vision) { 'yes (encoder from the mmproj file)' } else { 'no' })")
-  $L.Add("max context length (model): {0:N0} tokens" -f $m.ctx_train)
+  $L.Add(("max context length (model): {0:N0} tokens" -f $m.ctx_train))
   $mm = $m.memory
   if ($m.supported -and $mm) {
     $budget = $mm.device - $mm.keep_free - $mm.snapshots - $mm.encoders
     $L.Add("")
     $L.Add("Auto context (--ctx auto):")
-    $L.Add("  GPU memory (Intel setting)    {0,12}" -f (GiB $mm.device))
-    $L.Add("  - left for the driver         {0,12}" -f (GiB $mm.keep_free))
-    $L.Add("  - conversation snapshots      {0,12}" -f (GiB $mm.snapshots))
-    $L.Add("  - image / audio encoders      {0,12}" -f (GiB $mm.encoders))
-    $L.Add("  = for the model               {0,12}" -f (GiB $budget))
-    $L.Add("  - weights{0}{1,12}" -f $(if ($mm.resident) { " (+ W8 copies)     " } else { "                   " }), (GiB $mm.weights))
-    $L.Add("  - MTP block / drafter         {0,12}" -f (GiB $mm.mtp))
-    $L.Add("  - working buffers             {0,12}" -f (GiB $mm.buffers))
-    $L.Add("  = left for the context        {0,12}" -f (GiB ($budget - $mm.weights - $mm.mtp - $mm.buffers)))
-    $L.Add("  context per 1,000 tokens      {0,12}" -f ("{0:N1} MiB" -f ($mm.context_per_1k / 1MB)))
-    $L.Add("  -> {0:N0} tokens (KV {1}; multiples of 4,096, at most the max context length)" -f $m.ctx, (GiB $mm.context))
+    $L.Add(("  GPU memory (Intel setting)    {0,12}" -f (GiB $mm.device)))
+    $L.Add(("  - left for the driver         {0,12}" -f (GiB $mm.keep_free)))
+    $L.Add(("  - conversation snapshots      {0,12}" -f (GiB $mm.snapshots)))
+    $L.Add(("  - image / audio encoders      {0,12}" -f (GiB $mm.encoders)))
+    $L.Add(("  = for the model               {0,12}" -f (GiB $budget)))
+    $L.Add(("  - weights{0}{1,12}" -f $(if ($mm.resident) { " (+ W8 copies)     " } else { "                   " }), (GiB $mm.weights)))
+    $L.Add(("  - MTP block / drafter         {0,12}" -f (GiB $mm.mtp)))
+    $L.Add(("  - working buffers             {0,12}" -f (GiB $mm.buffers)))
+    $L.Add(("  = left for the context        {0,12}" -f (GiB ($budget - $mm.weights - $mm.mtp - $mm.buffers))))
+    $L.Add(("  context per 1,000 tokens      {0,12}" -f ("{0:N1} MiB" -f ($mm.context_per_1k / 1MB))))
+    $L.Add(("  -> {0:N0} tokens (KV {1}; multiples of 4,096, at most the max context length)" -f $m.ctx, (GiB $mm.context)))
   } elseif ($m.supported) {
     $L.Add(""); $L.Add("(no memory details yet: Refresh list)")
   }
@@ -403,16 +403,16 @@ function Update-Status {
     $L = New-Object System.Collections.Generic.List[string]
     $mem = $p.memory
     $L.Add("model    $id")
-    $L.Add("context  {0:N0} tokens, {1:N0} filled   chunk {2}" -f $p.n_ctx, $p.stats.position, $p.chunk)
-    $L.Add("MTP      {0}   images {1}   audio {2}" -f $(if ($p.mtp) { "yes ($($p.mtp_drafts) drafts)" } else { "no" }), $(if ($p.vision) { "yes" } else { "no" }), $(if ($p.audio) { "yes" } else { "no" }))
+    $L.Add(("context  {0:N0} tokens, {1:N0} filled   chunk {2}" -f $p.n_ctx, $p.stats.position, $p.chunk))
+    $L.Add(("MTP      {0}   images {1}   audio {2}" -f $(if ($p.mtp) { "yes ($($p.mtp_drafts) drafts)" } else { "no" }), $(if ($p.vision) { "yes" } else { "no" }), $(if ($p.audio) { "yes" } else { "no" })))
     if ($mem) {
       $L.Add("")
-      $L.Add("VRAM used by the server  {0,12}  of {1}" -f (GiB $mem.total), (GiB $mem.device))
-      $L.Add("  weights                {0,12}" -f (GiB $mem.weights))
-      $L.Add("  context (KV)           {0,12}" -f (GiB $mem.context))
-      $L.Add("  MTP / drafter          {0,12}" -f (GiB $mem.mtp))
-      $L.Add("  working buffers        {0,12}" -f (GiB $mem.buffers))
-      $L.Add("  encoders (loaded)      {0,12}" -f (GiB $mem.encoders))
+      $L.Add(("VRAM used by the server  {0,12}  of {1}" -f (GiB $mem.total), (GiB $mem.device)))
+      $L.Add(("  weights                {0,12}" -f (GiB $mem.weights)))
+      $L.Add(("  context (KV)           {0,12}" -f (GiB $mem.context)))
+      $L.Add(("  MTP / drafter          {0,12}" -f (GiB $mem.mtp)))
+      $L.Add(("  working buffers        {0,12}" -f (GiB $mem.buffers)))
+      $L.Add(("  encoders (loaded)      {0,12}" -f (GiB $mem.encoders)))
       $pct = [math]::Min(100, [math]::Round(100 * $mem.total / $mem.device))
       $L.Add(("  [" + ("#" * [int]($pct / 4)) + ("." * (25 - [int]($pct / 4))) + "] {0}%") -f $pct)
     }
@@ -421,9 +421,9 @@ function Update-Status {
     $t = $p.stats.last
     if ($t) {
       $L.Add("last request:")
-      $L.Add("  prompt  {0} new tokens ({1} from cache), {2:N1} tok/s" -f $t.prompt_n, $t.cache_n, $t.prompt_per_second)
-      $L.Add("  answer  {0} tokens, {1:N1} tok/s  ({2})" -f $t.predicted_n, $t.predicted_per_second, $t.finish)
-      if ($t.draft_n) { $L.Add("  MTP     {0}/{1} drafts accepted ({2:N0}%)" -f $t.draft_n_accepted, $t.draft_n, (100 * $t.draft_n_accepted / [math]::Max(1, $t.draft_n))) }
+      $L.Add(("  prompt  {0} new tokens ({1} from cache), {2:N1} tok/s" -f $t.prompt_n, $t.cache_n, $t.prompt_per_second))
+      $L.Add(("  answer  {0} tokens, {1:N1} tok/s  ({2})" -f $t.predicted_n, $t.predicted_per_second, $t.finish))
+      if ($t.draft_n) { $L.Add(("  MTP     {0}/{1} drafts accepted ({2:N0}%)" -f $t.draft_n_accepted, $t.draft_n, (100 * $t.draft_n_accepted / [math]::Max(1, $t.draft_n)))) }
     }
     if ($st) { $L.Add(""); $L.Add("started with: ctx $($st.ctx), chunk $($st.chunk), $(if ($st.extra) { $st.extra } else { 'default options' })") }
     $monitor.Text = $L -join "`r`n"

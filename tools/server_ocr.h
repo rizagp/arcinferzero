@@ -68,7 +68,12 @@
     if (at < 0) return false;
     const std::string words = text_of(msgs[last]), task = text_of(msgs[at]);  // (a continuation keeps the PDF's task)
     std::string err;
-    const int pages = pdfr::pdf_page_count(pdf.path, err);
+    std::string bytes;
+    pdfr::Pdf doc;
+    if (!files::Store::read(pdf.path, bytes) && !(files::store().get(pdf.id, pdf) && files::Store::read(pdf.path, bytes)))
+      err = "the file is gone";  // (once more: its chat's folder renamed meanwhile)
+    else doc.open(bytes, err);
+    const int pages = err.empty() ? doc.pages() : -1;
     if (pages < 0) {
       rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("cannot read the PDF: " + err).dump() + "}}");
       return true;
@@ -146,7 +151,7 @@
     }
     for (int p = first; p <= n && !rs.client_gone(); ++p) {
       std::string piece = (p > first ? "\n\n" : "") + std::string("## Page ") + std::to_string(p) + " / " + std::to_string(pages) + "\n\n";
-      const std::string png = pdfr::pdf_render_page(pdf.path, p, 150, err);
+      const std::string png = doc.render(p, 150, err);
       if (png.empty()) {
         piece += "[the page could not be rendered: " + err + "]";
       } else {

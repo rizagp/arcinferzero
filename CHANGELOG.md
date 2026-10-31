@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-31 (evening): launcher errors, PDFs of a new chat, NPU messages
+
+- **Launcher** (issue #5): the server monitor and the model details popped up "Index (zero based) must be greater
+  than or equal to zero..." every 2 s. In `$L.Add("... {0} {1}" -f a, b)` the commas split the method's arguments,
+  so `-f` got one value; each such line now has its own parentheses (`scripts/arc-launcher.ps1`).
+- **PDFs for OCR models**: the first PDF of a new chat could fail with "An item cannot be found at the specified
+  path". The chat's folder is renamed when the chat is first saved, which came while the PDF was being opened. The
+  PDF is now read into memory once and rendered from there (`tools/pdf_render.h`).
+- **NPU**: a driver's newer graph extension (1.9 and up) is taken too, and "no NPU" now says what is missing: no NPU
+  device in Level Zero (the Intel NPU driver), or a driver too old for graph extension 1.8.
+
 ## 2026-10-31 (late night): long PDFs for OCR models
 
 - **Every page, by itself**: a PDF is read 50 pages a turn. An answer with pages left ends with
