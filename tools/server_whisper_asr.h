@@ -50,6 +50,11 @@
     if (enc->out_dim() != eng->hp.n_embd)
       throw std::runtime_error(mm + ": audio rows of " + std::to_string(enc->out_dim()) + ", " + gguf + " takes " +
                                std::to_string(eng->hp.n_embd) + " (the mmproj of another Qwen3-ASR size)");
+    {  // (the encoder loads its weights and kernels on its first clip: here, not in the user's first transcript, which
+       //  it made ~3.6 s slower: 60 s of a recording, encoder 4.1 s instead of 0.5)
+      int nt = 0;
+      enc->encode(std::vector<float>(16000, 0.0f), nt);
+    }
     auto tok = std::make_unique<Tokenizer>(eng->gguf());
     asr_bytes_ = eng->gpu_bytes + AudioQwen3A::gpu_bytes(GgufFile(mm));
     asr_eng_ = std::move(eng);

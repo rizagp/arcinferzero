@@ -7,6 +7,8 @@
   the web UI's Transcripts tab or `POST /v1/audio/transcriptions`. `/health`, `/props` and `/v1/models` answer with no
   model loaded (the model started last listed first, none `loaded`), and the first chat request naming a model loads
   it, context auto next to the speech models. A 2:43 voice message: 25 s.
+- **The first transcript after a start no longer waits for the encoder**: Qwen3-ASR's audio encoder loaded its
+  weights and kernels on its first clip (60 s of audio: encoder 4.1 s instead of 0.5); now when the server starts.
 
 ## 2026-10-30 (night): multi-GPU groundwork
 
