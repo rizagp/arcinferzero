@@ -61,11 +61,12 @@ class HttpResponse {
     h += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     h += cors();
     h += extra;
-    h += "Connection: keep-alive\r\n\r\n";
+    h += close_after ? "Connection: close\r\n\r\n" : "Connection: keep-alive\r\n\r\n";
     raw(h);
     raw(body);
     done_ = true;
   }
+  bool close_after = false;  // (the connection closes after this reply: said so, not keep-alive; BUGS.md 7)
   // A file, or the one byte range a Range header asks for ("bytes=a-b", "bytes=a-", "bytes=-n": 206 with
   // Content-Range; past the end: 416), read and sent 1 MB at a time (media of gigabytes for a <video> that seeks).
   // The file is opened shared for writing and deleting: one being played can still be replaced or deleted (a <video>
@@ -358,6 +359,7 @@ class HttpServer {
   }
   static void reply_close(SOCKET c, int status, const char* msg) {
     HttpResponse rs(c);
+    rs.close_after = true;
     rs.send(status, "application/json", std::string("{\"error\":{\"message\":\"") + msg + "\"}}");
     closesocket(c);
   }

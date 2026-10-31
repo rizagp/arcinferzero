@@ -479,16 +479,27 @@ class Store {
         v.push_back({e.path().stem().string(), t});
     return v;
   }
-  // the file ids a chat's JSON refers to: "/files/<id>" (urls) and "file_id":"<id>" (file parts)
+  // the file ids a chat's JSON refers to: "/files/<id>" (urls) and "file_id": "<id>" (file parts; whitespace around the
+  // colon allowed: a client's pretty-printed chat lost its references, and delete_unused could remove its files,
+  // BUGS.md 5)
   static std::set<std::string> refs(const std::string& text) {
     std::set<std::string> r;
-    for (const char* pat : {"/files/", "\"file_id\":\""})
-      for (size_t i = 0, n = strlen(pat); (i = text.find(pat, i)) != std::string::npos; i += n) {
-        std::string fid = text.substr(i + n, 21);
-        if (fid.rfind("file-", 0) == 0) fid = fid.substr(5);
-        fid = fid.substr(0, 16);
-        if (fid.size() == 16 && valid_id(fid)) r.insert(fid);
-      }
+    auto take = [&](size_t at) {
+      std::string fid = text.substr(at, 21);
+      if (fid.rfind("file-", 0) == 0) fid = fid.substr(5);
+      fid = fid.substr(0, 16);
+      if (fid.size() == 16 && valid_id(fid)) r.insert(fid);
+    };
+    for (size_t i = 0; (i = text.find("/files/", i)) != std::string::npos; i += 7) take(i + 7);
+    static const std::string key = "\"file_id\"";
+    for (size_t i = 0; (i = text.find(key, i)) != std::string::npos; i += key.size()) {
+      size_t j = i + key.size();
+      while (j < text.size() && isspace((unsigned char)text[j])) ++j;
+      if (j >= text.size() || text[j] != ':') continue;
+      ++j;
+      while (j < text.size() && isspace((unsigned char)text[j])) ++j;
+      if (j < text.size() && text[j] == '"') take(j + 1);
+    }
     return r;
   }
   // file id -> the chats whose messages refer to it
@@ -606,10 +617,13 @@ class Store {
     folders_[chat] = d;
     return d;
   }
-  // name, or "name (2).ext" ... when another file has it
+  // name, or "name (2).ext" ... when another file has it, or it is the chat's own (chat.json and the temporary
+  // chat.json.tmp chat_put writes, in any case: Windows names are case-blind; a file of that name was replaced by the
+  // next save, BUGS.md 3)
   static std::string free_name(const fs::path& dir, const std::string& name) {
     std::error_code ec;
-    if (name == "chat.json" || fs::exists(dir / name, ec)) {
+    const std::string low = lower(name);
+    if (low == "chat.json" || low == "chat.json.tmp" || fs::exists(dir / name, ec)) {
       const size_t d = name.rfind('.');
       const std::string stem = d == std::string::npos || d == 0 ? name : name.substr(0, d),
                         ext = d == std::string::npos || d == 0 ? "" : name.substr(d);

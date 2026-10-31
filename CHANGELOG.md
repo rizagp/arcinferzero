@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-10-31 (late): fixes from a static review ([BUGS.md](BUGS.md))
+
+- **OCR save to a folder of your own** only from the server's own page or a client without an Origin: a page
+  another local program serves could call the chat API and write a `.md` into any folder (checked: 403).
+- An OCR save never replaces a file after 999 taken names (409); `chat.json.tmp` and `CHAT.JSON` are reserved names
+  in a chat's folder; chat file references found in pretty-printed chat JSON too (they could be deleted as unused).
+- Numbers from requests and prompts read without overflow (`read_file` offset / pages, OCR page numbers, transcript
+  export options); `read_file` never starts inside a UTF-8 character; error replies say `Connection: close`;
+  `ARC_QWEN_PS` checked; the web UI skips a non-JSON stream event; smaller hardening from `/analyze`.
+
 ## 2026-10-31 (last): multi-GPU measured on 4 Arc Pro B60
 
 - **First numbers from real GPUs** (issue #4): Qwen3.8 27B generation 1.63x on 2 B60s, 1.97x on 3, 2.44x on 4

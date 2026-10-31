@@ -63,8 +63,12 @@ struct Rt {
   }
   // (needs ze_load() and zeInit(0) done: zeInit(1), GPUs only, hides the NPU driver)
   bool init() {
-    auto getExt = (ze_result_t(*)(ze_driver_handle_t, const char*, void**))(void*)GetProcAddress(
-        GetModuleHandleA("ze_loader.dll"), "zeDriverGetExtensionFunctionAddress");
+    const HMODULE zl = GetModuleHandleA("ze_loader.dll");  // (not loaded: no Level Zero at all; BUGS.md appendix)
+    if (!zl) {
+      why = "Level Zero (ze_loader.dll) is not loaded";
+      return false;
+    }
+    auto getExt = (ze_result_t(*)(ze_driver_handle_t, const char*, void**))(void*)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
     uint32_t nd = 0;
     zeDriverGet(&nd, nullptr);
     std::vector<ze_driver_handle_t> ds(nd);
@@ -91,7 +95,7 @@ struct Rt {
     }
     {  // (the driver's version: part of the blob cache's key, so a driver update compiles the graphs again)
       struct DriverProps { uint32_t stype; void* pNext; uint8_t uuid[16]; uint32_t driverVersion; } dp{0x1u, nullptr, {}, 0};
-      auto getProps = (ze_result_t(*)(ze_driver_handle_t, DriverProps*))(void*)GetProcAddress(GetModuleHandleA("ze_loader.dll"),
+      auto getProps = (ze_result_t(*)(ze_driver_handle_t, DriverProps*))(void*)GetProcAddress(zl,
                                                                                              "zeDriverGetProperties");
       if (getProps && getProps(drv, &dp) == 0) driver_version = dp.driverVersion;
     }

@@ -121,8 +121,14 @@
       if (files::valid_id(chat)) chat_dir = std::filesystem::path(files::store().chat_dir_make(chat));
       std::error_code ec;
       if (!folder.empty()) {
-        if (!rq.local_peer) {
-          rs.send(403, "application/json", "{\"error\":{\"message\":\"ocr_save.folder: from this computer only\"}}");
+        // (this computer, and not a page another local program serves: such a page may call the chat API, and the
+        //  connection is local for it too, so local_peer alone let it write a .md into any folder. Only the server's
+        //  own page, Origin = http://<Host>, or a client that sends no Origin; BUGS.md 1, 2026-10-31)
+        std::string origin = rq.header("origin"), own = "http://" + rq.header("host");
+        for (std::string* x : {&origin, &own})
+          for (char& c : *x) c = (char)tolower((unsigned char)c);
+        if (!rq.local_peer || (!origin.empty() && origin != own)) {
+          rs.send(403, "application/json", "{\"error\":{\"message\":\"ocr_save.folder: from this server's own page or a client on this computer only\"}}");
           return true;
         }
         dir = std::filesystem::path(folder);
@@ -130,7 +136,10 @@
           rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("no such folder: " + folder).dump() + "}}");
           return true;
         }
-        if (std::filesystem::equivalent(dir, chat_dir, ec)) chat_dir.clear();  // (the chat's own folder named)
+        if (std::filesystem::equivalent(dir, chat_dir, ec)) {  // (the chat's own folder named: as an empty folder)
+          chat_dir.clear();
+          in_chat = true;
+        }
       } else {
         dir = chat_dir.empty() ? std::filesystem::path(pdf.path).parent_path() : chat_dir;
         chat_dir.clear();
@@ -146,6 +155,12 @@
           name = stem + " (" + std::to_string(k) + ").md";
           md = dir / name;
           if (!md_chat.empty()) md_chat = chat_dir / name;
+        }
+        // (999 names taken: the loop ended on one that exists, which the write below would have replaced)
+        if (std::filesystem::exists(md, ec) || (!md_chat.empty() && std::filesystem::exists(md_chat, ec))) {
+          rs.send(409, "application/json", "{\"error\":{\"message\":" + Json("every name from " + stem + ".md to " + stem +
+                                                                                 " (999).md is taken: choose another name").dump() + "}}");
+          return true;
         }
         for (const auto& f_path : {md, md_chat}) {
           if (f_path.empty()) continue;
@@ -317,14 +332,21 @@
       const char* p = t.c_str() + k + strlen(key);
       while (*p == ' ' || *p == ':') ++p;
       if (!isdigit((unsigned char)*p)) continue;
-      const int a = atoi(p);
-      while (isdigit((unsigned char)*p)) ++p;
+      // (a number of at most 7 digits: atoi of "page 99999999999999999999" overflowed an int, BUGS.md 4b)
+      auto num = [](const char*& q) {
+        long v = 0;
+        int nd = 0;
+        for (; isdigit((unsigned char)*q); ++q)
+          if (++nd <= 7) v = v * 10 + (*q - '0');
+        return nd <= 7 ? (int)v : 0;
+      };
+      const int a = num(p);
       while (*p == ' ') ++p;
       int b = a;
       if (*p == '-' || !strncmp(p, "sampai", 6) || !strncmp(p, "to", 2) || !strncmp(p, "s/d", 3) || !strncmp(p, "\xE2\x80\x93", 3)) {
         p += *p == '-' ? 1 : !strncmp(p, "sampai", 6) ? 6 : !strncmp(p, "\xE2\x80\x93", 3) ? 3 : !strncmp(p, "s/d", 3) ? 3 : 2;
         while (*p == ' ') ++p;
-        if (isdigit((unsigned char)*p)) b = atoi(p);
+        if (isdigit((unsigned char)*p)) b = num(p);
       }
       if (a >= 1 && b >= a) {
         first = a;
@@ -339,7 +361,8 @@
     int best = 0;
     for (size_t p = s.find("## Page "); p != std::string::npos; p = s.find("## Page ", p + 8)) {
       const size_t eol = s.find('\n', p), next = s.find("## Page ", p + 8);
-      const std::string body = eol == std::string::npos ? std::string() : s.substr(eol, (next == std::string::npos ? s.size() : next) - eol);
+      const size_t stop = next == std::string::npos || next < eol ? s.size() : next;  // (BUGS.md 11: no underflow)
+      const std::string body = eol == std::string::npos ? std::string() : s.substr(eol, stop - eol);
       if (body.find_first_not_of(" \r\n\t") != std::string::npos)  // (a kept note, see the web UI's ocrKept, counts)
         best = std::max(best, atoi(s.c_str() + p + 8));
     }

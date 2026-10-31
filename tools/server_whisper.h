@@ -771,9 +771,17 @@ class Service {
       const auto f = std::find_if(fs_.begin(), fs_.end(), [&](const whisper::Format& x) { return fmt == x.name; });
       if (f == fs_.end()) return fail(400, "format: json, fw, captions, verbose_json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv or tsv");
       whisper::CueOptions co;
-      if (!query_param(rq.query, "max_chars").empty()) co.max_chars = std::clamp(atoi(query_param(rq.query, "max_chars").c_str()), 8, 200);
-      if (!query_param(rq.query, "max_lines").empty()) co.max_lines = std::clamp(atoi(query_param(rq.query, "max_lines").c_str()), 1, 4);
-      if (!query_param(rq.query, "max_cue_s").empty()) co.max_s = std::clamp(atof(query_param(rq.query, "max_cue_s").c_str()), 0.5, 30.0);
+      // (strtol saturates where atoi overflowed; strtod's NaN keeps the default: BUGS.md 4c)
+      auto qint = [&](const char* k, int lo, int hi, int def) {
+        const std::string v = query_param(rq.query, k);
+        return v.empty() ? def : (int)std::clamp<long>(strtol(v.c_str(), nullptr, 10), lo, hi);
+      };
+      co.max_chars = qint("max_chars", 8, 200, co.max_chars);
+      co.max_lines = qint("max_lines", 1, 4, co.max_lines);
+      if (const std::string v = query_param(rq.query, "max_cue_s"); !v.empty()) {
+        const double d = strtod(v.c_str(), nullptr);
+        if (!std::isnan(d)) co.max_s = std::clamp(d, 0.5, 30.0);
+      }
       co.one_word = query_param(rq.query, "word_cues") == "1";
       std::string stem = m["name"].str("transcript");
       const size_t dot = stem.rfind('.');

@@ -1407,7 +1407,8 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
             // (its content within the model's read budget too, in parts by offset: a 60 KB page read whole overflowed
             //  a small context)
             const std::string body = sj["content"].str();
-            const size_t mx = files::read_budget(ctx), off = std::min(body.size(), (size_t)std::max(0.0, a["offset"].as_number(0)));
+            // (as_clamped: a cast of 1e308 to size_t was undefined, BUGS.md 4a)
+            const size_t mx = files::read_budget(ctx), off = (size_t)a["offset"].as_clamped(0, 0, (int64_t)body.size());
             if (off > 0 || body.size() > mx) {
               size_t b = off, end = std::min(body.size(), off + mx);
               while (b < body.size() && ((unsigned char)body[b] & 0xC0) == 0x80) ++b;
@@ -1438,8 +1439,18 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       }
       // the pages this call asks for ("12" or "12-15"; none: from 1, to 0)
       const bool by_pages = !a["pages"].str().empty() || a["pages"].is_number();
-      const std::string pg = a["pages"].is_number() ? std::to_string((int)a["pages"].as_number()) : a["pages"].str();
-      const int from = std::max(1, atoi(pg.c_str())), to = !by_pages ? 0 : pg.find('-') != std::string::npos ? std::max(from, atoi(pg.c_str() + pg.find('-') + 1)) : from;
+      const std::string pg = a["pages"].is_number() ? std::to_string(a["pages"].as_clamped(1, 1, 1 << 24)) : a["pages"].str();
+      // (page numbers of at most 7 digits: the cast and atoi of a huge one were undefined, BUGS.md 4a)
+      auto page_num = [](const char* q) {
+        long v = 0;
+        int nd = 0;
+        while (*q == ' ') ++q;
+        for (; isdigit((unsigned char)*q); ++q)
+          if (++nd <= 7) v = v * 10 + (*q - '0');
+        return nd <= 7 ? (int)v : 1 << 24;
+      };
+      const int from = std::max(1, page_num(pg.c_str())),
+                to = !by_pages ? 0 : pg.find('-') != std::string::npos ? std::max(from, page_num(pg.c_str() + pg.find('-') + 1)) : from;
       // scanned pages among them, not transcribed yet: the loaded vision model reads them now (kScanPagesPerCall)
       const std::string seer = vis.model ? vis.model() : "";
       std::vector<int> want;
@@ -1556,7 +1567,9 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       // (a part at a time: max_chars, and never more than the model's context takes in one read)
       whole = whole || fits(data);  // (a section's or pages' text, or the text from an offset, likewise)
       const size_t asked = whole ? data.size() : (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
-      const size_t off = (size_t)a["offset"].as_clamped(0, 0, (int64_t)data.size()), mx = std::min(asked, files::read_budget(ctx));
+      size_t off = (size_t)a["offset"].as_clamped(0, 0, (int64_t)data.size());
+      while (off < data.size() && ((unsigned char)data[off] & 0xC0) == 0x80) ++off;  // (a character's start: BUGS.md 9)
+      const size_t mx = std::min(asked, files::read_budget(ctx));
       size_t end = std::min(data.size(), off + mx);
       if (end < data.size()) {  // (cut at a paragraph's end, else a line's or a space, when one is in the last third)
         size_t at = data.rfind("\n\n", end);

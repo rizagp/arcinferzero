@@ -1998,8 +1998,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     PsCfg c;
     if (hp.gemma || hd != 256) return c;
     if (const char* e = getenv("ARC_QWEN_PS")) {
-      sscanf(e, "%d,%d,%d,%d,%d", &c.pns, &c.phg, &c.ptt, &c.tpw, &c.from);
-      if (c.pns && (hpg % c.phg || c.tpw % c.ptt)) c.pns = 0;
+      // (all four fields given and positive, else off: a missing or 0 phg / ptt divided by zero, BUGS.md 8)
+      if (sscanf(e, "%d,%d,%d,%d,%d", &c.pns, &c.phg, &c.ptt, &c.tpw, &c.from) < 4 || c.phg <= 0 || c.ptt <= 0 || c.tpw <= 0 ||
+          (c.pns && (hpg % c.phg || c.tpw % c.ptt)))
+        c.pns = 0;
       return c;
     }
     (void)hpg;

@@ -263,7 +263,7 @@ inline bool raw_image(const pdf::File& f, const P& xo, const P& res, const std::
     std::string rgb((size_t)w * h * 3, '\0');
     for (int y = 0; y < h; ++y)
       for (int x = 0; x < w; ++x) {
-        int v[4];
+        int v[4] = {};  // (a colour space of n components fills v[0, n): the rest 0, not undefined)
         for (int c = 0; c < n; ++c) {
           v[c] = sample(y, (size_t)x * n + c) * 255 / maxv;
           if (inv) v[c] = 255 - v[c];
