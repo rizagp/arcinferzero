@@ -300,13 +300,15 @@ $buttons = New-Object System.Windows.Forms.FlowLayoutPanel
 $buttons.Dock = "Bottom"; $buttons.Height = 42; $buttons.Padding = New-Object System.Windows.Forms.Padding(6, 4, 6, 2)
 $startBtn = New-Button "Start" 130
 $startBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+# (speech to text only, arc-server -Model none: Qwen3-ASR, plus Whisper when Speech is on; a chat model loads later)
+$speechBtn = New-Button "Speech only" 110
 $stopBtn = New-Button "Stop server" 120
 $refreshBtn = New-Button "Refresh list" 120
 $defBtn = New-Button "Set as default" 120
 $resetBtn = New-Button "Reset options" 110
 $webBtn = New-Button "Open web UI"
 $logBtn = New-Button "Open log"
-$buttons.Controls.AddRange(@($startBtn, $stopBtn, $defBtn, $resetBtn, $refreshBtn, $webBtn, $logBtn))
+$buttons.Controls.AddRange(@($startBtn, $speechBtn, $stopBtn, $defBtn, $resetBtn, $refreshBtn, $webBtn, $logBtn))
 # meeting recording (arc-server record / record-stop; only with bin\arc_recorder.exe): App = the meeting app whose
 # sound is "Others" (empty: everything the speakers play)
 $recAppLbl = New-Label "App:"
@@ -395,6 +397,7 @@ function Update-Status {
   }
   $stopBtn.Enabled = [bool]$id -and -not $busyAct
   $startBtn.Enabled = -not $busyAct -and $grid.SelectedRows.Count -gt 0
+  $speechBtn.Enabled = -not $busyAct
   # monitoring text
   if ($id -and $p) {
     $L = New-Object System.Collections.Generic.List[string]
@@ -491,11 +494,15 @@ function Start-Rec([string[]]$argList) {
   $script:recProc = Start-Process -FilePath $shell -ArgumentList $a -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $script:recOut -RedirectStandardError $script:recErr
 }
-function Start-Selected {
-  if ($grid.SelectedRows.Count -eq 0) { return }
-  $m = $grid.SelectedRows[0].Tag
-  if (-not $m.supported) {
-    [void][System.Windows.Forms.MessageBox]::Show("arcinferzero does not support this model yet (architecture $($m.arch)).", "arcinferzero"); return
+function Start-Selected([switch]$Speech) {
+  if ($Speech) {
+    $m = [pscustomobject]@{ alias = "none" }  # (no model's own options apply)
+  } else {
+    if ($grid.SelectedRows.Count -eq 0) { return }
+    $m = $grid.SelectedRows[0].Tag
+    if (-not $m.supported) {
+      [void][System.Windows.Forms.MessageBox]::Show("arcinferzero does not support this model yet (architecture $($m.arch)).", "arcinferzero"); return
+    }
   }
   $a = @("start", "-Model", $m.alias)
   foreach ($k in @($script:over.Keys)) {
@@ -533,7 +540,8 @@ function Start-Selected {
       "whisper_max" { $a += @("-WhisperMaxMinutes", [int]$v) }
     }
   }
-  $msg.Text = "Starting $($m.alias)... (loading takes 5-40 s; 35B up to 1-3 min)"
+  $wh = if ((Get-Field "whisper") -notin "", "off") { " and Whisper" } else { "" }
+  $msg.Text = if ($Speech) { "Starting speech to text only (Qwen3-ASR$wh)..." } else { "Starting $($m.alias)... (loading takes 5-40 s; 35B up to 1-3 min)" }
   Start-Action $a
 }
 
@@ -566,6 +574,7 @@ $resetBtn.Add_Click({
   })
 
 $startBtn.Add_Click({ Start-Selected })
+$speechBtn.Add_Click({ Start-Selected -Speech })
 $grid.Add_CellDoubleClick({ param($s, $e) if ($e.RowIndex -ge 0) { Start-Selected } })
 $grid.Add_SelectionChanged({ Show-Detail; Fill-Defaults; $startBtn.Enabled = -not ($script:actProc -and -not $script:actProc.HasExited) -and $grid.SelectedRows.Count -gt 0 })
 $stopBtn.Add_Click({

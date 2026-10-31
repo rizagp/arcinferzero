@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-31: speech to text without a chat model
+
+- **`serverz -m none`** (`arc-server start -Model none`, the launcher's **Speech only** button): only the speech
+  service loads (Qwen3-ASR alone, ~3.2 GB of GPU memory; `--whisper auto` adds Whisper), for transcripts through
+  the web UI's Transcripts tab or `POST /v1/audio/transcriptions`. `/health`, `/props` and `/v1/models` answer with no
+  model loaded (the model started last listed first, none `loaded`), and the first chat request naming a model loads
+  it, context auto next to the speech models. A 2:43 voice message: 25 s.
+
 ## 2026-10-30 (night): multi-GPU groundwork
 
 - **bin\mgpu_probe.exe** (zero/mgpu_probe.cpp, in the package): lists the GPUs and measures what moving data between

@@ -1557,7 +1557,7 @@ int main(int argc, char** argv) {
   };
   // the options and what each takes ("": a switch), for the messages of a missing value and of an unknown option
   static const std::vector<std::pair<std::string, std::string>> kOpts = {
-      {"--model", "a .gguf file, e.g. -m \"C:\\models\\Qwen3.5-4B-UD-Q4_K_XL.gguf\""}, {"--host", "an address, e.g. 0.0.0.0"},
+      {"--model", "a .gguf file, e.g. -m \"C:\\models\\Qwen3.5-4B-UD-Q4_K_XL.gguf\", or none"}, {"--host", "an address, e.g. 0.0.0.0"},
       {"--port", "a port, 1..65535"}, {"--ctx", "a number of tokens, or auto"}, {"--chunk", "a number of tokens, 0 = auto"},
       {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
@@ -1744,7 +1744,8 @@ int main(int argc, char** argv) {
       return v == "auto" || v == "auto-quiet" || v == "default" || v == "on" || v == "off" || v == "yes" || v == "no" ||
              v == "true" || v == "false" || v == "1" || v == "0";
     };
-    if (!model.empty()) check("-m", model, false, ".gguf");
+    if (!model.empty() && model != "none") check("-m", model, false, ".gguf");
+    if (model == "none" && !swap) throw std::runtime_error("-m none: a chat model loads later on request, which --no-swap turns off");
     if (!so.mmproj.empty() && so.mmproj != "-") check("--mmproj", so.mmproj, false, ".gguf");
     if (!so.eo.dflash.empty()) check("--dflash", so.eo.dflash, true, "model.safetensors");
     if (!so.webui.empty()) check("--webui", so.webui, true, "index.html");
@@ -1758,6 +1759,8 @@ int main(int argc, char** argv) {
   if (model.empty() || help) {
     fprintf(stderr,
             "usage: arcinferzero-server -m model.gguf [options]   OpenAI-compatible server (API at /v1, web UI at /)\n"
+            "       arcinferzero-server -m none [options]         speech to text only (Qwen3-ASR, --whisper auto for\n"
+            "                                                 Whisper too); a chat request naming a model loads it later\n"
             "       arcinferzero-server --list-models             the models it can load, as JSON (Hugging Face cache,\n"
             "                                                 %%USERPROFILE%%\\.arcinferzero\\models, model-dirs.txt) with each one's auto context\n"
             "  -m, --model FILE      model GGUF; an mmproj-* image projector and an mtp-* drafter next to it are found\n"
@@ -1863,6 +1866,10 @@ int main(int argc, char** argv) {
   if (so.eo.kernel_dir == "kernels" || so.eo.kernel_dir == "zero/kernels") so.eo.kernel_dir = find_dir(so.eo.kernel_dir);
   if (so.webui.empty()) so.webui = find_dir("webui");
   if (alias.empty()) alias = std::filesystem::path(model).stem().string();
+  // -m none: speech to text only (transcripts), a chat model loaded later by the first request naming one; with no
+  // speech option given, Qwen3-ASR alone (the default transcript model, ~3.7 GB of GPU memory)
+  const bool no_chat = model == "none";
+  if (no_chat && whisper_opt == "off" && asr_opt == "default") asr_opt = "auto";
 
   // the speech service before the model: --ctx auto then leaves its GPU memory free (tools/server_speech.h)
   std::unique_ptr<srvwh::Service> wh;
@@ -1873,13 +1880,20 @@ int main(int argc, char** argv) {
     fprintf(stderr, "arcinferzero-server: --whisper: %s\n", e.what());
     return 1;
   }
-  std::unique_ptr<Loaded> cur;
-  try {  // (a model that cannot load: its reason, not a silent abort)
-    cur = load_model(model, alias, so);
-  } catch (const std::exception& e) {
-    fprintf(stderr, "arcinferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
+  if (no_chat && !wh) {
+    fprintf(stderr, "arcinferzero-server: -m none with --whisper off --asr off: nothing to run\n");
     return 1;
   }
+  std::unique_ptr<Loaded> cur;
+  if (no_chat)
+    fprintf(stderr, "no chat model (-m none): speech to text only; a chat request naming a model loads it\n");
+  else
+    try {  // (a model that cannot load: its reason, not a silent abort)
+      cur = load_model(model, alias, so);
+    } catch (const std::exception& e) {
+      fprintf(stderr, "arcinferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
+      return 1;
+    }
   ServeOpts cur_so = so;  // (the loaded model's options: a change of --slots loads it again with them)
   std::vector<ModelInfo> catalog = swap ? scan_models() : std::vector<ModelInfo>();
   std::shared_mutex swap_mu;  // requests share it; switching models takes it exclusively
@@ -1914,7 +1928,7 @@ int main(int argc, char** argv) {
   // (no model loaded: a model switch failed and loading the previous model again did too; caller holds swap_mu)
   auto no_model = [&](HttpResponse& rs) {
     Json err = Json::object(), r = Json::object();
-    err.set("message", "no model is loaded (the last model switch failed); ask for a model or restart the server");
+    err.set("message", "no chat model is loaded (started with -m none, or the last model switch failed): name one in the request (\"model\": an id of /v1/models)");
     err.set("type", "server_error");
     r.set("error", err);
     return rs.send(503, "application/json", r.dump());
@@ -2229,11 +2243,15 @@ int main(int argc, char** argv) {
   };
   dispatch = [&](const HttpRequest& rq, HttpResponse& rs) {
     const bool chat_post = rq.method == "POST" && rq.path == "/v1/chat/completions";
-    {  // (no model: a switch failed and so did loading the previous model again; a chat request naming one loads it)
+    // (answered with no model too, below: the speech service's state and the models a chat can load)
+    const bool info = rq.method == "GET" && (rq.path == "/health" || rq.path == "/props" ||
+                                             (swap && (rq.path == "/v1/models" || rq.path == "/models")));
+    {  // (no model: -m none, or a switch failed and so did loading the previous model again; a chat request naming
+       //  one loads it)
       std::shared_lock<std::shared_mutex> lk(swap_mu);
-      if (!cur && !(swap && chat_post)) {
+      if (!cur && !(swap && chat_post) && !info) {
         Json err = Json::object(), r = Json::object();
-        err.set("message", "no model is loaded (the last model switch failed); ask for a model or restart the server");
+        err.set("message", "no chat model is loaded (started with -m none, or the last model switch failed): name one in the request (\"model\": an id of /v1/models)");
         err.set("type", "server_error");
         r.set("error", err);
         return rs.send(503, "application/json", r.dump());
@@ -2313,15 +2331,42 @@ int main(int argc, char** argv) {
         return rs.send(200, "application/json", merged.dump());
       }
     }
+    if (rq.method == "GET" && (rq.path == "/health" || rq.path == "/props")) {  // (no chat model: the speech service's)
+      std::shared_lock<std::shared_mutex> lk(swap_mu);
+      if (!cur) {
+        if (rq.path == "/health") return rs.send(200, "application/json", "{\"status\":\"ok\"}");
+        Json r = Json::object(), mod = Json::object();
+        r.set("model", "");
+        r.set("n_ctx", 0);
+        r.set("engine", "arcinferzero");
+        mod.set("vision", false);
+        mod.set("audio", false);
+        r.set("modalities", mod);
+        r.set("audio", false);
+        if (!so.whisper_props.is_null()) r.set("whisper", so.whisper_props);
+        return rs.send(200, "application/json", r.dump());
+      }
+    }
     if (swap && (rq.path == "/v1/models" || rq.path == "/models")) {  // every model a request can switch to
       std::shared_lock<std::shared_mutex> lk(swap_mu);
-      if (!cur) return no_model(rs);  // (a failed switch: before, cur->alias of no model)
+      // (no model loaded, -m none or a failed switch: none is "loaded", the one started last comes first, as the
+      //  model a client taking the first entry then loads)
+      std::string last;
+      if (!cur) {  // (written by arc-server: a UTF-8 BOM, CRLF; the catalog's Hugging Face paths mix / and \)
+        std::ifstream f(app_dir() + "/last-model.txt");
+        std::getline(f, last);
+        if (last.rfind("\xEF\xBB\xBF", 0) == 0) last.erase(0, 3);
+        while (!last.empty() && (last.back() == '\r' || last.back() == ' ')) last.pop_back();
+        if (!last.empty()) last = std::filesystem::path(last).lexically_normal().string();
+      }
       Json d = Json::array();
       std::map<std::string, uint64_t> sizes;  // (llama_models "size")
-      bool listed = false;
+      bool listed = !cur;
       for (const ModelInfo& m : catalog) {
         if (!m.supported) continue;
         const bool loaded = !listed && m.alias == cur->alias;
+        const bool front = loaded || (!last.empty() && std::filesystem::path(m.path).lexically_normal().string() == last);
+        if (front) last.clear();  // (its first variant only)
         listed = listed || loaded;
         Json j = Json::object();
         j.set("id", m.alias);
@@ -2335,7 +2380,7 @@ int main(int argc, char** argv) {
         set_modalities(j, loaded ? cur->srv->has_vision() : m.vision, loaded ? cur->srv->has_audio() : m.audio);
         sizes[m.alias] = m.bytes;
         // the loaded model first (clients that take the first entry get the running one)
-        if (loaded) {
+        if (front) {
           Json d2 = Json::array();
           d2.push(j);
           for (const Json& e : d.items()) d2.push(e);
@@ -2437,7 +2482,7 @@ int main(int argc, char** argv) {
     std::shared_lock<std::shared_mutex> lk(swap_mu);
     if (!cur) {  // (a chat request naming no model, or an unknown one, while none is loaded)
       Json err = Json::object(), r = Json::object();
-      err.set("message", "no model is loaded (the last model switch failed); ask for a model or restart the server");
+      err.set("message", "no chat model is loaded (started with -m none, or the last model switch failed): name one in the request (\"model\": an id of /v1/models)");
       err.set("type", "server_error");
       r.set("error", err);
       return rs.send(503, "application/json", r.dump());

@@ -159,7 +159,7 @@ function Say($msg) { if (-not $Quiet) { Write-Host $msg } }
 function Get-Running {
   try { $d = @((Invoke-RestMethod "$base/v1/models" -TimeoutSec 2).data) } catch { return $null }
   $l = @($d | Where-Object { $_.loaded -eq $true })
-  if ($l.Count) { return $l[0].id } else { return $d[0].id }
+  if ($l.Count) { return $l[0].id } else { return "none" }  # (-Model none, or a failed switch: no chat model)
 }
 
 # Model files compared by full path: serverz.exe lists Hugging Face cache paths with mixed separators
@@ -276,6 +276,8 @@ Options for start / restart:
   -Model <shortcut|text|path>    27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26; a variant with -mtp (MTP, no images),
                                  -vision (images, no MTP) or -std (neither), e.g. 9b-std, 27b-std; a model id
                                  (as in Pi's /model), part of a model's name (e.g. swift) or a .gguf path.
+                                 none: speech to text only (Qwen3-ASR; -Whisper auto adds Whisper), the web UI's
+                                 Transcripts tab; a chat model loads later when a chat picks one.
                                  -nodf / -df (models with a DFlash2 drafter): the MTP block only / DFlash2 only.
                                  Without it: a numbered list of the models in the Hugging Face cache.
   -Ctx <N|auto>                  context in tokens, or auto = the largest that fits the GPU memory currently
@@ -445,7 +447,12 @@ if (-not (Test-Path $exe)) { throw "$exe not found: build it with .\build.ps1 ze
 $running = Get-Running
 $st = if ($running -and (Test-Path $stateFile)) { Get-Content $stateFile -Raw | ConvertFrom-Json } else { $null }
 $models = Get-Models
-if (-not $Model -and $Action -eq "restart" -and $running) {
+# -Model none: speech to text only (Qwen3-ASR; -Whisper auto for Whisper too), a chat model loaded later by the first
+# chat request naming one (the web UI's model menu)
+$none = [pscustomobject]@{ name = "speech to text only"; file = ""; path = "none"; alias = "none"; mtp = $false; ctx = 0 }
+if ($Model -eq "none" -or (-not $Model -and $Action -eq "restart" -and $running -eq "none")) {
+  $m = $none
+} elseif (-not $Model -and $Action -eq "restart" -and $running) {
   # (restart without -Model: the running model again, with the options given; no menu)
   $m = $models | Where-Object { $_.alias -eq $running } | Select-Object -First 1
   if (-not $m -and $st) { $m = $models | Where-Object { Same-Path $_.path $st.path } | Select-Object -First 1 }
@@ -580,7 +587,7 @@ if (-not $NoStream) {
 Say "  (loading takes 5-40 s; log: $log)"
 $p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
   -RedirectStandardError $log -RedirectStandardOutput (Join-Path $stateDir "server.out.log")
-Set-Content $lastFile $m.path -Encoding utf8
+if ($m -ne $none) { Set-Content $lastFile $m.path -Encoding utf8 }  # (none: the chat model used last stays the default)
 @{ pid = $p.Id; engine = $Engine; model = $m.name; path = $m.path; alias = $m.alias; ctx = $ctxArg; chunk = $(if ($Chunk -gt 0) { "$Chunk" } else { "default" }); sess = "$SessionCacheGb"; novision = $novision; extra = $extraKey; port = $Port; started = (Get-Date).ToString("s") } |
   ConvertTo-Json | Set-Content $stateFile -Encoding utf8
 
@@ -617,6 +624,10 @@ while ($true) {
 }
 Write-Progress -Activity $barActivity -Completed
 $nctx = (Invoke-RestMethod "$base/props" -TimeoutSec 5).n_ctx
+if ($m -eq $none) {
+  Say ("Ready after {0:N0} s: speech to text only (web UI {1}/, Transcripts tab); a chat model loads when a chat asks for one" -f ((Get-Date) - $t0).TotalSeconds, $base)
+  return
+}
 Say ("Ready after {0:N0} s: {1}, context {2:N0} (web UI {3}/)" -f ((Get-Date) - $t0).TotalSeconds, $m.alias, $nctx, $base)
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
 if ($true) {
