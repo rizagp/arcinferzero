@@ -9,6 +9,9 @@
   it, context auto next to the speech models. A 2:43 voice message: 25 s.
 - **The first transcript after a start no longer waits for the encoder**: Qwen3-ASR's audio encoder loaded its
   weights and kernels on its first clip (60 s of audio: encoder 4.1 s instead of 0.5); now when the server starts.
+- **Web UI recordings: the MP3 bitrate is a choice** (Transcripts tab, "Keep as MP3 96 / 128 / 160 / 192 / 256 /
+  320 kbps", or WAV) instead of a fixed 192. Windows' MP3 encoder takes at most 128 kbps for one track (a
+  microphone): higher choices give 128 there; a meeting's two tracks get the bitrate chosen (checked: 96, 192, 320).
 
 ## 2026-10-30 (night): multi-GPU groundwork
 
