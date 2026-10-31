@@ -205,6 +205,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .ask .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .ask button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--side); color: var(--text); font-size: 13px; }
 .ask button.yes { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.ask .lab { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+.ask .in { display: block; width: 100%; box-sizing: border-box; margin-top: 3px; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--input); color: var(--text); font-size: 14px; }
 .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 .msg.user .imgs img { max-height: 200px; max-width: 260px; border-radius: 6px; display: block; }
 .msg.user .imgs audio, .att audio { height: 36px; max-width: 260px; }
@@ -1830,7 +1832,10 @@ async function streamTurn(el, st, onOverflow, job) {
     if (think.effort && !(job.model !== loadedId && think.effort !== "none")) body.reasoning_effort = think.effort;
     if ($("tempon").checked) body.temperature = parseFloat($("temp").value);
     if (caps.stt) body.speech = sttOn(job.model) ? "whisper" : "model";
-    if (caps.ocr && ocrSaveFor.get(job.id)) { body.ocr_save = true; body.chat_id = job.id; }  // (into this chat's .md, see ocrView)  // (audio attached: the server's Whisper writes it, or the model hears it)
+    {  // (an OCR model's PDF saved to a .md, see ocrView: a new file with the PDF's turn, the same one after it)
+      const sv = caps.ocr && ocrSaveFor.get(job.id);
+      if (sv) { body.ocr_save = { name: sv.name, folder: sv.folder, append: !job.ocrFresh }; body.chat_id = job.id; }
+    }
     if (toolsOn(job.id) && !job.noTools) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termOffered(job.id) ? TERM_TOOLS : [])];
     kick();
     res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: job.controller.signal });
@@ -1985,7 +1990,7 @@ function estTokens(h) {
 // ("ocr_save", asked when the PDF is sent): the text goes into "<the PDF's name>.md" in the chat's files, and the bubble
 // shows only the page read last under a bar of the pages done; the chat keeps that page and the closing note (enough
 // for the next turn to go on from), not hundreds of pages it would have to compact.
-const ocrSaveFor = new Map();  // chat id -> the PDF's text is saved to its .md
+const ocrSaveFor = new Map();  // chat id -> {name, folder} of the .md its PDF's text goes into (asked with each PDF), or null
 const OCR_MORE = /\[OCR: \d+ more page/;
 function ocrView(a, saving) {
   const heads = [...a.matchAll(/## Page (\d+) \/ (\d+)/g)], h = heads[heads.length - 1];
@@ -1993,43 +1998,43 @@ function ocrView(a, saving) {
   const page = (h ? a.slice(h.index) : a).replace(/\[OCR:[^\]]*\]/, "").trim();
   const n = h ? +h[1] : 0, total = h ? +h[2] : 0;
   return (total ? '<div class="ocrbar"><div style="width:' + (100 * n / total).toFixed(1) + '%"></div></div><div class="ocrlab">' +
-    "page " + n + " / " + total + " read" + (saving ? " · the text goes into the .md in this chat's files" : "") + "</div>" : "") +
+    "page " + n + " / " + total + " read" + (saving ? " · the text goes into " + esc(saving.folder ? saving.folder + "\\" + saving.name : saving.name) +
+    (saving.folder ? "" : " in this chat's files") : "") + "</div>" : "") +
     markdown(page) + (note ? '<div class="ocrnote">' + esc(note) + "</div>" : "");
 }
-// A question in a modal of the page (not the browser's confirm()): resolves true for the first button, false for the
-// other one or Esc. body: [text, ...] with {name} for a file name in bold.
-function askModal(title, body, yes, no) {
+// The save question of a PDF: the file's name and folder (empty: this chat's files); {name, folder}, or null for
+// "Just show it" / Esc
+function ocrSaveAsk(pdf) {
   return new Promise((done) => {
     const d = document.createElement("dialog");
     d.className = "ask";
-    const h = document.createElement("h3");
-    h.textContent = title;
-    d.appendChild(h);
-    for (const line of body) {
-      const para = document.createElement("p");
-      for (const piece of [].concat(line)) {
-        const span = document.createElement("span");
-        if (typeof piece === "object") { span.className = "name"; span.textContent = piece.name; } else span.textContent = piece;
-        para.appendChild(span);
-      }
-      d.appendChild(para);
-    }
-    const row = document.createElement("div");
-    row.className = "row";
+    d.innerHTML = '<h3>Save the OCR text to a file?</h3><p>The text read from <span class="name"></span> can go into a Markdown ' +
+      "file, each page added as it is read. The chat then shows only the page read last, with a bar of the pages done.</p>" +
+      '<label class="lab">File name<input class="in" data-k="name"></label>' +
+      '<label class="lab">Folder<input class="in" data-k="folder" placeholder="empty: this chat\'s files (the Files panel)"></label>' +
+      "<p>An existing file is never written over: a new name is taken then. Either way the next pages are read by " +
+      "themselves until the last one (Stop ends it).</p>" +
+      '<div class="row"><button>Just show it</button><button class="yes">Save to .md</button></div>';
+    d.querySelector(".name").textContent = pdf;
+    const [nameIn, folderIn] = d.querySelectorAll(".in");
+    nameIn.value = pdf.replace(/\.pdf$/i, "") + ".md";
     const finish = (v) => { d.close(); d.remove(); done(v); };
-    for (const [label, v] of [[no, false], [yes, true]]) {
-      const b = document.createElement("button");
-      b.textContent = label;
-      if (v) b.className = "yes";
-      b.addEventListener("click", () => finish(v));
-      row.appendChild(b);
-    }
-    d.appendChild(row);
-    d.addEventListener("cancel", (e) => { e.preventDefault(); finish(false); });  // (Esc)
+    const [no, yes] = d.querySelectorAll("button");
+    no.addEventListener("click", () => finish(null));
+    yes.addEventListener("click", () => finish({ name: nameIn.value.trim() || nameIn.placeholder, folder: folderIn.value.trim().replace(/^"|"$/g, "") }));
+    for (const i of [nameIn, folderIn]) i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); yes.click(); } });
+    d.addEventListener("cancel", (e) => { e.preventDefault(); finish(null); });  // (Esc)
     document.body.appendChild(d);
     d.showModal();
-    row.lastChild.focus();
+    yes.focus();
   });
+}
+// the file an answer says it went to ("added to F]" / "saved to F]"): F a name in the chat's files or a full path
+function ocrSavedTo(a, sv) {
+  const m = a.match(/(?:added|saved) to ([^\]]+)\]/);
+  if (!m || !sv) return;
+  const f = m[1].trim(), cut = Math.max(f.lastIndexOf("\\"), f.lastIndexOf("/"));
+  if (cut > 0) { sv.folder = f.slice(0, cut); sv.name = f.slice(cut + 1); } else sv.name = f;
 }
 function ocrCompact(a) {  // (the page read last and the closing note)
   const heads = [...a.matchAll(/## Page \d+ \/ \d+/g)], h = heads[heads.length - 1];
@@ -2069,12 +2074,9 @@ async function send() {
                 used: used || estTokens(history), slot: false, waiting: false, model: modelId, voice: voice.on };  // (voice: asked in Talk)
   if (!convs.some((c) => c.id === job.id))  // (in the list at once, also while it waits for a slot)
     convs.unshift({ id: job.id, title: titleOf([userMsg]), at, model: modelId, snippet: "" });
-  if (caps.ocr && sent.some((m) => /\.pdf$/i.test(m.name || "")) && !ocrSaveFor.has(job.id)) {
-    const pdf = sent.find((m) => /\.pdf$/i.test(m.name || "")).name;
-    ocrSaveFor.set(job.id, await askModal("Save the OCR text to a file?", [
-      ["The text read from ", { name: pdf }, " can go into ", { name: pdf.replace(/\.pdf$/i, ".md") }, " in this chat's files."],
-      "Each page is added to the file as it is read. The chat then shows only the page read last, with a bar of the pages done.",
-      "Either way the next pages are read by themselves until the last one (Stop ends it)."], "Save to .md", "Just show it"));
+  if (caps.ocr && sent.some((m) => /\.pdf$/i.test(m.name || ""))) {  // (each PDF sent: asked again, a new file)
+    ocrSaveFor.set(job.id, await ocrSaveAsk(sent.find((m) => /\.pdf$/i.test(m.name || "")).name));
+    job.ocrFresh = true;
   }
   jobs.set(job.id, job);
   controller = job.controller;
@@ -2184,6 +2186,7 @@ async function send() {
   const last = job.history[job.history.length - 1];
   for (const c of last.tool_calls || []) job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: stopped by the user" });
   if (!inHistory) {
+    if (caps.ocr) ocrSavedTo(st.answer, ocrSaveFor.get(job.id));  // (the name the server took: the next turns go on with it)
     const reply = { role: "assistant", content: caps.ocr && ocrSaveFor.get(job.id) ? ocrCompact(st.answer) : st.answer,
       reasoning_content: st.reasoning, at: Date.now() };
     job.history.push(reply);

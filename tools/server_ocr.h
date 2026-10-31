@@ -21,8 +21,11 @@
   //   words alone after a PDF ("lanjut") goes on with the same PDF and task from the page after the last "## Page N"
   //   the answers so far hold; an answer that leaves pages ends with "[OCR: N more page(s) ...]", which the web UI
   //   answers with "lanjut" by itself until the last page (a 450-page manual in 9 turns).
-  //   "ocr_save": true (the web UI asks when a PDF is sent): the pages also go into "<the PDF's name>.md" in the
-  //   chat's folder (its Files panel), the first page of the file starting it, each page appended once read.
+  //   "ocr_save": true or {name, folder, append} (the web UI asks each time a PDF is sent): the pages also go into a
+  //   .md, each page appended once read. name: the file's (default "<the PDF's name>.md"); folder: an existing folder
+  //   of this computer, for a request from this computer only (default: the chat's folder, its Files panel). A new
+  //   file never takes an existing one's place: "name (2).md" then; append (the web UI's "lanjut" turns): the named
+  //   file goes on. Every answer ends with the file it went to ("[OCR: ... added to F]" / "[OCR: saved to F]").
   bool ocr_pdf(const HttpRequest& rq, const Json& body, HttpResponse& rs) {
     const Json& msgs = body["messages"];
     int last = -1;
@@ -88,23 +91,49 @@
     int64_t ptok = 0, ctok = 0;
     // the .md next to the chat's files (started over with page 1, else appended)
     std::filesystem::path md;
-    if (body["ocr_save"].as_bool(false)) {
-      std::string stem = std::filesystem::path(pdf.name).stem().string();
-      for (char& c : stem)
+    bool in_chat = false;  // (in the chat's folder: its Files panel follows the file)
+    const Json& sv = body["ocr_save"];
+    if (sv.as_bool(false) || sv.is_object()) {
+      std::string name = sv["name"].str();
+      if (name.empty()) name = std::filesystem::path(pdf.name).stem().string() + ".md";
+      name = std::filesystem::path(name).filename().string();  // (a name, never a path)
+      for (char& c : name)
         if (strchr("<>:\"/\\|?*", c) || (unsigned char)c < 32) c = '_';
-      // (in the asking chat's folder: the PDF's copy found may be another chat's)
-      const std::string chat = body["chat_id"].str();
-      md = std::filesystem::path(files::valid_id(chat) ? files::store().chat_dir_make(chat) : std::filesystem::path(pdf.path).parent_path().string()) /
-           (stem + ".md");
-      if (first == 1) std::ofstream(md, std::ios::binary | std::ios::trunc) << "# " << pdf.name << "\n\n";
+      if (name.empty() || name[0] == '.') name = "ocr" + name;
+      if (files::lower(name).size() < 3 || files::lower(name).rfind(".md") != files::lower(name).size() - 3) name += ".md";
+      std::filesystem::path dir;
+      const std::string folder = sv["folder"].str();
+      std::error_code ec;
+      if (!folder.empty()) {
+        if (!rq.local_peer) {
+          rs.send(403, "application/json", "{\"error\":{\"message\":\"ocr_save.folder: from this computer only\"}}");
+          return true;
+        }
+        dir = std::filesystem::path(folder);
+        if (!dir.is_absolute() || !std::filesystem::is_directory(dir, ec)) {
+          rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("no such folder: " + folder).dump() + "}}");
+          return true;
+        }
+      } else {  // (the asking chat's folder: the PDF's copy found may be another chat's)
+        const std::string chat = body["chat_id"].str();
+        dir = files::valid_id(chat) ? std::filesystem::path(files::store().chat_dir_make(chat)) : std::filesystem::path(pdf.path).parent_path();
+        in_chat = true;
+      }
+      md = dir / name;
+      if (!sv["append"].as_bool(false)) {  // (a new file: never in an existing one's place)
+        const std::string stem = md.stem().string();
+        for (int k = 2; std::filesystem::exists(md, ec) && k < 1000; ++k) md = dir / (stem + " (" + std::to_string(k) + ").md");
+        std::ofstream(md, std::ios::binary | std::ios::trunc) << "# " << pdf.name << "\n\n";
+      }
     }
     auto save = [&](const std::string& piece) {
       if (md.empty()) return;
       std::ofstream(md, std::ios::binary | std::ios::app) << piece;
-      files::store().refresh();  // (in the Files panel with its new size)
+      if (in_chat) files::store().refresh();  // (in the Files panel with its new size)
     };
+    const std::string where = md.empty() ? "" : in_chat ? md.filename().string() : md.string();
     fprintf(stderr, "OCR mode: %s, pages %d-%d of %d%s\n", pdf.name.c_str(), first, n, pages,
-            md.empty() ? "" : (", saved to " + md.filename().string()).c_str());
+            md.empty() ? "" : (", saved to " + md.filename().string()).c_str());  // (the file's name only: no user's path in the log)
     if (first > pages) {
       const std::string note = "[OCR: every page of " + pdf.name + " is read (" + std::to_string(pages) + ")]";
       if (stream) {
@@ -158,10 +187,15 @@
         all += piece;
       }
     }
+    std::string note;  // (pages left: the web UI's cue for "lanjut"; and the file the text went to)
     if (pages > n && n >= first) {
       const int a = n + 1, b = std::min(pages, n + kOcrMaxPages);
-      const std::string note = "\n\n[OCR: " + std::to_string(pages - n) + " more page(s); \"lanjut\" reads pages " +
-                               std::to_string(a) + "-" + std::to_string(b) + (md.empty() ? "" : ", added to " + md.filename().string()) + "]";
+      note = "\n\n[OCR: " + std::to_string(pages - n) + " more page(s); \"lanjut\" reads pages " + std::to_string(a) + "-" +
+             std::to_string(b) + (md.empty() ? "" : ", added to " + where) + "]";
+    } else if (!md.empty()) {
+      note = "\n\n[OCR: saved to " + where + "]";
+    }
+    if (!note.empty()) {
       if (stream) {
         Json d = Json::object();
         d.set("content", note);
