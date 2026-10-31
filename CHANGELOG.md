@@ -12,10 +12,11 @@
 - **Web UI recordings: the MP3 bitrate is a choice** (Transcripts tab, "Keep as MP3 96 / 128 / 160 / 192 / 256 /
   320 kbps", or WAV) instead of a fixed 192. Windows' MP3 encoder takes at most 128 kbps for one track (a
   microphone): higher choices give 128 there; a meeting's two tracks get the bitrate chosen (checked: 96, 192, 320).
-- **A tab's sound recorded in stereo**: the Transcripts tab's "tab" source keeps left and right as the tab plays them
-  (`POST /v1/live` `channels: 2` with one track), so the MP3 gets the bitrate chosen; the transcript is made from its
-  mono mix (60 s: the same 164 tokens as the mono recording). A source that reports one channel stays mono; the
-  Meetings tab keeps one mono track per source.
+- **Mono or stereo recordings**: the Transcripts tab's new Mono / Stereo choice (default Mono). Stereo keeps left
+  and right of the one source as it plays them (a tab's music or video; a stereo microphone, then without the
+  browser's echo and noise suppression; `POST /v1/live` `channels: 2` with one track), so the MP3 gets the bitrate
+  chosen; the transcript is made from its mono mix (60 s: the same 164 tokens as the mono recording). A source that
+  reports one channel stays mono; the Meetings tab keeps one mono track per source.
 
 ## 2026-10-30 (night): multi-GPU groundwork
 

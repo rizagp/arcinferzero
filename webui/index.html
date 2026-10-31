@@ -403,6 +403,9 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <option value="192">Keep as MP3 192 kbps</option><option value="256">Keep as MP3 256 kbps</option>
           <option value="320">Keep as MP3 320 kbps</option>
         </select>
+        <select id="trch" aria-label="Mono or stereo" title="Recordings of one source (the microphone, or a tab's sound): Mono, one channel (half the size); Stereo keeps left and right when the source has them (music, a video; a stereo microphone, recorded then without echo and noise suppression). The text is the same: it is made from the mono mix. The Meetings tab: one mono track per source">
+          <option value="mono">Mono</option><option value="stereo">Stereo (when the source has it)</option>
+        </select>
         <textarea id="trterms" rows="3"placeholder="Glossary: names and terms the speech uses (Qwen, GGUF, Level Zero…)" aria-label="Glossary"
           title="Kept before every 30 s of audio, so Whisper writes these words as given. Written inside a casual sentence, the text keeps a casual spelling; a bare list makes it more formal"></textarea>
       </div>
@@ -3073,6 +3076,7 @@ $("trmodel").addEventListener("change", trBeamShown);
   if (p.beam) $("trbeam").value = p.beam;
   // (the bitrate, or "wav"; an earlier "mp3" was 192 kbps)
   $("trkeep").value = p.keep === "mp3" ? "192" : [...$("trkeep").options].some((o) => o.value === p.keep) ? p.keep : "wav";
+  $("trch").value = p.ch === "stereo" ? "stereo" : "mono";
   if (p.terms) $("trterms").value = p.terms;
   const f = Array.isArray(p.fmts) ? p.fmts : ["srt", "txt"];
   $("trfmts").querySelectorAll("input").forEach((c) => { c.checked = f.includes(c.value); });
@@ -3082,12 +3086,12 @@ $("trmodel").addEventListener("change", trBeamShown);
   $("trword").checked = !!p.word;
 })();
 function trSavePrefs() {
-  prefs.tr = { lang: $("trlang").value, model: $("trmodel").value, beam: $("trbeam").value, keep: $("trkeep").value, terms: $("trterms").value,
+  prefs.tr = { lang: $("trlang").value, model: $("trmodel").value, beam: $("trbeam").value, keep: $("trkeep").value, ch: $("trch").value, terms: $("trterms").value,
     fmts: [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value),
     chars: $("trchars").value, lines: $("trlines").value, maxs: $("trmaxs").value, word: $("trword").checked };
   store.set("arcinferzero-prefs", prefs);
 }
-["trlang", "trmodel", "trbeam", "trkeep", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
+["trlang", "trmodel", "trbeam", "trkeep", "trch", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
 $("trfmts").addEventListener("change", trSavePrefs);
 // the glossary grows with its text (up to its max-height; a drag of its corner still sets it by hand)
 function trTermsFit() { const t = $("trterms"); t.style.height = "auto"; t.style.height = t.scrollHeight + 2 + "px"; }
@@ -3125,6 +3129,7 @@ function trMode(on, kind) {
   const keep = (prefs.tr || {})[m ? "msrc" : "src"];
   $("trsrc").innerHTML = src.map(([v, t]) => '<option value="' + v + '">' + t + "</option>").join("");
   if (keep && src.some(([v]) => v === keep)) $("trsrc").value = keep;
+  $("trch").hidden = m;  // (a meeting: one mono track per source)
   liveButtons();
   if (on) { openPanel(false); openFiles(false); trPoll(); }
   else { clearTimeout(tr.timer); app.classList.remove("trviewing"); $("trvideo").pause(); }
@@ -3633,10 +3638,14 @@ const live = {
   async begin() {
     if (voice.on || voice.starting) voice.stop();  // (Talk's spoken answers would go into the meeting and its recording)
     const src = $("trsrc").value, want = src === "both" ? ["mic", "tab"] : [src], streams = [];
+    // (Stereo chosen, one source, the Transcripts tab: left and right kept; a microphone then without the browser's
+    //  echo and noise suppression, which make it mono)
+    const wantSt = tr.kind !== "meeting" && want.length === 1 && $("trch").value === "stereo";
     try {
       for (const w of want) {
         if (w === "mic") {
-          streams.push(await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }));
+          streams.push(await navigator.mediaDevices.getUserMedia({ audio: wantSt ? { channelCount: { ideal: 2 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+            : { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }));
         } else {
           const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, systemAudio: "include" });
           if (!s.getAudioTracks().length) {
@@ -3655,14 +3664,14 @@ const live = {
     try {
       // (48 kHz whatever the sound card's rate: the server takes 8-96 kHz)
       this.ctx = new AudioContext({ sampleRate: 48000 });
-      // (a tab's sound alone, in the Transcripts tab: kept in stereo as it plays (music, a video), transcribed as its
-      //  mono mix; a source that says it is mono stays mono. The Meetings tab: one mono track per source)
-      const cc = streams.length === 1 && src === "tab" ? streams[0].getAudioTracks()[0].getSettings().channelCount : 1;
-      this.stereo = tr.kind !== "meeting" && cc !== 1;
+      // (Stereo: one source kept in left and right as it plays (music, a video), transcribed as its mono mix; a source
+      //  that says it is mono stays mono. The Meetings tab: one mono track per source)
+      this.stereo = wantSt && streams[0].getAudioTracks()[0].getSettings().channelCount !== 1;
       this.n = this.stereo ? 2 : streams.length;
       const merger = this.ctx.createChannelMerger(this.n);
       if (this.stereo) {  // (left and right of the one source: a mono one gives the same on both)
         const sp = this.ctx.createChannelSplitter(2);
+        sp.channelInterpretation = "speakers";  // (a mono input up-mixed to both; "discrete" left the right silent)
         this.ctx.createMediaStreamSource(new MediaStream(streams[0].getAudioTracks())).connect(sp);
         sp.connect(merger, 0, 0);
         sp.connect(merger, 1, 1);
@@ -3842,7 +3851,7 @@ function liveButtons() {
   $("trlive").classList.toggle("on", live.on);
   $("trlive").disabled = live.starting || live.stopping;
   $("trlivetxt").textContent = live.on ? "Stop" : live.starting ? "Starting…" : live.stopping ? "Finishing…" : tr.kind === "meeting" ? "Start a meeting" : "Live";
-  $("trsrc").disabled = live.on || live.starting || live.stopping;
+  $("trsrc").disabled = $("trch").disabled = live.on || live.starting || live.stopping;
 }
 $("trlive").addEventListener("click", () => live.on ? live.stop() : live.start());
 // (Stop on a recording of another page, or of one that closed: the server ends it, its accurate pass follows)
