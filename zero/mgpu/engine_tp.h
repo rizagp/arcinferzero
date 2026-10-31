@@ -1,5 +1,5 @@
 // arcinferzero tensor parallel: one model split over several GPUs (--gpus N), each GPU running an Engine shard
-// (zero/engine_tp_shard.h says what each holds) on a thread of its own, the shards in lockstep.
+// (zero/mgpu/engine_tp_shard.h says what each holds) on a thread of its own, the shards in lockstep.
 //
 // The output projections' partial sums meet in host memory: GPUs that cannot reach each other's memory (Arc B60s on
 // Windows: no peer access, docs/multi-gpu.md) all reach pinned host memory of the one context. Each shard copies its
@@ -24,6 +24,7 @@ struct TpComm {
   std::vector<int> half;   // per shard: the half its next part goes to
   std::atomic<int> arrived{0}, gen{0};
   std::atomic<bool> failed{false};  // (a shard threw: the others leave their barrier instead of waiting forever)
+  std::atomic<int> first_failed{-1};  // (the shard that threw first: its error is the one to report)
   std::vector<double> wait_ms;      // per shard: time in reduce from its GPU wait to the barrier's end
   std::vector<long> reduces;        // per shard: how many
   void barrier() {
@@ -33,9 +34,10 @@ struct TpComm {
       gen.fetch_add(1, std::memory_order_release);
       return;
     }
-    while (gen.load(std::memory_order_acquire) == g) {
+    for (int spins = 0; gen.load(std::memory_order_acquire) == g; ++spins) {
       if (failed.load(std::memory_order_relaxed)) throw std::runtime_error("another GPU's shard failed");
-      _mm_pause();
+      if (spins < 4096) _mm_pause();  // (a token's sums come microseconds apart: spin)
+      else std::this_thread::yield();  // (a prompt chunk's GEMMs take milliseconds: let the core go)
     }
   }
 };
@@ -45,18 +47,8 @@ inline void Engine::tp_reduce(int rows) {
   const int r = opt.tp_rank, E = hp.n_embd;
   const size_t n = (size_t)rows * E;
   if (n > c.slot_floats) throw std::runtime_error("tensor parallel: more rows than the shared buffer holds");
-  if (!k_tp_add_) {
-    static const char* src = R"CLC(
-__kernel void tp_add(__global float* x, __global const float* p, ulong off, int n, int np, ulong stride) {
-  const int i = get_global_id(0);
-  if (i >= n) return;
-  float s = x[i];
-  for (int k = 0; k < np; ++k) s += p[off + k * stride + i];
-  x[i] = s;
-})CLC";
-    cl_program p = cl_.build(src, "-cl-std=CL3.0");
-    progs_.push_back(p);
-    k_tp_add_ = cl_.kernel(p, "tp_add");
+  tp_build();
+  if (!tp_host_) {
     tp_host_ = zrt::wrap(c.host, (size_t)2 * c.n * c.slot_floats * 4);
     mems_.push_back(tp_host_);
   }
@@ -79,6 +71,41 @@ __kernel void tp_add(__global float* x, __global const float* p, ulong off, int 
 class TpEngine {
  public:
   TpEngine(const std::string& path, EngineOptions o, int n) : n_(n) {
+    try {
+      start(path, o);
+    } catch (...) {
+      shutdown();  // (no destructor runs after a throwing constructor: its threads must stop here)
+      throw;
+    }
+  }
+  ~TpEngine() { shutdown(); }
+  TpEngine(const TpEngine&) = delete;
+  TpEngine& operator=(const TpEngine&) = delete;
+  int gpus() const { return n_; }
+  Engine& shard(int r) { return *shards_[r]; }
+  TpComm& comm() { return comm_; }
+  int vocab() const { return (int)logits_.size(); }
+  // Feeds tokens on every shard; the full vocabulary's logits of the last one (each shard's rows in rank order).
+  const std::vector<float>& forward(const int* tokens, int n) {
+    run_all([&](int r) { shards_[r]->forward(tokens, n); });
+    size_t at = 0;
+    for (int r = 0; r < n_; ++r) {
+      const size_t per = (size_t)shards_[r]->n_logits();
+      const std::vector<float>& l = shards_[r]->logits_host();
+      std::copy(l.begin(), l.begin() + per, logits_.begin() + at);
+      at += per;
+    }
+    return logits_;
+  }
+  void reset() {
+    run_all([&](int r) { shards_[r]->reset(); });
+    std::fill(comm_.half.begin(), comm_.half.end(), 0);
+  }
+
+ private:
+  void start(const std::string& path, const EngineOptions& o) {
+    const int n = n_;
+    if (n < 2 || n > 64) throw std::runtime_error("--gpus: 2 to 64");
     const bool sim = getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0;
     {
       ClRt rt;  // (the runtime: context and device 0, made here before any shard thread)
@@ -109,41 +136,32 @@ class TpEngine {
     Engine& e0 = *shards_[0];
     comm_.slot_floats = (size_t)e0.max_chunk * e0.hp.n_embd;
     comm_.host = (float*)zrt::host_alloc((size_t)2 * n * comm_.slot_floats * 4);
-    logits_.assign((size_t)e0.n_logits() * n, 0.0f);
+    size_t vocab = 0;
+    for (int r = 0; r < n; ++r) vocab += (size_t)shards_[r]->n_logits();
+    logits_.assign(vocab, 0.0f);
   }
-  ~TpEngine() {
-    try {
-      std::vector<int> all;
-      for (int r = 0; r < n_; ++r) all.push_back(r);
-      run_on(all, [this](int r) { shards_[r].reset(); });  // (each freed on its own GPU's thread)
-    } catch (...) {}
+  // the shards freed (each on its own GPU's thread), the threads ended, the shared memory freed; from the
+  // destructor or a constructor that threw part way
+  void shutdown() {
+    if (!w_.empty() && !broken_) {
+      std::vector<int> made;
+      for (int r = 0; r < (int)shards_.size(); ++r)
+        if (shards_[r]) made.push_back(r);
+      try {
+        if (!made.empty()) run_on(made, [this](int r) { shards_[r].reset(); });
+      } catch (...) {}
+    }
     {
       std::lock_guard<std::mutex> g(mu_);
       quit_ = true;
     }
     cv_.notify_all();
-    for (auto& w : w_) if (w.th.joinable()) w.th.join();
+    for (auto& w : w_)
+      if (w.th.joinable()) w.th.join();
+    shards_.clear();  // (after a failure: whatever is left, freed here)
     if (comm_.host) zeMemFree(zrt::ctx, comm_.host);
+    comm_.host = nullptr;
   }
-  int gpus() const { return n_; }
-  Engine& shard(int r) { return *shards_[r]; }
-  TpComm& comm() { return comm_; }
-  // Feeds tokens on every shard; the full vocabulary's logits of the last one.
-  const std::vector<float>& forward(const int* tokens, int n) {
-    run_all([&](int r) { shards_[r]->forward(tokens, n); });
-    const size_t per = (size_t)shards_[0]->n_logits();
-    for (int r = 0; r < n_; ++r) {
-      const std::vector<float>& l = shards_[r]->logits_host();
-      std::copy(l.begin(), l.begin() + per, logits_.begin() + r * per);
-    }
-    return logits_;
-  }
-  void reset() {
-    run_all([&](int r) { shards_[r]->reset(); });
-    std::fill(comm_.half.begin(), comm_.half.end(), 0);
-  }
-
- private:
   struct Worker {
     std::thread th;
     std::function<void(int)> job;
@@ -157,6 +175,7 @@ class TpEngine {
   std::mutex mu_;
   std::condition_variable cv_, done_cv_;
   bool quit_ = false;
+  bool broken_ = false;  // (a shard failed during a call: the others' barrier count and parts are out of step)
   int pending_ = 0;
   std::vector<float> logits_;
 
@@ -175,6 +194,8 @@ class TpEngine {
         job(r);
       } catch (...) {
         err = std::current_exception();
+        int none = -1;
+        comm_.first_failed.compare_exchange_strong(none, r);
         comm_.failed = true;
       }
       std::lock_guard<std::mutex> lk(mu_);
@@ -184,6 +205,7 @@ class TpEngine {
     }
   }
   void run_on(const std::vector<int>& ranks, std::function<void(int)> job) {
+    if (broken_) throw std::runtime_error("a GPU's shard failed earlier: load the model again");
     {
       std::lock_guard<std::mutex> lk(mu_);
       for (int r : ranks) {
@@ -196,11 +218,13 @@ class TpEngine {
     cv_.notify_all();
     std::unique_lock<std::mutex> lk(mu_);
     done_cv_.wait(lk, [&] { return pending_ == 0; });
+    std::exception_ptr err;
     for (int r : ranks)
-      if (w_[r].err) {
-        comm_.failed = false;
-        std::rethrow_exception(w_[r].err);
-      }
+      if (w_[r].err && (!err || r == comm_.first_failed)) err = w_[r].err;
+    if (err) {
+      broken_ = true;  // (shards that threw left their barrier or their sums mid-way)
+      std::rethrow_exception(err);
+    }
   }
   void run_all(std::function<void(int)> job) {
     std::vector<int> all;

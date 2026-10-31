@@ -183,8 +183,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
-    if (k_tp_add_) clReleaseKernel(k_tp_add_);
-    k_tp_add_ = nullptr;
+    for (cl_kernel k : {k_tp_add_, k_tp_pack_})
+      if (k) clReleaseKernel(k);
+    k_tp_add_ = k_tp_pack_ = nullptr;
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);
@@ -244,6 +245,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
           total += (double)t.nbytes;
       if (!opt.dry) loadp::begin(total);
       load_weights();
+      tp_loaded();  // (a split model: the host copies of its cut tensors freed)
       if (!opt.dry) loadp::step(loadp::st().what, total, total);
     }
     {
@@ -2277,10 +2279,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     std::vector<uint8_t> ab;
     {
       const GgufTensor &ta = T(p + "ssm_alpha.weight"), &tb = T(p + "ssm_beta.weight");
-      std::vector<float> v((size_t)nab * E);
+      std::vector<float> v((size_t)tp_rows(nab) * E, 0.0f);  // (a split model: padded rows of zeros, see gdn_ab)
       dequant_row(ta.type, ta.data, (int64_t)nab / 2 * E, v.data());
       dequant_row(tb.type, tb.data, (int64_t)nab / 2 * E, v.data() + (size_t)nab / 2 * E);
-      ab = quantize_rows_q8_0(v.data(), nab, E);
+      ab = quantize_rows_q8_0(v.data(), tp_rows(nab), E);
     }
     L.qz_ab = type == GGML_Q8_0 && nab % 64 == 0;
     std::vector<uint8_t> cat(tq.nbytes + tz.nbytes + (L.qz_ab ? ab.size() : 0));
@@ -2308,9 +2310,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     L.z = make_weight(type, tz.data, tz.nbytes, Di, E, weight_role(p + "attn_gate.weight"), &vz);
     if (L.qz_ab) {
       const cl_mem va = view(C + Di, nab);
-      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E, kRoles - 1, &va);
+      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E, kRoles - 1, &va);  // (nab % 64 == 0: not padded)
     } else {
-      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E);
+      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), tp_rows(nab), E);
     }
   }
   // Two matrices with the same K stacked by rows, requantized to Q8_0 (the tiny DeltaNet gate projections).
@@ -2344,12 +2346,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   }
   GpuWeight load_q8_concat(const std::string& a, const std::string& b) {
     const GgufTensor &ta = T(a), &tb = T(b);
-    const int K = (int)ta.dims[0], Na = (int)ta.dims[1], Nb = (int)tb.dims[1];
-    std::vector<float> v((size_t)(Na + Nb) * K);
+    const int K = (int)ta.dims[0], Na = (int)ta.dims[1], Nb = (int)tb.dims[1], Np = tp_rows(Na + Nb);
+    std::vector<float> v((size_t)Np * K, 0.0f);  // (a split model: rows of zeros up to the GEMM's 16, see gdn_ab)
     dequant_row(ta.type, ta.data, Na * K, v.data());
     dequant_row(tb.type, tb.data, Nb * K, v.data() + (size_t)Na * K);
-    auto q8 = quantize_rows_q8_0(v.data(), Na + Nb, K);
-    return make_weight(GGML_Q8_0, q8.data(), q8.size(), Na + Nb, K);
+    auto q8 = quantize_rows_q8_0(v.data(), Np, K);
+    return make_weight(GGML_Q8_0, q8.data(), q8.size(), Np, K);
   }
   cl_mem load_f32(const std::string& name) {
     const GgufTensor& t = T(name);
@@ -3925,7 +3927,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 #include "engine_flashnext.h"  // (Qwen3.8 Flash Next)
 
 #include "engine_qwen.h"  // (Qwen layers)
-#include "engine_tp_shard.h"  // (tensor parallel: this engine as one shard of a model split over GPUs)
+#include "mgpu/engine_tp_shard.h"  // (multi-GPU, zero/mgpu/: this engine as one shard of a model split over GPUs)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
 
@@ -3957,4 +3959,4 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
  private:
 };
 
-#include "engine_tp.h"  // (one model over several GPUs: TpEngine)
+#include "mgpu/engine_tp.h"  // (multi-GPU: TpEngine)

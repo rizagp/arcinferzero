@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-10-31 (afternoon): multi-GPU audit, uneven splits
+
+- **Self audit** (docs/self-audit-2026-10-31.md):
+  - a constructor error ended `runz --gpus` without a message (worker threads still running);
+  - the cut tensors' host copies held the model a second time in RAM;
+  - a failed shard left the others out of step;
+  - the 27B over 4 GPUs could not load prompts (24 alpha / beta rows; padded to 16 now).
+- **Any number of GPUs** the model's heads allow: counts that do not divide are split as evenly as their units allow
+  (27B over 3 GPUs: 6 / 6 / 4 k-heads, 2 / 1 / 1 kv-heads). 27B over 2 / 3 / 4 shards: greedy text identical to one
+  GPU.
+- **The multi-GPU code moved apart:** `zero/mgpu/` and `zero/kernels/tp.cl`; the one-GPU code only calls hooks,
+  and its logits stay bit-identical.
+
 ## 2026-10-31: one model over several GPUs (runz --gpus N)
 
 - **Tensor parallel for dense Qwen3.5 / 3.6 / 3.8** (docs/multi-gpu.md):

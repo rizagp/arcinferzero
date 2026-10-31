@@ -581,18 +581,25 @@ struct ClRt {
       std::vector<ze_device_handle_t> all(c);
       ZE_CHECK(zeDeviceGet(zrt::driver, &c, all.data()));
       gpus.push_back(zrt::dev0.dev);
+      ze_device_properties_t p0{};
+      p0.stype = ZE_STYPE_DEVICE_PROPERTIES;
+      ZE_CHECK(zeDeviceGetProperties(zrt::dev0.dev, &p0));
+      int other = 0;  // (GPUs of another kind: the kernels are compiled for GPU 0's, a module of them would not load)
       for (ze_device_handle_t x : all) {
         ze_device_properties_t p{};
         p.stype = ZE_STYPE_DEVICE_PROPERTIES;
-        if (x != zrt::dev0.dev && zeDeviceGetProperties(x, &p) == 0 && p.type == 1) gpus.push_back(x);
+        if (x == zrt::dev0.dev || zeDeviceGetProperties(x, &p) != 0 || p.type != 1) continue;
+        if (p.deviceId == p0.deviceId) gpus.push_back(x);
+        else ++other;
       }
       if ((int)gpus.size() < n) {
-        err = std::to_string(n) + " GPUs asked for, the driver has " + std::to_string(gpus.size());
+        err = std::to_string(n) + " GPUs asked for, the driver has " + std::to_string(gpus.size()) + " of GPU 0's kind" +
+              (other ? " (and " + std::to_string(other) + " of another kind, which cannot share a model with it)" : "");
         return 0;
       }
     }
     for (int i = (int)zrt::devs.size(); i < n; ++i) {
-      zrt::Dev* d = new zrt::Dev{};
+      zrt::Dev* d = new zrt::Dev{};  // (kept until the process ends, as device 0's state: a later engine reuses it)
       d->dev = gpus[i];
       d->index = i;
       uint32_t nm = 1;

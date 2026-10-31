@@ -14,12 +14,12 @@
       bigc = qz_out_;
       zc = qz_z_;
       if (L.qz_ab) gbc = qz_ab_;
-      else matmul("gemm_ab", L.ab, Mp, gb_, 2 * nv, 0, false, a_in);
+      else gdn_ab(L, Mp, a_in);
     } else {
       const bool npu = npu_qkv_start(L, T, Mp);  // (ARC_NPU=1: the NPU's share of attn_qkv, zero/npu/engine_npu.h)
       if (!npu) matmul("gemm_qkv", L.qkv, Mp, big_, C, 0, false, a_in);
       matmul("gemm_z", L.z, Mp, z_, Di, 0, false, a_in);
-      matmul("gemm_ab", L.ab, Mp, gb_, 2 * nv, 0, false, a_in);
+      gdn_ab(L, Mp, a_in);
       if (npu) npu_qkv_finish(L, Mp);
     }
     {
@@ -35,6 +35,7 @@
       {
         set_args(k_gdn_conv_, 0, bq, L.conv_state, L.conv_w, C, nk, Tq, eps, cq);
         size_t gws[2] = {(size_t)C / 128 * 16, (size_t)(Tq + conv_ct_ - 1) / conv_ct_}, lws[2] = {64, 1};
+        tp_conv_lws(C, lws[0]);  // (multi-GPU: a shard's channel groups, zero/mgpu/engine_tp_shard.h)
         run("gdn_conv", k_gdn_conv_, 2, gws, lws);
         size_t g1 = ((size_t)C + 255) / 256 * 256, l1 = 256;  // (conv_state_update checks c < C)
         if (spec_) {  // (verification pass: what verify_done() needs to replay the accepted tokens)

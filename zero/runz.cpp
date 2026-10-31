@@ -73,7 +73,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
   Engine& e0 = tp.shard(0);
   Vocab vocab(e0.gguf());
   printf("loaded: %d GPUs, %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB per GPU | W8 %s | chunk %d | ctx %d | load %.0f ms (GPU 0)\n",
-         gpus, e0.hp.n_layer, e0.hp.n_embd, e0.n_logits() * gpus, e0.gpu_bytes / 1073741824.0,
+         gpus, e0.hp.n_layer, e0.hp.n_embd, tp.vocab(), e0.gpu_bytes / 1073741824.0,
          e0.w8_resident ? "resident" : "just-in-time", e0.max_chunk, e0.ctx, e0.load_ms);
   auto ms_since = [](std::chrono::steady_clock::time_point t) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
@@ -100,7 +100,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     _fseeki64(fi, 0, SEEK_SET);
     const size_t got = fread(ref.data(), 4, ref.size(), fi);
     fclose(fi);
-    const size_t V = (size_t)e0.n_logits() * gpus;
+    const size_t V = (size_t)tp.vocab();
     if (got != ref.size() || ref.size() != V * prompt.size()) { fprintf(stderr, "reference must hold every position\n"); return 1; }
     double sum = 0, mxk = 0;
     int agree = 0;
