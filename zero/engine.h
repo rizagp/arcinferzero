@@ -16,6 +16,7 @@
 #include "../src/load_progress.h"
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -95,9 +96,12 @@ struct EngineOptions {
   // the NPU next to the GPU for prompt chunks (zero/npu/engine_npu.h, --npu): 0 off, 1 on where it pays off (the Qwen3.8
   // 27B), 2 forced on every Qwen model; -1: the ARC_NPU environment variable (unset: off)
   int npu = -1;
+  // tensor parallel (zero/engine_tp.h, --gpus): this engine is shard tp_rank of a model split over tp_size GPUs
+  int tp_rank = 0, tp_size = 1;
 };
 
 class VisionQwen3VL;
+struct TpComm;
 
 class Engine {
   friend class VisionQwen3VL;
@@ -174,11 +178,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 
  private:
   void release_all() {
-    if (zrt::cl) clFinish(cl_.queue);  // (init may have failed before the runtime existed: nothing to wait for)
+    if (zrt::D().cl) clFinish(cl_.queue);  // (init may have failed before the runtime existed: nothing to wait for)
     if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
+    if (k_tp_add_) clReleaseKernel(k_tp_add_);
+    k_tp_add_ = nullptr;
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);
@@ -195,6 +201,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (!cl_.init(true)) throw std::runtime_error("OpenCL init failed");
     ctx = (o.ctx + 15) / 16 * 16;
     load_hparams();
+    if (opt.tp_size > 1) tp_setup();  // (this shard's heads and columns: engine_tp_shard.h)
     // (MoE, Qwen3.6 35B: 1 and 2 drafts equally fast, 20.2 vs 20.3 tok/s; 1 keeps one DeltaNet state copy less)
     // (measured on arcinferzero, server answers at temperature 0, 2026-10-16: 35B 1 -> 3 drafts 23.9 -> 26.1 tok/s,
     //  4B 2 -> 3 22.9 -> 24.8; 9B 2 and 3 alike (15.8 / 15.6); 27B 3 = 5 = 7; Gemma's drafter unchanged at 2)
@@ -341,7 +348,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       if (c0 + T >= n) head(T);
       if (profile) collect_profile();
     }
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * 4, logits_host_.data(), 0,
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * 4, logits_host_.data(), 0,
                                  nullptr, nullptr));
     collect_profile();
     return logits_host_;
@@ -419,7 +426,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, x_saved, 0, 0, (size_t)chunk_Mp(nch - 1) * hp.hce() * 4, 0, nullptr,
                                  nullptr));
     x_ = x_saved;
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * 4, logits_host_.data(), 0,
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * 4, logits_host_.data(), 0,
                                  nullptr, nullptr));
     collect_profile();
     return logits_host_;
@@ -498,7 +505,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     pos += n;
     if (logits) {
       head(n);
-      CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * 4, logits_host_.data(), 0,
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * 4, logits_host_.data(), 0,
                                    nullptr, nullptr));
     }
     collect_profile();
@@ -585,7 +592,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // Logits predicting the token after row `row` of the last processed chunk (for perplexity evaluation).
   const std::vector<float>& logits_at(int row) {
     head_rows(row, 1, out_norm_, nullptr);
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * 4, logits_host_.data(), 0,
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * 4, logits_host_.data(), 0,
                                  nullptr, nullptr));
     return logits_host_;
   }
@@ -790,7 +797,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       add(dfl_vrows_);
     }
     // views into those buffers (the PLE history and QSA tails in a recurrent state) follow their buffer
-    for (ZMem* m : zrt::mems) {
+    for (ZMem* m : zrt::D().mems) {
       if (m->owner) continue;
       for (size_t i = 0; i < roles_.size(); ++i) {
         const ZMem* r = *roles_[i];
@@ -1939,7 +1946,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       for (auto& t : f_.tensors)
         if (t.name.find("_exps.weight") != std::string::npos) ex += t.nbytes;
       static const bool keep = getenv("ARC_W8_RESIDENT") != nullptr;  // (A/B)
-      if (hp.moe_std && opt.stream_experts && !keep && zrt::global_mem && ex > zrt::global_mem) w8_resident = false;
+      if (hp.moe_std && opt.stream_experts && !keep && zrt::D().global_mem && ex > zrt::D().global_mem) w8_resident = false;
       return;
     }
     size_t raw = 0, w8 = 0;
@@ -2242,7 +2249,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     return kRoles - 1;
   }
   GpuWeight load_w(const std::string& name) {
-    const GgufTensor& t = f_.get(name);
+    const GgufTensor& t = T(name);
     const int K = (int)t.dims[0], N = (int)t.dims[1];
     if (t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16) {
       std::vector<float> v((size_t)N * K);
@@ -2256,7 +2263,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // they are uploaded as one stack of rows (with ab, already Q8_0, when they are Q8_0 too): a single token runs one GEMV
   // over all of them (Layer::qz); the matrices are views of it, stored once.
   void load_gdn_in(Layer& L, const std::string& p) {
-    const GgufTensor &tq = f_.get(p + "attn_qkv.weight"), &tz = f_.get(p + "attn_gate.weight");
+    const GgufTensor &tq = T(p + "attn_qkv.weight"), &tz = T(p + "attn_gate.weight");
     const int E = hp.n_embd, C = (int)tq.dims[1], Di = (int)tz.dims[1], nab = 2 * hp.ssm_nv;
     const bool quant = tq.type != GGML_F32 && tq.type != GGML_F16 && tq.type != GGML_BF16;
     if (!quant || tq.type != tz.type || tq.dims[0] != E || tz.dims[0] != E || E % 256 || C % 64 || Di % 64 ||
@@ -2269,7 +2276,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     const uint32_t type = tq.type;
     std::vector<uint8_t> ab;
     {
-      const GgufTensor &ta = f_.get(p + "ssm_alpha.weight"), &tb = f_.get(p + "ssm_beta.weight");
+      const GgufTensor &ta = T(p + "ssm_alpha.weight"), &tb = T(p + "ssm_beta.weight");
       std::vector<float> v((size_t)nab * E);
       dequant_row(ta.type, ta.data, (int64_t)nab / 2 * E, v.data());
       dequant_row(tb.type, tb.data, (int64_t)nab / 2 * E, v.data() + (size_t)nab / 2 * E);
@@ -2311,14 +2318,14 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // values unchanged; a row's result does not depend on the others): one GEMV / GEMM instead of one per matrix.
   // BF16 / F16 / F32 matrices (Qwen3-ASR's BF16 file) are requantized to Q8_0 row by row, as a single one is.
   GpuWeight load_w_stack(std::initializer_list<std::string> names) {
-    const GgufTensor& t0 = f_.get(*names.begin());
+    const GgufTensor& t0 = T(*names.begin());
     const bool flt = t0.type == GGML_F32 || t0.type == GGML_F16 || t0.type == GGML_BF16;
     const int K = (int)t0.dims[0];
     std::vector<uint8_t> cat;
     std::vector<float> v;
     int N = 0;
     for (const std::string& n : names) {
-      const GgufTensor& t = f_.get(n);
+      const GgufTensor& t = T(n);
       if (t.type != t0.type || t.dims[0] != t0.dims[0])
         throw std::runtime_error("load_w_stack: matrices of different shapes or types: " + n);
       if (flt) {
@@ -2336,7 +2343,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     return make_weight(t0.type, cat.data(), cat.size(), N, K, weight_role(*names.begin()));
   }
   GpuWeight load_q8_concat(const std::string& a, const std::string& b) {
-    const GgufTensor &ta = f_.get(a), &tb = f_.get(b);
+    const GgufTensor &ta = T(a), &tb = T(b);
     const int K = (int)ta.dims[0], Na = (int)ta.dims[1], Nb = (int)tb.dims[1];
     std::vector<float> v((size_t)(Na + Nb) * K);
     dequant_row(ta.type, ta.data, Na * K, v.data());
@@ -2345,7 +2352,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     return make_weight(GGML_Q8_0, q8.data(), q8.size(), Na + Nb, K);
   }
   cl_mem load_f32(const std::string& name) {
-    const GgufTensor& t = f_.get(name);
+    const GgufTensor& t = T(name);
     std::vector<float> v(t.nelements());
     dequant_row(t.type, t.data, (int)v.size(), v.data());
     return buf(v.size() * 4, v.data());
@@ -2548,7 +2555,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       // kDriverSlack for the driver: the share is the user's setting, the rest of the RAM what they leave to Windows
       // (the user's rule since 2026-10-22; before: also RAM - a 14 GB Windows reserve, which held a 20.4 GiB share to
       // 17.7). (With 1.13 GiB left a kernel launch once failed with out of device memory, 35B at 262K.)
-      const uint64_t share = zrt::global_mem, slack = (uint64_t)kDriverSlack;
+      const uint64_t share = zrt::D().global_mem, slack = (uint64_t)kDriverSlack;
       const uint64_t limit = share > slack ? share - slack : 0;
       // (+ kernels and host side, the server's state snapshots, and what the caller keeps for its encoders)
       const uint64_t used = gpu_bytes + xc_->stage_bytes + (uint64_t)(0.1 * GiB) + snapshot_bytes() * std::max(opt.slots, 1) + opt.stream_reserve;
@@ -3116,7 +3123,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       out_norm_ = load_f32("output_norm.weight");
     }
     // lm_head is only ever a GEMV on the last token: keep just the raw rows.
-    const GgufTensor& lt = f_.find("output.weight") ? f_.get("output.weight") : *tok_embd_;
+    const GgufTensor& lt = tp_head(f_.find("output.weight") ? f_.get("output.weight") : *tok_embd_);
     lm_head_.N = (int)lt.dims[1];
     lm_head_.K = (int)lt.dims[0];
     if (lt.type == GGML_F32 || lt.type == GGML_F16 || lt.type == GGML_BF16) {
@@ -3231,7 +3238,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // rows of a speculative verification pass or a batched pass over the slots
     // (DFlash2's head writes block - 1 draft rows whatever the drafts kept)
     batch_rows_ = std::min(16, std::max({1 + max_drafts(), opt.slots, 1, dfl_ ? dfl_B_ : 1}));
-    logits_ = buf((size_t)hp.n_vocab * 4 * batch_rows_);
+    logits_ = buf((size_t)n_logits() * 4 * batch_rows_);
     if (hp.moe) {
       const size_t S = M * hp.n_expert_used, F = hp.n_ff_exp_pad, NE = hp.n_expert;
       slots_ = (int)S;
@@ -3344,7 +3351,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       }
     }
     fill(x_, M * hp.hce() * 4);
-    logits_host_.resize(hp.n_vocab);
+    logits_host_.resize(n_logits());
     if (has_mtp) spec_logits_host_.resize((size_t)hp.n_vocab * (1 + max_drafts()));
     x_host_.resize(M * hp.hce());
   }
@@ -3918,6 +3925,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 #include "engine_flashnext.h"  // (Qwen3.8 Flash Next)
 
 #include "engine_qwen.h"  // (Qwen layers)
+#include "engine_tp_shard.h"  // (tensor parallel: this engine as one shard of a model split over GPUs)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
 
@@ -3930,7 +3938,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     cur_T_ = n;
     if (hp.hc) {  // Flash Next: the final mixer of the streams is the output norm
       hc_mix(out_hc_norm_, out_hc_down_, out_hc_up_, n, 16, 1, r0);
-      matmul("lm_head", lm_head_, 16, logits_, hp.n_vocab, 0, 0, true);
+      matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
       cur_T_ = saved;
       return;
     }
@@ -3939,7 +3947,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     set_args(k_rmsnorm_, 0, x_, r0, normw, E, M, nn, eps, aq_, asc_, absum_, hout ? hout : big_, wh, a32);
     size_t gws[2] = {256, (size_t)n}, lws[2] = {256, 1};
     run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
-    matmul("lm_head", lm_head_, 16, logits_, hp.n_vocab, 0, 0, true);
+    matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
     cur_T_ = saved;
   }
   void head(int T) { head_rows(T - 1, 1, out_norm_, has_mtp ? hlast_ : nullptr); }
@@ -3948,3 +3956,5 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 
  private:
 };
+
+#include "engine_tp.h"  // (one model over several GPUs: TpEngine)

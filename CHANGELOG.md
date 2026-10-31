@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-31: one model over several GPUs (runz --gpus N)
+
+- **Tensor parallel for dense Qwen3.5 / 3.6 / 3.8** (docs/multi-gpu.md):
+  - `runz --gpus N` splits the DeltaNet and attention heads, the FFN columns and the output head's vocabulary over N
+    GPUs, so each GPU reads 1/N of the weights per token.
+  - The output projections' partial sums meet in pinned host memory (B60s on Windows have no peer access).
+  - Checked on one GPU with `ARC_TP_SIM=1`: greedy text identical, KL against an f32 reference the same as one GPU
+    (4B: 0.00113 / 0.00096 / 0.00109 for 1 / 2 / 4 shards).
+  - Speed needs a machine with several GPUs; the server does not use it yet.
+- **The runtime keeps its state per GPU** (`zero/clrt.h` `zrt::Dev`, `zrt::D()`):
+  - one Level Zero context holds every GPU of the driver;
+  - a thread works on the GPU it chose, GPU 0 by default;
+  - one GPU is unchanged, with logits of the 4B and 27B bit-identical to before.
+
 ## 2026-10-31: speech to text without a chat model
 
 - **`serverz -m none`** (`arc-server start -Model none`, the launcher's **Speech only** button): only the speech

@@ -28,10 +28,12 @@ typedef cl_uint cl_device_info;
 typedef cl_uint cl_profiling_info;
 typedef cl_uint cl_buffer_create_type;
 
+namespace zrt { struct Dev; }
 struct ZMem {
   char* ptr;
   size_t size;
   bool owner;
+  zrt::Dev* d = nullptr;  // (the GPU it was made on: freed there)
 };
 struct ZKernel {
   ze_kernel_handle_t k;
@@ -74,97 +76,109 @@ struct cl_buffer_region { size_t origin, size; };
     }                                                                                        \
   } while (0)
 
-// ---- the runtime state (one device, one context, one in-order immediate command list)
+// ---- the runtime state: one context for every GPU of the driver; per GPU (Dev) its device, one in-order immediate
+// command list, its buffers. A thread works on zrt::D(): the device its zrt::cur names, device 0 when it set none (the
+// server's threads, Whisper / Qwen3-ASR, the expert prefetch); a multi-GPU shard's thread sets its own (engine_tp.h).
 namespace zrt {
+struct Mapping;
+struct Dev {
+  ze_device_handle_t dev = nullptr;
+  ze_command_list_handle_t cl = nullptr;
+  std::unordered_set<ZMem*> mems;
+  uint64_t global_mem = 0;
+  uint64_t device_bytes = 0;  // device USM allocated by the engine
+  char* stage = nullptr;      // host USM bounce buffer for reads / writes
+  size_t stage_n = 0;
+  ze_command_list_handle_t cl_copy = nullptr;  // (see copy_list)
+  const char* cl_copy_kind = "";
+  ze_event_handle_t copy_ev[4] = {};  // (see copy_event)
+  std::vector<ze_event_handle_t> ev_free;  // (see ev_get)
+  double ev_ns_per_tick = 0;
+  uint64_t ev_mask = ~0ull;
+  std::vector<Mapping>* maps = nullptr;  // (see clEnqueueMapBuffer)
+  int index = 0;
+};
 inline ze_context_handle_t ctx = nullptr;
-inline ze_device_handle_t dev = nullptr;
-inline ze_command_list_handle_t cl = nullptr;
-inline std::unordered_set<ZMem*> mems;
-inline uint64_t global_mem = 0;
-inline uint64_t device_bytes = 0;  // device USM allocated by the engine
-inline char* stage = nullptr;      // host USM bounce buffer for reads / writes
-inline size_t stage_n = 0;
-inline void sync() { ZE_CHECK(zeCommandListHostSynchronize(cl, UINT64_MAX)); }
+inline ze_driver_handle_t driver = nullptr;
+inline Dev dev0;
+inline std::vector<Dev*> devs{&dev0};  // devs[i]: GPU i (open_devices)
+inline thread_local Dev* cur = nullptr;
+inline Dev& D() { return cur ? *cur : dev0; }
+inline void sync() { ZE_CHECK(zeCommandListHostSynchronize(D().cl, UINT64_MAX)); }
 // A second immediate command list for copies that run while `cl` executes kernels (the expert cache's prompt
 // prefetch, xcache.h): on a copy engine when the device has one, else on another queue of the compute group.
-inline ze_command_list_handle_t cl_copy = nullptr;
-inline const char* cl_copy_kind = "";
 inline ze_command_list_handle_t copy_list() {
-  if (cl_copy) return cl_copy;
+  if (D().cl_copy) return D().cl_copy;
   uint32_t ng = 0;
-  ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(dev, &ng, nullptr));
+  ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(D().dev, &ng, nullptr));
   std::vector<ze_command_queue_group_properties_t> gp(ng);
   for (auto& g : gp) g.stype = ZE_STYPE_COMMAND_QUEUE_GROUP_PROPERTIES;
-  ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(dev, &ng, gp.data()));
+  ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(D().dev, &ng, gp.data()));
   int ord = -1, idx = 0;
   for (uint32_t i = 0; i < ng && ord < 0; ++i)  // a copy-only group
     if ((gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY) && !(gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE))
-      ord = (int)i, cl_copy_kind = "copy engine";
+      ord = (int)i, D().cl_copy_kind = "copy engine";
   for (uint32_t i = 0; i < ng && ord < 0; ++i)  // else the compute group, its second queue when it has one
     if (gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE)
-      ord = (int)i, idx = gp[i].numQueues > 1 ? 1 : 0, cl_copy_kind = idx ? "second compute queue" : "compute queue";
+      ord = (int)i, idx = gp[i].numQueues > 1 ? 1 : 0, D().cl_copy_kind = idx ? "second compute queue" : "compute queue";
   if (ord < 0) ord = 0;
   ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, (uint32_t)ord, (uint32_t)idx, 2 /* in order */,
                              2 /* asynchronous */, 0};
-  ZE_CHECK(zeCommandListCreateImmediate(ctx, dev, &qd, &cl_copy));
-  fprintf(stderr, "arcinferzero: expert copies on a %s (queue group %d, queue %d)\n", cl_copy_kind, ord, idx);
-  return cl_copy;
+  ZE_CHECK(zeCommandListCreateImmediate(ctx, D().dev, &qd, &D().cl_copy));
+  fprintf(stderr, "arcinferzero: expert copies on a %s (queue group %d, queue %d)\n", D().cl_copy_kind, ord, idx);
+  return D().cl_copy;
 }
 // Events the copy list signals after a batch of copies: 0 and 1 (used alternately) the main list waits on before
 // kernels read the copied memory (the wait, device scope, has the compute side invalidate its caches, which a host
 // synchronization alone does not promise); 2 and 3 the copy thread waits on before it reuses a part of its staging.
-inline ze_event_handle_t copy_ev[4] = {};
 inline ze_event_handle_t copy_event(int i) {
-  if (!copy_ev[0]) {
+  if (!D().copy_ev[0]) {
     ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, 4};
     ze_event_pool_handle_t pool = nullptr;
-    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &dev, &pool));
+    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &D().dev, &pool));
     for (uint32_t k = 0; k < 4; ++k) {
       ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
-      ZE_CHECK(zeEventCreate(pool, &ed, &copy_ev[k]));
+      ZE_CHECK(zeEventCreate(pool, &ed, &D().copy_ev[k]));
     }
   }
-  return copy_ev[i & 3];
+  return D().copy_ev[i & 3];
 }
 // kernel timestamps for profiling (engine.profile: clEnqueueNDRangeKernel asked for an event): events come from pools
 // of 4096 host-visible timestamp events and go back to a free list on clReleaseEvent
-inline std::vector<ze_event_handle_t> ev_free;
-inline double ev_ns_per_tick = 0;
-inline uint64_t ev_mask = ~0ull;
 inline ze_event_handle_t ev_get() {
-  if (ev_free.empty()) {
-    if (ev_ns_per_tick == 0) {
+  if (D().ev_free.empty()) {
+    if (D().ev_ns_per_tick == 0) {
       ze_device_properties_t dp{};
       dp.stype = ZE_STYPE_DEVICE_PROPERTIES;  // (this stype: timerResolution in ns per tick)
-      ZE_CHECK(zeDeviceGetProperties(dev, &dp));
-      ev_ns_per_tick = dp.timerResolution ? (double)dp.timerResolution : 1.0;
-      if (dp.kernelTimestampValidBits && dp.kernelTimestampValidBits < 64) ev_mask = (1ull << dp.kernelTimestampValidBits) - 1;
+      ZE_CHECK(zeDeviceGetProperties(D().dev, &dp));
+      D().ev_ns_per_tick = dp.timerResolution ? (double)dp.timerResolution : 1.0;
+      if (dp.kernelTimestampValidBits && dp.kernelTimestampValidBits < 64) D().ev_mask = (1ull << dp.kernelTimestampValidBits) - 1;
     }
     const uint32_t n = 4096;
     ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 | 0x4 /* host visible, kernel timestamps */, n};
     ze_event_pool_handle_t pool;
-    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &dev, &pool));
+    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &D().dev, &pool));
     for (uint32_t i = 0; i < n; ++i) {
       ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, i, 0x4 /* host scope */, 0};
       ze_event_handle_t e;
       ZE_CHECK(zeEventCreate(pool, &ed, &e));
-      ev_free.push_back(e);
+      D().ev_free.push_back(e);
     }
   }
-  ze_event_handle_t e = ev_free.back();
-  ev_free.pop_back();
+  ze_event_handle_t e = D().ev_free.back();
+  D().ev_free.pop_back();
   return e;
 }
 inline char* staging(size_t n) {
-  if (n > stage_n) {
-    if (stage) { sync(); zeMemFree(ctx, stage); }
-    stage_n = std::max(n, (size_t)1 << 22);
+  if (n > D().stage_n) {
+    if (D().stage) { sync(); zeMemFree(ctx, D().stage); }
+    D().stage_n = std::max(n, (size_t)1 << 22);
     ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
     void* p = nullptr;
-    ZE_CHECK(zeMemAllocHost(ctx, &hd, stage_n, 4096, &p));
-    stage = (char*)p;
+    ZE_CHECK(zeMemAllocHost(ctx, &hd, D().stage_n, 4096, &p));
+    D().stage = (char*)p;
   }
-  return stage;
+  return D().stage;
 }
 inline void* host_alloc(size_t n) {
   ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
@@ -179,15 +193,15 @@ inline bool (*oom_hook)() = nullptr;
 inline void* device_alloc(size_t n) {
   ze_device_mem_alloc_desc_t dd{ZE_STYPE_DEVICE_MEM_ALLOC_DESC, nullptr, 0, 0};
   void* p = nullptr;
-  ze_result_t r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, dev, &p);
+  ze_result_t r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
   for (int i = 0; r != ZE_RESULT_SUCCESS && i < 8 && oom_hook && oom_hook(); ++i)
-    r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, dev, &p);
+    r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
   if (r != ZE_RESULT_SUCCESS) {
     fprintf(stderr, "arcinferzero: device allocation of %.1f MB failed (0x%x; %.2f GiB allocated)\n", n / 1e6, r,
-            device_bytes / 1073741824.0);
+            D().device_bytes / 1073741824.0);
     exit(1);
   }
-  device_bytes += n;
+  D().device_bytes += n;
   return p;
 }
 // What Windows lets this process keep resident on the GPU now (WDDM budget, DXGI) and what it uses: the GPU share is
@@ -223,16 +237,19 @@ inline void print_memory() {
   GlobalMemoryStatusEx(&ms);
   if (video_budget(b, u))
     fprintf(stderr, "  GPU memory: Windows budget %.2f GiB, in use %.2f GiB (allocated by the engine %.2f GiB); RAM free %.2f GiB\n",
-            b / 1073741824.0, u / 1073741824.0, device_bytes / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
+            b / 1073741824.0, u / 1073741824.0, D().device_bytes / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
 }
 // memory the engine allocated itself (host USM, device pools) as a buffer kernels can take as an argument
 inline ZMem* wrap(void* p, size_t n) {
-  ZMem* m = new ZMem{(char*)p, n, false};
-  mems.insert(m);
+  ZMem* m = new ZMem{(char*)p, n, false, &D()};
+  D().mems.insert(m);
   return m;
 }
 struct Mapping { ZMem* m; size_t off, n; void* host; };
-inline std::vector<Mapping> maps;
+inline std::vector<Mapping>& maps() {
+  if (!D().maps) D().maps = new std::vector<Mapping>;
+  return *D().maps;
+}
 
 // OpenCL.dll, only to compile kernels (its native binaries load into Level Zero)
 namespace rcl {
@@ -299,7 +316,7 @@ inline cl_int clEnqueueCopyBuffer(cl_command_queue, cl_mem src, cl_mem dst, size
             n, so, n, src->size, doff, n, dst->size);
     return -30;
   }
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, dst->ptr + doff, src->ptr + so, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, dst->ptr + doff, src->ptr + so, n, nullptr, 0, nullptr));
   return CL_SUCCESS;
 }
 inline bool out_of_bounds(const char* what, cl_mem b, size_t off, size_t n) {
@@ -313,7 +330,7 @@ inline cl_int clEnqueueReadBuffer(cl_command_queue, cl_mem b, cl_bool, size_t of
   if (ev) *ev = nullptr;
   if (out_of_bounds("read", b, off, n)) return -30;
   char* s = zrt::staging(n);
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, s, b->ptr + off, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, s, b->ptr + off, n, nullptr, 0, nullptr));
   zrt::sync();
   memcpy(host, s, n);
   return CL_SUCCESS;
@@ -325,7 +342,7 @@ inline cl_int clEnqueueWriteBuffer(cl_command_queue, cl_mem b, cl_bool, size_t o
   char* s = zrt::staging(n);
   zrt::sync();  // (the bounce buffer may still be read by an earlier copy)
   memcpy(s, host, n);
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, b->ptr + off, s, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, b->ptr + off, s, n, nullptr, 0, nullptr));
   zrt::sync();
   return CL_SUCCESS;
 }
@@ -333,7 +350,7 @@ inline cl_int clEnqueueFillBuffer(cl_command_queue, cl_mem b, const void* patter
                                   cl_uint, const cl_event*, cl_event* ev) {
   if (ev) *ev = nullptr;
   if (out_of_bounds("fill", b, off, n)) return -30;
-  ZE_CHECK(zeCommandListAppendMemoryFill(zrt::cl, b->ptr + off, pattern, ps, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryFill(zrt::D().cl, b->ptr + off, pattern, ps, n, nullptr, 0, nullptr));
   zrt::sync();  // (the pattern is the caller's)
   return CL_SUCCESS;
 }
@@ -342,28 +359,28 @@ inline void* clEnqueueMapBuffer(cl_command_queue, cl_mem b, cl_bool, cl_map_flag
   if (ev) *ev = nullptr;
   void* h = zrt::host_alloc(n);
   if (flags & CL_MAP_READ) {
-    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, h, b->ptr + off, n, nullptr, 0, nullptr));
+    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, h, b->ptr + off, n, nullptr, 0, nullptr));
     zrt::sync();
   }
-  zrt::maps.push_back({b, off, n, h});
+  zrt::maps().push_back({b, off, n, h});
   if (err) *err = CL_SUCCESS;
   return h;
 }
 inline cl_int clEnqueueUnmapMemObject(cl_command_queue, cl_mem b, void* p, cl_uint, const cl_event*, cl_event* ev) {
   if (ev) *ev = nullptr;
-  for (size_t i = 0; i < zrt::maps.size(); ++i)
-    if (zrt::maps[i].host == p && zrt::maps[i].m == b) {
-      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, b->ptr + zrt::maps[i].off, p, zrt::maps[i].n, nullptr, 0, nullptr));
+  for (size_t i = 0; i < zrt::maps().size(); ++i)
+    if (zrt::maps()[i].host == p && zrt::maps()[i].m == b) {
+      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, b->ptr + zrt::maps()[i].off, p, zrt::maps()[i].n, nullptr, 0, nullptr));
       zrt::sync();
       zeMemFree(zrt::ctx, p);
-      zrt::maps.erase(zrt::maps.begin() + i);
+      zrt::maps().erase(zrt::maps().begin() + i);
       return CL_SUCCESS;
     }
   return -30;
 }
 inline cl_mem clCreateBuffer(cl_context, cl_mem_flags flags, size_t n, void* host, cl_int* err) {
-  ZMem* m = new ZMem{(char*)zrt::device_alloc(n), n, true};
-  zrt::mems.insert(m);
+  ZMem* m = new ZMem{(char*)zrt::device_alloc(n), n, true, &zrt::D()};
+  zrt::D().mems.insert(m);
   if ((flags & CL_MEM_COPY_HOST_PTR) && host) clEnqueueWriteBuffer(nullptr, m, CL_TRUE, 0, n, host, 0, nullptr, nullptr);
   if (err) *err = CL_SUCCESS;
   return m;
@@ -374,15 +391,16 @@ inline cl_mem clCreateSubBuffer(cl_mem parent, cl_mem_flags, cl_buffer_create_ty
     if (err) *err = -13;
     return nullptr;
   }
-  ZMem* m = new ZMem{parent->ptr + r->origin, r->size, false};
-  zrt::mems.insert(m);
+  ZMem* m = new ZMem{parent->ptr + r->origin, r->size, false, &zrt::D()};
+  zrt::D().mems.insert(m);
   if (err) *err = CL_SUCCESS;
   return m;
 }
 inline cl_int clReleaseMemObject(cl_mem m) {
   if (!m) return CL_SUCCESS;
-  if (m->owner) { zrt::sync(); zeMemFree(zrt::ctx, m->ptr); zrt::device_bytes -= m->size; }
-  zrt::mems.erase(m);
+  zrt::Dev& d = m->d ? *m->d : zrt::D();
+  if (m->owner) { zeCommandListHostSynchronize(d.cl, UINT64_MAX); zeMemFree(zrt::ctx, m->ptr); d.device_bytes -= m->size; }
+  d.mems.erase(m);
   delete m;
   return CL_SUCCESS;
 }
@@ -390,7 +408,7 @@ inline cl_int clReleaseMemObject(cl_mem m) {
 inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
   if (sz == sizeof(void*) && v) {
     ZMem* m = *(ZMem* const*)v;
-    if (m && zrt::mems.count(m)) {
+    if (m && zrt::D().mems.count(m)) {
       void* p = m->ptr;
       return zeKernelSetArgumentValue(k->k, i, sizeof(p), &p) == ZE_RESULT_SUCCESS ? CL_SUCCESS : -51;
     }
@@ -427,7 +445,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   }
   ze_event_handle_t sig = ev ? zrt::ev_get() : nullptr;
   if (ev) *ev = (cl_event)sig;
-  ze_result_t r = zeCommandListAppendLaunchKernel(zrt::cl, k->k, &gc, sig, 0, nullptr);
+  ze_result_t r = zeCommandListAppendLaunchKernel(zrt::D().cl, k->k, &gc, sig, 0, nullptr);
   static const long fake_oom = getenv("ARC_FAKE_OOM") ? atol(getenv("ARC_FAKE_OOM")) : 0;  // (test: launch N "fails")
   static long launches = 0;
   if (fake_oom && ++launches % fake_oom == 0 && r == ZE_RESULT_SUCCESS) {
@@ -436,7 +454,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
     if (zrt::oom_hook && zrt::oom_hook()) return CL_SUCCESS;
   }
   for (int i = 0; r == (ze_result_t)0x70000003 && i < 8 && zrt::oom_hook && zrt::oom_hook(); ++i)  // (out of device memory)
-    r = zeCommandListAppendLaunchKernel(zrt::cl, k->k, &gc, sig, 0, nullptr);
+    r = zeCommandListAppendLaunchKernel(zrt::D().cl, k->k, &gc, sig, 0, nullptr);
   if (r != ZE_RESULT_SUCCESS) {
     fprintf(stderr, "Level Zero error 0x%x launching %s (global %u x %u x %u, local %u x %u x %u)\n", r, k->name.c_str(),
             gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
@@ -446,7 +464,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   }
   static const bool sync_each = getenv("ARC_ZE_SYNC_EACH") != nullptr;  // (debug: which kernel loses the device)
   if (sync_each) {
-    const ze_result_t s = zeCommandListHostSynchronize(zrt::cl, UINT64_MAX);
+    const ze_result_t s = zeCommandListHostSynchronize(zrt::D().cl, UINT64_MAX);
     if (s != ZE_RESULT_SUCCESS) {
       fprintf(stderr, "Level Zero error 0x%x running %s (global %u x %u x %u, local %u x %u x %u)\n", s, k->name.c_str(),
               gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
@@ -458,7 +476,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   return CL_SUCCESS;
 }
 inline cl_int clGetDeviceInfo(cl_device_id, cl_device_info p, size_t sz, void* v, size_t* ret) {
-  if (p == CL_DEVICE_GLOBAL_MEM_SIZE && sz >= 8) { *(cl_ulong*)v = zrt::global_mem; if (ret) *ret = 8; return CL_SUCCESS; }
+  if (p == CL_DEVICE_GLOBAL_MEM_SIZE && sz >= 8) { *(cl_ulong*)v = zrt::D().global_mem; if (ret) *ret = 8; return CL_SUCCESS; }
   return -30;
 }
 inline cl_int clWaitForEvents(cl_uint, const cl_event*) { zrt::sync(); return CL_SUCCESS; }
@@ -467,7 +485,7 @@ inline cl_int clGetEventProfilingInfo(cl_event, cl_profiling_info, size_t sz, vo
   return CL_SUCCESS;
 }
 inline cl_int clReleaseEvent(cl_event e) {  // (only kernel events are real: back to the free list)
-  if (e) { ZE_CHECK(zeEventHostReset((ze_event_handle_t)e)); zrt::ev_free.push_back((ze_event_handle_t)e); }
+  if (e) { ZE_CHECK(zeEventHostReset((ze_event_handle_t)e)); zrt::D().ev_free.push_back((ze_event_handle_t)e); }
   return CL_SUCCESS;
 }
 inline cl_int clReleaseKernel(cl_kernel k) { if (k) { zeKernelDestroy(k->k); delete k; } return CL_SUCCESS; }
@@ -532,20 +550,61 @@ struct ClRt {
       if (zeDeviceGet(d, &n, &x) != 0 || !n) continue;
       ze_device_properties_t p{};
       p.stype = ZE_STYPE_DEVICE_PROPERTIES;
-      if (zeDeviceGetProperties(x, &p) == 0 && p.type == 1) { drvh = d; zrt::dev = x; break; }
+      if (zeDeviceGetProperties(x, &p) == 0 && p.type == 1) { drvh = d; zrt::dev0.dev = x; break; }
     }
     if (!drvh) { fprintf(stderr, "no Level Zero GPU driver\n"); return false; }
     uint32_t nm = 1;
     ze_device_memory_properties_t mp{};
     mp.stype = ZE_STYPE_DEVICE_MEMORY_PROPERTIES;
-    ZE_CHECK(zeDeviceGetMemoryProperties(zrt::dev, &nm, &mp));
-    zrt::global_mem = mp.totalSize;
+    ZE_CHECK(zeDeviceGetMemoryProperties(zrt::dev0.dev, &nm, &mp));
+    zrt::dev0.global_mem = mp.totalSize;
     ze_context_desc_t cd{ZE_STYPE_CONTEXT_DESC, nullptr, 0};
-    ZE_CHECK(zeContextCreate(drvh, &cd, &zrt::ctx));
+    ZE_CHECK(zeContextCreate(drvh, &cd, &zrt::ctx));  // (every GPU of the driver: host memory they all reach)
+    zrt::driver = drvh;
     ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 2 /* in order */, 2 /* asynchronous */, 0};
-    ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, zrt::dev, &qd, &zrt::cl));
+    ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, zrt::dev0.dev, &qd, &zrt::dev0.cl));
     ze_fail_hook = zrt::print_memory;
     return true;
+  }
+  // GPUs 1..n-1 of the driver next to device 0 (after init), each with its own command list: zrt::devs. sim: n
+  // "GPUs" that are all device 0, each with its own list (multi-GPU tests on one GPU, ARC_TP_SIM). Returns the
+  // number open, or 0 and why in err (fewer GPUs than asked, others of another kind).
+  static int open_devices(int n, bool sim, std::string& err) {
+    if (!zrt::ctx || !zrt::driver) { err = "the runtime is not started"; return 0; }
+    if ((int)zrt::devs.size() >= n) return n;
+    std::vector<ze_device_handle_t> gpus;
+    if (sim) {
+      gpus.assign(n, zrt::dev0.dev);
+    } else {
+      uint32_t c = 0;
+      ZE_CHECK(zeDeviceGet(zrt::driver, &c, nullptr));
+      std::vector<ze_device_handle_t> all(c);
+      ZE_CHECK(zeDeviceGet(zrt::driver, &c, all.data()));
+      gpus.push_back(zrt::dev0.dev);
+      for (ze_device_handle_t x : all) {
+        ze_device_properties_t p{};
+        p.stype = ZE_STYPE_DEVICE_PROPERTIES;
+        if (x != zrt::dev0.dev && zeDeviceGetProperties(x, &p) == 0 && p.type == 1) gpus.push_back(x);
+      }
+      if ((int)gpus.size() < n) {
+        err = std::to_string(n) + " GPUs asked for, the driver has " + std::to_string(gpus.size());
+        return 0;
+      }
+    }
+    for (int i = (int)zrt::devs.size(); i < n; ++i) {
+      zrt::Dev* d = new zrt::Dev{};
+      d->dev = gpus[i];
+      d->index = i;
+      uint32_t nm = 1;
+      ze_device_memory_properties_t mp{};
+      mp.stype = ZE_STYPE_DEVICE_MEMORY_PROPERTIES;
+      ZE_CHECK(zeDeviceGetMemoryProperties(d->dev, &nm, &mp));
+      d->global_mem = mp.totalSize;
+      ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 2 /* in order */, 2 /* asynchronous */, 0};
+      ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, d->dev, &qd, &d->cl));
+      zrt::devs.push_back(d);
+    }
+    return n;
   }
 
   // The native binary for (source, options): from the shared kernel cache, else compiled by OpenCL and saved there.
@@ -616,7 +675,7 @@ struct ClRt {
     p->indirect = opts.find("-DXCACHE") != std::string::npos;
     p->opts = opts;
     ze_module_build_log_handle_t log = nullptr;
-    const ze_result_t r = zeModuleCreate(zrt::ctx, zrt::dev, &md, &p->m, &log);
+    const ze_result_t r = zeModuleCreate(zrt::ctx, zrt::D().dev, &md, &p->m, &log);
     if (r != ZE_RESULT_SUCCESS && cached) {  // a damaged cache file: compiled again from the source
       if (log) zeModuleBuildLogDestroy(log);
       delete p;
@@ -676,8 +735,8 @@ struct ClRt {
     if (!e) return 0.0;
     ze_kernel_timestamp_result_t ts{};
     if (zeEventQueryKernelTimestamp((ze_event_handle_t)e, &ts) != ZE_RESULT_SUCCESS) return 0.0;
-    const uint64_t t = (ts.context.kernelEnd - ts.context.kernelStart) & zrt::ev_mask;
-    return t * zrt::ev_ns_per_tick * 1e-6;
+    const uint64_t t = (ts.context.kernelEnd - ts.context.kernelStart) & zrt::D().ev_mask;
+    return t * zrt::D().ev_ns_per_tick * 1e-6;
   }
 };
 

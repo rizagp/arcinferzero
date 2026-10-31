@@ -66,6 +66,120 @@ static std::string peak_note(Engine& eng, double gbs) {
   return s;
 }
 
+// --gpus N: the model split over N GPUs (zero/engine_tp.h): the prompt (or --bench-pp N), then greedy generation
+static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, const std::vector<int>& toks, int n_gen,
+                  int bench_pp, const std::string& dump_logits, bool show, const std::string& kl_ref) {
+  TpEngine tp(model, eo, gpus);
+  Engine& e0 = tp.shard(0);
+  Vocab vocab(e0.gguf());
+  printf("loaded: %d GPUs, %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB per GPU | W8 %s | chunk %d | ctx %d | load %.0f ms (GPU 0)\n",
+         gpus, e0.hp.n_layer, e0.hp.n_embd, e0.n_logits() * gpus, e0.gpu_bytes / 1073741824.0,
+         e0.w8_resident ? "resident" : "just-in-time", e0.max_chunk, e0.ctx, e0.load_ms);
+  auto ms_since = [](std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+  };
+  auto syncs = [&] {  // (GPU 0's time in the shards' sums: its GPU's wait + the barrier)
+    return std::make_pair(tp.comm().wait_ms[0], tp.comm().reduces[0]);
+  };
+  auto read_bytes = [&] {
+    uint64_t b = 0;
+    for (int r = 0; r < gpus; ++r) b += tp.shard(r).rd_bytes;
+    return b;
+  };
+  std::vector<int> prompt = toks;
+  if (bench_pp > 0) {
+    prompt.resize(bench_pp);
+    for (int i = 0; i < bench_pp; ++i) prompt[i] = 1000 + (i * 7919) % 50000;
+  }
+  if (prompt.empty()) { fprintf(stderr, "no tokens\n"); return 1; }
+  if (!kl_ref.empty()) {  // (--kl-ref with every position's reference log-probs: the prompt fed token by token, as --kl-decode)
+    FILE* fi = fopen(kl_ref.c_str(), "rb");
+    if (!fi) { fprintf(stderr, "cannot open %s\n", kl_ref.c_str()); return 1; }
+    _fseeki64(fi, 0, SEEK_END);
+    std::vector<float> ref((size_t)_ftelli64(fi) / 4);
+    _fseeki64(fi, 0, SEEK_SET);
+    const size_t got = fread(ref.data(), 4, ref.size(), fi);
+    fclose(fi);
+    const size_t V = (size_t)e0.n_logits() * gpus;
+    if (got != ref.size() || ref.size() != V * prompt.size()) { fprintf(stderr, "reference must hold every position\n"); return 1; }
+    double sum = 0, mxk = 0;
+    int agree = 0;
+    for (size_t r = 0; r < prompt.size(); ++r) {
+      const auto& l = tp.forward(&prompt[r], 1);
+      const double mx = *std::max_element(l.begin(), l.end());
+      double z = 0;
+      for (float v : l) z += std::exp((double)v - mx);
+      const float* rr = ref.data() + r * V;
+      double kl = 0;
+      for (size_t i = 0; i < V; ++i)
+        if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
+      sum += kl;
+      mxk = std::max(mxk, kl);
+      agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
+    }
+    printf("KL decode path (ref || arcinferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
+           sum / prompt.size(), prompt.size(), mxk, agree, prompt.size());
+    return 0;
+  }
+  tp.forward(prompt.data(), std::min((int)prompt.size(), 64));  // warm-up (kernels, page-in)
+  const int runs = bench_pp > 0 ? 3 : 1;
+  std::vector<float> lg;
+  for (int r = 0; r < runs; ++r) {
+    tp.reset();
+    const auto [w0, n0] = syncs();
+    const auto t0 = std::chrono::steady_clock::now();
+    lg = tp.forward(prompt.data(), (int)prompt.size());
+    const double ms = ms_since(t0);
+    const auto [w1, n1] = syncs();
+    printf("pp%zu run %d: %.1f ms  ->  %.1f tokens/s (sums: %ld, %.1f ms waiting)\n", prompt.size(), r, ms,
+           prompt.size() / ms * 1000.0, n1 - n0, w1 - w0);
+  }
+  if (bench_pp <= 0) {
+    std::vector<std::pair<int, float>> tk;
+    top_k(lg, 10, tk);
+    printf("top-10 next token:");
+    for (auto& [id, p] : tk) printf(" %d(%.4f)", id, p);
+    printf("\n");
+  }
+  FILE* dl = dump_logits.empty() ? nullptr : fopen(dump_logits.c_str(), "wb");
+  if (dl) fwrite(lg.data(), sizeof(float), lg.size(), dl);
+  int tok = (int)(std::max_element(lg.begin(), lg.end()) - lg.begin());
+  if (bench_pp > 0) tok = 1000;
+  std::vector<int> gen;
+  std::vector<double> step_ms;
+  const uint64_t b0 = read_bytes();
+  const auto [w0, n0] = syncs();
+  const auto t1 = std::chrono::steady_clock::now();
+  for (int i = 0; i < n_gen; ++i) {
+    gen.push_back(tok);
+    if (bench_pp <= 0 && tok == vocab.eos) break;
+    const auto ts = std::chrono::steady_clock::now();
+    const auto& l2 = tp.forward(&tok, 1);
+    step_ms.push_back(ms_since(ts));
+    if (dl) fwrite(l2.data(), sizeof(float), l2.size(), dl);
+    tok = (int)(std::max_element(l2.begin(), l2.end()) - l2.begin());
+  }
+  if (dl) fclose(dl);
+  const double gms = ms_since(t1);
+  const auto [w1, n1] = syncs();
+  if (bench_pp <= 0) {
+    printf("greedy:");
+    for (int id : gen) printf(" %d", id);
+    printf("\n");
+  }
+  if (!step_ms.empty()) {
+    std::vector<double> st = step_ms;
+    std::sort(st.begin(), st.end());
+    printf("tg%zu: %.1f ms  ->  %.2f tokens/s | steps min %.1f, median %.1f ms | sums per token %.0f, %.2f ms of each token waiting\n",
+           step_ms.size(), gms, step_ms.size() / gms * 1000.0, st.front(), st[st.size() / 2],
+           (double)(n1 - n0) / step_ms.size(), (w1 - w0) / step_ms.size());
+    const double gb = (read_bytes() - b0) / 1e9;
+    printf("weights read: %.0f MB per token over %d GPUs, %.1f GB/s together\n", gb * 1000 / step_ms.size(), gpus, gb / gms * 1000);
+  }
+  if (show) printf("----- text -----\n%s\n----------------\n", vocab.decode(gen).c_str());
+  return 0;
+}
+
 static int run_main(int argc, char** argv);
 int main(int argc, char** argv) {
   full_speed_process();
@@ -99,6 +213,8 @@ static int run_main(int argc, char** argv) {
             "  --ctx N               context (default: what the prompt needs)     --chunk N   prompt tokens per step\n"
             "  --feed-step N         feed the prompt in calls of N tokens (tests resuming mid-prompt)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
+            "  --gpus N              the model split over N GPUs (dense Qwen3.5 / 3.6 / 3.8): the prompt or --bench-pp, then\n"
+            "                        greedy generation (ARC_TP_SIM=1: N shards on GPU 0, to test the split)\n"
             "  --attn-f32            f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
             "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any)\n"
             "profiling:\n"
@@ -131,7 +247,7 @@ static int run_main(int argc, char** argv) {
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;
   std::string ppl_kl_save, ppl_kl;
   int ppl_ctx = 512, ppl_chunks = 0, ppl_score_last = 0, ppl_score_step = 0;
-  int n_gen = 16, chunk = 0, ctx = 0, bench_pp = 0, feed_step = 0;
+  int n_gen = 16, chunk = 0, ctx = 0, bench_pp = 0, feed_step = 0, gpus = 1;
   EngineOptions eo;
   bool prof = false, show = false, prof_gen = false, kl_decode = false, slots_check = false;
   int bench_batch = 0;
@@ -195,6 +311,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--ppl-ctx") ppl_ctx = atoi(next());
     else if (a == "--ppl-chunks") ppl_chunks = atoi(next());
     else if (a == "--budget") eo.w8_budget_gb = atof(next());
+    else if (a == "--gpus") gpus = std::max(1, atoi(next()));
     else if (!a.empty() && a[0] != '-' && text_prompt.empty()) text_prompt = a;  // PROMPT (special tokens parsed)
     else { fprintf(stderr, "unknown option %s (--help: the options)\n", a.c_str()); return 1; }
   }
@@ -216,6 +333,7 @@ static int run_main(int argc, char** argv) {
   eo.ctx = std::max(ctx, need);
   eo.chunk = chunk;
   warn_gpu_neighbours();
+  if (gpus > 1) return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref);
   Engine eng(model, eo);
   Vocab vocab(eng.gguf());
   printf("loaded: %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB | W8 %s | chunk %d | ctx %d | load %.0f ms\n",

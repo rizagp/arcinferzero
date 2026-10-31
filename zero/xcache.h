@@ -190,7 +190,7 @@ struct XCache {
       for (size_t c = 0; c < P.chunks.size(); ++c) {
         const int k = std::min(per, P.n - (int)c * per);
         zeMemFree(zrt::ctx, P.chunks[c]);
-        zrt::device_bytes -= (size_t)std::max(0, k) * P.rec + 65536;
+        zrt::D().device_bytes -= (size_t)std::max(0, k) * P.rec + 65536;
       }
       P.chunks.clear();
     }
@@ -250,7 +250,7 @@ struct XCache {
       P->key[t] = k;
       where[k] = t;
       push_front(*P, t);
-      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, P->addr[t], P->addr[from], P->rec, nullptr, 0, nullptr));
+      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, P->addr[t], P->addr[from], P->rec, nullptr, 0, nullptr));
       xaddr[k] = (uint64_t)P->addr[t];
     }
     zrt::sync();
@@ -262,7 +262,7 @@ struct XCache {
     P->next.resize(s0);
     P->chunks.pop_back();
     zeMemFree(zrt::ctx, base);
-    zrt::device_bytes -= bytes;
+    zrt::D().device_bytes -= bytes;
     cache_bytes -= bytes - 65536;
     shrunk_bytes += bytes;
     // table entries into the freed piece: to a valid slot (as set_cache leaves them)
@@ -464,7 +464,7 @@ struct XCache {
         }
         st.read(reqs);
         for (size_t j = b0; j < std::min(order.size(), b0 + S); ++j)
-          ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, P.addr[order[j]], stage[h] + (j - b0) * stage_rec, P.rec,
+          ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, P.addr[order[j]], stage[h] + (j - b0) * stage_rec, P.rec,
                                                  nullptr, 0, nullptr));
         warm_bytes += reqs.size() * P.rec;
         loadp::step(what, (double)warm_bytes, fill);
@@ -664,7 +664,7 @@ struct XCache {
     const int busy = pf_.joinable() ? pf_layer_ : -1;
     if (pf_wait_[l % 2] == l) {  // (this layer's experts came through the copy list: the kernels wait for its event)
       ze_event_handle_t ev = zrt::copy_event(l % 2);
-      ZE_CHECK(zeCommandListAppendBarrier(zrt::cl, nullptr, 1, &ev));
+      ZE_CHECK(zeCommandListAppendBarrier(zrt::D().cl, nullptr, 1, &ev));
       pf_wait_[l % 2] = -1;
     }
     Pool& P = pools[pool_of[l]];
@@ -773,7 +773,7 @@ struct XCache {
         read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
       }
       for (auto& c : copies)
-        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, P.addr[c.second], stage[h] + (size_t)c.first * stage_rec, P.rec,
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, P.addr[c.second], stage[h] + (size_t)c.first * stage_rec, P.rec,
                                                nullptr, 0, nullptr));
       // next round: the misses not done yet (skipping prefetched ones copied above)
       i0 = i;
@@ -821,7 +821,7 @@ struct XCache {
       int bad = 0, first_bad = -1;
       for (int e = 0; e < NE; ++e) {
         if (!seen[e]) continue;
-        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::cl, a, (void*)xa[e], lrec[l], nullptr, 0, nullptr));
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, a, (void*)xa[e], lrec[l], nullptr, 0, nullptr));
         zrt::sync();
         st.read({{l, e, b}});
         if (memcmp(a, b, lrec[l])) { ++bad; if (first_bad < 0) first_bad = e; }

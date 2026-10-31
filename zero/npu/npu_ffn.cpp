@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
   }
   auto view = [&](size_t off, size_t bytes) {  // a cl_mem of the GPU runtime on part of the shared block
     ZMem* m = new ZMem{(char*)shm + off, bytes, false};
-    zrt::mems.insert(m);
+    zrt::D().mems.insert(m);
     return (cl_mem)m;
   };
   cl_mem g_aq = view(a_off, (size_t)M * K), g_sa = view(sa_off, (size_t)M * 2), g_cg = view(cg_off, (size_t)M * Nn * 2),

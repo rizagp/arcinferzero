@@ -153,7 +153,7 @@ void npu_setup() {
   }
   auto view = [&](size_t off, size_t bytes) {
     ZMem* m = new ZMem{(char*)npu_shm_ + off, bytes, false};
-    zrt::mems.insert(m);
+    zrt::D().mems.insert(m);
     mems_.push_back(m);
     return (cl_mem)m;
   };

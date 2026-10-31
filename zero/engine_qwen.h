@@ -67,7 +67,8 @@
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
       run("gated_norm_quant", k_gnorm_, 2, gws, lws);
     }
-    matmul("gemm_ssm_out", L.ssm_out, Mp, hp.hc ? hco_ : x_, E, 0, hp.hc ? 0 : 1, a_out);
+    if (hp.hc) matmul("gemm_ssm_out", L.ssm_out, Mp, hco_, E, 0, 0, a_out);
+    else tp_out("gemm_ssm_out", L.ssm_out, Mp, a_out);
   }
 
   // ---- Flash Next QSA. The indexer rows of the pass (one GEMM over the block input), the pooled keys of the blocks it
@@ -342,7 +343,8 @@
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
       run("attn_gate_quant", k_attn_gate_, 2, gws, lws);
     }
-    matmul("gemm_o", L.wo, Mp, hp.hc ? hco_ : x_, E, 0, hp.hc ? 0 : 1, a_out);
+    if (hp.hc) matmul("gemm_o", L.wo, Mp, hco_, E, 0, 0, a_out);
+    else tp_out("gemm_o", L.wo, Mp, a_out);
   }
 
   void layer_ffn(Layer& L, int T, int Mp) {
@@ -368,5 +370,5 @@
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
       run("swiglu_quant", k_swiglu_, 2, gws, lws);
     }
-    matmul("gemm_down", L.down, Mp, x_, E, 0, true, a_dn);
+    tp_out("gemm_down", L.down, Mp, a_dn);
   }
