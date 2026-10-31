@@ -2244,7 +2244,7 @@ int main(int argc, char** argv) {
   dispatch = [&](const HttpRequest& rq, HttpResponse& rs) {
     const bool chat_post = rq.method == "POST" && rq.path == "/v1/chat/completions";
     // (answered with no model too, below: the speech service's state and the models a chat can load)
-    const bool info = rq.method == "GET" && (rq.path == "/health" || rq.path == "/props" ||
+    const bool info = rq.method == "GET" && (rq.path == "/" || rq.path == "/index.html" || rq.path == "/health" || rq.path == "/props" ||
                                              (swap && (rq.path == "/v1/models" || rq.path == "/models")));
     {  // (no model: -m none, or a switch failed and so did loading the previous model again; a chat request naming
        //  one loads it)
@@ -2331,10 +2331,18 @@ int main(int argc, char** argv) {
         return rs.send(200, "application/json", merged.dump());
       }
     }
-    if (rq.method == "GET" && (rq.path == "/health" || rq.path == "/props")) {  // (no chat model: the speech service's)
+    // (no chat model: the web UI, and the speech service's state)
+    if (rq.method == "GET" && (rq.path == "/" || rq.path == "/index.html" || rq.path == "/health" || rq.path == "/props")) {
       std::shared_lock<std::shared_mutex> lk(swap_mu);
       if (!cur) {
         if (rq.path == "/health") return rs.send(200, "application/json", "{\"status\":\"ok\"}");
+        if (rq.path != "/props") {
+          std::ifstream f(so.webui + "/index.html", std::ios::binary);
+          if (!f) return rs.send(404, "text/plain", "web UI not found: " + so.webui + "/index.html");
+          std::stringstream ss;
+          ss << f.rdbuf();
+          return rs.send(200, "text/html; charset=utf-8", ss.str());
+        }
         Json r = Json::object(), mod = Json::object();
         r.set("model", "");
         r.set("n_ctx", 0);
