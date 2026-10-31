@@ -8,6 +8,12 @@
 - **PDFs for OCR models**: the first PDF of a new chat could fail with "An item cannot be found at the specified
   path". The chat's folder is renamed when the chat is first saved, which came while the PDF was being opened. The
   PDF is now read into memory once and rendered from there (`tools/pdf_render.h`).
+- **Self audit** of the OCR mode ([docs/self-audit-2026-10-31.md](docs/self-audit-2026-10-31.md), evening):
+  - a page the model could not read stops the pages (`[OCR: stopped at page P: why]`), so the web UI no longer
+    sends "lanjut" into the same error to the PDF's end;
+  - PDF answers carry the pages' `timings` (the statistics line said "stopped");
+  - an `.md` that cannot be written is refused before any page; `CON` / `NUL` / `COM1` as its name become
+    `ocr CON.md`.
 - **NPU**: a driver's newer graph extension (1.9 and up) is taken too, and "no NPU" now says what is missing: no NPU
   device in Level Zero (the Intel NPU driver), or a driver too old for graph extension 1.8.
 

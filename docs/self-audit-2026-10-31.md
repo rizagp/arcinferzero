@@ -62,3 +62,31 @@ New at the user's request during the audit:
 | 2 | 0.00096 (196/200) | identical, KL 0.00087 (top-1 17/17) |
 | 3 | 0.00110 (198/200) | identical, KL 0.00078 (top-1 17/17) |
 | 4 | 0.00109 (197/200) | identical, KL 0.00068 (top-1 17/17) |
+
+## Evening: OCR mode, PDFs, the launcher, the NPU
+
+Scope: `tools/server_ocr.h`, `tools/pdf_render.h`, the web UI's OCR view and save dialog, `scripts/arc-launcher.ps1`,
+`zero/npu/npu_rt.h`.
+
+### Found and fixed
+
+| ID | Severity | Problem | Fix | Checked |
+|---|---|---|---|---|
+| O1 | high | A page the model could not read (an OCR model with no image encoder, an error) went into the answer, and the answer still ended with "N more page(s)". The web UI then sent "lanjut" again, which hit the same error each turn, page after page to the PDF's end | the pages stop at the first failed one; the answer ends with `[OCR: stopped at page P: why]`, which the web UI does not go on from | read through: the note does not match the web UI's `OCR_MORE` |
+| O2 | high | The first PDF of a new chat failed with "An item cannot be found at the specified path": the chat's folder is renamed at its first save, while the PDF was being opened (user report) | the PDF read into memory once, every page rendered from it; the file looked up again if it moved | the 13-page PDF that failed reads |
+| O3 | medium | A PDF answer carried no `timings`, so the web UI's statistics line said "stopped" | the pages' timings added up, sent with the last chunk and in a non-stream answer; the web UI's context meter does not take them (each page has a context of its own) | stream and non-stream: prompt / generated tokens and t/s |
+| O4 | medium | An `.md` that could not be written (a read-only folder, a full disk) failed silently: the pages were read into no file | the file's first line checked; HTTP 400 "cannot write NAME there" before any page | `C:\Windows\System32` as the folder: 400 |
+| O5 | low | A device name as the `.md`'s name (`CON`, `NUL`, `COM1`) opened the device, not a file | such a name gets "ocr " in front | `CON` saved as `ocr CON.md` |
+| L1 | high | The launcher popped up an index error every 2 s (issue #5): commas inside `$L.Add("..." -f a, b)` split the method's arguments | each such line has its own parentheses | PowerShell 5.1 and 7: the old form fails, the new one works; the script parses |
+| N1 | low | "no NPU" said nothing of why; a driver with a newer graph extension only was not taken | graph extension 1.8 to 1.20 tried; the message names what is missing | the NPU here still runs (pp1024 ~4,900 tok/s) |
+
+### Checked and left as is
+
+- The `.md`'s name is a name only (no path, the reserved characters replaced); a folder only from a request of this
+  computer, and only one that exists.
+- The PDF's bytes stay in memory for one request only (the file's size, freed when the answer ends).
+- WinRT on the request threads: each thread joins the multi-threaded apartment once.
+- A chat with an OCR model is not compacted (the server reads only its last turn); a PDF's pages stay in its history
+  and go with every "lanjut" (the server reads only the highest `## Page N` from them).
+- `halaman` / `page` in the words also pick the document task (Markdown, OTSL tables): kept, a PDF's pages read
+  better that way.

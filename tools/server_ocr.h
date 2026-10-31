@@ -106,6 +106,13 @@
         if (strchr("<>:\"/\\|?*", c) || (unsigned char)c < 32) c = '_';
       if (name.empty() || name[0] == '.') name = "ocr" + name;
       if (files::lower(name).size() < 3 || files::lower(name).rfind(".md") != files::lower(name).size() - 3) name += ".md";
+      {  // (a device's name, "CON.md", "nul.md", "COM1.md": Windows opens the device, not a file)
+        const std::string st = files::lower(std::filesystem::path(name).stem().string());
+        const std::string base = st.substr(0, st.find('.'));
+        if (base == "con" || base == "prn" || base == "aux" || base == "nul" ||
+            ((base.rfind("com", 0) == 0 || base.rfind("lpt", 0) == 0) && base.size() == 4 && isdigit((unsigned char)base[3])))
+          name = "ocr " + name;
+      }
       std::filesystem::path dir;
       const std::string folder = sv["folder"].str();
       std::error_code ec;
@@ -128,7 +135,12 @@
       if (!sv["append"].as_bool(false)) {  // (a new file: never in an existing one's place)
         const std::string stem = md.stem().string();
         for (int k = 2; std::filesystem::exists(md, ec) && k < 1000; ++k) md = dir / (stem + " (" + std::to_string(k) + ").md");
-        std::ofstream(md, std::ios::binary | std::ios::trunc) << "# " << pdf.name << "\n\n";
+        std::ofstream f(md, std::ios::binary | std::ios::trunc);
+        f << "# " << pdf.name << "\n\n";
+        if (!f.flush()) {  // (a read-only folder, a full disk: said now, not pages read into no file)
+          rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("cannot write " + name + " there").dump() + "}}");
+          return true;
+        }
       }
     }
     auto save = [&](const std::string& piece) {
@@ -149,7 +161,10 @@
         all = note;
       }
     }
-    for (int p = first; p <= n && !rs.client_gone(); ++p) {
+    // (the pages' timings added up: the web UI's statistics line, which said "stopped" for an answer without them)
+    double t_pn = 0, t_cn = 0, t_pms = 0, t_gn = 0, t_gms = 0;
+    std::string failed;  // (a page the model could not read: the pages stop there, no "more pages" note to go on with)
+    for (int p = first; p <= n && !rs.client_gone() && failed.empty(); ++p) {
       std::string piece = (p > first ? "\n\n" : "") + std::string("## Page ") + std::to_string(p) + " / " + std::to_string(pages) + "\n\n";
       const std::string png = doc.render(p, 150, err);
       if (png.empty()) {
@@ -178,10 +193,20 @@
         chat(rq2, r2);  // (an image now: ocr_request gives it the task prompt; its tables come back as Markdown)
         Json j;
         Json::try_parse(out, j);
-        if (st != 200) piece += "[page " + std::to_string(p) + ": " + j["error"]["message"].str("HTTP " + std::to_string(st)) + "]";
-        else piece += j["choices"][0]["message"]["content"].str();
+        if (st != 200) {
+          failed = "page " + std::to_string(p) + ": " + j["error"]["message"].str("HTTP " + std::to_string(st));
+          piece += "[" + failed + "]";
+        } else {
+          piece += j["choices"][0]["message"]["content"].str();
+        }
         ptok += j["usage"]["prompt_tokens"].as_int();
         ctok += j["usage"]["completion_tokens"].as_int();
+        const Json& tm = j["timings"];
+        t_pn += tm["prompt_n"].as_number(0);
+        t_cn += tm["cache_n"].as_number(0);
+        t_pms += tm["prompt_ms"].as_number(0);
+        t_gn += tm["predicted_n"].as_number(0);
+        t_gms += tm["predicted_ms"].as_number(0);
       }
       save((p > 1 && p == first ? "\n\n" : "") + piece);
       if (stream) {
@@ -193,7 +218,10 @@
       }
     }
     std::string note;  // (pages left: the web UI's cue for "lanjut"; and the file the text went to)
-    if (pages > n && n >= first) {
+    if (!failed.empty()) {  // (the web UI goes on only after a "more page(s)" note: a model that cannot read the pages, no
+                            //  vision encoder, would have answered every "lanjut" with the same error, 450 times)
+      note = "\n\n[OCR: stopped at " + failed + (md.empty() ? "" : "; the pages before it are in " + where) + "]";
+    } else if (pages > n && n >= first) {
       const int a = n + 1, b = std::min(pages, n + kOcrMaxPages);
       note = "\n\n[OCR: " + std::to_string(pages - n) + " more page(s); \"lanjut\" reads pages " + std::to_string(a) + "-" +
              std::to_string(b) + (md.empty() ? "" : ", added to " + where) + "]";
@@ -213,9 +241,18 @@
     usage.set("prompt_tokens", ptok);
     usage.set("completion_tokens", ctok);
     usage.set("total_tokens", ptok + ctok);
+    Json timings = Json::object();
+    timings.set("prompt_n", t_pn);
+    timings.set("cache_n", t_cn);
+    timings.set("prompt_ms", t_pms);
+    timings.set("prompt_per_second", t_pms > 0 ? 1000.0 * t_pn / t_pms : 0.0);
+    timings.set("predicted_n", t_gn);
+    timings.set("predicted_ms", t_gms);
+    timings.set("predicted_per_second", t_gms > 0 ? 1000.0 * t_gn / t_gms : 0.0);
     if (stream) {
       Json fin = chunk(id, created, Json::object(), Json("stop"));
       fin.set("usage", usage);
+      fin.set("timings", timings);
       rs.sse_event(fin.dump());
       rs.sse_event("[DONE]");
       rs.sse_end();
@@ -234,6 +271,7 @@
     r.set("model", model_id_);
     r.set("choices", choices);
     r.set("usage", usage);
+    r.set("timings", timings);
     rs.send(200, "application/json", r.dump());
     return true;
   }

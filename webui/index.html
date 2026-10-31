@@ -1931,7 +1931,8 @@ function turnStats(el, st, job) {
   const n = (k) => Number(t[k]) || 0;  // (a field missing: 0, not an exception that loses the answer's last steps)
   stats.textContent = "prompt " + (n("prompt_n") + n("cache_n")) + " tok (" + n("cache_n") + " cached) in " + (n("prompt_ms") / 1000).toFixed(1) +
     " s · " + n("prompt_per_second").toFixed(1) + " t/s · generated " + n("predicted_n") + " tok at " + n("predicted_per_second").toFixed(2) + " t/s";
-  job.used = n("prompt_n") + n("cache_n") + n("predicted_n");
+  // (not an OCR model's PDF: its timings add up its pages, each read in a context of its own)
+  if (!(caps.ocr && /## Page \d+ \/ \d+/.test(st.answer))) job.used = n("prompt_n") + n("cache_n") + n("predicted_n");
   if (onScreen(job)) { used = job.used; showUse(); }
 }
 
