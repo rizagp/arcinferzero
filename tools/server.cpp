@@ -1231,7 +1231,14 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       // pages are those sections, from page `from`'s heading up to the heading after page `to` (2026-10-31: pages
       // "26-30" of such a file said "no text", and Qwen 3.5 4B read it a page-section at a time, 8 tool rounds)
       size_t md_first = n, md_last = n;
-      bool whole = false;  // (the whole text in this read: see below)
+      // the rest of the text from the call's offset in this read, when the model's context takes it in one and no
+      // max_chars was asked (a model reading "offset: 0, 11934, 23882..." in 12,000-character parts ran out of its
+      // tool rounds at 80K of 98K, 2026-10-31)
+      auto fits = [&](const std::string& d) {
+        const size_t off = std::min(d.size(), (size_t)a["offset"].as_clamped(0, 0, (int64_t)d.size()));
+        return ctx > 0 && !a["max_chars"].is_number() && d.size() - off <= files::read_budget(ctx);
+      };
+      bool whole = false;
       if (by_pages && ix->doc.pages <= 1) {
         for (const rdoc::Section& s : ix->outline) {
           int k = 0, m = 0;
@@ -1284,7 +1291,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         data = ix->text(0, n);
         // a long document: its outline first; one the model's context takes in a single read comes whole (the OCR
         // .md of 56 pages, 25K tokens, for a 262K-token Qwen 3.5 4B: section after section ran out of tool rounds)
-        whole = ctx > 0 && data.size() <= files::read_budget(ctx) && !a["max_chars"].is_number() && !a["offset"].is_number();
+        whole = fits(data);
         if (data.size() > files::kInlineChars && !whole && !a["offset"].is_number()) {
           r.set("total_tokens", (double)files::tokens_of(data.size()));
           r.set("outline", files::outline_json(*ix));
@@ -1298,6 +1305,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         }
       }
       // (a part at a time: max_chars, and never more than the model's context takes in one read)
+      whole = whole || fits(data);  // (a section's or pages' text, or the text from an offset, likewise)
       const size_t asked = whole ? data.size() : (size_t)std::clamp(a["max_chars"].as_number(12000), 500.0, 60000.0);
       const size_t off = (size_t)a["offset"].as_clamped(0, 0, (int64_t)data.size()), mx = std::min(asked, files::read_budget(ctx));
       size_t end = std::min(data.size(), off + mx);

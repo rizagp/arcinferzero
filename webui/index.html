@@ -1279,9 +1279,9 @@ const FILE_TOOLS = [
   { type: "function", function: { name: "read_file",
     description: "Read a saved file: DOCX, PDF, XLSX, PPTX, text, Markdown, CSV... Spreadsheet: a heading per sheet, a line " +
       "per row (\"Column: value | ...\" with a header row). Presentation: a heading per slide (pages = slides) with its " +
-      "notes. A document your context takes in one read comes whole; a longer one returns its outline first (numbered " +
-      "sections, pages, sizes): then read many pages in one call (pages \"1-20\"), not a section at a time. Text in " +
-      "parts of up to 12,000 characters (next_offset continues). A file you wrote returns its create_file arguments. Images, audio: " +
+      "notes. A document your context takes in one read comes whole (also from an offset: the rest at once); a longer " +
+      "one returns its outline first (numbered sections, pages, sizes): then read many pages in one call (pages " +
+      "\"1-20\"), not a section at a time. A longer text in parts (next_offset continues). A file you wrote returns its create_file arguments. Images, audio: " +
       "metadata only. Scanned PDF pages, read by pages, are transcribed by the vision model (up to 4 a call, 10-60 s " +
       "each). Also other chats (\"chat:<id>\": a section per exchange) and recordings / meetings (\"transcript:<id>\", " +
       "attached with @: a summary, then 5-minute sections with times and speakers).",

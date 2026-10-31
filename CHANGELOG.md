@@ -2,9 +2,12 @@
 
 ## 2026-10-31 (night): reading an OCR .md with a chat model
 
-- **`read_file` without arguments reads a document whole** when the model's context takes it in one read
-  (`files::read_budget`); a longer one still gets its outline. Qwen3.5 4B (262K context) read the 56-page OCR `.md`
-  (98 KB, 25K tokens) a page-section at a time and ran out of its 8 tool rounds; now one call.
+- **`read_file` reads a document whole** when the model's context takes it in one read (`files::read_budget`) and
+  no `max_chars` is asked: without arguments, and from an `offset` too (the rest at once); a longer one still gets
+  its outline, and parts. Qwen3.5 4B (262K context) read the 56-page OCR `.md` (98 KB, 25K tokens) a page-section at
+  a time, then with `offset: 0` in 12,000-character parts, and ran out of its 8 tool rounds at 80K of 98K. Now, in
+  the web UI, "Baca seluruh file ... lalu berikan kekurangannya": one call, the whole file (23K-token prompt,
+  670 t/s), the answer from all of it.
 - **`pages: "A-B"` in a Markdown file with `## Page N / M` headings** (an OCR model's `.md`): those pages' sections
   in one call ("26-30" said "no text" before). The web UI's `read_file` description says so.
 - **Qwen tool calls with a number argument** (`section: 12`): every token after its `</parameter` was refused by the
