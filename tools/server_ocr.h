@@ -23,9 +23,11 @@
   //   answers with "lanjut" by itself until the last page (a 450-page manual in 9 turns).
   //   "ocr_save": true or {name, folder, append} (the web UI asks each time a PDF is sent): the pages also go into a
   //   .md, each page appended once read. name: the file's (default "<the PDF's name>.md"); folder: an existing folder
-  //   of this computer, for a request from this computer only (default: the chat's folder, its Files panel). A new
-  //   file never takes an existing one's place: "name (2).md" then; append (the web UI's "lanjut" turns): the named
-  //   file goes on. Every answer ends with the file it went to ("[OCR: ... added to F]" / "[OCR: saved to F]").
+  //   of this computer, for a request from this computer only (default: the chat's folder, its Files panel); a
+  //   folder of the user's gets a copy in the chat's files too, under the same name, for a chat model to read later
+  //   (read_file). A new file never takes an existing one's place: "name (2).md" then; append (the web UI's "lanjut"
+  //   turns): the named file goes on. Every answer ends with the file it went to ("[OCR: ... added to F]" /
+  //   "[OCR: saved to F]", F "PATH; in this chat's files as NAME" for a folder of the user's).
   bool ocr_pdf(const HttpRequest& rq, const Json& body, HttpResponse& rs) {
     const Json& msgs = body["messages"];
     int last = -1;
@@ -95,7 +97,7 @@
     std::string all;
     int64_t ptok = 0, ctok = 0;
     // the .md next to the chat's files (started over with page 1, else appended)
-    std::filesystem::path md;
+    std::filesystem::path md, md_chat;
     bool in_chat = false;  // (in the chat's folder: its Files panel follows the file)
     const Json& sv = body["ocr_save"];
     if (sv.as_bool(false) || sv.is_object()) {
@@ -113,8 +115,10 @@
             ((base.rfind("com", 0) == 0 || base.rfind("lpt", 0) == 0) && base.size() == 4 && isdigit((unsigned char)base[3])))
           name = "ocr " + name;
       }
-      std::filesystem::path dir;
-      const std::string folder = sv["folder"].str();
+      std::filesystem::path dir, chat_dir;
+      const std::string folder = sv["folder"].str(), chat = body["chat_id"].str();
+      // (the asking chat's folder: the PDF's copy found may be another chat's)
+      if (files::valid_id(chat)) chat_dir = std::filesystem::path(files::store().chat_dir_make(chat));
       std::error_code ec;
       if (!folder.empty()) {
         if (!rq.local_peer) {
@@ -126,29 +130,44 @@
           rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("no such folder: " + folder).dump() + "}}");
           return true;
         }
-      } else {  // (the asking chat's folder: the PDF's copy found may be another chat's)
-        const std::string chat = body["chat_id"].str();
-        dir = files::valid_id(chat) ? std::filesystem::path(files::store().chat_dir_make(chat)) : std::filesystem::path(pdf.path).parent_path();
+        if (std::filesystem::equivalent(dir, chat_dir, ec)) chat_dir.clear();  // (the chat's own folder named)
+      } else {
+        dir = chat_dir.empty() ? std::filesystem::path(pdf.path).parent_path() : chat_dir;
+        chat_dir.clear();
         in_chat = true;
       }
       md = dir / name;
-      if (!sv["append"].as_bool(false)) {  // (a new file: never in an existing one's place)
+      // a folder of the user's: a copy in the chat's files as well, under the same name, which a chat model reads later
+      // (read_file NAME; it reads no folder of this computer)
+      if (!chat_dir.empty()) md_chat = chat_dir / name;
+      if (!sv["append"].as_bool(false)) {  // (a new file: never in an existing one's place, nor its copy)
         const std::string stem = md.stem().string();
-        for (int k = 2; std::filesystem::exists(md, ec) && k < 1000; ++k) md = dir / (stem + " (" + std::to_string(k) + ").md");
-        std::ofstream f(md, std::ios::binary | std::ios::trunc);
-        f << "# " << pdf.name << "\n\n";
-        if (!f.flush()) {  // (a read-only folder, a full disk: said now, not pages read into no file)
-          rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("cannot write " + name + " there").dump() + "}}");
-          return true;
+        for (int k = 2; (std::filesystem::exists(md, ec) || (!md_chat.empty() && std::filesystem::exists(md_chat, ec))) && k < 1000; ++k) {
+          name = stem + " (" + std::to_string(k) + ").md";
+          md = dir / name;
+          if (!md_chat.empty()) md_chat = chat_dir / name;
+        }
+        for (const auto& f_path : {md, md_chat}) {
+          if (f_path.empty()) continue;
+          std::ofstream f(f_path, std::ios::binary | std::ios::trunc);
+          f << "# " << pdf.name << "\n\n";
+          if (!f.flush()) {  // (a read-only folder, a full disk: said now, not pages read into no file)
+            rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("cannot write " + name + " there").dump() + "}}");
+            return true;
+          }
         }
       }
     }
     auto save = [&](const std::string& piece) {
       if (md.empty()) return;
       std::ofstream(md, std::ios::binary | std::ios::app) << piece;
-      if (in_chat) files::store().refresh();  // (in the Files panel with its new size)
+      if (!md_chat.empty()) std::ofstream(md_chat, std::ios::binary | std::ios::app) << piece;
+      if (in_chat || !md_chat.empty()) files::store().refresh();  // (in the Files panel with its new size)
     };
-    const std::string where = md.empty() ? "" : in_chat ? md.filename().string() : md.string();
+    // (the file named at the end of each answer: its name in the chat's files, else its full path; with the copy's
+    //  name after "; in this chat's files as")
+    const std::string where = md.empty() ? "" : in_chat ? md.filename().string()
+                                         : md.string() + (md_chat.empty() ? "" : "; in this chat's files as " + md_chat.filename().string());
     fprintf(stderr, "OCR mode: %s, pages %d-%d of %d%s\n", pdf.name.c_str(), first, n, pages,
             md.empty() ? "" : (", saved to " + md.filename().string()).c_str());  // (the file's name only: no user's path in the log)
     if (first > pages) {
@@ -166,6 +185,13 @@
     std::string failed;  // (a page the model could not read: the pages stop there, no "more pages" note to go on with)
     for (int p = first; p <= n && !rs.client_gone() && failed.empty(); ++p) {
       std::string piece = (p > first ? "\n\n" : "") + std::string("## Page ") + std::to_string(p) + " / " + std::to_string(pages) + "\n\n";
+      size_t sent = 0;  // (the heading streamed before the page is read: the web UI shows the page under way)
+      if (stream) {
+        Json d = Json::object();
+        d.set("content", piece);
+        if (!rs.sse_event(chunk(id, created, d, Json()).dump())) return true;
+        sent = piece.size();
+      }
       const std::string png = doc.render(p, 150, err);
       if (png.empty()) {
         piece += "[the page could not be rendered: " + err + "]";
@@ -211,7 +237,7 @@
       save((p > 1 && p == first ? "\n\n" : "") + piece);
       if (stream) {
         Json d = Json::object();
-        d.set("content", piece);
+        d.set("content", piece.substr(sent));
         if (!rs.sse_event(chunk(id, created, d, Json()).dump())) return true;
       } else {
         all += piece;

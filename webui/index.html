@@ -1988,9 +1988,10 @@ function estTokens(h) {
 
 // ---- an OCR model reading a PDF (tools/server_ocr.h): the server reads up to 50 pages a turn and ends with
 // "[OCR: N more page(s); ...]", which this page answers with "lanjut" by itself until the last page. Saved to a file
-// ("ocr_save", asked when the PDF is sent): the text also goes into a .md, each page added as it is read. Either way
-// the bubble shows every page of the turn under a bar of the pages done, and the chat keeps them all (the server reads
-// only the last turn of an OCR model, so they are not compacted while it reads).
+// ("ocr_save", asked when the PDF is sent): the text goes into a .md, each page added as it is read, and the bubble
+// shows only a bar of the pages done; the chat keeps a note of the file instead of the pages (another model asked
+// later reads the file: read_file, the server keeps a copy in the chat's files). Not saved: every page shows and the
+// chat keeps them all (the server reads only the last turn of an OCR model, so they are not compacted while it reads).
 const ocrSaveFor = new Map();  // chat id -> {name, folder} of the .md its PDF's text goes into (asked with each PDF), or null
 const OCR_MORE = /\[OCR: \d+ more page/;
 function ocrView(a, saving) {
@@ -1998,10 +1999,24 @@ function ocrView(a, saving) {
   const note = (a.match(/\[OCR:[^\]]*\]/) || [""])[0];
   const page = a.replace(/\[OCR:[^\]]*\]/, "").trim();
   const n = h ? +h[1] : 0, total = h ? +h[2] : 0;
-  return (total ? '<div class="ocrbar"><div style="width:' + (100 * n / total).toFixed(1) + '%"></div></div><div class="ocrlab">' +
-    "page " + n + " / " + total + " read" + (saving ? " · the text goes into " + esc(saving.folder ? saving.folder + "\\" + saving.name : saving.name) +
-    (saving.folder ? "" : " in this chat's files") : "") + "</div>" : "") +
-    markdown(page) + (note ? '<div class="ocrnote">' + esc(note) + "</div>" : "");
+  // (the server sends a page's heading before it reads it: the page under way counts once its text is in; saved,
+  //  the text itself only in the file)
+  const busy = !!h && !note && !a.slice(h.index + h[0].length).trim();
+  const done = busy ? n - 1 : n;
+  return (total ? '<div class="ocrbar"><div style="width:' + (100 * done / total).toFixed(1) + '%"></div></div><div class="ocrlab">' +
+    (busy ? "reading page " + n + " / " + total + "…" : "page " + n + " / " + total + " read") +
+    (saving ? " · the text goes into " + esc(saving.folder ? saving.folder + "\\" + saving.name : saving.name) + (saving.folder ? "" : " in this chat's files") : "") +
+    "</div>" : "") +
+    (saving ? "" : markdown(page)) + (note ? '<div class="ocrnote">' + esc(note) + "</div>" : "");
+}
+// What the chat keeps of a saved turn: the last page's heading (the server goes on after it) and where the text is
+function ocrKept(a, sv) {
+  const heads = [...a.matchAll(/## Page (\d+) \/ (\d+)/g)];
+  if (!heads.length || !sv) return a;
+  const f = heads[0], l = heads[heads.length - 1], note = (a.match(/\[OCR:[^\]]*\]/) || [""])[0];
+  return "## Page " + l[1] + " / " + l[2] + "\n\nThe text of pages " + f[1] + (l[1] !== f[1] ? "-" + l[1] : "") + " of " + l[2] +
+    " is saved in the file \"" + sv.name + "\" in this chat's files (read_file it to read the text), not in this message." +
+    (note ? "\n\n" + note : "");
 }
 // The save question of a PDF: the file's name and folder (empty: this chat's files); {name, folder}, or null for
 // "Just show it" / Esc
@@ -2010,7 +2025,8 @@ function ocrSaveAsk(pdf) {
     const d = document.createElement("dialog");
     d.className = "ask";
     d.innerHTML = '<h3>Save the OCR text to a file?</h3><p>The text read from <span class="name"></span> can go into a Markdown ' +
-      "file, each page added as it is read. The chat shows every page too, with a bar of the pages done.</p>" +
+      "file, each page added as it is read. The chat then shows only a bar of the pages done, and keeps a note of the " +
+      "file: another model asked in this chat later reads it from there.</p>" +
       '<label class="lab">File name<input class="in" data-k="name"></label>' +
       '<label class="lab">Folder<input class="in" data-k="folder" placeholder="empty: this chat\'s files (the Files panel)"></label>' +
       "<p>An existing file is never written over: a new name is taken then. Either way the next pages are read by " +
@@ -2031,10 +2047,11 @@ function ocrSaveAsk(pdf) {
   });
 }
 // the file an answer says it went to ("added to F]" / "saved to F]"): F a name in the chat's files or a full path
+// (then "PATH; in this chat's files as NAME": its copy there has the same name)
 function ocrSavedTo(a, sv) {
   const m = a.match(/(?:added|saved) to ([^\]]+)\]/);
   if (!m || !sv) return;
-  const f = m[1].trim(), cut = Math.max(f.lastIndexOf("\\"), f.lastIndexOf("/"));
+  const f = m[1].split("; in this chat's files as ")[0].trim(), cut = Math.max(f.lastIndexOf("\\"), f.lastIndexOf("/"));
   if (cut > 0) { sv.folder = f.slice(0, cut); sv.name = f.slice(cut + 1); } else sv.name = f;
 }
 
@@ -2185,7 +2202,8 @@ async function send() {
   for (const c of last.tool_calls || []) job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: stopped by the user" });
   if (!inHistory) {
     if (caps.ocr) ocrSavedTo(st.answer, ocrSaveFor.get(job.id));  // (the name the server took: the next turns go on with it)
-    const reply = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, at: Date.now() };
+    // (saved: the chat keeps where the text is, not the pages; see ocrKept)
+    const reply = { role: "assistant", content: caps.ocr && ocrSaveFor.get(job.id) ? ocrKept(st.answer, ocrSaveFor.get(job.id)) : st.answer, reasoning_content: st.reasoning, at: Date.now() };
     job.history.push(reply);
     el._h = reply;
     answerFiles(el, job.made);

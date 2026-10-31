@@ -298,8 +298,9 @@ While the server is running:
   The web UI then sends "lanjut" by itself until the last page (Stop ends it); `halaman 51-100` picks pages.
   Each time you send a PDF, it offers to save the text to a `.md`, each page added as it is read. You choose its name
   (`<the PDF's name>.md`) and folder (empty: the chat's files; or e.g. `C:\Users\you\Downloads`). An existing file is
-  never written over (`name (2).md` then). Either way the chat shows every page, with a bar of the pages done. A
-  `.md` in the chat's files can be read later by a chat model in the same chat (Files on: `read_file`).
+  never written over (`name (2).md` then). Saved, the chat shows only a bar of the pages done and keeps a note of the
+  file, not the pages; switch to a chat model in the same chat (Files on) and it reads the file with `read_file`. A
+  folder of your own gets a copy in the chat's files too, for that. Not saved, the chat shows every page.
 
   The text keeps the image's language. For questions about a document, use Qwen3.5 4B / 9B or Gemma 4 instead
   ([tools/server_ocr.h](tools/server_ocr.h)).

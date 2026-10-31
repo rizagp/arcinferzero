@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-10-31 (late evening): saved OCR text stays in the file
+
+- **Saved to a .md**, the OCR answer shows only the bar of the pages done ("reading page N / M…": the server now
+  sends each page's heading before it reads the page), not the text.
+- The chat keeps a note instead of the pages: the last page's heading (the next "lanjut" goes on after it) and
+  "the text of pages A-B is saved in the file NAME in this chat's files (read_file it)". A chat model switched to in
+  the same chat reads the file from there.
+- A folder of the user's gets a copy in the chat's files under the same name (a chat model's `read_file` reads no
+  folder of this computer). Checked in the web UI on a 2-page PDF: the bar only; the external `.md` and its copy the
+  same 1,881 bytes; `list_files` / `read_file doc_sample.md` of that chat find it.
+- Not saved: every page shows, as before.
+
 ## 2026-10-31 (evening): launcher errors, PDFs of a new chat, NPU messages
 
 - **Launcher** (issue #5): the server monitor and the model details popped up "Index (zero based) must be greater
