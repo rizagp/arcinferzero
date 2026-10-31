@@ -349,7 +349,9 @@ static int run_main(int argc, char** argv) {
   // rewind() to a fails), the snapshot restored, 600 tokens from a: their logits against the same tokens fed after a
   // fresh start (the same pieces), bit for bit
   if (ring_snap_test) {
-    const int a = 1000, mid = 6000, tail = 600;
+    // (a past every Gemma 4 window, 512-1024: below it the copy covers position 0 on, and a rewind there is right;
+    //  mid past the rings' reach: the copy taken on the way)
+    const int a = 2000, mid = eng.ring_cap() + 1000, tail = 600;
     if (!eng.hp.swa_rings || (int)toks.size() < a + mid + tail) {
       fprintf(stderr, "--ring-snap-test: a Gemma 4 model and a prompt of at least %d tokens\n", a + mid + tail);
       return 1;
@@ -368,20 +370,29 @@ static int run_main(int argc, char** argv) {
     const auto t0 = std::chrono::steady_clock::now();
     eng.snapshot(0);
     const double snap_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const size_t before = eng.snapshot_host_bytes(0);  // (none yet: the copy waits until the rings reach it)
+    const auto tm = std::chrono::steady_clock::now();
     feed(a, a + mid);
+    const double mid_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tm).count();
     const bool rew = eng.rewind(a);
     const auto t1 = std::chrono::steady_clock::now();
     const bool ok = !rew && eng.restore(0) && eng.pos == a;
     const double rest_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
     const std::vector<float> got = feed(a, a + tail);
+    // (after the restore the rings hold only the window before a: a rewind to just before a must be refused, its
+    //  slots still hold the 6,000 tokens fed since; audit 2026-10-31)
+    const bool below = eng.rewind(a - 16);
+    const size_t host = eng.snapshot_host_bytes(0);
     eng.reset();
     feed(0, a);
     const std::vector<float> want = feed(a, a + tail);
     const bool same = ok && got.size() == want.size() && memcmp(got.data(), want.data(), got.size() * 4) == 0;
-    printf("ring snapshot at %d: rewind after %d more %s, restore %s; logits of %d tokens after it %s (snapshot %.1f ms, "
+    printf("ring snapshot at %d: rewind after %d more %s, restore %s; logits of %d tokens after it %s; a rewind below it "
+           "%s (snapshot %.1f ms with %zu bytes copied, the copy on the way: %.1f MB host memory; the %d tokens %.0f ms; "
            "restore %.1f ms)\n", a, mid, rew ? "worked (test not valid)" : "refused", ok ? "ok" : "FAILED", tail,
-           same ? "bit-identical" : "DIFFER", snap_ms, rest_ms);
-    return same ? 0 : 1;
+           same ? "bit-identical" : "DIFFER", below ? "ACCEPTED (stale slots)" : "refused", snap_ms, before,
+           host / 1048576.0, mid, mid_ms, rest_ms);
+    return same && !below && before == 0 && host > 0 ? 0 : 1;
   }
   if (bench_batch > 1) {  // batched decoding (forward_batch) over 1..N slots holding the prompt, against one slot alone
     const int NS = bench_batch;

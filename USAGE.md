@@ -16,14 +16,14 @@ Open PowerShell or Terminal in the arcinferzero folder, then run:
 The setup is safe to run again (steps that are already done are skipped): it checks the requirements, builds the
 programs (a ready-to-use package keeps its own: no compiler needed), asks which models to download (no Python:
 `curl.exe`, resumed after a cut, SHA256 checked) and connects Pi (the `pi-arc` and `arc-server` commands, callable
-from any folder). What it does and its options: [README, "Ready-to-use package"](README.md#ready-to-use-package-no-compiler-no-python-no-terminal)
-and ["Quick setup"](README.md#quick-setup). One model's files by hand, the same way:
+from any folder). What it does and its options: [docs/install.md, "Ready-to-use package"](docs/install.md#ready-to-use-package-no-compiler-no-python-no-terminal)
+and ["Quick setup"](docs/install.md#quick-setup). One model's files by hand, the same way:
 `powershell -File scripts\hf-get.ps1 unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-UD-Q4_K_XL.gguf mmproj-F16.gguf`.
 
-Download a model by hand: see [README, section 6](README.md#6-download-models) (every model, its shortcut and the
+Download a model by hand: see [docs/install.md, section 6](docs/install.md#6-download-models) (every model, its shortcut and the
 `hf download` command). `35b` in `setup.cmd` and `pi-arc 35b` is Qwen3.6 35B-A3B UD-IQ4_XS from Unsloth's MTP
 repository (MTP and images, 19 GB); `35b-gsq` downloads ISTA-DASLab's GSQ 2-bit version instead and converts it once
-with Python (no MTP; [README, section 7](README.md#7-qwen36-35b-a3b-optional-convert-the-gsq-checkpoint)). Qwen3.8
+with Python (no MTP; [docs/install.md, section 7](docs/install.md#7-qwen36-35b-a3b-optional-convert-the-gsq-checkpoint)). Qwen3.8
 Flash Next (`flash`) and the DFlash2 drafters are not downloaded by setup.
 
 ## 2. Using Pi
@@ -80,7 +80,7 @@ The effort reaches the chat template only where it uses one (Qwen3.8 27B); the b
 
 **Sessions.** A new session always starts empty: Pi only sends its system prompt and your message, so the model does
 not see the conversation of an earlier session. To continue a conversation, use `pi-arc -c` or `pi-arc -r`. What the
-server processes (times on the 27B; how the caches work: [README, "Run the server by hand"](README.md#run-the-server-by-hand)):
+server processes (times on the 27B; how the caches work: [docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand)):
 
 | You | The server processes |
 |---|---|
@@ -185,7 +185,7 @@ arcinferzero notes:
 
 **DFlash2 drafter (`--dflash`, arcinferzero only: `serverz.exe` / `runz.exe`).** This drafter guesses 7 tokens at
 once from the main model's hidden state, then the main model checks them in a single pass. Download the drafter
-([README, section 6](README.md#6-download-models)), then pass its folder (the snapshot folder containing `config.json` and `model.safetensors`)
+([docs/install.md, section 6](docs/install.md#6-download-models)), then pass its folder (the snapshot folder containing `config.json` and `model.safetensors`)
 with `--dflash DIR`. The model's MTP block is still used: at each step the server picks DFlash2 while many of its
 drafts are accepted, otherwise MTP; greedy answers are identical to running without a drafter.
 
@@ -198,7 +198,7 @@ code), the default (both) when the text is mixed. Speeds of each variant:
 [docs/before-after.md, "Where it stands"](docs/before-after.md#where-it-stands).
 
 **Gemma 4 runs in its accurate mode** (float attention; the 26B and 12B with two int8 passes per matmul, E4B with
-one: [README, "How it works"](README.md#how-it-works), its KL under "Validation"). Conversations saved by an older
+one: [docs/architecture.md, "How it works"](docs/architecture.md#how-it-works), its KL under "Validation"). Conversations saved by an older
 mode are not loaded (they are processed again).
 
 **The NPU next to the GPU (`-Npu on`).** `pi-arc 27b --npu on` (or `arc-server start -Model 27b -Npu on`) lets
@@ -286,8 +286,9 @@ While the server is running:
   ("what did we decide in the chat about the budget?": it searches them and reads the exchange it needs) and
   into the recordings and meetings of the Transcripts / Meetings tabs. `@` in the message box lists them next to
   the saved files: picking one attaches it like a document (a long one as its outline, read in parts).
-- **OCR models** (Xiaomi-OCR-0 and others whose name says "OCR"; convert one to GGUF with model + mmproj): add an
-  image and send. The server asks the model with its own task prompt, so just name the task, in Indonesian or
+- **OCR models** (Xiaomi-OCR-0 and others whose name says "OCR"; convert one to GGUF with model + mmproj, and put
+  both files directly in `%USERPROFILE%\.arcinferzero\models`, not in a subfolder of it, so the launcher and the
+  model menu list it; `.arcinferzero\zero\models` holds only MoE packages made with `--pack`): add an image and send. The server asks the model with its own task prompt, so just name the task, in Indonesian or
   English:
   - nothing: the text;
   - `dokumen`: Markdown, tables as OTSL, formulas as LaTeX;
@@ -347,7 +348,7 @@ While the server is running:
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
   on with what it found. The server does the requests itself (Brave Search, Bing when Brave gives nothing) and
   turns pages into plain text; it only reaches public http(s) addresses (nothing on this machine or the local
-  network). Other clients can use the same endpoints ([README, "Run the server by hand"](README.md#run-the-server-by-hand));
+  network). Other clients can use the same endpoints ([docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand));
   `--no-web-tools` turns them off.
 - **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
   (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, Excel XLSX / XLSM, PowerPoint
@@ -444,7 +445,7 @@ While the server is running:
   conversation continues with the summary + the last exchanges. The **Compact** button does this at any time;
   **Stop** cancels it.
 - **Well-formed tool calls** (Gemma 4 and Qwen): the server keeps every tool call valid for the tool's schema
-  ([README, "Run the server by hand"](README.md#run-the-server-by-hand); `ARC_TOOL_CONSTRAINT=0` turns it off).
+  ([docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand); `ARC_TOOL_CONSTRAINT=0` turns it off).
 - **Qwen3.6 35B: `pi-arc 35b --preserve-thinking`**: the thinking of earlier turns stays in the prompt (an official
   option of the Qwen3.6 template; Qwen3.8 27B always does this). Follow-up messages do not process anything again;
   the context fills faster.
@@ -506,6 +507,14 @@ This summary takes time (a few minutes on the 27B), because the model has to rea
 then process the new conversation again. The server cannot simply drop old tokens: the DeltaNet layers of
 Qwen3.5/3.8 keep a state that cannot "forget" individual tokens.
 
+Between turns the cache keeps the conversation: a new message processes only itself. Qwen keeps its DeltaNet state
+at the end of each prompt, the start of the model's turn and the turn start after the user's last message. Gemma 4's
+sliding-window layers keep a ring of ~4K positions beyond their window; since 2026-10-31 the same points keep a copy
+of that ring too, and a tool call goes into the prompt without its reasoning every turn, so a long answer or a long
+tool result no longer makes the next turn process the whole conversation again (E4B: a follow-up after a 20K-token
+file read 0.8 s, 38 s before). In the web UI, a document too long for the context is better read with
+`digest_file` (section 4, Files) than in parts inside one answer: its parts do not use the answer's tool rounds.
+
 ## 6. How fast
 
 Current numbers, measured on this laptop with arcinferzero (every model, how it was measured, and llama.cpp for
@@ -553,7 +562,7 @@ Only the `pi-arc` / `arc-server` shortcut commands store the folder location; ev
 | A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. The server log shows it (`system-prompt cache: saved / loaded ... for <folder>`). |
 | `unknown option ...`, `... needs a value`, `expected ... (got ...)`, `is a folder` / `is a file`, `has a quote in it` | An option was written wrong; the message names what it takes (section 3, "Writing the options"; `arc-server help`, WHEN IT FAILS). A path ending in a backslash inside quotes gives "has a quote in it": leave the last backslash out. |
 | Flash Next does not read images | Its image projector is not in the model's folder: `hf download bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf`, copied next to the model (or its package in `%USERPROFILE%\.arcinferzero\zero\models\<name>\`). |
-| "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [README, section 6](README.md#6-download-models)). |
+| "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [docs/install.md, section 6](docs/install.md#6-download-models)). |
 | Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\.arcinferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated), e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first, so a model kept in both places loads from there. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, such as a backup on another drive, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
 | The answer is very slow at the start | Normal for the first large prompt (see section 6); later ones use the cache. |

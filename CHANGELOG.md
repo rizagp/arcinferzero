@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-10-31 (late night): self audit fixes, the README as a landing page
+
+- **Gemma ring snapshots, after an audit** ([docs/self-audit-2026-10-31.md](docs/self-audit-2026-10-31.md)):
+  - after a restore no rewind reaches below the restored window (it could read an abandoned conversation's keys);
+  - the rings' copy is taken only when the rings are about to overwrite it, not at every snapshot: a turn that never
+    goes ~4K positions past its start costs nothing (a copy: E4B 30 MB, 12B 480 MB of RAM, 12B 233 ms);
+  - `runz --ring-snap-test` sizes its run to the model's rings and also checks the rewind below; E4B and 12B pass.
+- **OCR**: a page stopped while being read is read again by the next "lanjut" (its heading had counted it as read).
+- **digest_file**: a combining step that does not shrink the notes keeps the ones before it.
+- **Documentation**: the README is a landing page (what it is, why, how to try it, results, models, an index of the
+  docs); its long sections moved word for word to [docs/install.md](docs/install.md),
+  [docs/server.md](docs/server.md), [docs/models.md](docs/models.md) and [docs/architecture.md](docs/architecture.md);
+  [docs/features.md](docs/features.md) tours the best features.
+
 ## 2026-10-31 (night): Gemma 4 conversations keep their cache after long answers and tool results
 
 - **The same prompt every turn**: Gemma 4's template keeps an assistant tool call's reasoning while the turn's tool

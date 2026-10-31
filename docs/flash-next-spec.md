@@ -4,7 +4,7 @@ Source: `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF`, IQ3_S, 2 parts (C: Huggin
 Reference: llama.cpp `src/models/qwen4exp.cpp` + `conversion/qwen4exp.py` (read 2026-10-16). Notes written before any
 code, so the implementation can be checked against them.
 
-Status 2026-10-24: implemented in arcinferzero (README "Supported models"). KL against the f32 reference 0.0143
+Status 2026-10-24: implemented in arcinferzero ([models.md](models.md)). KL against the f32 reference 0.0143
 prompt / 0.0147 decode on 363 tokens, 0.0186 / 0.0177 on a 3,584-token prompt with QSA; `ARC_FN_PRECISE=1` (opt-in:
 BF16 hyper-connection rows and router, two int8 passes everywhere) 0.0127 / 0.0132 at about half the prompt speed;
 the user keeps the fast default (QUEUE.md, "Flash Next KL"); prompts ~164 tok/s at 4K (F21.15);

@@ -333,10 +333,16 @@
       return;
     }
   }
-  // the highest "## Page N" an answer holds (0: none)
+  // the highest "## Page N" an answer holds with its text after it (0: none). (A heading goes out before its page is
+  // read: one stopped there has no text, and that page was skipped by the next "lanjut"; audit 2026-10-31)
   static int ocr_last_page(const std::string& s) {
     int best = 0;
-    for (size_t p = s.find("## Page "); p != std::string::npos; p = s.find("## Page ", p + 8)) best = std::max(best, atoi(s.c_str() + p + 8));
+    for (size_t p = s.find("## Page "); p != std::string::npos; p = s.find("## Page ", p + 8)) {
+      const size_t eol = s.find('\n', p), next = s.find("## Page ", p + 8);
+      const std::string body = eol == std::string::npos ? std::string() : s.substr(eol, (next == std::string::npos ? s.size() : next) - eol);
+      if (body.find_first_not_of(" \r\n\t") != std::string::npos)  // (a kept note, see the web UI's ocrKept, counts)
+        best = std::max(best, atoi(s.c_str() + p + 8));
+    }
     return best;
   }
   // the model's task prompts (its README): name, prompt

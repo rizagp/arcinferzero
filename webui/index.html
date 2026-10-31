@@ -2234,6 +2234,8 @@ async function send() {
   for (const c of last.tool_calls || []) job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: stopped by the user" });
   if (!inHistory) {
     if (caps.ocr) ocrSavedTo(st.answer, ocrSaveFor.get(job.id));  // (the name the server took: the next turns go on with it)
+    // (stopped while a page was read: its heading came first, without its text; kept, the page counted as read)
+    if (caps.ocr) st.answer = st.answer.replace(/\n*## Page \d+ \/ \d+\s*$/, "");
     // (saved: the chat keeps where the text is, not the pages; see ocrKept)
     const reply = { role: "assistant", content: caps.ocr && ocrSaveFor.get(job.id) ? ocrKept(st.answer, ocrSaveFor.get(job.id)) : st.answer, reasoning_content: st.reasoning, at: Date.now() };
     job.history.push(reply);

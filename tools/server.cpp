@@ -709,9 +709,9 @@ class Server {
       // the rings moved on (a long answer or tool result since): the latest snapshot at or before L has their copy
       // (Engine::snapshot), e.g. the turn start after the user's last message, where a new message diverges
       int best = -1, bp = -1;
-      for (int s = 0; s < kSnaps; ++s) {
+      for (int s = 0; s < kSnaps; ++s) {  // (only those with the rings' copy: a loaded conversation's have none)
         const int p = eng_.snapshot_pos(s);
-        if (p >= 0 && (size_t)p <= L && p > bp) { best = s; bp = p; }
+        if (eng_.snapshot_usable(s) && (size_t)p <= L && p > bp) { best = s; bp = p; }
       }
       if (best >= 0 && eng_.restore(best)) {
         for (int s = 0; s < kSnaps; ++s) if (eng_.snapshot_pos(s) > bp) eng_.drop_snapshot(s);
@@ -1340,6 +1340,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
           if (end < out.size()) {
             const size_t cut = out.rfind("\n## ", end);
             if (cut != std::string::npos && cut > at) end = cut;
+            while (end > at + 1 && ((unsigned char)out[end] & 0xC0) == 0x80) --end;  // (not inside a character)
           }
           if (rs.client_gone()) return;
           try {
@@ -1354,9 +1355,8 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
           }
           at = end;
         }
-        const bool shrank = next.size() < out.size() * 9 / 10;
+        if (next.size() >= out.size() * 9 / 10) break;  // (not shorter: the notes before it kept, cut below)
         out = next;
-        if (!shrank) break;
       }
       std::string cut_note;
       if (ctx > 0 && out.size() > budget) {  // (never past one read: the result goes into the model's context)

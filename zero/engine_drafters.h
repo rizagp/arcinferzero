@@ -688,6 +688,7 @@
     last_drafts_ = drafts;
     vrows_ = false;
     if (hp.hc && hp.ple_layer >= 0) hc_spec_save(tok);  // (before embed: it advances the token ids)
+    ring_guard(T);  // (Gemma: a snapshot's rings' window, see Engine::forward)
     embed(toks.data(), T, 16);
     if (dfl_) dfl_window(pos, T);
     spec_ = !gemma_mtp_;

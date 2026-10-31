@@ -90,3 +90,31 @@ Scope: `tools/server_ocr.h`, `tools/pdf_render.h`, the web UI's OCR view and sav
   and go with every "lanjut" (the server reads only the highest `## Page N` from them).
 - `halaman` / `page` in the words also pick the document task (Markdown, OTSL tables): kept, a PDF's pages read
   better that way.
+
+## Late night: Gemma ring snapshots, digest_file, the tool-call fixes
+
+Scope: commits c5fb88c to e6e998a (the OCR notes, read_file whole and by pages, digest_file, the Qwen tool-call
+constraint fixes, tool_choice "none", Gemma 4's history and ring snapshots). Read by a second reader with no part in
+writing them; every finding checked in the code and, where it could be run, with `runz --ring-snap-test`.
+
+### Found and fixed
+
+| ID | Severity | Problem | Fix | Checked |
+|---|---|---|---|---|
+| G1 | high | After a ring snapshot was restored, the rings held only the window before it, but `rewind()` checked `written_hi_` alone: a later rewind to just before the snapshot (an edited message, a moved tool-result cut) read the abandoned conversation's keys, silently | `restore()` raises `swa_lo_` to the restored window's start; `rewind`, `rewind_floor`, the saves and `ring_segs` already honour it | `--ring-snap-test`: a rewind 16 below the snapshot refused (E4B, 12B) |
+| G2 | medium | A ring copy at every snapshot: 12B 472 MB and 233 ms each, up to three per request (0.7 s a turn, 1.4 GB of RAM) | the copy is taken only when the rings are about to overwrite that window (`ring_guard` before every pass: forward, layer-major, embeddings, verify, both batched paths), and not for the prompt's end (slot 1) | `--ring-snap-test`: 0 bytes at the snapshot, the copy on the way (E4B 30 MB, 12B 480 MB), logits bit-identical |
+| G3 | low | After a loaded conversation, snapshots without a copy were still chosen, failed, and reset the cache | `snapshot_usable()`: a copy taken or still to take | read through |
+| G4 | low | `restore()` could queue some writes before finding a size that did not match | every size checked first | read through |
+| O1 | medium | OCR: the page heading goes out before the page is read; stopped there, the heading stayed without text and the next "lanjut" skipped that page | the server counts a heading only with text after it; the web UI drops a trailing empty heading | read through |
+| D1 | low | digest_file: a combining level that did not shrink the notes still replaced them; a cut could fall inside a UTF-8 character | the notes before it kept; the cut moved off continuation bytes | read through |
+
+### Checked and left as is
+
+- The ring block ranges (16-key blocks, the wrap), the drop rules on rewind and restore, `--slots` (snapshots move
+  with their slot), the Gemma drafter (no state of its own), Qwen models (every ring path gated on `swa_rings`).
+- `gemma_history` in both chat() and count_tokens; `tool_choice: "none"` masks one token on the sampled path only.
+- The Qwen enum and integer checks, the list_files / search_chats caps, read_file's whole / outline rules.
+- digest_file's part size in characters (bytes): Latin and CJK text alike are ~3-4 bytes a token, so a part is
+  about half the context.
+- The web UI's deep trim after an overflow moves its cut each round (the prompt processed again from there): a
+  fallback for an answer that would otherwise fail, kept.

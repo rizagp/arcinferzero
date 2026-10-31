@@ -339,6 +339,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       // pad to a multiple of 128 tokens so GEMM work-groups always get 8 token tiles (rows beyond T are zero)
       const int Mp = T >= 128 ? std::min((T + 127) / 128 * 128, max_chunk) : (T + 15) / 16 * 16;
       if (by_layer) keep_block();
+      ring_guard(T);  // (Gemma: a snapshot's rings' window copied before this chunk overwrites it)
       embed(tokens + c0, T, Mp);
       media_pos(tokens + c0, T);
       for (auto& L : layers_) {
@@ -360,6 +361,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // so each matrix is decoded once per prompt instead of once per chunk. The residual stream of all chunks lives
   // in x_all_ (x_ points at the current chunk's view).
   const std::vector<float>& forward_layer_major(const int* tokens, int n) {
+    ring_guard(n);  // (each layer writes the whole span: see forward)
     const int pos0 = pos, nch = (n + max_chunk - 1) / max_chunk;
     struct SegN { int& v; ~SegN() { v = 0; } } seg_n{seg_n_};  // (the experts' deep prefetch, see stream_layer)
     seg_n_ = n;
@@ -500,6 +502,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       ple_inputs(n, Mp);
     }
     if (non_causal) { nc_lo_ = pos; nc_hi_ = pos + n - 1; }
+    ring_guard(n);
     {
       struct Causal { int& lo; int& hi; ~Causal() { lo = hi = -1; } } causal{nc_lo_, nc_hi_};  // (also on a throw)
       for (auto& L : layers_) run_layer(L, n, Mp);
@@ -625,10 +628,23 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // ~4K positions back, and a turn after a long answer or a long tool result (Gemma's template drops the earlier
     // reasoning, so the next request diverges at the turn start) processed the whole conversation again, 42 s for 22K
     // tokens on E4B (2026-10-31)
+    // The copy is taken only when the rings are about to overwrite those positions (ring_guard, before every pass):
+    // most turns never get that far, and a copy costs (12B: 472 MB and 233 ms; E4B 31 MB, 14 ms). Not for slot 1, the
+    // prompt's end (the next request diverges at the model's turn start, slot 0, or within the ~4K rewind reaches).
     s.ring.clear();
     s.ring_ok = false;
-    if (hp.swa_rings && pos > 0 && pos >= rewind_floor()) {
-      const auto segs = ring_segs(pos);
+    s.ring_want = hp.swa_rings && slot != 1 && pos > 0 && pos >= rewind_floor();
+  }
+  // Gemma: before a pass writes positions [pos, pos + T) of the bound slot: a snapshot whose rings' window those
+  // writes would overwrite gets its copy now (still intact, else none)
+  void ring_guard(int T) {
+    if (!hp.swa_rings) return;
+    for (Snap& s : snaps_) {
+      if (s.pos < 0 || !s.ring_want || s.ring_ok) continue;
+      if (pos + T - 1 - swa_cap_ < s.pos - hp.n_swa) continue;  // (not reached yet)
+      s.ring_want = false;
+      if (written_hi_ - 1 - swa_cap_ >= s.pos - hp.n_swa || (swa_lo_ > 0 && s.pos - hp.n_swa < swa_lo_)) continue;  // (gone)
+      const auto segs = ring_segs(s.pos);
       s.ring.resize(segs.size());
       for (size_t i = 0; i < segs.size(); ++i) {
         s.ring[i].resize(segs[i].n);
@@ -638,21 +654,38 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       s.ring_ok = true;
     }
   }
+  int ring_cap() const { return swa_cap_; }  // (Gemma: the sliding-window rings' positions)
   int snapshot_pos(int slot) const { return slot < (int)snaps_.size() ? snaps_[slot].pos : -1; }
+  // a snapshot restore() can use (Gemma: with its rings' copy; one of a loaded conversation has none)
+  bool snapshot_usable(int slot) const {
+    return snapshot_pos(slot) >= 0 && (!hp.swa_rings || snaps_[slot].ring_ok || snaps_[slot].ring_want);
+  }
+  size_t snapshot_host_bytes(int slot) const {  // (Gemma: the rings' copy in host memory)
+    size_t n = 0;
+    if (slot < (int)snaps_.size())
+      for (const auto& v : snaps_[slot].ring) n += v.size();
+    return n;
+  }
   void drop_snapshot(int slot) { if (slot < (int)snaps_.size()) snaps_[slot].pos = -1; }
   bool restore(int slot) {
     if (snapshot_pos(slot) < 0) return false;
     Snap& s = snaps_[slot];
-    if (hp.swa_rings) {  // (the rings' copy back to their slots, the position there: see snapshot())
-      if (!s.ring_ok) return false;
+    if (hp.swa_rings && !s.ring_ok) {  // (no copy taken yet: the rings still hold its window, or it cannot be used)
+      if (!s.ring_want || !rewind(s.pos)) return false;
+      last_drafts_.clear();
+    } else if (hp.swa_rings) {  // (the rings' copy back to their slots, the position there: see snapshot())
       const auto segs = ring_segs(s.pos);
       if (segs.size() != s.ring.size()) return false;
-      for (size_t i = 0; i < segs.size(); ++i) {
+      for (size_t i = 0; i < segs.size(); ++i)  // (every size first: nothing written when one does not match)
         if (segs[i].n != s.ring[i].size()) return false;
+      for (size_t i = 0; i < segs.size(); ++i)
         CL_CHECK(clEnqueueWriteBuffer(cl_.queue, segs[i].b, CL_FALSE, segs[i].off, segs[i].n, s.ring[i].data(), 0, nullptr, nullptr));
-      }
       clFinish(cl_.queue);
       written_hi_ = s.pos;  // (the ring slots past it hold a later conversation's positions now: never rewound into)
+      // the rings hold only [pos - n_swa, pos) of this conversation now: the slots below it still hold the abandoned
+      // one, so no rewind, snapshot or save may reach below it (rewind() checked written_hi_ alone, which let a later
+      // rewind to just before pos read those stale keys; audit 2026-10-31)
+      swa_lo_ = std::max(swa_lo_, std::max(0, s.pos - hp.n_swa) / 16 * 16);
       last_drafts_.clear();
     }
     const size_t sb = (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4, cb = conv_bytes();
@@ -890,6 +923,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     for (int b = 0; b < B; ++b) {  // (pending MTP rows of accepted drafts first, each in its slot)
       bind(slots[b]);
       if (has_mtp) flush_mtp_pending();
+      ring_guard(1);
     }
     bind(guard.bound);
     clFinish(cl_.queue);
@@ -1008,6 +1042,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     for (int b = 0; b < B; ++b) {
       bind(slots[b]);
       flush_mtp_pending();
+      ring_guard(n[b]);
     }
     bind(guard.bound);
     clFinish(cl_.queue);
@@ -1258,7 +1293,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }
     for (int i = 0; i < ns; ++i)
       if (sp[i] >= 0) snaps_[i].pos = sp[i];
-    for (Snap& s : snaps_) s.ring_ok = false;  // (Gemma: a saved conversation holds no ring copies: rewind() or reset)
+    for (Snap& s : snaps_) s.ring_ok = s.ring_want = false;  // (Gemma: a saved conversation holds no ring copies)
     hsnap_.pos = hpos;
     pos = spos;
     written_hi_ = swh;
@@ -1332,7 +1367,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     std::vector<cl_mem> S, conv;
     cl_mem h = nullptr;  // MTP: main hidden state of the last position
     std::vector<std::vector<uint8_t>> ring;  // Gemma: the sliding-window rings' n_swa positions before pos (ring_segs)
-    bool ring_ok = false;
+    bool ring_ok = false;    // (that copy taken)
+    bool ring_want = false;  // (to be taken before the rings overwrite it: ring_guard)
   };
   std::vector<Snap> snaps_;
   static constexpr int32_t kStateMagic = 0x53435241;  // "ARCS"
