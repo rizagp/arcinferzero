@@ -620,12 +620,41 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, s.h, 0, 0, (size_t)hp.n_embd * 4, 0, nullptr, nullptr));
     }
     s.pos = pos;
+    // Gemma (ring caches): the sliding-window rings' last n_swa positions, in host memory. The global layers' caches
+    // keep every position, so with these the cache goes back here after the rings moved on: rewind() reaches only
+    // ~4K positions back, and a turn after a long answer or a long tool result (Gemma's template drops the earlier
+    // reasoning, so the next request diverges at the turn start) processed the whole conversation again, 42 s for 22K
+    // tokens on E4B (2026-10-31)
+    s.ring.clear();
+    s.ring_ok = false;
+    if (hp.swa_rings && pos > 0 && pos >= rewind_floor()) {
+      const auto segs = ring_segs(pos);
+      s.ring.resize(segs.size());
+      for (size_t i = 0; i < segs.size(); ++i) {
+        s.ring[i].resize(segs[i].n);
+        CL_CHECK(clEnqueueReadBuffer(cl_.queue, segs[i].b, CL_FALSE, segs[i].off, segs[i].n, s.ring[i].data(), 0, nullptr, nullptr));
+      }
+      clFinish(cl_.queue);
+      s.ring_ok = true;
+    }
   }
   int snapshot_pos(int slot) const { return slot < (int)snaps_.size() ? snaps_[slot].pos : -1; }
   void drop_snapshot(int slot) { if (slot < (int)snaps_.size()) snaps_[slot].pos = -1; }
   bool restore(int slot) {
     if (snapshot_pos(slot) < 0) return false;
     Snap& s = snaps_[slot];
+    if (hp.swa_rings) {  // (the rings' copy back to their slots, the position there: see snapshot())
+      if (!s.ring_ok) return false;
+      const auto segs = ring_segs(s.pos);
+      if (segs.size() != s.ring.size()) return false;
+      for (size_t i = 0; i < segs.size(); ++i) {
+        if (segs[i].n != s.ring[i].size()) return false;
+        CL_CHECK(clEnqueueWriteBuffer(cl_.queue, segs[i].b, CL_FALSE, segs[i].off, segs[i].n, s.ring[i].data(), 0, nullptr, nullptr));
+      }
+      clFinish(cl_.queue);
+      written_hi_ = s.pos;  // (the ring slots past it hold a later conversation's positions now: never rewound into)
+      last_drafts_.clear();
+    }
     const size_t sb = (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4, cb = conv_bytes();
     size_t k = 0;
     for (auto& L : layers_)
@@ -1229,6 +1258,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }
     for (int i = 0; i < ns; ++i)
       if (sp[i] >= 0) snaps_[i].pos = sp[i];
+    for (Snap& s : snaps_) s.ring_ok = false;  // (Gemma: a saved conversation holds no ring copies: rewind() or reset)
     hsnap_.pos = hpos;
     pos = spos;
     written_hi_ = swh;
@@ -1301,6 +1331,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     int pos = -1;
     std::vector<cl_mem> S, conv;
     cl_mem h = nullptr;  // MTP: main hidden state of the last position
+    std::vector<std::vector<uint8_t>> ring;  // Gemma: the sliding-window rings' n_swa positions before pos (ring_segs)
+    bool ring_ok = false;
   };
   std::vector<Snap> snaps_;
   static constexpr int32_t kStateMagic = 0x53435241;  // "ARCS"
@@ -1469,6 +1501,17 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       if (has_mtp) v.push_back({sn.h, 0, (size_t)hp.n_embd * 4});
     }
     if (has_mtp) v.push_back({hlast_, 0, (size_t)hp.n_embd * 4});
+    return v;
+  }
+  // Gemma: the device ranges of the sliding-window layers' ring slots for positions [pos - n_swa, pos) (16-key
+  // blocks), in state_segs' order; the global layers keep every position and need none
+  std::vector<Seg> ring_segs(int p) {
+    const auto kl = kv_layers();
+    const int lo = std::max({0, p - hp.n_swa, swa_lo_}) / 16;
+    std::vector<std::pair<int, int>> br;
+    for (const KvGeom& k : kl) br.push_back(k.L->swa ? std::pair{lo, std::max(lo, (p + 15) / 16)} : std::pair{0, 0});
+    auto v = state_segs(kl, br, {});
+    std::erase_if(v, [&](const Seg& s) { return s.b == hlast_; });  // (the MTP hidden state: Snap::h)
     return v;
   }
   // (a saved state loads only into the same layout: ring caches (swa_rings), the 4-bit V copy, the two-pass mode's float K / V rows)

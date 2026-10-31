@@ -2,6 +2,23 @@
 // A part of class Server (tools/server.cpp), included inside the class body at the place it was cut from:
 // not a header of its own. Split out of tools/server.cpp unchanged on 2026-10-24 (QUEUE item 11).
 
+  // Gemma 4: the messages as the template gets them: an assistant message with tool calls without its reasoning (see
+  // chat(); count_tokens renders the same)
+  static Json gemma_history(const Json& messages) {
+    Json out = Json::array();
+    for (const Json& m : messages.items()) {
+      if (m["role"].str() == "assistant" && m["tool_calls"].is_array() && m["tool_calls"].size() &&
+          (m.has("reasoning_content") || m.has("reasoning") || m.has("thinking"))) {
+        Json c = Json::object();
+        for (const auto& [k, v] : m.entries())
+          if (k != "reasoning_content" && k != "reasoning" && k != "thinking") c.set(k, v);
+        out.push(c);
+      } else {
+        out.push(m);
+      }
+    }
+    return out;
+  }
   void chat(const HttpRequest& rq, HttpResponse& rs) {
     Json body;
     if (!Json::try_parse(rq.body, body)) return rs.send(400, "application/json", err("invalid JSON body").dump());
@@ -117,6 +134,12 @@
     const int top_lp = (int)body["top_logprobs"].as_clamped(0, 0, 20);
     const bool usage_in_stream = body["stream_options"]["include_usage"].as_bool(false);
 
+    // Gemma 4: an assistant message with tool calls goes in without its reasoning. The template keeps that reasoning
+    // while the turn's tool rounds go on and drops it once the user writes again, so the next turn's prompt differed
+    // right before the tool results: a 20K-token result processed again for a one-line question (E4B: 38 s). Without
+    // it every turn renders the same; a tool round only goes back over the reasoning just generated (rewind)
+    const Json gmsgs = gemma_ ? gemma_history(messages) : Json();
+    const Json& rmsgs = gemma_ ? gmsgs : messages;  // (the messages the template renders)
     std::string prompt;
     const bool raw_prompt = body["__raw_prompt"].is_string();  // (api_compat: the prompt text as it is)
     if (raw_prompt) {
@@ -125,10 +148,21 @@
     }
     try {
       prompt = raw_prompt ? body["__raw_prompt"].str()
-               : jinja_   ? jinja_->render(messages, tools, true, co.enable_thinking)
+               : jinja_   ? jinja_->render(rmsgs, tools, true, co.enable_thinking)
                           : chat::render(messages, tools, co, q38_);
     } catch (const std::exception& e) {
       return rs.send(400, "application/json", err(e.what()).dump());
+    }
+    // ARC_DUMP_PROMPT=file: every rendered prompt appended to the file (to see where a turn's prompt differs from the
+    // last one, which decides how much of the cache is reused)
+    if (const char* df = getenv("ARC_DUMP_PROMPT")) {
+      static std::mutex dm;
+      std::lock_guard<std::mutex> lk(dm);
+      if (FILE* f = fopen(df, "ab")) {
+        fprintf(f, "\n===== prompt %zu bytes =====\n", prompt.size());
+        fwrite(prompt.data(), 1, prompt.size(), f);
+        fclose(f);
+      }
     }
     // Same wording and error type as llama-server, so that clients recognize a context overflow (Pi then compacts
     // the conversation and retries). The hybrid DeltaNet state cannot drop old tokens, so there is no server-side

@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-31 (night): Gemma 4 conversations keep their cache after long answers and tool results
+
+- **The same prompt every turn**: Gemma 4's template keeps an assistant tool call's reasoning while the turn's tool
+  rounds go on and drops it once the user writes again, so the next turn's prompt differed right before the tool
+  results. The server now renders a tool call without its reasoning every time (`gemma_history`). E4B in the web UI,
+  "Ringkas README.md" (a 20K-token read) then "Model apa saja yang didukung?": the follow-up's prompt 22,092 tokens,
+  **21,846 from the cache, 0.8 s** (it was 2,234 from the cache, 38.4 s).
+- **Ring snapshots**: Gemma's sliding-window layers keep a ring of ~4K positions beyond their window, so the cache
+  could go back only that far (`rewind`). The engine's snapshots (end of the prompt, start of the model's turn) now
+  also keep a host copy of the rings' last window (13.7 ms to take, 6.4 ms to restore on E4B); when a request
+  differs further back than the rings reach, the latest snapshot before it is restored instead of processing the
+  whole conversation again. `runz --ring-snap-test` (a Gemma model, a prompt of 7,600+ tokens): restored after 6,000
+  more tokens, the next 600 tokens' logits bit-identical to a fresh run.
+- `digest_file`'s outline note says "do not answer from it": E4B, asked about all of a 159 KB file, had answered from
+  the outline alone; now it called `digest_file` (4 parts, 306 s) and answered from the notes.
+- `ARC_DUMP_PROMPT=file`: every rendered prompt appended to the file (where two turns' prompts differ).
+
 ## 2026-10-31 (late night): digest_file, tool-call fixes from an audit, a shorter prompt
 
 - **`digest_file {file_id, focus}`** (Files on): a document longer than one read, for all of it (a summary, a review,

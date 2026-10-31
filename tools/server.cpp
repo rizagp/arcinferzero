@@ -241,7 +241,8 @@ class Server {
     std::string prompt;
     try {
       const Json msgs = defuse_contents(body["messages"]);
-      prompt = jinja_ ? jinja_->render(msgs, body["tools"], true, co.enable_thinking) : chat::render(msgs, body["tools"], co, q38_);
+      prompt = jinja_ ? jinja_->render(gemma_ ? gemma_history(msgs) : msgs, body["tools"], true, co.enable_thinking)
+                      : chat::render(msgs, body["tools"], co, q38_);
     } catch (const std::exception&) {
       return -1;
     }
@@ -701,10 +702,24 @@ class Server {
     if (L == cached_.size() && (int)cached_.size() == eng_.pos) return L;  // pure extension
     if (rings_) {  // no recurrent state: move back to the common prefix if the sliding-window rings allow it
       if (eng_.rewind((int)L)) {
+        for (int s = 0; s < kSnaps; ++s) if (eng_.snapshot_pos(s) > (int)L) eng_.drop_snapshot(s);  // (overwritten next)
         cached_.resize(L);
         return L;
       }
+      // the rings moved on (a long answer or tool result since): the latest snapshot at or before L has their copy
+      // (Engine::snapshot), e.g. the turn start after the user's last message, where a new message diverges
+      int best = -1, bp = -1;
+      for (int s = 0; s < kSnaps; ++s) {
+        const int p = eng_.snapshot_pos(s);
+        if (p >= 0 && (size_t)p <= L && p > bp) { best = s; bp = p; }
+      }
+      if (best >= 0 && eng_.restore(best)) {
+        for (int s = 0; s < kSnaps; ++s) if (eng_.snapshot_pos(s) > bp) eng_.drop_snapshot(s);
+        cached_.resize(bp);
+        return bp;
+      }
       eng_.reset();
+      for (int s = 0; s < kSnaps; ++s) eng_.drop_snapshot(s);
       cached_.clear();
       return 0;
     }
@@ -1530,9 +1545,11 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
           size_t cut = std::min(data.size(), (size_t)2000);
           while (cut < data.size() && cut > 0 && ((unsigned char)data[cut] & 0xC0) == 0x80) --cut;
           r.set("beginning", data.substr(0, cut));
-          r.set("note", "a long document: read the sections the question needs (read_file with section: N, or pages: \"A-B\" "
-                        "for a range of pages in one call), or find passages with search_file; for all of it (a summary, "
-                        "a review): digest_file, which has you read it part by part and returns notes of every part");
+          // (said as a must: Gemma 4 E4B, asked about all of a 159 KB file, answered from this outline alone, 2026-10-31)
+          r.set("note", "this is only the outline and the beginning, not the document's text: do not answer from it. Read "
+                        "the sections the question needs (read_file with section: N, or pages: \"A-B\" for a range of pages "
+                        "in one call), or find passages with search_file; for a question about all of it (a summary, its "
+                        "parts, a review) call digest_file now: it has you read it part by part and returns notes of every part");
           return reply(200, r);
         }
       }

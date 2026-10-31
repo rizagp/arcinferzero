@@ -204,6 +204,8 @@ static int run_main(int argc, char** argv) {
             "generation:\n"
             "  --n N                 tokens to generate (default 16)     --show   print the generated text\n"
             "  --dump-logits F       write the prompt logits and every generation step's (f32) to F, to compare runs bitwise\n"
+            "  --ring-snap-test      Gemma 4: a snapshot's ring copy restored after the rings moved on (a 7,600+ token\n"
+            "                        prompt), the next tokens' logits against a fresh run, bit for bit\n"
             "  --mtp                 speculative decoding (MTP block / Gemma drafter)  --mtp-drafts N  drafts per step\n"
             "  --dflash DIR          speculative decoding with a DFlash2 block drafter (Qwen3.8 27B, Qwen3.6 35B-A3B, Flash Next)\n"
             "  --draft auto|mtp|dflash  with --dflash: both drafters picked per step (auto), the MTP block only, or\n"
@@ -252,6 +254,7 @@ static int run_main(int argc, char** argv) {
   EngineOptions eo;
   bool prof = false, show = false, prof_gen = false, kl_decode = false, slots_check = false;
   int bench_batch = 0;
+  bool ring_snap_test = false;  // Gemma: a snapshot's ring copy restored after the rings moved on, logits bitwise
   std::string dump_logits;  // every generation step's logits (f32), to compare two builds / settings bitwise
   for (int i = 2; i < argc; ++i) {
     std::string a = argv[i];
@@ -302,6 +305,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--kl-ref") kl_ref = next();
     else if (a == "--slots-check") slots_check = true;
     else if (a == "--bench-batch") bench_batch = atoi(next());
+    else if (a == "--ring-snap-test") ring_snap_test = true;
     else if (a == "--kl-decode") kl_decode = true;  // with --kl-ref of every position: feed the prompt token by token
     else if (a == "--perplexity") ppl_file = next();
     else if (a == "--ppl-dump") ppl_dump = next();
@@ -341,6 +345,44 @@ static int run_main(int argc, char** argv) {
          eng.hp.n_layer, eng.hp.n_embd, eng.hp.n_vocab, eng.gpu_bytes / 1073741824.0,
          eng.w8_resident ? "resident" : "just-in-time", eng.max_chunk, eng.ctx, eng.load_ms);
 
+  // --ring-snap-test (Gemma): the prompt to a, a snapshot, 6,000 more tokens (the sliding-window rings move on, so
+  // rewind() to a fails), the snapshot restored, 600 tokens from a: their logits against the same tokens fed after a
+  // fresh start (the same pieces), bit for bit
+  if (ring_snap_test) {
+    const int a = 1000, mid = 6000, tail = 600;
+    if (!eng.hp.swa_rings || (int)toks.size() < a + mid + tail) {
+      fprintf(stderr, "--ring-snap-test: a Gemma 4 model and a prompt of at least %d tokens\n", a + mid + tail);
+      return 1;
+    }
+    auto feed = [&](int from, int to) {
+      std::vector<float> l;
+      for (int p = from; p < to;) {
+        const int n = std::min(eng.max_chunk, to - p);
+        l = eng.forward(toks.data() + p, n);
+        p += n;
+      }
+      return l;
+    };
+    eng.reset();
+    feed(0, a);
+    const auto t0 = std::chrono::steady_clock::now();
+    eng.snapshot(0);
+    const double snap_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    feed(a, a + mid);
+    const bool rew = eng.rewind(a);
+    const auto t1 = std::chrono::steady_clock::now();
+    const bool ok = !rew && eng.restore(0) && eng.pos == a;
+    const double rest_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+    const std::vector<float> got = feed(a, a + tail);
+    eng.reset();
+    feed(0, a);
+    const std::vector<float> want = feed(a, a + tail);
+    const bool same = ok && got.size() == want.size() && memcmp(got.data(), want.data(), got.size() * 4) == 0;
+    printf("ring snapshot at %d: rewind after %d more %s, restore %s; logits of %d tokens after it %s (snapshot %.1f ms, "
+           "restore %.1f ms)\n", a, mid, rew ? "worked (test not valid)" : "refused", ok ? "ok" : "FAILED", tail,
+           same ? "bit-identical" : "DIFFER", snap_ms, rest_ms);
+    return same ? 0 : 1;
+  }
   if (bench_batch > 1) {  // batched decoding (forward_batch) over 1..N slots holding the prompt, against one slot alone
     const int NS = bench_batch;
     if ((int)toks.size() < NS) { fprintf(stderr, "--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS); return 1; }
