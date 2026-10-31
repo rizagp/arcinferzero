@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-01: Ornith 1.5 35B-A3B checked
+
+- **Ornith 1.5 35B-A3B** (a Qwen 3.5 MoE fine-tune for coding agents, MIT) runs as it is: the official Q4_K_M GGUF
+  with its MTP block and `mmproj`, listed with MTP and images; generation 15.9 tok/s plain, ~23-24 with drafts (its
+  MTP block 71 % accepted, Qwen3.6's DFlash2 83 %). Its Q4_K_M experts are 28 % larger than Qwen3.6's UD-IQ4_XS, so
+  less of them fit the cache. Details: [docs/models.md](docs/models.md).
+
 ## 2026-10-31 (late): fixes from a static review ([BUGS.md](BUGS.md))
 
 - **OCR save to a folder of your own** only from the server's own page or a client without an Origin: a page

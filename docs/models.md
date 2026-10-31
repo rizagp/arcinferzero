@@ -10,6 +10,16 @@
 | `gemma4` | Gemma 4 12B, Gemma 4 E4B, Gemma 4 26B-A4B (Google's QAT Q4_0 GGUFs) | sliding-window + global attention, per-layer embeddings (E4B); image and audio input (`mmproj`: 12B gemma4uv / gemma4ua, E4B gemma4v ViT and gemma4a conformer, 26B gemma4v with 72-dim heads, on the GPU); speculative decoding with the Gemma 4 assistant drafters (`mtp-*.gguf`; 12B, E4B, 26B). 26B-A4B: a dense FFN beside 128 routed experts (8 active, GELU, f32 router) streamed from the SSD like the 35B's. Accuracy: float attention (f32 q / K, f16 V; E4B's global layers in prompts read an int8 copy of K / V, `ARC_G4_ATT8=0`: float); 26B and 12B run their matmuls on two int8 passes (value and rounding residual: KL 0.0042 / 0.0002), E4B on one (KL 0.00088) |
 | `qwen4exp` | Qwen3.8 Flash Next (ISTA-DASLab GSQ-RCO IQ3_S, GGUF in 2 parts) | **arcinferzero only**; 4 hyper-connection streams, Gated DeltaNet + gated attention with QSA sparse attention, 512 experts (10 active) streamed from the SSD, PLE n-gram table read from part 2 per token; no MTP block; images with an `mmproj-*` next to it (bartowski/Qwen3.8-Flash-Next-GGUF `mmproj-Qwen3.8-Flash-Next-f16.gguf`, 0.9 GB) (incoai/Qwen3.8-Flash-Next-DFlash2 drafts with `--dflash DIR`: same text, ~79 % accepted, no faster on this laptop's SSD: QUEUE F21.16); runs up to 262,144 tokens, accuracy measured up to a 3.5K-token prompt (KL 0.0143 / 0.0147 (363 tokens); 0.0186 / 0.0177 at 3.5K (QSA); `ARC_FN_PRECISE=1` 0.0127 / 0.0132) |
 
+**Fine-tunes of these architectures run as they are.** Checked 2026-11-01: Ornith 1.5 35B-A3B (ornith-ai, MIT; a
+Qwen 3.5 MoE fine-tune for coding agents; `ornith-ai/Ornith-1.5-35B-A3B-GGUF` Q4_K_M 21.7 GB with its MTP block, and
+its `mmproj`). The catalog lists it with MTP and images, the expert file is written once (20.2 GB, 183 s), and it
+answers correctly. On the test laptop: pp512 ~370 tok/s; generation 15.9 tok/s plain, 22.5-22.9 with its MTP block
+(71 % accepted), 23.7-24.3 with Qwen3.6's DFlash2 drafter picked up for it (83 % accepted); the server's expert
+cache at 131K context 56-61 % (its Q4_K_M experts, 18.8 GiB, are 28 % larger than Qwen3.6's UD-IQ4_XS, so slower
+than that one). Smaller quants (AtomicChat: IQ4_XS 18.7 GB, a mixed IQ4_XS / IQ3_S 17.6 GB) keep the MTP block in
+a separate `mtp-*.gguf`, which arcinferzero reads only for Gemma 4: with them, DFlash2 drafts alone. Accuracy (KL
+against an f32 reference) not measured for it.
+
 Weight types: `Q4_0`, `Q8_0`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ1_S`, `IQ1_M`, `IQ2_XXS`, `IQ2_XS`, `IQ2_S`, `IQ3_XXS`, `IQ3_S`,
 `IQ4_XS` (mixed per tensor, e.g. Unsloth dynamic or ISTA-DASLab GSQ-RCO quants), plus `F32/F16/BF16` small matrices;
 GSQ 2-bit experts (`tools/convert_gsq.py`); `Q4_0` drafter matrices (requantized to Q8_0 at load).
