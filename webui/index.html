@@ -197,6 +197,14 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .ocrbar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 2px 0 4px; }
 .ocrbar > div { height: 100%; background: var(--accent); transition: width .3s; }
 .ocrlab, .ocrnote { font-size: 12px; color: var(--muted); margin: 2px 0 8px; }
+.ask { background: var(--side); color: var(--text); border: none; border-radius: 10px; padding: 18px 20px 14px; width: min(440px, 92vw); box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+.ask::backdrop { background: rgba(0, 0, 0, .45); }
+.ask h3 { margin: 0 0 8px; font-size: 16px; }
+.ask p { margin: 0 0 6px; font-size: 14px; line-height: 1.45; }
+.ask .name { font-weight: 600; overflow-wrap: anywhere; }
+.ask .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.ask button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--side); color: var(--text); font-size: 13px; }
+.ask button.yes { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .msg.user .imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 .msg.user .imgs img { max-height: 200px; max-width: 260px; border-radius: 6px; display: block; }
 .msg.user .imgs audio, .att audio { height: 36px; max-width: 260px; }
@@ -1988,6 +1996,41 @@ function ocrView(a, saving) {
     "page " + n + " / " + total + " read" + (saving ? " · the text goes into the .md in this chat's files" : "") + "</div>" : "") +
     markdown(page) + (note ? '<div class="ocrnote">' + esc(note) + "</div>" : "");
 }
+// A question in a modal of the page (not the browser's confirm()): resolves true for the first button, false for the
+// other one or Esc. body: [text, ...] with {name} for a file name in bold.
+function askModal(title, body, yes, no) {
+  return new Promise((done) => {
+    const d = document.createElement("dialog");
+    d.className = "ask";
+    const h = document.createElement("h3");
+    h.textContent = title;
+    d.appendChild(h);
+    for (const line of body) {
+      const para = document.createElement("p");
+      for (const piece of [].concat(line)) {
+        const span = document.createElement("span");
+        if (typeof piece === "object") { span.className = "name"; span.textContent = piece.name; } else span.textContent = piece;
+        para.appendChild(span);
+      }
+      d.appendChild(para);
+    }
+    const row = document.createElement("div");
+    row.className = "row";
+    const finish = (v) => { d.close(); d.remove(); done(v); };
+    for (const [label, v] of [[no, false], [yes, true]]) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (v) b.className = "yes";
+      b.addEventListener("click", () => finish(v));
+      row.appendChild(b);
+    }
+    d.appendChild(row);
+    d.addEventListener("cancel", (e) => { e.preventDefault(); finish(false); });  // (Esc)
+    document.body.appendChild(d);
+    d.showModal();
+    row.lastChild.focus();
+  });
+}
 function ocrCompact(a) {  // (the page read last and the closing note)
   const heads = [...a.matchAll(/## Page \d+ \/ \d+/g)], h = heads[heads.length - 1];
   return h ? a.slice(h.index) : a;
@@ -2028,9 +2071,10 @@ async function send() {
     convs.unshift({ id: job.id, title: titleOf([userMsg]), at, model: modelId, snippet: "" });
   if (caps.ocr && sent.some((m) => /\.pdf$/i.test(m.name || "")) && !ocrSaveFor.has(job.id)) {
     const pdf = sent.find((m) => /\.pdf$/i.test(m.name || "")).name;
-    ocrSaveFor.set(job.id, confirm("Save the text read from \"" + pdf + "\" to \"" + pdf.replace(/\.pdf$/i, ".md") +
-      "\" in this chat's files?\n\nEach page is added to the file as it is read, the chat shows the page read last, and the " +
-      "next pages are read by themselves until the last one."));
+    ocrSaveFor.set(job.id, await askModal("Save the OCR text to a file?", [
+      ["The text read from ", { name: pdf }, " can go into ", { name: pdf.replace(/\.pdf$/i, ".md") }, " in this chat's files."],
+      "Each page is added to the file as it is read. The chat then shows only the page read last, with a bar of the pages done.",
+      "Either way the next pages are read by themselves until the last one (Stop ends it)."], "Save to .md", "Just show it"));
   }
   jobs.set(job.id, job);
   controller = job.controller;

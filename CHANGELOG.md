@@ -8,6 +8,8 @@
   PDF and task after the highest `## Page N` of the answers so far.
 - **Saved to a file**: when a PDF is sent to an OCR model, the web UI offers to save its text to
   `<the PDF's name>.md` in the chat's files (`ocr_save`, `chat_id`).
+  - The question comes in a modal of the page (Save to .md / Just show it; Esc: just show it), not the browser's
+    confirm box.
   - Each page is appended once read, and the file shows in the Files panel.
   - The answer then shows only the page read last, under a bar of the pages done, and the chat keeps that page only
     (no hundreds of pages to compact).
