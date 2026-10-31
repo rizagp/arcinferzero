@@ -241,7 +241,8 @@ static int run_main(int argc, char** argv) {
             "  matmuls on two passes, ARC_ZE_KPROPS=1 register spills per kernel (ARC_NO_KCACHE=1: build them again),\n"
             "  ARC_KLIST=1 each kernel's cache file and build options (for ocloc disasm, docs/kernel-audit-2026-10-27.md),\n"
             "  ARC_VIT_Q2=0 / 1 the Qwen vision encoder's int8 matmuls off / on, A/B switches of the 2026-10-27 kernel\n"
-            "  changes: ARC_MOE_TM_SMALL=0 (MoE tiles of 16 for 2-8 rows), ARC_MOE_GR_DN_S=1, ARC_RG_IMUL=1\n");
+            "  changes: ARC_MOE_TM_SMALL=0 (MoE tiles of 16 for 2-8 rows), ARC_MOE_GR_DN_S=1, ARC_RG_IMUL=1; of the stacked\n"
+            "  float matrices (BF16 models, 2026-10-31): ARC_NO_QZ_FLT=1, ARC_NO_GU_FLT=1, ARC_NO_QKV_FLT=1, ARC_NO_QZAB16=1\n");
     return help ? 0 : 1;
   }
   std::string model = argv[1], tokens_arg, kl_ref, ppl_file, ppl_dump, text_prompt, dump_ids;

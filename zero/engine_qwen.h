@@ -270,9 +270,13 @@
     const int ldq = nh * hd * 2 + 2 * nkv * hd;
     const int a_in = act32_for(false);
     if (!hp.hc) rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
-    matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
-    matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd * 2, false, a_in);
-    matmul("gemm_v", L.wv, Mp, big_, ldq, nh * hd * 2 + nkv * hd, false, a_in);
+    if (!L.wk.N) {  // (q, k, v stacked: float weights, see load_attn)
+      matmul("gemm_qkv", L.wq, Mp, big_, ldq, 0, false, a_in);
+    } else {
+      matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
+      matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd * 2, false, a_in);
+      matmul("gemm_v", L.wv, Mp, big_, ldq, nh * hd * 2 + nkv * hd, false, a_in);
+    }
     if (!batch_.empty()) {  // a batched pass: each sequence's rows with its slot's caches and position (T <= 8)
       const cl_mem qi0 = qi_, qsc0 = qsc_, o0 = o_;
       if (L.qr > 0) matmul("qsa_ix", L.ix, Mp, qsa_ixo_, (1 + hp.qsa_heads) * hp.qsa_dim, 0, 0, a_in);

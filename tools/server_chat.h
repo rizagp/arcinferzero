@@ -5,6 +5,7 @@
   void chat(const HttpRequest& rq, HttpResponse& rs) {
     Json body;
     if (!Json::try_parse(rq.body, body)) return rs.send(400, "application/json", err("invalid JSON body").dump());
+    if (ocr_ && ocr_pdf(rq, body, rs)) return;  // (an OCR model and a PDF: page by page, tools/server_ocr.h)
     {  // the web UI's saved files ("file" parts): as text, or as references to the image / audio (server_files.h)
       bool any = false;
       for (const Json& m : body["messages"].items())

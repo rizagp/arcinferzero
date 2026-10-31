@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-31 (night): faster BF16 models (the OCR model)
+
+- **Float matrices stacked as quantized ones are** (`zero/engine.h`):
+  - DeltaNet `qkv` + `z` + alpha / beta: one GEMV, since a BF16 GGUF's float matrices become the same Q8_0 rows
+    first; alpha / beta join the stack when their rows come in 16s, not only 64s;
+  - FFN `gate` + `up`;
+  - gated attention `q` + `k` + `v`.
+
+  Xiaomi-OCR-0 (Qwen3.5 0.8B) runs 9 GEMV launches fewer per layer:
+  - generation 69.3 -> 73.2 tok/s, prompts +2 %;
+  - logits bit-identical;
+  - quantized models take none of these paths.
+
+  The output head as Q4_0 was 86 tok/s, but KL 0.048 against f32 (the limit is 0.015), so it stays Q8_0. The image
+  encoder (~1.44 s for a 2,000-token page) is already near the iGPU's f32 rate; its attention in f16 is left as the
+  next step. Switches for A/B tests: `ARC_NO_QZ_FLT`, `ARC_NO_GU_FLT`, `ARC_NO_QKV_FLT`, `ARC_NO_QZAB16`.
+
 ## 2026-10-31 (evening): OCR mode
 
 - **OCR models get their own task prompts** (`tools/server_ocr.h`). Xiaomi-OCR-0 (Qwen3.5 0.8B with an image
@@ -26,6 +43,11 @@
   lines. A follow-up without an image ("now as a table") takes the conversation's latest image. Checked with
   files from a Downloads folder through the web UI's way (file part, system prompt, thinking, temperature 0.8), all
   in Indonesian words: no Chinese in any answer.
+- **PDFs for OCR models**: a PDF in the last turn is rendered page by page by Windows (`tools/pdf_render.h`,
+  Windows.Data.Pdf: every kind of page, as a viewer draws it, ~0.2 s a page at 150 dpi). Each page is read as an image
+  and streamed under `## Page N / M` (at most 50 pages a request). Before, a PDF went in as its text layer, and
+  the follow-up rule took the conversation's last image instead (the user's report came back as an earlier picture);
+  a turn that brings a file now never looks back for an image. A 5-page report: first page after 12 s, all in 50 s.
 - **OCR tables as Markdown**: the model writes tables in OTSL (`<fcel>cell<fcel>cell<nl>...`). The server turns
   them into Markdown tables in non-streamed answers, and the web UI does so while an answer streams. A report page's
   similarity to its PDF text layer went from 0.61 to 0.87.

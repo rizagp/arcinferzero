@@ -29,6 +29,7 @@
 #include "sampler.h"
 #include "web_tools.h"
 #include "server_files.h"
+#include "pdf_render.h"  // (PDF pages as images, for OCR models: server_ocr.h)
 #include "doc_writer.h"
 #include "xlsx.h"
 #include "server_terminal.h"

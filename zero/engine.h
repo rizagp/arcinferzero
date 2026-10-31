@@ -2264,8 +2264,28 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // DeltaNet input projections (qkv, z = attn_gate, ab = alpha + beta). When qkv and z have the same quantized type
   // they are uploaded as one stack of rows (with ab, already Q8_0, when they are Q8_0 too): a single token runs one GEMV
   // over all of them (Layer::qz); the matrices are views of it, stored once.
+  static bool float_type(uint32_t t) { return t == GGML_F32 || t == GGML_F16 || t == GGML_BF16; }
+  // a float matrix as the Q8_0 rows load_w would make of it (kept in `keep`), so that it can be stacked with others
+  const GgufTensor& as_q8(const GgufTensor& t, GgufTensor& out, std::vector<uint8_t>& keep) {
+    std::vector<float> v((size_t)t.dims[0] * t.dims[1]);
+    dequant_row(t.type, t.data, (int)v.size(), v.data());
+    keep = quantize_rows_q8_0(v.data(), (int)t.dims[1], (int)t.dims[0]);
+    out = t;
+    out.type = GGML_Q8_0;
+    out.data = keep.data();
+    out.nbytes = keep.size();
+    return out;
+  }
   void load_gdn_in(Layer& L, const std::string& p) {
-    const GgufTensor &tq = T(p + "attn_qkv.weight"), &tz = T(p + "attn_gate.weight");
+    GgufTensor q8q, q8z;
+    std::vector<uint8_t> kq, kz;
+    const GgufTensor *pq = &T(p + "attn_qkv.weight"), *pz = &T(p + "attn_gate.weight");
+    // (float qkv / z (a BF16 GGUF: Xiaomi-OCR-0): the same Q8_0 rows load_w makes, stacked as quantized ones are)
+    if (float_type(pq->type) && float_type(pz->type) && !getenv("ARC_NO_QZ_FLT")) {
+      pq = &as_q8(*pq, q8q, kq);
+      pz = &as_q8(*pz, q8z, kz);
+    }
+    const GgufTensor &tq = *pq, &tz = *pz;
     const int E = hp.n_embd, C = (int)tq.dims[1], Di = (int)tz.dims[1], nab = 2 * hp.ssm_nv;
     const bool quant = tq.type != GGML_F32 && tq.type != GGML_F16 && tq.type != GGML_BF16;
     if (!quant || tq.type != tz.type || tq.dims[0] != E || tz.dims[0] != E || E % 256 || C % 64 || Di % 64 ||
@@ -2284,7 +2304,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       dequant_row(tb.type, tb.data, (int64_t)nab / 2 * E, v.data() + (size_t)nab / 2 * E);
       ab = quantize_rows_q8_0(v.data(), tp_rows(nab), E);
     }
-    L.qz_ab = type == GGML_Q8_0 && nab % 64 == 0;
+    L.qz_ab = type == GGML_Q8_0 && nab % 16 == 0 && !getenv("ARC_NO_QZAB16");  // (the GEMV / GEMM take rows in 16s)
     std::vector<uint8_t> cat(tq.nbytes + tz.nbytes + (L.qz_ab ? ab.size() : 0));
     memcpy(cat.data(), tq.data, tq.nbytes);
     memcpy(cat.data() + tq.nbytes, tz.data, tz.nbytes);
@@ -2489,7 +2509,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       }
       if (hp.moe) {
         load_moe(L, p);
-      } else if (hp.qwen3 && f_.get(p + "ffn_gate.weight").type == f_.get(p + "ffn_up.weight").type) {
+      } else if ((hp.qwen3 || (float_type(f_.get(p + "ffn_gate.weight").type) && !getenv("ARC_NO_GU_FLT"))) &&
+                 f_.get(p + "ffn_gate.weight").type == f_.get(p + "ffn_up.weight").type) {
         L.gate = load_w_stack({p + "ffn_gate.weight", p + "ffn_up.weight"});  // (rows [gate | up], L.up empty: layer_ffn)
         L.down = load_w(p + "ffn_down.weight");
       } else {
@@ -2856,7 +2877,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       //  stay empty. Qwen3-ASR, one token at 2048 of context: q + k + v 0.166 -> 0.139 ms a layer, gate + up (load_weights)
       //  0.437 -> 0.414; generation 23.8 -> 25.1 tok/s, the 2:34 recording's 507 tokens 19.97 -> 19.56 s (mean of 3); logits
       //  bit-identical)
-      const bool stack = hp.qwen3 && f_.get(p + "attn_q.weight").type == f_.get(p + "attn_k.weight").type &&
+      // (also float ones of the gated attention (a BF16 GGUF: Xiaomi-OCR-0): rows [q + gate | k | v] as layer_attn reads
+      //  them, one GEMV for the three)
+      const bool stack = (hp.qwen3 || (float_type(f_.get(p + "attn_q.weight").type) && !getenv("ARC_NO_QKV_FLT"))) &&
+                         f_.get(p + "attn_q.weight").type == f_.get(p + "attn_k.weight").type &&
                          f_.get(p + "attn_q.weight").type == f_.get(p + "attn_v.weight").type;
       {
         if (stack) {
@@ -3131,9 +3155,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (lt.type == GGML_F32 || lt.type == GGML_F16 || lt.type == GGML_BF16) {
       std::vector<float> v((size_t)lm_head_.N * lm_head_.K);
       dequant_row(lt.type, lt.data, (int)v.size(), v.data());
-      auto q8 = quantize_rows_q8_0(v.data(), lm_head_.N, lm_head_.K);
-      lm_head_.type = GGML_Q8_0;
-      lm_head_.raw = upload_padded(GGML_Q8_0, q8.data(), q8.size());
+      const bool q4 = getenv("ARC_HEAD_Q4") != nullptr;
+      auto q8 = q4 ? quantize_rows_q4_0(v.data(), lm_head_.N, lm_head_.K) : quantize_rows_q8_0(v.data(), lm_head_.N, lm_head_.K);
+      lm_head_.type = q4 ? GGML_Q4_0 : GGML_Q8_0;
+      lm_head_.raw = upload_padded(lm_head_.type, q8.data(), q8.size());
     } else {
       lm_head_.type = lt.type;
       lm_head_.raw = upload_padded(lt.type, lt.data, lt.nbytes);

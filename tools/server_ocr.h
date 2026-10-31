@@ -11,6 +11,124 @@
 
  private:
   bool ocr_ = false;
+  static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; more: a note at the end)
+  // A PDF in the request's last user turn (a web UI file part): every page rendered by Windows (tools/pdf_render.h)
+  // and read as an image with the turn's words, page after page, each under "## Page N / M" (streamed as each page
+  // is done). False when the turn has no PDF. Before, a PDF went in as its text layer: no image in the turn, and the
+  // follow-up rule took the conversation's last image instead, an earlier file (2026-10-31, the user's LPO reports).
+  bool ocr_pdf(const HttpRequest& rq, const Json& body, HttpResponse& rs) {
+    const Json& msgs = body["messages"];
+    int last = -1;
+    for (int i = 0; i < (int)msgs.size(); ++i)
+      if (msgs[i]["role"].str() == "user") last = i;
+    if (last < 0) return false;
+    files::Info pdf;
+    std::string words;
+    for (const Json& p : msgs[last]["content"].items()) {
+      const std::string ty = p["type"].str();
+      if (ty == "text" || ty == "input_text") words += (words.empty() ? "" : "\n") + p["text"].str();
+      if (ty != "file" && ty != "input_file") continue;
+      files::Info i;
+      const std::string id = p["file"]["file_id"].str(p["file_id"].str());
+      if (pdf.path.empty() && files::store().get(id, i) && files::lower(i.name).size() > 4 &&
+          files::lower(i.name).rfind(".pdf") == files::lower(i.name).size() - 4)
+        pdf = i;
+    }
+    if (pdf.path.empty()) return false;
+    std::string err;
+    const int pages = pdfr::pdf_page_count(pdf.path, err);
+    if (pages < 0) {
+      rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("cannot read the PDF: " + err).dump() + "}}");
+      return true;
+    }
+    const int n = std::min(pages, kOcrMaxPages);
+    const bool stream = body["stream"].as_bool(false);
+    const std::string id = "chatcmpl-arc" + std::to_string(++counter_);
+    const long long created = (long long)time(nullptr);
+    if (stream) rs.sse_begin();
+    std::string all;
+    int64_t ptok = 0, ctok = 0;
+    fprintf(stderr, "OCR mode: %s, %d page(s)%s\n", pdf.name.c_str(), pages, pages > n ? " (the first 50)" : "");
+    for (int p = 1; p <= n && !rs.client_gone(); ++p) {
+      std::string piece = (p > 1 ? "\n\n" : "") + std::string("## Page ") + std::to_string(p) + " / " + std::to_string(pages) + "\n\n";
+      const std::string png = pdfr::pdf_render_page(pdf.path, p, 150, err);
+      if (png.empty()) {
+        piece += "[the page could not be rendered: " + err + "]";
+      } else {
+        Json url = Json::object(), img = Json::object(), txt = Json::object(), content = Json::array(), msg = Json::object(),
+             one = Json::array(), req = Json::object();
+        url.set("url", "data:image/png;base64," + apic::base64_encode(png));
+        img.set("type", "image_url");
+        img.set("image_url", url);
+        txt.set("type", "text");
+        txt.set("text", words);
+        content.push(img);
+        content.push(txt);
+        msg.set("role", "user");
+        msg.set("content", content);
+        one.push(msg);
+        req.set("messages", one);
+        req.set("stream", false);
+        HttpRequest rq2 = rq;
+        rq2.body = req.dump();
+        HttpResponse r2(INVALID_SOCKET);
+        int st = 0;
+        std::string out;
+        r2.on_send = [&](int s, const std::string& b) { st = s; out = b; };
+        chat(rq2, r2);  // (an image now: ocr_request gives it the task prompt; its tables come back as Markdown)
+        Json j;
+        Json::try_parse(out, j);
+        if (st != 200) piece += "[page " + std::to_string(p) + ": " + j["error"]["message"].str("HTTP " + std::to_string(st)) + "]";
+        else piece += j["choices"][0]["message"]["content"].str();
+        ptok += j["usage"]["prompt_tokens"].as_int();
+        ctok += j["usage"]["completion_tokens"].as_int();
+      }
+      if (stream) {
+        Json d = Json::object();
+        d.set("content", piece);
+        if (!rs.sse_event(chunk(id, created, d, Json()).dump())) return true;
+      } else {
+        all += piece;
+      }
+    }
+    if (pages > n) {
+      const std::string note = "\n\n[" + std::to_string(pages - n) + " more page(s) not read: at most " + std::to_string(kOcrMaxPages) + " per request]";
+      if (stream) {
+        Json d = Json::object();
+        d.set("content", note);
+        rs.sse_event(chunk(id, created, d, Json()).dump());
+      } else {
+        all += note;
+      }
+    }
+    Json usage = Json::object();
+    usage.set("prompt_tokens", ptok);
+    usage.set("completion_tokens", ctok);
+    usage.set("total_tokens", ptok + ctok);
+    if (stream) {
+      Json fin = chunk(id, created, Json::object(), Json("stop"));
+      fin.set("usage", usage);
+      rs.sse_event(fin.dump());
+      rs.sse_event("[DONE]");
+      rs.sse_end();
+      return true;
+    }
+    Json msg = Json::object(), c = Json::object(), choices = Json::array(), r = Json::object();
+    msg.set("role", "assistant");
+    msg.set("content", all);
+    c.set("index", 0);
+    c.set("message", msg);
+    c.set("finish_reason", "stop");
+    choices.push(c);
+    r.set("id", id);
+    r.set("object", "chat.completion");
+    r.set("created", (double)created);
+    r.set("model", model_id_);
+    r.set("choices", choices);
+    r.set("usage", usage);
+    rs.send(200, "application/json", r.dump());
+    return true;
+  }
   static bool ocr_model(const GgufFile& g, const std::string& id) {
     std::string n = g.get_str("general.name") + " " + id;
     for (char& c : n) c = (char)tolower((unsigned char)c);
@@ -186,7 +304,11 @@
     Json images = Json::array();
     std::string text;
     if (msgs[last]["content"].is_string()) text = msgs[last]["content"].str();
-    for (int i = last; i >= 0 && !images.size(); --i) {
+    // (only a turn of words alone looks back: one that brought a file of another kind is about that file)
+    bool other_file = false;
+    for (const Json& p : msgs[last]["content"].items())
+      other_file = other_file || p["text"].str().rfind("[file: ", 0) == 0 || p["type"].str() == "input_file";
+    for (int i = last; i >= 0 && !images.size() && !(i < last && other_file); --i) {
       if (msgs[i]["role"].str() != "user") continue;
       for (const Json& p : msgs[i]["content"].items()) {
         const std::string ty = p["type"].str();

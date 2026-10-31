@@ -294,6 +294,8 @@ While the server is running:
   - `tabel` or `rumus`;
   - `json:` and the fields, e.g. `json: tanggal, total, nama toko`.
 
+  A PDF works too: each page (up to 50) is read in turn and comes under its own `## Page N / M` heading.
+
   The text keeps the image's language. For questions about a document, use Qwen3.5 4B / 9B or Gemma 4 instead
   ([tools/server_ocr.h](tools/server_ocr.h)).
 - **Web UI: Transcripts and Meetings** (the left rail's second and third buttons; the server started with
