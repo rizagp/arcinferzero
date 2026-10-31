@@ -1987,15 +1987,15 @@ function estTokens(h) {
 
 // ---- an OCR model reading a PDF (tools/server_ocr.h): the server reads up to 50 pages a turn and ends with
 // "[OCR: N more page(s); ...]", which this page answers with "lanjut" by itself until the last page. Saved to a file
-// ("ocr_save", asked when the PDF is sent): the text goes into "<the PDF's name>.md" in the chat's files, and the bubble
-// shows only the page read last under a bar of the pages done; the chat keeps that page and the closing note (enough
-// for the next turn to go on from), not hundreds of pages it would have to compact.
+// ("ocr_save", asked when the PDF is sent): the text also goes into a .md, each page added as it is read. Either way
+// the bubble shows every page of the turn under a bar of the pages done, and the chat keeps them all (the server reads
+// only the last turn of an OCR model, so they are not compacted while it reads).
 const ocrSaveFor = new Map();  // chat id -> {name, folder} of the .md its PDF's text goes into (asked with each PDF), or null
 const OCR_MORE = /\[OCR: \d+ more page/;
 function ocrView(a, saving) {
   const heads = [...a.matchAll(/## Page (\d+) \/ (\d+)/g)], h = heads[heads.length - 1];
   const note = (a.match(/\[OCR:[^\]]*\]/) || [""])[0];
-  const page = (h ? a.slice(h.index) : a).replace(/\[OCR:[^\]]*\]/, "").trim();
+  const page = a.replace(/\[OCR:[^\]]*\]/, "").trim();
   const n = h ? +h[1] : 0, total = h ? +h[2] : 0;
   return (total ? '<div class="ocrbar"><div style="width:' + (100 * n / total).toFixed(1) + '%"></div></div><div class="ocrlab">' +
     "page " + n + " / " + total + " read" + (saving ? " · the text goes into " + esc(saving.folder ? saving.folder + "\\" + saving.name : saving.name) +
@@ -2009,7 +2009,7 @@ function ocrSaveAsk(pdf) {
     const d = document.createElement("dialog");
     d.className = "ask";
     d.innerHTML = '<h3>Save the OCR text to a file?</h3><p>The text read from <span class="name"></span> can go into a Markdown ' +
-      "file, each page added as it is read. The chat then shows only the page read last, with a bar of the pages done.</p>" +
+      "file, each page added as it is read. The chat shows every page too, with a bar of the pages done.</p>" +
       '<label class="lab">File name<input class="in" data-k="name"></label>' +
       '<label class="lab">Folder<input class="in" data-k="folder" placeholder="empty: this chat\'s files (the Files panel)"></label>' +
       "<p>An existing file is never written over: a new name is taken then. Either way the next pages are read by " +
@@ -2035,10 +2035,6 @@ function ocrSavedTo(a, sv) {
   if (!m || !sv) return;
   const f = m[1].trim(), cut = Math.max(f.lastIndexOf("\\"), f.lastIndexOf("/"));
   if (cut > 0) { sv.folder = f.slice(0, cut); sv.name = f.slice(cut + 1); } else sv.name = f;
-}
-function ocrCompact(a) {  // (the page read last and the closing note)
-  const heads = [...a.matchAll(/## Page \d+ \/ \d+/g)], h = heads[heads.length - 1];
-  return h ? a.slice(h.index) : a;
 }
 
 let epoch = 0;  // (another chat on screen: an upload still running stays out of its message box)
@@ -2094,7 +2090,8 @@ async function send() {
     // compact first (a chat opened again, another model, or more slots: each chat's context gets smaller)
     const ctxOf = switching ? (models.find((m) => m.id === modelId)?.context_length || 0) : ctxLen;
     const need = job.used + Math.ceil(text.length / 3) + 300 * media.length + ANSWER_RESERVE;
-    if (ctxOf && need > 0.9 * ctxOf) await compact(2, signal, el.querySelector(".stats"), job);
+    // (not for an OCR model: it reads only the last turn, tools/server_ocr.h, and a summary of its pages would lose them)
+    if (ctxOf && need > 0.9 * ctxOf && !(caps.ocr && !switching)) await compact(2, signal, el.querySelector(".stats"), job);
     job.history.push(userMsg);
     saveConv(false, job);  // (on disk at once: its files belong to a saved chat, a closed page keeps the question)
     // the server says it does not fit: compact everything before this message and try again (once a round)
@@ -2187,8 +2184,7 @@ async function send() {
   for (const c of last.tool_calls || []) job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: stopped by the user" });
   if (!inHistory) {
     if (caps.ocr) ocrSavedTo(st.answer, ocrSaveFor.get(job.id));  // (the name the server took: the next turns go on with it)
-    const reply = { role: "assistant", content: caps.ocr && ocrSaveFor.get(job.id) ? ocrCompact(st.answer) : st.answer,
-      reasoning_content: st.reasoning, at: Date.now() };
+    const reply = { role: "assistant", content: st.answer, reasoning_content: st.reasoning, at: Date.now() };
     job.history.push(reply);
     el._h = reply;
     answerFiles(el, job.made);

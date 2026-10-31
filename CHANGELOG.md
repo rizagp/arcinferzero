@@ -15,10 +15,10 @@
   - An existing file is never written over: `name (2).md` then. The "lanjut" turns go on with the file the server
     named at the end of its answer.
   - Each page is appended once read, and the file shows in the Files panel.
-  - The answer then shows only the page read last, under a bar of the pages done, and the chat keeps that page only
-    (no hundreds of pages to compact).
+  - Saved or not, the answer shows every page under a bar of the pages done, and the chat keeps them all. A chat
+    with an OCR model is not compacted (the server reads only its last turn), so no page is lost to a summary.
   - Checked on a 450-page service manual: pages 1-2, then 449-450 appended to the same file; in the web UI the bar
-    counted on, the bubble held one page, and "lanjut" went by itself.
+    counted on and "lanjut" went by itself.
 
 ## 2026-10-31 (night): faster BF16 models (the OCR model)
 
