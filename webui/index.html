@@ -3670,9 +3670,12 @@ const live = {
       this.n = this.stereo ? 2 : streams.length;
       const merger = this.ctx.createChannelMerger(this.n);
       if (this.stereo) {  // (left and right of the one source: a mono one gives the same on both)
+        // (through a 2-channel gain node first: it up-mixes a mono input to both sides; the splitter itself takes only
+        //  "discrete", which leaves the right side of a mono input silent, and Chrome refuses "speakers" on it)
+        const up = new GainNode(this.ctx, { channelCount: 2, channelCountMode: "explicit", channelInterpretation: "speakers" });
         const sp = this.ctx.createChannelSplitter(2);
-        sp.channelInterpretation = "speakers";  // (a mono input up-mixed to both; "discrete" left the right silent)
-        this.ctx.createMediaStreamSource(new MediaStream(streams[0].getAudioTracks())).connect(sp);
+        this.ctx.createMediaStreamSource(new MediaStream(streams[0].getAudioTracks())).connect(up);
+        up.connect(sp);
         sp.connect(merger, 0, 0);
         sp.connect(merger, 1, 1);
       } else {
