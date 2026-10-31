@@ -2154,6 +2154,11 @@ int main(int argc, char** argv) {
   const bool no_chat = model == "none";
   if (no_chat && whisper_opt == "off" && asr_opt == "default") asr_opt = "auto";
 
+  // the NPU (--npu on / force, ARC_NPU): Level Zero initialized for every driver type before anything starts the GPU
+  // runtime (it initializes for GPUs only, which hides the NPU driver for the rest of the process). It was done only
+  // in the speech service's start, after its early return without Whisper / ASR, and --ctx auto starts the GPU
+  // runtime before the engine's own npu_preinit: "--npu on" with Gemma 4 12B said "no NPU device" (2026-10-31)
+  if ((so.eo.npu > 0 || (so.eo.npu < 0 && getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0)) && ze_load()) zeInit(0);
   // the speech service before the model: --ctx auto then leaves its GPU memory free (tools/server_speech.h)
   std::unique_ptr<srvwh::Service> wh;
   loadp::st().on = true;  // ("progress: P % ..." lines while loading: arc-server's and the launcher's progress bar)
