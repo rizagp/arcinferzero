@@ -860,7 +860,8 @@ class Service {
   // (greedy, word timestamps; before the queue's windows) into the draft. Stopping queues the accurate pass over the
   // recording (its options: beam 5 by default; each track alone with its speaker, merged by time), which replaces the
   // draft; the recording is then kept as MP3 (192 kbps unless mp3_kbps says otherwise; 0: kept as WAV).
-  //   POST /v1/live                    {name, language, terms, beam_size, tracks: 1 | 2, rate, speakers: [..],
+  //   POST /v1/live                    {name, language, terms, beam_size, tracks: 1 | 2, channels: 1 | 2 (one track
+  //                                     in stereo: a tab's sound kept as it plays, transcribed as its mono mix), rate, speakers: [..],
   //                                     mp3_kbps} -> the record (status "live")
   //   POST /v1/live/<id>/audio?since=N&offset=F  the next piece (at most 120 s; F: the frames sent before it, so a
   //                                     piece sent again is not written twice) -> {segments: the draft's from the
@@ -901,9 +902,11 @@ class Service {
       if (!(rate_d >= 8000 && rate_d < 96001)) return fail(400, "rate: 8000..96000");
       if (!(tracks_d >= 1 && tracks_d < 3)) return fail(400, "tracks: 1 or 2");
       const int rate = (int)rate_d, tracks = (int)tracks_d;
+      const bool stereo = tracks == 1 && in["channels"].as_number(1) == 2;
       auto s = std::make_shared<Live>();
       s->rate = rate;
       s->tracks = tracks;
+      s->ch = stereo ? 2 : tracks;
       s->t.resize(tracks);
       for (LiveTrack& t : s->t) t.rs = std::make_unique<audio::Resampler>(rate, 16000);
       Json sp = Json::array();
@@ -940,6 +943,7 @@ class Service {
       m.set("progress", 0.0);
       m.set("options", o);
       m.set("tracks", (double)tracks);
+      if (stereo) m.set("channels", 2.0);  // (the library pass reads one track: the WAV's mono mix)
       m.set("speakers", sp);
       m.set("rate", (double)rate);
       m.set("recording", true);
@@ -973,8 +977,8 @@ class Service {
     }
     if (!s || rq.method != "POST") return fail(404, "no live recording " + tid);
     if (what == "audio") {
-      const size_t frame = (size_t)2 * s->tracks;
-      if (rq.body.size() % frame) return fail(400, "16-bit samples, the tracks interleaved");
+      const size_t frame = (size_t)2 * s->ch;
+      if (rq.body.size() % frame) return fail(400, "16-bit samples, the tracks (or a stereo track's channels) interleaved");
       // (a page sends half a second at a time; a background tab's timers, a minute or so; more is not a recording)
       if (rq.body.size() > (size_t)kLiveMaxPiece * s->rate * frame)
         return fail(413, "at most " + std::to_string(kLiveMaxPiece) + " s of audio a request");
@@ -1001,9 +1005,14 @@ class Service {
         std::vector<float> x(n);
         for (int k = 0; k < s->tracks; ++k) {
           for (size_t i = 0; i < n; ++i) {
-            int16_t v;
+            int16_t v, r;
             memcpy(&v, rq.body.data() + skip + i * frame + 2 * k, 2);
-            x[i] = v / 32768.0f;
+            if (s->ch > s->tracks) {  // (one stereo track: its mono mix)
+              memcpy(&r, rq.body.data() + skip + i * frame + 2, 2);
+              x[i] = (v + r) / 65536.0f;
+            } else {
+              x[i] = v / 32768.0f;
+            }
           }
           LiveTrack& t = s->t[k];
           t.rs->push(x.data(), n, t.x);
@@ -1108,7 +1117,7 @@ class Service {
   };
   struct Live {
     std::string id;
-    int rate = 48000, tracks = 1;
+    int rate = 48000, tracks = 1, ch = 1;  // (ch: channels in the file, 2 for one stereo track)
     std::vector<std::string> speakers;
     whisper::Options opt;
     std::ofstream wav;
@@ -1229,7 +1238,7 @@ class Service {
     f.write((const char*)&data, 4);
   }
   static void write_wav_header(Live& s) {  // (live_mu_ held)
-    const uint32_t data = (uint32_t)std::min<uint64_t>(s.frames * 2 * s.tracks, 0xFFFFFFF0u);
+    const uint32_t data = (uint32_t)std::min<uint64_t>(s.frames * 2 * s.ch, 0xFFFFFFF0u);
     uint8_t h[44];
     auto u32 = [&](int o, uint32_t v) { for (int i = 0; i < 4; ++i) h[o + i] = (uint8_t)(v >> (8 * i)); };
     auto u16 = [&](int o, uint32_t v) { h[o] = (uint8_t)v; h[o + 1] = (uint8_t)(v >> 8); };
@@ -1238,10 +1247,10 @@ class Service {
     memcpy(h + 8, "WAVEfmt ", 8);
     u32(16, 16);
     u16(20, 1);
-    u16(22, (uint32_t)s.tracks);
+    u16(22, (uint32_t)s.ch);
     u32(24, (uint32_t)s.rate);
-    u32(28, (uint32_t)(s.rate * 2 * s.tracks));
-    u16(32, (uint32_t)(2 * s.tracks));
+    u32(28, (uint32_t)(s.rate * 2 * s.ch));
+    u16(32, (uint32_t)(2 * s.ch));
     u16(34, 16);
     memcpy(h + 36, "data", 4);
     u32(40, data);

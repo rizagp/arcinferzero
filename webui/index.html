@@ -3655,9 +3655,20 @@ const live = {
     try {
       // (48 kHz whatever the sound card's rate: the server takes 8-96 kHz)
       this.ctx = new AudioContext({ sampleRate: 48000 });
-      this.n = streams.length;
+      // (a tab's sound alone, in the Transcripts tab: kept in stereo as it plays (music, a video), transcribed as its
+      //  mono mix; a source that says it is mono stays mono. The Meetings tab: one mono track per source)
+      const cc = streams.length === 1 && src === "tab" ? streams[0].getAudioTracks()[0].getSettings().channelCount : 1;
+      this.stereo = tr.kind !== "meeting" && cc !== 1;
+      this.n = this.stereo ? 2 : streams.length;
       const merger = this.ctx.createChannelMerger(this.n);
-      streams.forEach((s, k) => this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks())).connect(merger, 0, k));
+      if (this.stereo) {  // (left and right of the one source: a mono one gives the same on both)
+        const sp = this.ctx.createChannelSplitter(2);
+        this.ctx.createMediaStreamSource(new MediaStream(streams[0].getAudioTracks())).connect(sp);
+        sp.connect(merger, 0, 0);
+        sp.connect(merger, 1, 1);
+      } else {
+        streams.forEach((s, k) => this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks())).connect(merger, 0, k));
+      }
       // (16384 frames, 0.34 s a call: the page's own work (a long transcript drawn again) has that long before a
       //  buffer of sound is lost)
       this.node = this.ctx.createScriptProcessor(16384, this.n, this.n);
@@ -3675,10 +3686,10 @@ const live = {
       const meeting = tr.kind === "meeting", when = new Date().toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
       const r = await fetch("/v1/live", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: (meeting ? "Meeting " : "Recording ") + when, language: $("trlang").value, beam_size: +$("trbeam").value,
-          terms: $("trterms").value.trim(), tracks: this.n, rate: this.ctx.sampleRate, kind: tr.kind,
+          terms: $("trterms").value.trim(), tracks: this.stereo ? 1 : this.n, channels: this.stereo ? 2 : 1, rate: this.ctx.sampleRate, kind: tr.kind,
           ...(!$("trmodel").hidden ? { model: $("trmodel").value } : {}),
           mp3_kbps: $("trkeep").value === "wav" ? 0 : +$("trkeep").value,
-          speakers: this.n === 2 ? ["Me", "Others"] : [""] }) });
+          speakers: this.n === 2 && !this.stereo ? ["Me", "Others"] : [""] }) });
       rec = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(rec.error?.message || "HTTP " + r.status);
     } catch (e) {
@@ -3696,7 +3707,7 @@ const live = {
     this.timer = setInterval(() => this.send(), 500);
     this.clock = setInterval(() => {
       if (tr.sel === this.id) $("trsub").innerHTML = '<span class="dot"></span>Recording ' + trClock((performance.now() - this.t0) / 1000) +
-        (this.n > 1 ? " · Me + Others" : "") + " · the text comes ~2 s behind";
+        (this.stereo ? " · stereo" : this.n > 1 ? " · Me + Others" : "") + " · the text comes ~2 s behind";
     }, 500);
     liveButtons();
     tr.list = [rec, ...tr.list];
