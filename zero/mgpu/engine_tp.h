@@ -121,7 +121,10 @@ class TpEngine {
     shards_.resize(n);
     w_.resize(n);
     for (int r = 0; r < n; ++r) w_[r].th = std::thread([this, r] { loop(r); });
-    // shard 0 first (it compiles and caches the kernels the others then load), then the others together
+    // shard 0 first (it compiles and caches the kernels the others then load), then the others one after another:
+    // made together (kernels built, the XMX check, buffers allocated on several GPUs of one context at once), 3 and 4
+    // B60s ended at random in the driver's "Abort was called at 252 line" (issue #4, 2026-10-31).
+    // ARC_TP_PARALLEL_LOAD=1: the others together again (faster to load; for tests)
     auto make = [&, o](int r) mutable {
       EngineOptions so = o;
       so.tp_rank = r;
@@ -130,9 +133,12 @@ class TpEngine {
       shards_[r]->tp_ = &comm_;
     };
     run_on({0}, make);
+    const bool together = getenv("ARC_TP_PARALLEL_LOAD") && atoi(getenv("ARC_TP_PARALLEL_LOAD")) != 0;
     std::vector<int> rest;
     for (int r = 1; r < n; ++r) rest.push_back(r);
-    if (!rest.empty()) run_on(rest, make);
+    if (together && !rest.empty()) run_on(rest, make);
+    else
+      for (int r : rest) run_on({r}, make);
     Engine& e0 = *shards_[0];
     comm_.slot_floats = (size_t)e0.max_chunk * e0.hp.n_embd;
     comm_.host = (float*)zrt::host_alloc((size_t)2 * n * comm_.slot_floats * 4);

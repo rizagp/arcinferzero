@@ -82,7 +82,32 @@ nothing.
 
 - **One GPU is unchanged:** the 4B and 27B logits are bit-identical to the build before multi-GPU.
 
-## Expected speed (not measured yet: no machine here has two GPUs)
+## Measured on 4 Arc Pro B60 (issue #4, 2026-10-31)
+
+Qwen3.8 27B GSQ-RCO IQ3_S, `runz --bench-pp 512 --n 64 --gpus N`, two runs each (the owner's machine: no peer access
+between the GPUs, every sum through host memory). Generation by the median step (the tg64 total includes a slow
+first step):
+
+| GPUs | Generation step | tok/s | vs 1 GPU | pp512 | vs 1 GPU | Waiting for the sums |
+|---|---|---|---|---|---|---|
+| 1 | 45.7 ms | ~21.9 | 1.00x | 383-395 tok/s | 1.00x | - |
+| 2 | 28.0 ms | ~35.7 | 1.63x | 489-503 | 1.28x | 21.5-21.9 ms of a token |
+| 3 | 23.2 ms | ~43 | 1.97x | 531-532 | 1.36x | 33.6 ms (a slow step in the run) |
+| 4 | 18.7 ms | ~53 | 2.44x | 531-541 | 1.38x | 12.7 ms |
+
+- "Waiting" counts a shard's time in its sums, the host round trip and the wait for the slowest shard's kernels
+  alike, so it is not the transfer alone. Against the ideal (4 GPUs: 45.7 / 4 = 11.4 ms), the 4-GPU step has ~7 ms
+  more: ~57 µs for each of its 128 sums, not the 16-20 µs the probe measured for a single copy.
+- Prompts gain little: each sum of a 512-row chunk moves 10 MB through host memory, 128 times a chunk, about 0.4 s
+  of the ~1 s per chunk.
+- One run of 3 GPUs and one of 4 ended while loading in the driver's "Abort was called at 252 line in file:",
+  right after the shards' XMX checks. The shards after the first were made at the same time; since then they are
+  made one after another (`ARC_TP_PARALLEL_LOAD=1`: together, for tests).
+
+Next for speed: f16 parts for prompts (half the bytes), the next GPU waiting on an event instead of a host wait and
+a barrier, and batch decoding (a step's sums carry several rows for the cost of one).
+
+## Expected speed (the estimate before the measurement)
 
 One B60 runs the 27B IQ3_S at 21.5 tok/s, reading 11.3 GB per token in 45.3 ms. With N GPUs each reads 1/N, plus
 128 sums of ~16-20 µs each (2-2.6 ms per token). Estimates:

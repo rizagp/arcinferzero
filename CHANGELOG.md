@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-31 (last): multi-GPU measured on 4 Arc Pro B60
+
+- **First numbers from real GPUs** (issue #4): Qwen3.8 27B generation 1.63x on 2 B60s, 1.97x on 3, 2.44x on 4
+  (45.7 -> 18.7 ms a token, ~53 tok/s); pp512 1.28-1.38x. Table and what limits it: [docs/multi-gpu.md](docs/multi-gpu.md).
+- **Fixed**: 3 and 4 GPUs sometimes ended while loading in the driver's "Abort was called at 252 line in file:":
+  the shards after the first were made at the same time on one Level Zero context; now one after another
+  (`ARC_TP_PARALLEL_LOAD=1` for the old way).
+
 ## 2026-10-31 (late night): self audit fixes, the README as a landing page
 
 - **Gemma ring snapshots, after an audit** ([docs/self-audit-2026-10-31.md](docs/self-audit-2026-10-31.md)):
