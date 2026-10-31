@@ -20,6 +20,15 @@
   - the repo's examples: 0.975 / 0.988 to its outputs.
 
   The web UI's message box shows the tasks.
+- **OCR mode from the web UI** (the same evening): the web UI sends its images as saved files (`"type": "file"`),
+  which became image parts only after the OCR rewrite looked for one, so its requests went through unchanged (and
+  still came back in Chinese). The rewrite now runs after the files are expanded and skips their `[file: ...]`
+  lines. A follow-up without an image ("now as a table") takes the conversation's latest image. Checked with
+  files from a Downloads folder through the web UI's way (file part, system prompt, thinking, temperature 0.8), all
+  in Indonesian words: no Chinese in any answer.
+- **OCR tables as Markdown**: the model writes tables in OTSL (`<fcel>cell<fcel>cell<nl>...`). The server turns
+  them into Markdown tables in non-streamed answers, and the web UI does so while an answer streams. A report page's
+  similarity to its PDF text layer went from 0.61 to 0.87.
 
 ## 2026-10-31 (afternoon): multi-GPU audit, uneven splits
 

@@ -104,20 +104,98 @@
     for (const std::string& x : w) k += (k.empty() ? "" : "_") + x;
     return k;
   }
+  // The answer's OTSL tables (<fcel> a cell, <ecel> empty, <lcel> / <ucel> / <xcel> merged into the cell left / above /
+  // both, <nl> a row's end) as Markdown tables, the first row as the header, merged cells empty: what a client shows
+  // as a table (the web UI does the same while an answer streams, webui/index.html otslToMd). Text around them as is.
+  static std::string otsl_to_md(const std::string& s) {
+    if (s.find("<fcel>") == std::string::npos && s.find("<ecel>") == std::string::npos && s.find("<ched>") == std::string::npos)
+      return s;
+    static const char* tags[] = {"fcel", "ecel", "lcel", "ucel", "xcel", "ched", "rhed", "srow", "nl"};
+    auto tag_at = [&](size_t p) -> std::string {  // the OTSL tag starting at p, or ""
+      if (s[p] != '<') return "";
+      for (const char* t : tags) {
+        const std::string x = std::string("<") + t + ">";
+        if (s.compare(p, x.size(), x) == 0) return t;
+      }
+      return "";
+    };
+    auto esc = [](std::string c) {
+      std::string o;
+      for (char ch : c) o += ch == '|' ? std::string("\\|") : ch == '\n' ? std::string(" ") : std::string(1, ch);
+      size_t a = o.find_first_not_of(' '), b = o.find_last_not_of(' ');
+      return a == std::string::npos ? std::string() : o.substr(a, b - a + 1);
+    };
+    std::string out;
+    size_t i = 0;
+    while (i < s.size()) {
+      size_t start = i;
+      if (s.compare(i, 6, "<otsl>") == 0) i += 6;
+      if (tag_at(i).empty()) {  // (plain text up to the next tag)
+        i = start;
+        const size_t n = s.find('<', i + 1);
+        out += s.substr(i, n == std::string::npos ? std::string::npos : n - i);
+        i = n == std::string::npos ? s.size() : n;
+        continue;
+      }
+      std::vector<std::vector<std::string>> grid(1);
+      while (i < s.size()) {
+        const std::string t = tag_at(i);
+        if (t.empty()) break;
+        i += t.size() + 2;
+        if (t == "nl") {
+          grid.emplace_back();
+          while (i < s.size() && (s[i] == '\n' || s[i] == ' ' || s[i] == '\r')) ++i;
+          continue;
+        }
+        size_t e = i;  // (the cell's text: up to the next tag or </otsl>)
+        for (;; ++e) {
+          e = s.find('<', e);
+          if (e == std::string::npos) { e = s.size(); break; }
+          if (!tag_at(e).empty() || s.compare(e, 7, "</otsl>") == 0) break;
+        }
+        const bool text = t == "fcel" || t == "ched" || t == "rhed" || t == "srow";
+        grid.back().push_back(text ? esc(s.substr(i, e - i)) : std::string());
+        i = e;
+      }
+      if (s.compare(i, 7, "</otsl>") == 0) i += 7;
+      while (!grid.empty() && grid.back().empty()) grid.pop_back();
+      size_t w = 0;
+      for (const auto& r : grid) w = std::max(w, r.size());
+      if (!w) continue;
+      auto row = [&](const std::vector<std::string>& r) {
+        std::string l = "|";
+        for (size_t c = 0; c < w; ++c) l += " " + (c < r.size() ? r[c] : std::string()) + " |";
+        return l + "\n";
+      };
+      out += "\n\n" + row(grid[0]) + "|";
+      for (size_t c = 0; c < w; ++c) out += " --- |";
+      out += "\n";
+      for (size_t r = 1; r < grid.size(); ++r) out += row(grid[r]);
+      out += "\n";
+    }
+    return out;
+  }
   Json ocr_request(const Json& in) {
     const Json& msgs = in["messages"];
     int last = -1;
     for (int i = 0; i < (int)msgs.size(); ++i)
       if (msgs[i]["role"].str() == "user") last = i;
     if (last < 0) return in;
+    // the last user turn's words; its images, else those of the latest earlier turn that had one (a follow-up in a
+    // chat, "now as a table": the same image again, with the new task)
     Json images = Json::array();
     std::string text;
-    for (const Json& p : msgs[last]["content"].items()) {
-      const std::string ty = p["type"].str();
-      if (ty == "image_url" || ty == "input_image" || ty == "image") images.push(p);
-      else if (ty == "text" || ty == "input_text") text += (text.empty() ? "" : "\n") + p["text"].str();
+    if (msgs[last]["content"].is_string()) text = msgs[last]["content"].str();
+    for (int i = last; i >= 0 && !images.size(); --i) {
+      if (msgs[i]["role"].str() != "user") continue;
+      for (const Json& p : msgs[i]["content"].items()) {
+        const std::string ty = p["type"].str();
+        if (ty == "image_url" || ty == "input_image" || ty == "image") images.push(p);
+        else if (i == last && (ty == "text" || ty == "input_text") && p["text"].str().rfind("[file: ", 0) != 0)
+          text += (text.empty() ? "" : "\n") + p["text"].str();  // (not a saved file's line)
+      }
     }
-    if (!images.size()) return in;  // (no image in the last turn: the request as it came)
+    if (!images.size()) return in;  // (no image in the conversation: the request as it came)
     std::string prompt;
     for (const auto& [name, pr] : ocr_tasks())
       if (text.rfind(pr, 0) == 0) prompt = text;  // (an official prompt already, with a schema after it for key)

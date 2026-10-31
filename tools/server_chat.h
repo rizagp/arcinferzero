@@ -5,7 +5,6 @@
   void chat(const HttpRequest& rq, HttpResponse& rs) {
     Json body;
     if (!Json::try_parse(rq.body, body)) return rs.send(400, "application/json", err("invalid JSON body").dump());
-    if (ocr_) body = ocr_request(body);  // (an OCR model: its own task prompt, tools/server_ocr.h)
     {  // the web UI's saved files ("file" parts): as text, or as references to the image / audio (server_files.h)
       bool any = false;
       for (const Json& m : body["messages"].items())
@@ -16,6 +15,9 @@
     }
     // (special tokens written in user and tool contents, the files' text included: plain text, see defuse_contents)
     if (!body["__raw_prompt"].is_string()) body.set("messages", defuse_contents(body["messages"]));
+    // (an OCR model: its own task prompt, tools/server_ocr.h; after the saved files became image parts: the web UI
+    //  sends its images as files)
+    if (ocr_) body = ocr_request(body);
     const Json& messages = body["messages"];
     if (!messages.is_array() || messages.size() == 0) return rs.send(400, "application/json", err("messages required").dump());
     const std::string folder = prompt_folder(messages);  // Pi: the project folder (its system-prompt cache)
@@ -857,7 +859,9 @@
     }
     Json msg = Json::object();
     msg.set("role", "assistant");
-    const std::string content = parser.content_text(text), reasoning = parser.reasoning_text(text);
+    const std::string reasoning = parser.reasoning_text(text);
+    // (an OCR model's OTSL tables as Markdown ones, tools/server_ocr.h)
+    const std::string content = ocr_ ? otsl_to_md(parser.content_text(text)) : parser.content_text(text);
     msg.set("content", content.empty() && tc_json.size() ? Json() : Json(content));
     if (!reasoning.empty()) msg.set("reasoning_content", reasoning);
     if (tc_json.size()) msg.set("tool_calls", tc_json);

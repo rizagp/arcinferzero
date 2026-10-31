@@ -817,7 +817,23 @@ function mdBlocks(lines) {
   closeLists();
   return out.replace(/(<div class="gap"><\/div>)+$/, "");
 }
+// OCR models' tables (OTSL: <fcel> a cell, <ecel> an empty one, <lcel> / <ucel> / <xcel> merged into the one left /
+// above / both, <nl> a row's end; tools/server_ocr.h) as Markdown tables, the first row as the header; merged cells
+// left empty. Also while an answer streams in (its last row grows).
+const OTSL_CELL = /<(fcel|ecel|lcel|ucel|xcel|ched|rhed|srow)>([^<]*)/g;
+function otslToMd(src) {
+  if (!/<(fcel|ecel|ched)>/.test(src)) return src;
+  return src.replace(/(?:<otsl>)?((?:<(?:fcel|ecel|lcel|ucel|xcel|ched|rhed|srow)>[^<]*|<nl>\s*)+)(?:<\/otsl>)?/g, (m, body) => {
+    const grid = body.split("<nl>").map((r) => r.trim()).filter((r) => r).map((r) =>
+      [...r.matchAll(OTSL_CELL)].map(([, t, c]) => /^(fcel|ched|rhed|srow)$/.test(t) ? c.trim().replace(/\|/g, "\\|") : ""));
+    const w = Math.max(0, ...grid.map((r) => r.length));
+    if (!w) return m;
+    const row = (r) => "| " + Array.from({ length: w }, (_, i) => r[i] ?? "").join(" | ") + " |";
+    return "\n\n" + [row(grid[0]), "|" + " --- |".repeat(w), ...grid.slice(1).map(row)].join("\n") + "\n\n";
+  });
+}
 function markdown(src) {
+  src = otslToMd(src);
   const parts = src.split(/```/);
   let html = "";
   parts.forEach((p, i) => {
