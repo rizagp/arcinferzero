@@ -85,7 +85,9 @@ That property is what every speed change is held to:
   prompt, 21.6 vs 21.8 tok/s generation (noise). Split (ARC_TP_SIM, one iGPU: speeds mean nothing): KL to one GPU
   over the first 4 positions 0.007-0.023, as one GPU's own between chunk sizes 512 and 8192 (0.0026-0.017). RAM
   tier forced on the laptop (4 GiB cache): bit-identical; generation 13.1 vs 13.3 tok/s, prompt 275 vs 372 tok/s
-  (off by default on an iGPU).
+  (off by default on an iGPU). Flash Next after its re-download, the same 1,687-token prompt: bit-identical to the
+  build before in the default and precise modes; default 98.1 (before) vs 93.4-97.0 tok/s prompt, 6.19 vs 6.15-6.37
+  tok/s generation; precise 54.4 vs 55.5-59.6 / 5.28 vs 5.20-5.21.
 
 | Date | Change | Before | After | Answers |
 |---|---|---|---|---|
