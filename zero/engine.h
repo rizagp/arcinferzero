@@ -234,6 +234,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     q2_init();
     if (!opt.dry) build_kernels();
     if (!opt.dry && (cl_.xmx || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
+      xe2_ = true;  // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them)
       xmx_ = xmx_check();
       if (xmx_) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)\n");
     }
@@ -2078,15 +2079,17 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
     return t == 2 ? " -DTP=8" : t == 3 ? " -DTP=8 -DDBG_NOBCAST" : " -DXMX -DTP=8";
   }
-  cl_kernel gemm_kernel(int qtype, bool act32, int xmx = -1) {
-    return kernel("gemm", "-cl-intel-256-GRF-per-thread -DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
-                              (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) + gemm_extra() +
+  // (xe2_gemm_grf / cg: zero/xe2/engine_xe2.h, the defaults on GPUs without XMX)
+  cl_kernel gemm_kernel(int qtype, bool act32, int xmx = -1, int cg = 1) {
+    return kernel("gemm", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
+                              (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) +
+                              xe2_cg_defs(cg) + gemm_extra() +
                               ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() : ""),
                   "gemm");
   }
   // the mixture-of-experts prompt GEMM over slot tiles (gemm.cl MOE_TILES; W8 layouts 100..103, per-32 scales)
   cl_kernel moe_gemm_kernel(int qtype, int xmx = -1) {
-    return kernel("gemm", "-cl-intel-256-GRF-per-thread -DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
+    return kernel("gemm", xe2_gemm_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
                               ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() : ""),
                   "gemm");
   }
@@ -2101,7 +2104,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   bool xmx_ = false;
   bool xmx_check() {
     // (M: 4 tiles of tm tokens, so every work-group shape below covers at least one; 64 with the default tm 16)
-    const int M = 4 * gemm_tm(), N = 32, K = 1024, nsb = K / 256, ng = 2 * N / 16;  // (weights for 2 * N rows: two experts)
+    // (N: 4 column groups, so ARC_GEMM_CG up to 4 is checked too)
+    const int M = 4 * gemm_tm(), N = 64, K = 1024, nsb = K / 256, ng = 2 * N / 16;  // (weights for 2 * N rows: two experts)
     uint32_t seed = 12345;
     auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
     auto rndf = [&](float lo, float span) { return lo + (float)(rnd() % 10000) * (span / 10000.0f); };
@@ -2154,13 +2158,14 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       for (int q : {101, 100, 103, 102, 8, 12, 13, 14})
         for (int a32 = 1; a32 >= 0; --a32) {
           const std::string nm = std::to_string(q) + (a32 ? "/act32" : "");
-          auto make = [&](int x) { return gemm_kernel(q, a32 != 0, x); };
+          const int cg = xe2_cg_for(N);
+          auto make = [&](int x) { return gemm_kernel(q, a32 != 0, x, cg); };
           // (wgy rows of tm tokens per work-group, rg row groups; split: superblocks per piece, 0 = one piece)
           auto dense = [&](int acc, int wgy, int rg, int split) {
             return [&, acc, wgy, rg, split](cl_kernel k) {
               int MM = M, NN = N, KK = K, ldc = N, coff = 0, rgg = rg;
               const int pieces = split ? (nsb + split - 1) / split : 1;
-              size_t gws[2] = {(size_t)N * (M / gemm_tm() / wgy), (size_t)wgy}, lws[2] = {16, (size_t)wgy};
+              size_t gws[2] = {(size_t)N * (M / gemm_tm() / wgy), (size_t)wgy}, lws[2] = {16 * (size_t)cg, (size_t)wgy};
               for (int sp = 0; sp < pieces; ++sp) {
                 int s0 = nsb * sp / pieces, s1 = nsb * (sp + 1) / pieces, ac = sp == 0 ? acc : 1;
                 set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, coff, ac, rgg, s0, s1);
@@ -3688,7 +3693,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       int N = w.N, K = w.K, M = Mp;
       rd_bytes += raw_bytes(w);
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);
-      cl_kernel k = kernel("decode", "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) + head_defs(w) +
+      cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) + head_defs(w) +
                                          (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()),
                            vk ? "gemv_v" : "gemv");
       q2_fused_ = q2_fuse_;
@@ -3743,7 +3748,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         stage_owner_[w.role] = &w;
       }
     }
-    cl_kernel k = gemm_kernel(w.gemm_qtype, act32);
+    const int cg = xe2_cg_for(w.N);
+    cl_kernel k = gemm_kernel(w.gemm_qtype, act32, -1, cg);
     int M = Mp, N = w.N, K = w.K;
     // Long reductions are split into ~17-superblock pieces (the activation slab of a token-row group then stays in
     // L3); later pieces accumulate into C. Token rows are swept together per weight slice (rgroup).
@@ -3759,7 +3765,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     const int nsb = K / 256, splits = K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
     int wgy = 1;
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
-    size_t gws[2] = {(size_t)N * (Mp / tm / wgy), (size_t)wgy}, lws[2] = {16, (size_t)wgy};
+    size_t gws[2] = {(size_t)N * (Mp / tm / wgy), (size_t)wgy}, lws[2] = {16 * (size_t)cg, (size_t)wgy};
     for (int sp = 0; sp < splits; ++sp) {
       int s0 = nsb * sp / splits, s1 = nsb * (sp + 1) / splits, ac = sp == 0 ? a : 1;
       set_args(k, 0, wq, wh, aq_, asc_, absum_, C, M, N, K, ldc, c_off, ac, rgroup, s0, s1);
@@ -4080,6 +4086,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 
 #include "engine_qwen.h"  // (Qwen layers)
 #include "mgpu/engine_tp_shard.h"  // (multi-GPU, zero/mgpu/: this engine as one shard of a model split over GPUs)
+#include "xe2/engine_xe2.h"  // (tuning switches for GPUs with XMX, zero/xe2/; off on the iGPUs)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
 

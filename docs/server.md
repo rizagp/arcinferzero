@@ -173,7 +173,10 @@ Several GPUs and GPU tuning:
 .\bin\runz.exe model.gguf --bench-pp 512 --n 64 --gpus 2     # a dense Qwen model split over 2 GPUs (2, 3, 4, ...)
 .\bin\mgpu_probe.exe                                         # the GPUs, and what moving data between them costs
 .\bench\gemm_sweep.ps1 -Models model.gguf                     # the prompt GEMM's settings swept on this GPU
+.\bench\decode_try.ps1 -Models model.gguf                     # generation: plain, MTP, DFlash2, GEMV switches
 ```
+
+What to run on an Arc B-series card (B580 / B60): [docs/xe2-tuning.md](xe2-tuning.md).
 
 `--gpus N` splits the model's heads and FFN columns over N GPUs, and each reads 1/N of the weights per token. The
 server does not use it yet; see [docs/multi-gpu.md](multi-gpu.md). `ARC_TP_SIM=1` runs the split on one GPU

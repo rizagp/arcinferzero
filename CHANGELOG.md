@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-01 (night): switches for Arc B-series tuning
+
+- **Switches to measure on GPUs with XMX** (B580 / B60), in `zero/xe2/engine_xe2.h`: `ARC_GEMM_GRF=128` (the prompt
+  GEMMs without 256 registers per thread), `ARC_GEMM_CG=2|4` (column groups per work-group), `ARC_GEMV_GRF=256`.
+  Ignored on the iGPUs, where every kernel is built as before (checked: the same kernel builds, bit-identical logits,
+  same speed); with them on, the XMX check passes and the logits are bit-identical.
+- `serverz --act256` (as in `runz`): one activation scale per 256 values; less accurate (35B: KL 0.009-0.026 against
+  the default), a switch to measure, not a default.
+- `bench\gemm_sweep.ps1` sweeps `GRF`, `CG` and `ACT` too; new `bench\decode_try.ps1` (generation plain, MTP,
+  DFlash2, GEMV switches); what to run on a B-series card: [docs/xe2-tuning.md](docs/xe2-tuning.md).
+
 ## 2026-11-01 (evening): XMX check at 32 tokens per sub-group
 
 - **`ARC_GEMM_TM=32` kept DP4a on XMX GPUs**: the XMX check's 64 test tokens gave its split-K case an empty grid

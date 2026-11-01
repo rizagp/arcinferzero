@@ -11,6 +11,10 @@
 #   RG          ARC_GEMM_RG, token rows swept together per weight slice [4]
 #   WGY         ARC_GEMM_WGY, most sub-groups per work-group [8]
 #   SPLIT       ARC_GEMM_SPLIT, superblocks per split-K piece, 0 = none [17]
+#   GRF         ARC_GEMM_GRF, registers per thread: 256 or 128 (the default file) [256]
+#   CG          ARC_GEMM_CG, 16-column groups per work-group: 1, 2 or 4 [1]
+#   ACT         runz --act256: one activation scale per 256 values instead of 32 [32]; less accurate, so a winning
+#               ACT=256 needs a KL check before it could become a default (not part of "best of each together")
 #   CHUNK       runz --chunk, tokens per prompt chunk [model's default]
 param(
   [Parameter(Mandatory = $true)][string[]]$Models,
@@ -21,7 +25,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
-$vars = @("ARC_NO_XMX", "ARC_GEMM_TM", "ARC_GEMM_RG", "ARC_GEMM_WGY", "ARC_GEMM_SPLIT")
+$vars = @("ARC_NO_XMX", "ARC_GEMM_TM", "ARC_GEMM_RG", "ARC_GEMM_WGY", "ARC_GEMM_SPLIT", "ARC_GEMM_GRF", "ARC_GEMM_CG")
 
 # one run: the settings in $set (name -> value; CHUNK goes to the command line), returns tok/s and the GEMM path
 function Invoke-Run([string]$model, [hashtable]$set) {
@@ -34,6 +38,9 @@ function Invoke-Run([string]$model, [hashtable]$set) {
       "RG" { $env:ARC_GEMM_RG = "$($set[$k])" }
       "WGY" { $env:ARC_GEMM_WGY = "$($set[$k])" }
       "SPLIT" { $env:ARC_GEMM_SPLIT = "$($set[$k])" }
+      "GRF" { $env:ARC_GEMM_GRF = "$($set[$k])" }
+      "CG" { $env:ARC_GEMM_CG = "$($set[$k])" }
+      "ACT" { if ("$($set[$k])" -eq "256") { $args2 += "--act256" } }
       "CHUNK" { $args2 += @("--chunk", $set[$k]) }
     }
   }
@@ -54,9 +61,12 @@ $grid = [ordered]@{
   RG    = if ($Quick) { @(2, 4, 8) } else { @(1, 2, 4, 8) }
   WGY   = if ($Quick) { @(2, 8) } else { @(1, 2, 4, 8, 16) }
   SPLIT = if ($Quick) { @(0, 17) } else { @(0, 9, 17, 34) }
+  GRF   = @(256, 128)
+  CG    = if ($Quick) { @(1, 2) } else { @(1, 2, 4) }
+  ACT   = @(32, 256)
   CHUNK = if ($Quick) { @(2048, 4096) } else { @(1024, 2048, 4096, 8192) }
 }
-$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17 }
+$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 256; CG = 1; ACT = 32 }
 
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function Line([string]$what, $r) { [string]::Format($inv, "{0,-28} {1,10:F1} tok/s  {2}", $what, $r.tps, $r.path) }
@@ -81,7 +91,7 @@ foreach ($model in $Models) {
     $best[$p] = $bv
   }
   $set = @{}
-  foreach ($p in $best.Keys) { if ($null -ne $best[$p]) { $set[$p] = $best[$p] } }
+  foreach ($p in $best.Keys) { if ($null -ne $best[$p] -and $p -ne "ACT") { $set[$p] = $best[$p] } }
   $r = Invoke-Run $model $set
   $desc = ($set.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " "
   Line "best of each together" $r

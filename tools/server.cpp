@@ -1857,7 +1857,7 @@ int main(int argc, char** argv) {
       {"--port", "a port, 1..65535"}, {"--ctx", "a number of tokens, or auto"}, {"--chunk", "a number of tokens, 0 = auto"},
       {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--expert-ram-gb", "GiB, e.g. 200"},{"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
-      {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--precise", ""}, {"--npu", "on, off or force"},
+      {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--act256", ""}, {"--precise", ""}, {"--npu", "on, off or force"},
       {"--mtp", ""}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
       {"--draft", "auto, mtp or dflash"}, {"--mmproj", "an mmproj .gguf file"}, {"--no-mmproj", ""},
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
@@ -1919,6 +1919,7 @@ int main(int argc, char** argv) {
     else if (a == "--webui") so.webui = next();
     else if (a == "--budget") { so.eo.w8_budget_gb = to_double(a, next()); so.budget_given = true; }
     else if (a == "--attn-f32") so.eo.attn_int8 = false;
+    else if (a == "--act256") so.eo.act32_all = false;
     else if (a == "--precise") precise = true;
     else if (a == "--npu") {  // (kept by every model switch: so.eo)
       std::string v = next();
@@ -2114,6 +2115,8 @@ int main(int argc, char** argv) {
             "                        the original GGUF can be moved away (e.g. to a USB disk)\n"
             "  --no-stream           every expert on the GPU (no SSD streaming; MoE models then get less context)\n"
             "  --attn-f32            f32 attention (tests)\n"
+            "  --act256              one activation scale per 256 values in the prompt GEMMs (not 32; faster on XMX\n"
+            "                        GPUs perhaps, less accurate: check the KL first)\n"
             "  --precise             Qwen3.8 Flash Next's precise mode (as ARC_FN_PRECISE=1): BF16 hyper-connection rows and\n"
             "                        router, two int8 passes everywhere: KL 0.0186 -> 0.0127 at 3.5K tokens, prompts about\n"
             "                        half as fast; other models are unchanged\n"
