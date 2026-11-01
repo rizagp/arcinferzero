@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-01 (later): multi-GPU MoE, experts in RAM
+
+- **Qwen3.6 35B-A3B over several GPUs** (`runz --gpus N`, and its fine-tunes such as Ornith 1.5 35B): the routed
+  experts divided over the GPUs, each streaming and caching only its own; the attention layers stay whole on every
+  GPU over 3-4 GPUs (the 35B has 2 kv-heads). Checked on one GPU with `ARC_TP_SIM` over 2, 3 and 4 shards: KL to
+  one GPU no larger than one GPU's own between two chunk sizes. Details: [docs/multi-gpu.md](docs/multi-gpu.md).
+- **Experts in RAM** on GPUs with memory of their own (B580 / B60): each expert read from the SSD stays in pinned
+  RAM (up to the free RAM less 16 GiB, `serverz --expert-ram-gb N`, 0: off) and is copied from there by the GPU
+  the next time. Never on an iGPU. Logits bit-identical.
+
 ## 2026-11-01: Ornith 1.5 35B-A3B checked
 
 - **Ornith 1.5 35B-A3B** (a Qwen 3.5 MoE fine-tune for coding agents, MIT) runs as it is: the official Q4_K_M GGUF

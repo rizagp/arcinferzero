@@ -91,6 +91,9 @@ struct EngineOptions {
   // automatic: what is left after the rest of the model within the GPU's memory share less kDriverSlack.
   bool stream_experts = true;
   double expert_cache_gb = 0, expert_cache_pct = 0;
+  // RAM tier between the expert cache and the SSD (zero/expert_store.h set_ram), GiB: < 0 automatic (a GPU with
+  // memory of its own: the free RAM less 16 GiB, shared by a split model's GPUs; an iGPU: none), 0 none
+  double expert_ram_gb = -1;
   size_t stream_reserve = 0;  // bytes the automatic cache size leaves for GPU memory allocated later (image encoders)
   int slots = 1;  // conversations held at once (server --slots): each further one its own KV caches and states
   // the NPU next to the GPU for prompt chunks (zero/npu/engine_npu.h, --npu): 0 off, 1 on where it pays off (the Qwen3.8
@@ -183,9 +186,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
-    for (cl_kernel k : {k_tp_add_, k_tp_pack_})
+    for (cl_kernel k : {k_tp_add_, k_tp_pack_, k_tp_moe_mask_, k_tp_moe_scatter_, k_tp_moe_tiles1_, k_tp_moe_combine_})
       if (k) clReleaseKernel(k);
-    k_tp_add_ = k_tp_pack_ = nullptr;
+    k_tp_add_ = k_tp_pack_ = k_tp_moe_mask_ = k_tp_moe_scatter_ = k_tp_moe_tiles1_ = k_tp_moe_combine_ = nullptr;
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);
@@ -2642,8 +2645,32 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     xc_->st.open_or_build(f_, path_, pre, hp.n_expert);
     // (staging records per half: ARC_XSTAGE, default 64 = 8 verification tokens x 8 experts)
     xc_->init(hp.n_layer + 1, hp.n_expert, getenv("ARC_XSTAGE") ? atoi(getenv("ARC_XSTAGE")) : 64);
+    if (tp_moe()) xc_->set_range((int)tpe_.first, (int)tpe_.second);  // (multi-GPU: this GPU's experts only)
     if (xc_->st.built)
       fprintf(stderr, "arcinferzero: expert file written in %.1f s\n", xc_->st.build_ms / 1000);
+    // (ARC_XRAM_GB overrides the option)
+    const double ram_gb = getenv("ARC_XRAM_GB") ? atof(getenv("ARC_XRAM_GB")) : opt.expert_ram_gb;
+    uint64_t ram = 0;
+    if (ram_gb > 0) {
+      ram = (uint64_t)(ram_gb * 1073741824.0);
+    } else if (ram_gb < 0 && !zrt::integrated()) {
+      MEMORYSTATUSEX ms{sizeof ms};
+      GlobalMemoryStatusEx(&ms);
+      const uint64_t keep = 16ull << 30;
+      ram = ms.ullAvailPhys > keep ? (ms.ullAvailPhys - keep) / std::max(1, opt.tp_size) : 0;
+    }
+    ram = std::min(ram, xc_->st.file_bytes);
+    if (ram >= (1ull << 30)) {
+      // (pinned host memory of the context: every GPU of a split model copies from it)
+      xc_->st.ram_alloc = [](size_t n) -> char* {
+        ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
+        void* p = nullptr;
+        return zeMemAllocHost(zrt::ctx, &hd, n, 4096, &p) == 0 ? (char*)p : nullptr;
+      };
+      xc_->st.ram_free = [](char* p) { zeMemFree(zrt::ctx, p); };
+      xc_->st.set_ram(ram);
+      fprintf(stderr, "arcinferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
+    }
   }
   void size_expert_cache() {
     const double GiB = 1073741824.0;
@@ -2660,7 +2687,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       // (the user's rule since 2026-10-22; before: also RAM - a 14 GB Windows reserve, which held a 20.4 GiB share to
       // 17.7). (With 1.13 GiB left a kernel launch once failed with out of device memory, 35B at 262K.)
       const uint64_t share = zrt::D().global_mem, slack = (uint64_t)kDriverSlack;
-      const uint64_t limit = share > slack ? share - slack : 0;
+      uint64_t limit = share > slack ? share - slack : 0;
+      // (ARC_TP_SIM: every shard on GPU 0, each with its part of the memory)
+      if (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0) limit /= opt.tp_size;
       // (+ kernels and host side, the server's state snapshots, and what the caller keeps for its encoders)
       const uint64_t used = gpu_bytes + xc_->stage_bytes + (uint64_t)(0.1 * GiB) + snapshot_bytes() * std::max(opt.slots, 1) + opt.stream_reserve;
       want = limit > used ? limit - used : 0;
@@ -2672,10 +2701,14 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     want = std::max<uint64_t>(want, xc_->min_bytes());
     xc_->set_cache(want);
     gpu_bytes += xc_->cache_bytes;
-    XCache::active() = xc_.get();
-    zrt::oom_hook = [] { return XCache::active() && XCache::active()->shrink(); };
+    if (!tp_on()) {  // (one process-wide hook: a split model's shards are on GPUs of their own)
+      XCache::active() = xc_.get();
+      zrt::oom_hook = [] { return XCache::active() && XCache::active()->shrink(); };
+    }
     // fill the cache before the first request: the experts the last run had cached (or the first of every layer)
-    xc_->state_path = xc_->st.path.substr(0, xc_->st.path.size() - 8) + ".lru";
+    // (multi-GPU: one state per GPU of the split, for its experts)
+    xc_->state_path = xc_->st.path.substr(0, xc_->st.path.size() - 8) +
+                      (tp_moe() ? ".gpu" + std::to_string(opt.tp_rank) + "of" + std::to_string(opt.tp_size) : std::string()) + ".lru";
     if (!getenv("ARC_XWARM") || atoi(getenv("ARC_XWARM")) != 0) {
       xc_->warm();
       fprintf(stderr, "arcinferzero: cache filled from the SSD: %.2f GB in %.1f s\n", xc_->warm_bytes / 1e9, xc_->warm_ms / 1000);
@@ -2691,12 +2724,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   //  and copies while the GPU waits), and Flash Next's PLE rows)
   double hst_sync_ms_ = 0, hst_ensure_ms_ = 0, hst_ple_ms_ = 0;
   int seg_n_ = 0;  // tokens of the layer-major segment being processed (0: none)
+  std::vector<int> stream_ids_;  // (stream_layer's expert ids)
   using hclk = std::chrono::steady_clock;
   static double hms(hclk::time_point a) { return std::chrono::duration<double, std::milli>(hclk::now() - a).count(); }
   void stream_layer(Layer& L, int T, bool gemm, const int* tl1 = nullptr) {
     const int NU = hp.n_expert_used;
     const auto h0 = hclk::now();
-    static std::vector<int> ids;
+    std::vector<int>& ids = stream_ids_;  // (per engine: a split model's shards run this on threads of their own)
     ids.resize((size_t)T * NU);
     if (T == 1) {
       std::vector<int> tl(1 + 3 * NU);
@@ -2704,7 +2738,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         std::copy(tl1, tl1 + tl.size(), tl.begin());
       else
         CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl.size() * 4, tl.data(), 0, nullptr, nullptr));
-      for (int k = 0; k < NU; ++k) ids[k] = tl[1 + 3 * k];
+      // (NU tiles; fewer on a split model's GPU, its experts' only)
+      ids.resize((size_t)std::clamp(tl[0], 0, NU));
+      for (size_t k = 0; k < ids.size(); ++k) ids[k] = tl[1 + 3 * k];
     } else {
       CL_CHECK(clEnqueueReadBuffer(cl_.queue, mids_, CL_TRUE, 0, ids.size() * 4, ids.data(), 0, nullptr, nullptr));
     }
@@ -2760,6 +2796,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
              (unsigned long long)x.p_hits, (unsigned long long)x.p_reads, (unsigned long long)x.pf_reads,
              x.st.bytes_read / 1e9, x.read_ms, x.st.bytes_read / 1e6 / std::max(1e-9, x.read_ms));
     std::string r = b;
+    if (x.st.ram_bytes()) {
+      char m[128];
+      snprintf(m, sizeof m, " | RAM tier %.2f GB, %llu records from it", x.st.ram_bytes() / 1e9, (unsigned long long)x.st.ram_hits.load());
+      r += m;
+    }
     char h[160];
     snprintf(h, sizeof h, "\nhost: routing reads %.0f ms (waiting for the GPU), ensure %.0f ms, PLE rows %.0f ms",
              hst_sync_ms_, hst_ensure_ms_, hst_ple_ms_);

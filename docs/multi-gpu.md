@@ -1,7 +1,7 @@
 # Multi-GPU: one model split over several GPUs
 
-`runz --gpus N` splits a dense Qwen3.5 / 3.6 / 3.8 model (the 27B, the 9B, the 4B) over N GPUs with tensor
-parallelism. Each GPU reads 1/N of the weights per token, so token generation can get up to N times faster.
+`runz --gpus N` splits a dense Qwen3.5 / 3.6 / 3.8 model (the 27B, the 9B, the 4B) or the Qwen3.6 35B-A3B MoE
+(and fine-tunes of it such as Ornith 1.5 35B) over N GPUs with tensor parallelism; see "Mixture of experts" below. Each GPU reads 1/N of the weights per token, so token generation can get up to N times faster.
 Generation is bound by memory bandwidth, so this is the only kind of split that speeds it up; a layer split only adds
 capacity. The server does not use it yet (see "Not yet").
 
@@ -60,6 +60,56 @@ The limits:
 
 MTP / DFlash2 drafting, slots (batch decoding) and the NPU are off in a split model.
 
+## Mixture of experts (Qwen3.6 35B-A3B, 2026-11-01)
+
+The MoE layers are divided by expert instead of by FFN column: GPU r of N holds the routed experts [e0, e1) (256
+experts over 2: 0-127 and 128-255). Every GPU routes every token itself (the router and its input are the same on
+all of them), then only its own (token, expert) pairs get slots and tiles (`tp_moe_mask` / `tp_moe_scatter` after
+the prompt routing, `tp_moe_tiles1` after a single token's). The expert kernels are the one-GPU ones. Each GPU's
+combine (`tp_moe_combine`) writes the sum of its experts, GPU 0 adding the gated shared expert (which every GPU
+computes), and the parts are summed as for the dense projections. Expert ids stay global everywhere (router, expert
+file, cache tables).
+
+- **Each GPU streams and caches only its experts.** The expert cache (`zero/xcache.h`) has a range: warm-up,
+  prefetch, the sizes and the saved cache state (`<model>.gpu<r>of<N>.lru`) cover the GPU's own experts. Over 2 GPUs
+  each needs half the cache for the same hit rate; 4 B60s (96 GB) hold all of the 35B's 14.7 GiB of experts many
+  times over.
+- **Attention whole when the kv-heads are few.** The 35B has 2 kv-heads. Over 3 or 4 GPUs its 10 attention layers
+  stay whole on every GPU (the same output everywhere, no sum: 70 sums per token instead of 80), while DeltaNet and
+  the experts are divided. Over 2 GPUs everything is divided.
+- **Off in a split model:** decode + GEMM for prompt experts (it decodes every expert of a layer; moe_rg runs the
+  prompt chunks instead, the same results bit for bit on one GPU), and the cached / missing split of a token's
+  experts (ARC_XSPLIT): with experts missing it gave run-to-run differences in a split model, see QUEUE F30.
+
+Checked with `ARC_TP_SIM=1` on the laptop (Qwen3.6 35B-A3B UD-IQ4_XS, 1,687 tokens of `docs/architecture.md`, then
+32 greedy tokens):
+
+| GPUs | KL vs 1 GPU, first 4 positions | Greedy text vs 1 GPU |
+|---|---|---|
+| 2 | 0.0093, 0.0000, 0.0158, 0.0038 | the same 3 tokens, then a near tie (318 vs 513) |
+| 3 | 0.0085, 0.0000, 0.0234, 0.0063 | the same 27 tokens |
+| 4 | 0.0074, 0.0000, 0.0115, 0.0065 | the same 4 tokens |
+| 1, other chunk size (512 vs 8192) | 0.0026, 0.0000, 0.0174, 0.0030 | the same 32 tokens |
+
+The last row is the yardstick: the same model on one GPU moves as much when only its prompt chunks change, so the
+split adds no error beyond this MoE's own rounding sensitivity (near ties of the router). One GPU is unchanged: its
+logits are bit-identical to the build before (full cache, and a 1.2 GiB cache at 50 % hits three times), and its
+speed the same (best of two: 608 vs 612 tok/s prompt, 21.6 vs 21.8 tok/s generation). Two GPUs give the same logits
+run after run, with full and with small (2 GiB) caches.
+
+## Experts in RAM (GPUs with memory of their own)
+
+Experts are read from the SSD unbuffered (no Windows file cache), so a machine with a large RAM never used it for
+them. On a GPU with memory of its own (`zrt::integrated()` false: Arc B580 / B60 / A770, not the iGPUs) each record
+read from the SSD now goes into pinned host memory and stays there, up to the free RAM less 16 GiB (shared by a
+split model's GPUs; `serverz --expert-ram-gb N`, `ARC_XRAM_GB`, 0: off). A later miss of that expert is no SSD
+read: the GPU copies it from RAM (PCIe DMA), no CPU copy in between (a memcpy into the staging memory ran at only
+3-4 GB/s on the laptop). The tiers are then GPU cache -> RAM -> SSD.
+
+On the laptop (forced on, iGPU, 4 GiB cache: not a case it is meant for) the logits are bit-identical with and
+without it; generation the same (13.1 vs 13.3 tok/s), the prompt slower (275 vs 372 tok/s: the RAM is the iGPU's
+memory too). The numbers that count are a B60 machine's: `serverz --expert-ram-gb 0` against the default.
+
 ## Accuracy (checked on one GPU, 2026-10-31)
 
 `ARC_TP_SIM=1` runs the N shards on GPU 0, each with its own command list. It checks the split; its speed means
@@ -102,7 +152,10 @@ first step):
   of the ~1 s per chunk.
 - One run of 3 GPUs and one of 4 ended while loading in the driver's "Abort was called at 252 line in file:",
   right after the shards' XMX checks. The shards after the first were made at the same time; since then they are
-  made one after another (`ARC_TP_PARALLEL_LOAD=1`: together, for tests).
+  made one after another (`ARC_TP_PARALLEL_LOAD=1`: together, for tests). The owner's check with the fix (commit
+  79edbcd): 20 runs each of 1, 2, 3 and 4 GPUs, 80 loads, no abort; loading 8.7 / 14.9 / 11.7 / 9.3 s (1-4 GPUs,
+  averages); every run's median step within 0.4 ms (2: 27.7-28.1 ms, 3: 22.8-23.1, 4: 18.5-18.7) and pp512 within
+  2 tok/s (512.8 / 542.1 / 546.5).
 
 Next for speed: f16 parts for prompts (half the bytes), the next GPU waiting on an event instead of a host wait and
 a barrier, and batch decoding (a step's sums carry several rows for the cost of one).
@@ -122,7 +175,7 @@ One B60 runs the 27B IQ3_S at 21.5 tok/s, reading 11.3 GB per token in 45.3 ms. 
 
 - The server and launcher (`serverz --gpus`, a choice of which GPUs): slots and batch decoding (a step's sums carry
   B rows instead of 1, so their cost per token falls), DeltaNet snapshots, the prompt cache and MTP on a split model.
-- MoE models (Qwen3.6 35B, Flash Next): experts spread over the GPUs, those that do not fit in pinned host RAM
-  instead of the SSD (the B60 machine has ~990 GB free); Gemma 4.
+- MoE models: Flash Next (hyper-connections, its two-pass precise mode) and Gemma 4 26B; the 35B is split (above).
+  Measured numbers of the 35B over B60s.
 - Fewer host round trips per sum (an event the next GPU waits on instead of a host wait and a barrier), and f16 parts
   for prompts (half the bytes).

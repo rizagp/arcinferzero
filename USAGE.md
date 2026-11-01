@@ -168,6 +168,11 @@ shared-memory setting) less 1.2 GB for the driver, and the cache takes what the 
 changed: server options `--expert-cache-gb`, `--expert-cache-pct`). If GPU memory suddenly runs short because of other apps (e.g.
 Chrome), the cache shrinks itself by 1 GB per step instead of crashing.
 
+On a GPU with memory of its own (Arc B580 / B60 / A770) the RAM is a second tier: each expert read from the SSD
+stays in RAM (up to the free RAM less 16 GiB) and the GPU copies it from there the next time it is missing from the
+GPU cache, so a large RAM saves most SSD reads. `--expert-ram-gb N` sets the size, `--expert-ram-gb 0` turns it off.
+Never on the iGPU, whose GPU memory is that RAM.
+
 arcinferzero notes:
 - The SSD cache is only for MoE models (35B, Qwen3.8 Flash Next and Gemma 4 26B; the experts of the 35B's MTP
   layer are in the same file). Dense models (27B, 9B, 4B, Gemma 12B / E4B) keep every weight on the GPU.

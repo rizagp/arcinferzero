@@ -96,6 +96,7 @@
       if (g4) set_args(k, 6, L.escale);
       size_t g1 = 16, l1 = 16;
       run("moe_route", k, 1, &g1, &l1);
+      if (tp_moe()) tp_moe_tiles1();  // (multi-GPU: this GPU's experts' tiles only, zero/mgpu/engine_tp_shard.h)
     } else {
       {
         cl_kernel k = kernel("moe", defs, "moe_route");
@@ -104,13 +105,16 @@
         size_t gws[2] = {16, (size_t)T}, lws[2] = {16, 1};
         run("moe_route", k, 2, gws, lws);
       }
+      if (tp_moe()) tp_moe_mask();  // (multi-GPU: the other GPUs' experts get no slots)
       {
         cl_kernel k = kernel("moe", defs, "moe_scan");
         set_args(k, 0, mcount_, moffs_, mcursor_, mtiles_, mtstart_);
         size_t g1 = hp.n_expert, l1 = hp.n_expert;
         run("moe_scan", k, 1, &g1, &l1);
       }
-      {
+      if (tp_moe()) {
+        tp_moe_scatter(n);
+      } else {
         cl_kernel k = kernel("moe", defs, "moe_scatter");
         set_args(k, 0, mids_, mwts_, n, mcursor_, stok_, swt_, minv_);
         size_t g1 = ((size_t)n + 255) / 256 * 256, l1 = 256;
@@ -136,9 +140,12 @@
     }
     // the tile count is only known on the GPU: launch for the most tiles possible (extra work-groups exit)
     const size_t max_tiles = tm == 1 ? (size_t)n : (size_t)(n + tm - 1) / tm + std::min(n, hp.n_expert);
-    if (hp.moe_std && T == 1)  // (weight bytes read: the token's NU experts, gate + up + down)
+    if (hp.moe_std && T == 1) {  // (weight bytes read: the token's NU experts, gate + up + down)
+      // (multi-GPU: this GPU's share of them on average, its part of the experts)
+      const double share = tp_moe() ? (double)(tpe_.second - tpe_.first) / hp.n_expert : 1.0;
       for (int i = 0; i < 3; ++i)
-        rd_bytes += (uint64_t)NU * (i == 2 ? E : F) * ((i == 2 ? F : E) / 256) * gguf_sb_bytes(L.ex_type[i]);
+        rd_bytes += (uint64_t)(share * NU * (i == 2 ? E : F) * ((i == 2 ? F : E) / 256) * gguf_sb_bytes(L.ex_type[i]));
+    }
     static const int gr_gu = getenv("ARC_MOE_GR_GU") ? atoi(getenv("ARC_MOE_GR_GU")) : 1,
                      gr_dn = getenv("ARC_MOE_GR_DN") ? atoi(getenv("ARC_MOE_GR_DN")) : 4;  // (rows per sub-group;
     // the down projection's 512-wide rows: 4 per sub-group in generation, 5.1 -> 4.0 ms per token, 1 for prompts)
@@ -157,7 +164,8 @@
     // rg_min: Flash Next, 8K prompt in 2048-token chunks: down 13.8 -> 6.2 s GPU time, 145 -> 165 tok/s, and KL to the
     // CPU reference 0.0221 -> 0.0191 (337 tokens; max 0.96 -> 0.27); its gate / up stay per tile (15.4 vs 13.7 s, KL
     // 0.0230 with both).
-    const bool gemm_ok = moe_group_ > 0 && Fp == F && moe_gemm_layer_ok(L);
+    // (multi-GPU: not decode + GEMM, which decodes every expert of the layer, the other GPUs' too)
+    const bool gemm_ok = moe_group_ > 0 && Fp == F && moe_gemm_layer_ok(L) && !tp_moe();
     const bool rg_ok = hp.moe_std && tm == 16 && (T >= rg_min || q2g) && F % 64 == 0 && moe_rg_layer_ok(L);
     // (Gemma 4 26B-A4B, F 704 padded to 768: no decode + GEMM, so gate / up take moe_rg at every chunk size from
     //  rg_min as the down projection does; ARC_G4_RG_GU=0: per tile)
@@ -230,7 +238,10 @@
     cl_mem tiles = mtiles_;
     std::vector<int> tl1;
     // (a batched step of 2 Flash Next slots split the same way: the same tok/s, 2026-10-27: not kept)
-    if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g) {
+    // (multi-GPU: off. With experts missing, a split model's logits changed from run to run with it (35B over 2 GPUs,
+    //  ARC_TP_SIM, 2 GiB caches: up to 1.1 apart from step 7 on), never without it or with ARC_XVERIFY's syncs; the
+    //  cause is not found yet, QUEUE F30)
+    if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g && !tp_moe()) {
       tl1.resize(1 + 3 * (size_t)NU);
       CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl1.size() * 4, tl1.data(), 0, nullptr, nullptr));
       xt_hit_h_.assign(1, 0);
@@ -290,7 +301,9 @@
       size_t gws[2] = {(size_t)E, max_tiles}, lws[2] = {16, 1};
       run("moe_down", k, 2, gws, lws);
     }
-    {
+    if (tp_moe()) {
+      tp_moe_combine(T);  // (this GPU's experts + the shared expert on GPU 0, summed over the GPUs)
+    } else {
       cl_kernel k = kernel("moe", defs, "moe_combine");
       if (hp.hc) fill(hco_, (size_t)T * E * 4);  // (Flash Next: the block output alone, combined into the streams after)
       if (g4) fill(gmoe_, (size_t)T * E * 4);    // (Gemma 4: the experts' sum alone; msh_ stays zero)

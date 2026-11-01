@@ -151,6 +151,12 @@ inline Plan choose(const std::vector<uint64_t>& lrec, int NE, uint64_t bytes) {
 struct XCache {
   ExpertStore st;
   int NE = 0, NL = 0;
+  // the experts this cache holds: [lo_, hi_) (multi-GPU MoE: a shard's own, zero/mgpu/engine_tp_shard.h; all
+  // otherwise). Ids stay global; ensure skips the others.
+  int lo_ = 0, hi_ = 0;
+  int nloc() const { return hi_ - lo_; }
+  bool mine(int e) const { return e >= lo_ && e < hi_; }
+  void set_range(int a, int b) { lo_ = a, hi_ = b; }
   struct Pool {
     uint64_t rec = 0;          // record bytes of the layers using this pool
     int n = 0, used = 0;       // slots, slots ever filled
@@ -170,6 +176,8 @@ struct XCache {
   char* stage[2] = {};
   uint64_t stage_rec = 0;
   std::vector<int> stage_e[2];
+  // (where each prefetched record is for its copy: its staging record, or its place in the RAM tier, see ExpertStore)
+  std::vector<const void*> stage_src[2];
   int stage_layer[2] = {-1, -1};
   char* verify_buf_[2] = {};  // (ARC_XVERIFY: one record from the GPU, one from the file; stage_rec bytes each)
   uint64_t cache_bytes = 0, stage_bytes = 0;
@@ -220,7 +228,7 @@ struct XCache {
     for (auto& Q : pools) {
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / Q.rec);
       const int s0 = (int)(Q.chunks.size() - 1) * per;
-      if (Q.chunks.size() >= 2 && s0 >= NE && (!P || Q.n * Q.rec > P->n * P->rec)) P = &Q;
+      if (Q.chunks.size() >= 2 && s0 >= nloc() && (!P || Q.n * Q.rec > P->n * P->rec)) P = &Q;
     }
     if (!P) return false;
     const int per = (int)std::max<uint64_t>(1, (1ull << 30) / P->rec);
@@ -280,6 +288,7 @@ struct XCache {
   void init(int n_layers, int n_expert, int stage_records) {
     NL = n_layers;
     NE = n_expert;
+    lo_ = 0, hi_ = n_expert;
     S = std::max(16, stage_records);
     pool_of.assign(NL, -1);
     where.assign((size_t)NL * NE, -1);
@@ -312,22 +321,22 @@ struct XCache {
   }
   // every expert of every layer, each in a record of its own size: the cache that holds them all (set_cache then
   // keeps one pool per size)
-  uint64_t all_bytes() const { return xpools::real_bytes(lrec, NE); }
+  uint64_t all_bytes() const { return xpools::real_bytes(lrec, nloc()); }
   // Least bytes set_cache takes: every pool holds at least one layer's experts (a prompt chunk uses all of them).
   uint64_t min_bytes() const {
     uint64_t s = 0;
-    for (auto& P : pools) s += P.rec * NE;
+    for (auto& P : pools) s += P.rec * nloc();
     return s;
   }
   // The pools for `bytes` (xpools::choose: with one or two record sizes the pools of init split by their share of the
   // experts; with more the grouping with the most slots), allocated as device USM in pieces of <= 1 GiB.
   void set_cache(uint64_t bytes) {
-    const xpools::Plan G = xpools::choose(lrec, NE, bytes);
+    const xpools::Plan G = xpools::choose(lrec, nloc(), bytes);
     if (xpools::sizes(lrec).size() > 2) {
       use(G);
       const double GiB = 1073741824.0;
       uint64_t pad = 0;
-      for (int l = 0; l < NL; ++l) if (lrec[l]) pad += (G.rec[G.pool_of[l]] - lrec[l]) * NE;
+      for (int l = 0; l < NL; ++l) if (lrec[l]) pad += (G.rec[G.pool_of[l]] - lrec[l]) * nloc();
       fprintf(stderr, "arcinferzero: %zu expert record sizes in %zu pools (records", xpools::sizes(lrec).size(), G.rec.size());
       for (size_t p = 0; p < G.rec.size(); ++p) fprintf(stderr, " %.2f MB x %d layers", G.rec[p] / 1e6, G.layers[p]);
       fprintf(stderr, "), padding %.2f GiB of %.2f GiB experts\n", pad / GiB, all_bytes() / GiB);
@@ -439,9 +448,9 @@ struct XCache {
       for (size_t q0 = 0; q0 < want.size(); ++q0) {
         const size_t q = q0 == 0 ? std::min(p, want.size() - 1) : q0 <= std::min(p, want.size() - 1) ? q0 - 1 : q0;
         for (int k : want[q])  // (saved keys that belong to this pool)
-          if (k >= 0 && k < NL * NE && pool_of[k / NE] == (int)p && !have[k] && (int)keep.size() < P.n) keep.push_back(k), have[k] = 1;
+          if (k >= 0 && k < NL * NE && mine(k % NE) && pool_of[k / NE] == (int)p && !have[k] && (int)keep.size() < P.n) keep.push_back(k), have[k] = 1;
       }
-      for (int e = 0; e < NE && (int)keep.size() < P.n; ++e)  // then the first experts of every layer
+      for (int e = lo_; e < hi_ && (int)keep.size() < P.n; ++e)  // then the first experts of every layer
         for (int l = 0; l < NL && (int)keep.size() < P.n; ++l)
           if (pool_of[l] == (int)p && !have[(size_t)l * NE + e]) keep.push_back(l * NE + e), have[(size_t)l * NE + e] = 1;
       // slots in LRU order (keep[0] = most recent), records read in file order
@@ -464,8 +473,7 @@ struct XCache {
         }
         st.read(reqs);
         for (size_t j = b0; j < std::min(order.size(), b0 + S); ++j)
-          ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, P.addr[order[j]], stage[h] + (j - b0) * stage_rec, P.rec,
-                                                 nullptr, 0, nullptr));
+          ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, P.addr[order[j]], reqs[j - b0].src, P.rec, nullptr, 0, nullptr));
         warm_bytes += reqs.size() * P.rec;
         loadp::step(what, (double)warm_bytes, fill);
       }
@@ -478,6 +486,7 @@ struct XCache {
   // ---- prefetch: up to S experts of layer X not in the cache, into stage[X % 2], on a thread
   std::thread pf_;
   std::vector<ExpertStore::Req> pf_reqs_;
+  int pf_half_ = 0;  // (the staging half of the plain prefetch on the thread)
   double pf_ms_ = 0;
   int pf_layer_ = -1;  // the layer a deep prefetch is filling (-1: none)
   std::string pf_err_;  // a prefetch's error (the read failed): join() drops what it read and throws it
@@ -534,11 +543,11 @@ struct XCache {
     // to NE of their own, else they wait for this prefetch and take its experts back out)
     int room = P.n;
     if (cur >= 0 && pool_of[cur] == pool_of[X]) {
-      room = P.n - NE;
-      for (int e = 0; e < NE; ++e) room -= where[(size_t)X * NE + e] >= 0;
+      room = P.n - nloc();
+      for (int e = lo_; e < hi_; ++e) room -= where[(size_t)X * NE + e] >= 0;
     }
     std::vector<std::pair<int, char*>> todo;  // (expert, slot address)
-    for (int e = 0; e < NE && (int)todo.size() < room; ++e) {
+    for (int e = lo_; e < hi_ && (int)todo.size() < room; ++e) {
       const size_t key = (size_t)X * NE + e;
       if (where[key] >= 0) continue;
       int sl;
@@ -566,11 +575,12 @@ struct XCache {
     ze_command_list_handle_t cc = zrt::copy_list();
     // (the event of this half: reused two layers later, when the main list has passed its wait; see ensure)
     ze_event_handle_t ev = zrt::copy_event(h);
+    ze_event_handle_t pev[2] = {zrt::copy_event(2), zrt::copy_event(3)};
     ZE_CHECK(zeEventHostReset(ev));
     pf_wait_[h] = X;
     const uint64_t rec = P.rec;
     try {
-    pf_ = std::thread([this, todo = std::move(todo), h, cc, rec, X, ev] {
+    pf_ = std::thread([this, todo = std::move(todo), h, cc, rec, X, ev, pev] {
       const auto t0 = std::chrono::steady_clock::now();
       std::vector<ExpertStore::Req> reqs;
       try {
@@ -579,7 +589,7 @@ struct XCache {
       const size_t R = std::max(1, S / 2);
       for (size_t b0 = 0, r = 0; b0 < todo.size(); b0 += R, ++r) {
         const int p = (int)(r & 1);
-        ze_event_handle_t pe = zrt::copy_event(2 + p);
+        ze_event_handle_t pe = pev[p];
         if (r >= 2) ZE_CHECK(zeEventHostSynchronize(pe, UINT64_MAX));
         ZE_CHECK(zeEventHostReset(pe));
         char* base = stage[h] + (size_t)p * R * stage_rec;
@@ -588,7 +598,7 @@ struct XCache {
         for (size_t j = b0; j < b1; ++j) reqs.push_back({X, todo[j].first, base + (j - b0) * stage_rec});
         st.read(reqs, 1);
         for (size_t j = b0; j < b1; ++j)
-          ZE_CHECK(zeCommandListAppendMemoryCopy(cc, todo[j].second, base + (j - b0) * stage_rec, rec, nullptr, 0, nullptr));
+          ZE_CHECK(zeCommandListAppendMemoryCopy(cc, todo[j].second, reqs[j - b0].src, rec, nullptr, 0, nullptr));
         ZE_CHECK(zeCommandListAppendBarrier(cc, pe, 0, nullptr));
       }
       ZE_CHECK(zeCommandListAppendBarrier(cc, ev, 0, nullptr));  // (signalled once every copy above is done)
@@ -620,8 +630,10 @@ struct XCache {
     if (stage_layer[h] == X) return;  // (layer-major prompts: already prefetched for an earlier chunk)
     stage_layer[h] = X;
     stage_e[h].clear();
+    stage_src[h].clear();
+    pf_half_ = h;
     pf_reqs_.clear();
-    for (int e = 0; e < NE && (int)stage_e[h].size() < S; ++e) {
+    for (int e = lo_; e < hi_ && (int)stage_e[h].size() < S; ++e) {
       if (where[(size_t)X * NE + e] >= 0) continue;
       pf_reqs_.push_back({X, e, stage[h] + stage_e[h].size() * stage_rec});
       stage_e[h].push_back(e);
@@ -637,6 +649,7 @@ struct XCache {
         const auto t0 = std::chrono::steady_clock::now();
         try {
           st.read(pf_reqs_);
+          for (const auto& r : pf_reqs_) stage_src[pf_half_].push_back(r.src);
         } catch (const std::exception& e) {
           pf_err_ = std::string("expert prefetch: ") + e.what();
         }
@@ -680,7 +693,7 @@ struct XCache {
     // 7637 records read for a 9000-token prompt instead of 846)
     for (size_t i = 0; i < n; ++i) {
       const int e = ids[i];
-      if (e < 0 || e >= NE || seen[e]) continue;
+      if (!mine(e) || seen[e]) continue;
       seen[e] = 1;
       const int s = where[(size_t)l * NE + e];
       if (s < 0) { miss.push_back(e); continue; }
@@ -740,7 +753,8 @@ struct XCache {
     bool first = true;
     while (i0 < miss.size()) {
       std::vector<ExpertStore::Req> reqs;
-      std::vector<std::pair<int, int>> copies;  // (staging record, slot)
+      struct Copy { int rec, slot, req; };  // (staging record, slot, its request this round or -1: prefetched)
+      std::vector<Copy> copies;
       std::vector<uint8_t> used_rec(S, 0);
       if (first) {
         for (size_t i = 0; i < miss.size(); ++i)
@@ -754,27 +768,29 @@ struct XCache {
       for (; i < miss.size(); ++i) {
         const int e = miss[i];
         if (first && pre[e] >= 0) {
-          copies.push_back({pre[e], slot[i]});
+          copies.push_back({pre[e], slot[i], -1});
           continue;
         }
         while (next_free < S && used_rec[next_free]) ++next_free;
         if (next_free >= S) break;
         used_rec[next_free] = 1;
+        copies.push_back({next_free, slot[i], (int)reqs.size()});
         reqs.push_back({l, e, stage[h] + (size_t)next_free * stage_rec});
-        copies.push_back({next_free, slot[i]});
       }
       // (the prefetched records past the round's end: still copied in this round)
       if (first)
         for (size_t j = i; j < miss.size(); ++j)
-          if (pre[miss[j]] >= 0) copies.push_back({pre[miss[j]], slot[j]}), pre[miss[j]] = -2;
+          if (pre[miss[j]] >= 0) copies.push_back({pre[miss[j]], slot[j], -1}), pre[miss[j]] = -2;
       if (!reqs.empty()) {
         const auto t0 = std::chrono::steady_clock::now();
         st.read(reqs);
         read_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
       }
-      for (auto& c : copies)
-        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, P.addr[c.second], stage[h] + (size_t)c.first * stage_rec, P.rec,
-                                               nullptr, 0, nullptr));
+      for (auto& c : copies) {
+        const void* src = c.req >= 0 ? reqs[c.req].src
+                          : (size_t)c.rec < stage_src[h].size() ? stage_src[h][c.rec] : stage[h] + (size_t)c.rec * stage_rec;
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, P.addr[c.slot], src, P.rec, nullptr, 0, nullptr));
+      }
       // next round: the misses not done yet (skipping prefetched ones copied above)
       i0 = i;
       while (i0 < miss.size() && pre[miss[i0]] == -2) ++i0;
@@ -823,7 +839,8 @@ struct XCache {
         if (!seen[e]) continue;
         ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, a, (void*)xa[e], lrec[l], nullptr, 0, nullptr));
         zrt::sync();
-        st.read({{l, e, b}});
+        std::vector<ExpertStore::Req> one{{l, e, b}};
+        st.read(one, 0, true);
         if (memcmp(a, b, lrec[l])) { ++bad; if (first_bad < 0) first_bad = e; }
       }
       if (bad) fprintf(stderr, "XVERIFY layer %d (%s): %d slots differ from the file (first expert %d)\n", l,

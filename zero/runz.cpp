@@ -215,7 +215,7 @@ static int run_main(int argc, char** argv) {
             "  --ctx N               context (default: what the prompt needs)     --chunk N   prompt tokens per step\n"
             "  --feed-step N         feed the prompt in calls of N tokens (tests resuming mid-prompt)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
-            "  --gpus N              the model split over N GPUs (dense Qwen3.5 / 3.6 / 3.8): the prompt or --bench-pp, then\n"
+            "  --gpus N              the model split over N GPUs (Qwen3.5 / 3.6 / 3.8, the 35B-A3B too): the prompt or --bench-pp, then\n"
             "                        greedy generation (ARC_TP_SIM=1: N shards on GPU 0, to test the split)\n"
             "  --attn-f32            f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
             "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any)\n"

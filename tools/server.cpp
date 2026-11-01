@@ -1855,7 +1855,7 @@ int main(int argc, char** argv) {
   static const std::vector<std::pair<std::string, std::string>> kOpts = {
       {"--model", "a .gguf file, e.g. -m \"C:\\models\\Qwen3.5-4B-UD-Q4_K_XL.gguf\", or none"}, {"--host", "an address, e.g. 0.0.0.0"},
       {"--port", "a port, 1..65535"}, {"--ctx", "a number of tokens, or auto"}, {"--chunk", "a number of tokens, 0 = auto"},
-      {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--no-stream", ""},
+      {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--expert-ram-gb", "GiB, e.g. 200"},{"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
       {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--precise", ""}, {"--npu", "on, off or force"},
       {"--mtp", ""}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
@@ -1897,6 +1897,7 @@ int main(int argc, char** argv) {
     else if (a == "--chunk") so.eo.chunk = std::clamp(to_int(a, next()), 0, 65536);
     else if (a == "--expert-cache-gb") so.eo.expert_cache_gb = to_double(a, next());
     else if (a == "--expert-cache-pct") so.eo.expert_cache_pct = to_double(a, next());
+    else if (a == "--expert-ram-gb") so.eo.expert_ram_gb = to_double(a, next());
     else if (a == "--no-stream") so.eo.stream_experts = false;
     else if (a == "--pack") {  // make an arcinferzero package of a MoE GGUF, then exit
       const std::string src = next();
@@ -2106,6 +2107,8 @@ int main(int argc, char** argv) {
             "  --expert-cache-gb N   expert cache size in GiB (default: automatic: the GPU share Windows reports, your\n"
             "                        setting, less 1.2 GB for the driver, less the rest of the model)\n"
             "  --expert-cache-pct P  expert cache as a percentage of all experts\n"
+            "  --expert-ram-gb N     experts read from the SSD also kept in RAM, up to N GiB, and read from there again\n"
+            "                        (default: a GPU with memory of its own: the free RAM less 16 GiB; an iGPU: 0)\n"
             "  --pack FILE.gguf      make a package of a MoE model (its first part when split): the non-expert\n"
             "                        weights + an expert file under %%USERPROFILE%%\\.arcinferzero\\zero\\models; afterwards\n"
             "                        the original GGUF can be moved away (e.g. to a USB disk)\n"

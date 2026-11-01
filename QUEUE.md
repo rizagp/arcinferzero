@@ -11,6 +11,7 @@ Everything below this list is history plus the details of these items; a row not
 
 | Priority | Item | Section |
 |---|---|---|
+| 0 | Unattended 2026-11-01: multi-GPU MoE (qwen35moe), a host RAM tier for experts, Flash Next re-test after the re-download | F30 |
 | 1 | Flash Next prompt: the per-tile gate / up kernel (7.0 s of 22 s GPU at 4K after the scale transpose): its IQ2_S / IQ3_XXS decode (~4 s) and activation reads; generation is SSD-bound (DFlash2 works, no gain) | F21.15 / F21.16 |
 | 4 | Xe2 / Xe3: XMX prompt GEMMs built and self-checked, waiting for gee456's report (issue #1); then moe_rg / attention on XMX | F29 |
 | 5 | Voice: a real microphone test by the user; ASR for any model, human-sounding replies, omni models | F24.4-24.7 |
@@ -503,3 +504,18 @@ context 262,144. Close to the 35B-A3B path (streamed experts, shared expert) plu
 
 Disk: the package's expert file (~23 GB) goes with the model on D: or C: (C: had 57 GB free on 2026-10-22).
 
+
+## F30: unattended work, 2026-11-01 (the user away for long)
+
+The user is re-downloading Flash Next (C: had 131 GB free with part 1 at 16 of 54.8 GB). They left GGUF / expert
+file management and small downloads (mmproj) to me; Qwen3.6 35B may be downloaded if the SSD has room. Local
+commits only, no push, no package.
+
+| # | Item | Status | Notes |
+|---|---|---|---|
+| 30.1 | Multi-GPU MoE, stage 1: qwen35moe experts divided over the shards (routing filter, partial combine, all-reduce) | ✅ 2026-11-01 | Qwen3.6 35B UD-IQ4_XS (the Ornith GGUF was gone); 2 / 3 / 4 shards; attention whole over 3-4 (2 kv-heads); KL vs one GPU at the level of one GPU's own chunk-size noise; docs/multi-gpu.md |
+| 30.2 | Stage 2: each shard streams only its experts (XCache expert range: warm / prefetch / sizes / .lru per rank) | ✅ 2026-11-01 | cache budget / N under ARC_TP_SIM. **Open:** ARC_XSPLIT (cached experts' kernels before the misses are read) gave run-to-run logit differences in a split model with experts missing (2 GiB caches, from step 7 or 12, up to 1.1), never with ARC_XSPLIT=0, with ARC_XVERIFY's syncs, or on one GPU (1.2 GiB cache, 3 runs identical): off for split models until the cause is found |
+| 30.3 | Host RAM tier for experts | ✅ 2026-11-01 (on GPUs with memory of their own; measured only on the laptop, forced) | the B60 owner has VRAM -> very large RAM -> SSD. Expert reads are unbuffered (FILE_FLAG_NO_BUFFERING), so a large RAM is never used as a cache today: a pinned host copy of the experts (whole file when it fits) and misses copied host -> GPU instead of read from the SSD |
+| 30.4 | Flash Next after the re-download: load, bench, greedy text, KL short check, package if useful | ⏳ | disk: GGUF 83.6 GB + expert file ~50 GB; the Ornith expert file (20 GB) can be rebuilt if room is needed |
+| 30.5 | Qwen3.6 35B download | ⏳ only if room | after 30.4: GGUF ~18 GB + expert file ~15 GB |
+| 30.6 | Docs (multi-gpu.md, before-after rows), local commits | ⏳ | |

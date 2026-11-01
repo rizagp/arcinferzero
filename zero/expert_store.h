@@ -14,6 +14,9 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -55,6 +58,7 @@ struct ExpertStore {
   ~ExpertStore() {
     for (auto& s : slots_) if (s.ev) CloseHandle(s.ev);
     if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+    if (ram_free) for (char* p : ram_pieces_) ram_free(p);
   }
 
   // prefixes[i]: the GGUF tensor prefix of layer i ("blk.7.") when it has routed experts, else "".
@@ -135,11 +139,106 @@ struct ExpertStore {
       if (!(s.ev = CreateEventW(nullptr, TRUE, FALSE, nullptr))) throw std::runtime_error("cannot create the read events");
   }
 
+  // ---- RAM tier (a GPU with memory of its own and a large system RAM: Arc B60 + hundreds of GB): the unbuffered
+  // reads never fill the Windows file cache, so records read from the SSD go into RAM pieces the GPU can copy from
+  // (pinned host memory from ram_alloc), up to `bytes`, and stay there: a later read of one is no read at all, its
+  // Req's src points at it and the caller's GPU copy takes it from there. No CPU copies: a memcpy ran at 3-4 GB/s on
+  // the laptop, slower than its SSD. Never on an iGPU, whose GPU memory is that RAM.
+  struct Slot { OVERLAPPED ov{}; HANDLE ev = nullptr; bool busy = false; };  // (a read in flight)
+  std::function<char*(size_t)> ram_alloc;  // (pinned host memory of n bytes, nullptr when none is left)
+  std::function<void(char*)> ram_free;
+  void set_ram(uint64_t bytes) {
+    ram_cap_ = bytes;
+    if (bytes && !ram_rec_) {
+      ram_n_ = layers.size() * (size_t)n_expert;
+      ram_rec_.reset(new std::atomic<char*>[ram_n_]);
+      for (size_t i = 0; i < ram_n_; ++i) ram_rec_[i].store(nullptr, std::memory_order_relaxed);
+    }
+  }
+  uint64_t ram_bytes() const { return ram_used_; }
+  std::atomic<uint64_t> ram_hits{0};
+
   // ---- reads: up to kQD unbuffered reads in flight. dst must be 4 KB aligned (host USM is). set: which of the two
-  // sets of read slots (0: the caller's thread, 1: the expert cache's prefetch thread; two threads may read at once)
-  struct Req { int layer, expert; void* dst; };
-  void read(const std::vector<Req>& reqs, int set = 0) {
+  // sets of read slots (0: the caller's thread, 1: the expert cache's prefetch thread; two threads may read at once).
+  // src (out): where the record is now, for the GPU copy: dst, or its place in the RAM tier (to_dst: always dst)
+  struct Req { int layer, expert; void* dst; const void* src = nullptr; };
+  void read(std::vector<Req>& reqs, int set = 0, bool to_dst = false) {
     Slot* slots = slots_ + (set ? kQD : 0);
+    if (!ram_rec_) {
+      read_ssd(reqs, slots);
+      for (Req& r : reqs) r.src = r.dst;
+      return;
+    }
+    // the RAM tier's records are used where they are; the others read from the SSD, into a new record of the tier
+    // while it has room (published once read), else into dst
+    std::vector<Req>& todo = ram_todo_[set ? 1 : 0];
+    std::vector<size_t>& at = ram_at_[set ? 1 : 0];
+    todo.clear(), at.clear();
+    for (size_t i = 0; i < reqs.size(); ++i) {
+      Req& r = reqs[i];
+      std::atomic<char*>& slot = ram_rec_[(size_t)r.layer * n_expert + r.expert];
+      char* m = slot.load(std::memory_order_acquire);
+      if (m && m != kPending) {
+        r.src = m;
+        ++ram_hits;
+        if (to_dst) memcpy(r.dst, m, layers[r.layer].rec), r.src = r.dst;
+        continue;
+      }
+      char* home = m ? nullptr : ram_take(slot, layers[r.layer].rec);
+      todo.push_back({r.layer, r.expert, home ? home : r.dst});
+      at.push_back(i);
+    }
+    try {
+      read_ssd(todo, slots);
+    } catch (...) {
+      for (const Req& t : todo) {  // (records not read: their reserved slots free again, the memory stays unused)
+        std::atomic<char*>& slot = ram_rec_[(size_t)t.layer * n_expert + t.expert];
+        char* exp = kPending;
+        if (t.dst != reqs[at[&t - todo.data()]].dst) slot.compare_exchange_strong(exp, nullptr);
+      }
+      throw;
+    }
+    for (size_t j = 0; j < todo.size(); ++j) {
+      Req& r = reqs[at[j]];
+      if (todo[j].dst != r.dst) {  // (read into the tier: published)
+        ram_rec_[(size_t)r.layer * n_expert + r.expert].store((char*)todo[j].dst, std::memory_order_release);
+        if (to_dst) memcpy(r.dst, todo[j].dst, layers[r.layer].rec);
+        else r.src = todo[j].dst;
+      }
+      if (!r.src) r.src = r.dst;
+    }
+    for (Req& r : reqs) if (to_dst || !r.src) r.src = r.dst;
+  }
+
+ private:
+  static inline char* const kPending = (char*)1;  // (a record being read into the tier by a read() call)
+  // a new record of `rec` bytes in the tier for `slot` (marked pending), or nullptr: full, or another call has it
+  char* ram_take(std::atomic<char*>& slot, uint64_t rec) {
+    std::lock_guard<std::mutex> g(ram_mu_);
+    if (slot.load(std::memory_order_relaxed) || ram_used_ + rec > ram_cap_) return nullptr;
+    if (ram_left_ < rec) {  // (pieces of 1 GiB)
+      const size_t piece = std::max<size_t>(rec, 1ull << 30);
+      char* p = ram_alloc ? ram_alloc(piece) : nullptr;
+      if (!p) { ram_cap_ = ram_used_; return nullptr; }  // (no more pinned memory: the tier stays as it is)
+      ram_pieces_.push_back(p);
+      ram_next_ = p, ram_left_ = piece;
+    }
+    char* r = ram_next_;
+    ram_next_ += rec, ram_left_ -= rec, ram_used_ += rec;
+    slot.store(kPending, std::memory_order_relaxed);
+    return r;
+  }
+  std::unique_ptr<std::atomic<char*>[]> ram_rec_;  // (layer * n_expert + expert -> its record in RAM, kPending, null)
+  size_t ram_n_ = 0;
+  uint64_t ram_cap_ = 0, ram_used_ = 0, ram_left_ = 0;
+  char* ram_next_ = nullptr;
+  std::vector<char*> ram_pieces_;
+  std::mutex ram_mu_;
+  std::vector<Req> ram_todo_[2];
+  std::vector<size_t> ram_at_[2];
+
+  void read_ssd(const std::vector<Req>& reqs, Slot* slots) {
+    if (reqs.empty()) return;
     size_t next = 0, done = 0;
     int busy = 0;
     auto issue = [&](int s) {
@@ -189,11 +288,12 @@ struct ExpertStore {
     }
     reads += reqs.size();
   }
+
+ public:
   std::atomic<uint64_t> reads{0}, bytes_read{0};
 
  private:
   static constexpr int kQD = 16;
-  struct Slot { OVERLAPPED ov{}; HANDLE ev = nullptr; bool busy = false; };
   Slot slots_[2 * kQD];
   HANDLE h_ = INVALID_HANDLE_VALUE;
 

@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-01, multi-GPU MoE (Qwen3.6 35B-A3B) and experts in RAM.** One GPU: logits bit-identical to the build
+  before (1,687-token prompt + 32 tokens; full cache, and 1.2 GiB at 50 % hits); speed best of two 608 vs 612 tok/s
+  prompt, 21.6 vs 21.8 tok/s generation (noise). Split (ARC_TP_SIM, one iGPU: speeds mean nothing): KL to one GPU
+  over the first 4 positions 0.007-0.023, as one GPU's own between chunk sizes 512 and 8192 (0.0026-0.017). RAM
+  tier forced on the laptop (4 GiB cache): bit-identical; generation 13.1 vs 13.3 tok/s, prompt 275 vs 372 tok/s
+  (off by default on an iGPU).
+
 | Date | Change | Before | After | Answers |
 |---|---|---|---|---|
 | 10-31 | **Gemma 4: a tool call rendered without its reasoning, ring snapshots** (`tools/server_chat.h` gemma_history; `zero/engine.h` Snap::ring, `tools/server.cpp` prepare_prefix). Web UI, Gemma 4 E4B, "Ringkas file README.md" (read_file: 20K tokens), then "Model apa saja yang didukung?" | follow-up: 2,234 of 22K prompt tokens from the cache, 38.4 s | **21,846 of 22,092 from the cache, 0.8 s** | `runz --ring-snap-test` on E4B: a snapshot restored after 6,000 more tokens, the next 600 tokens' logits bit-identical to a fresh run (snapshot 13.7 ms, restore 6.4 ms); the web UI's answers not compared word for word (a model sampling) |

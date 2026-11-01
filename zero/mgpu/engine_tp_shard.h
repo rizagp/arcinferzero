@@ -17,6 +17,13 @@
 // GPUs holds 6 / 6 / 4 k-heads, 2 / 1 / 1 kv-heads.
 // The output projections (ssm_out, attn_output, ffn_down) write partial sums that tp_out adds over the shards
 // (TpComm::reduce) before they reach x_. MTP, DFlash2, slots and the NPU are off in a split model.
+//
+// Mixture of experts (qwen35moe: Qwen3.6 35B, Ornith): the routed experts are divided instead of FFN columns, shard r
+// holding experts [e0, e1) (global ids everywhere: the router, the expert file, the cache tables). Every shard routes
+// every token; only its own (token, expert) pairs get slots and tiles (tp_moe_mask / tp_moe_scatter / tp_moe_tiles1
+// after the routing), its experts stream into its own cache (XCache's range), and the combine writes the shard's
+// part (rank 0 adds the gated shared expert, which every shard computes) for tp_reduce. A model with fewer kv-heads
+// than GPUs (the 35B has 2) keeps its attention layers whole on every shard (the same output everywhere: no sum).
 
  public:
   TpComm* tp_ = nullptr;  // (set by TpEngine before the first forward)
@@ -28,6 +35,9 @@
   TpGlobal tpg_;
   using TpRange = std::pair<int64_t, int64_t>;
   TpRange tpk_, tpkv_, tpf_, tpv_;  // this shard's k-heads, kv-heads, FFN columns, vocabulary rows: [begin, end)
+  TpRange tpe_{0, 0};               // (MoE) this shard's routed experts
+  bool tp_att_whole_ = false;       // (attention layers whole on every shard: fewer kv-heads than GPUs)
+  cl_kernel k_tp_moe_mask_ = nullptr, k_tp_moe_scatter_ = nullptr, k_tp_moe_tiles1_ = nullptr, k_tp_moe_combine_ = nullptr;
   // rank r's part of `total` in whole units (the first total / unit % N ranks one unit more)
   static TpRange tp_range(int64_t total, int64_t unit, int N, int r) {
     const int64_t units = total / unit, base = units / N, extra = units % N;
@@ -46,8 +56,10 @@
   // This shard's dimensions in hp (the global ones in tpg_); everything sized from hp is then this shard's.
   void tp_setup() {
     const int N = opt.tp_size, r = opt.tp_rank;
-    if (hp.arch != "qwen35" || hp.moe || hp.hc || hp.gemma || hp.qwen3)
-      throw std::runtime_error("multi-GPU (--gpus) runs dense Qwen3.5 / 3.6 / 3.8 models only for now (this is " + hp.arch + ")");
+    const bool moe = hp.moe && hp.moe_std;
+    if ((hp.arch != "qwen35" && !(hp.arch == "qwen35moe" && moe)) || hp.hc || hp.gemma || hp.qwen3)
+      throw std::runtime_error("multi-GPU (--gpus) runs Qwen3.5 / 3.6 / 3.8 models (dense, or the 35B-A3B MoE) only for now (this is " +
+                               hp.arch + ")");
     if (r < 0 || r >= N) throw std::runtime_error("tensor parallel: bad rank");
     tpg_ = {hp.ssm_nk, hp.ssm_nv, hp.n_head, hp.n_head_kv, hp.n_ff, hp.n_vocab};
     auto need = [&](bool ok, const char* what) {
@@ -57,12 +69,22 @@
     };
     // (k-heads in pairs: a pair's 2 x 128 v-values are one 256-value block of ssm_out's columns)
     need(hp.ssm_nk > 0 && hp.ssm_nk % 2 == 0 && hp.ssm_nk / 2 >= N && hp.ssm_nv % hp.ssm_nk == 0, "DeltaNet heads");
-    need(hp.n_head_kv >= N && hp.n_head % hp.n_head_kv == 0 && (hp.n_head / hp.n_head_kv * hp.head_dim) % 256 == 0, "attention heads");
-    need(hp.n_ff % 256 == 0 && hp.n_ff / 256 >= N, "FFN width");
+    // (MoE: fewer kv-heads than GPUs keeps the attention whole on every shard, it is a small part of the weights)
+    tp_att_whole_ = moe && hp.n_head_kv < N;
+    need(tp_att_whole_ || (hp.n_head_kv >= N && hp.n_head % hp.n_head_kv == 0 && (hp.n_head / hp.n_head_kv * hp.head_dim) % 256 == 0),
+         "attention heads");
+    if (moe) {
+      need(hp.n_expert >= N && hp.n_expert_used > 0, "experts");
+      if (!stream_experts_ok())
+        throw std::runtime_error("multi-GPU MoE streams its experts (each GPU caches its own): run without --no-stream");
+    } else {
+      need(hp.n_ff % 256 == 0 && hp.n_ff / 256 >= N, "FFN width");
+    }
     need(hp.n_vocab % 16 == 0, "vocabulary");
     tpk_ = tp_range(hp.ssm_nk, 2, N, r);
-    tpkv_ = tp_range(hp.n_head_kv, 1, N, r);
-    tpf_ = tp_range(hp.n_ff, 256, N, r);
+    tpkv_ = tp_att_whole_ ? TpRange{0, hp.n_head_kv} : tp_range(hp.n_head_kv, 1, N, r);
+    tpf_ = moe ? TpRange{0, 0} : tp_range(hp.n_ff, 256, N, r);
+    if (moe) tpe_ = tp_range(hp.n_expert, 1, N, r);
     tpv_ = tp_range(hp.n_vocab, 16, N, r);
     const int hpg = hp.n_head / hp.n_head_kv;
     hp.ssm_nk = (int)(tpk_.second - tpk_.first);
@@ -75,8 +97,48 @@
     opt.dflash.clear();
     opt.npu = 0;
     opt.slots = 1;
-    fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads, %d of %d FFN columns, %lld of %d vocabulary rows\n",
-            r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv, hp.n_ff, tpg_.ff, (long long)(tpv_.second - tpv_.first), tpg_.vocab);
+    if (moe)
+      fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads%s, experts %lld-%lld of %d, %lld of %d vocabulary rows\n",
+              r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv, tp_att_whole_ ? " (whole on every GPU)" : "",
+              (long long)tpe_.first, (long long)tpe_.second - 1, hp.n_expert, (long long)(tpv_.second - tpv_.first), tpg_.vocab);
+    else
+      fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads, %d of %d FFN columns, %lld of %d vocabulary rows\n",
+              r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv, hp.n_ff, tpg_.ff, (long long)(tpv_.second - tpv_.first), tpg_.vocab);
+  }
+  bool stream_experts_ok() const { return opt.stream_experts && !getenv("ARC_ZERO_NO_STREAM"); }
+  bool tp_moe() const { return tp_on() && tpe_.second > tpe_.first; }
+
+  // MoE hooks (layer_moe, zero/engine_moe.h; nothing when the model is not split). After moe_route: the other
+  // shards' experts out of the counts; then tp_scatter instead of moe_scatter. After moe_route1: tp_tiles1.
+  void tp_moe_mask() {
+    tp_build();
+    int ne = hp.n_expert, e0 = (int)tpe_.first, e1 = (int)tpe_.second;
+    set_args(k_tp_moe_mask_, 0, mcount_, ne, e0, e1);
+    size_t g1 = ((size_t)ne + 63) / 64 * 64, l1 = 64;
+    run("moe_route", k_tp_moe_mask_, 1, &g1, &l1);
+  }
+  void tp_moe_scatter(int n) {
+    int nu = hp.n_expert_used, e0 = (int)tpe_.first, e1 = (int)tpe_.second;
+    set_args(k_tp_moe_scatter_, 0, mids_, mwts_, n, mcursor_, stok_, swt_, minv_, nu, e0, e1);
+    size_t g1 = ((size_t)n + 255) / 256 * 256, l1 = 256;
+    run("moe_scatter", k_tp_moe_scatter_, 1, &g1, &l1);
+  }
+  void tp_moe_tiles1() {
+    tp_build();
+    int e0 = (int)tpe_.first, e1 = (int)tpe_.second;
+    set_args(k_tp_moe_tiles1_, 0, mtiles_, minv_, e0, e1);
+    size_t g1 = 1, l1 = 1;
+    run("moe_route", k_tp_moe_tiles1_, 1, &g1, &l1);
+  }
+  // the combine: this shard's experts (+ the shared expert on rank 0) into tp_part_, summed over the shards
+  void tp_moe_combine(int T) {
+    const int E = hp.n_embd;
+    if (!tp_part_) tp_part_ = buf((size_t)max_chunk * E * 4);
+    int N = E, nu = hp.n_expert_used, shared = opt.tp_rank == 0 ? 1 : 0;
+    set_args(k_tp_moe_combine_, 0, tp_part_, msh_, sgate_, my_, minv_, N, nu, shared);
+    size_t gws[2] = {((size_t)E + 255) / 256 * 256, (size_t)T}, lws[2] = {256, 1};
+    run("moe_combine", k_tp_moe_combine_, 2, gws, lws);
+    tp_reduce(T);
   }
 
   // rows `rows` (empty: all) and columns `cols` (empty: all; whole blocks of the type) of a 1-D or 2-D tensor
@@ -138,7 +200,7 @@
       if (s == "ssm_alpha.weight" || s == "ssm_beta.weight") return tp_slice(t, tp_vheads(1), {});
       if (s == "ssm_a" || s == "ssm_dt.bias") return tp_slice(t, {}, tp_vheads(1));
       if (s == "ssm_out.weight") return tp_slice(t, {}, tp_vheads(D));
-    } else if (il < hp.n_layer) {
+    } else if (il < hp.n_layer && !tp_att_whole_) {
       const int64_t hpg = tpg_.nh / tpg_.nkv, g0 = tpkv_.first, g1 = tpkv_.second, q0 = g0 * hpg, q1 = g1 * hpg;
       if (s == "attn_q.weight") {  // (each head's rows: query then gate, 2 * head_dim)
         const int64_t per = (int64_t)t.dims[1] / tpg_.nh;
@@ -147,7 +209,7 @@
       if (s == "attn_k.weight" || s == "attn_v.weight") return tp_slice(t, {{g0 * hd, g1 * hd}}, {});
       if (s == "attn_output.weight") return tp_slice(t, {}, {{q0 * hd, q1 * hd}});
     }
-    if (il < hp.n_layer) {
+    if (il < hp.n_layer && !hp.moe) {
       const int64_t f0 = tpf_.first, f1 = tpf_.second;
       if (s == "ffn_gate.weight" || s == "ffn_up.weight") return tp_slice(t, {{f0, f1}}, {});
       if (s == "ffn_down.weight") return tp_slice(t, {}, {{f0, f1}});
@@ -162,7 +224,8 @@
   // An output projection into the residual stream: x_ += act * W^T, the shards' partial sums added (tp_reduce in
   // zero/engine_tp.h) when the model is split.
   void tp_out(const char* name, const GpuWeight& w, int Mp, int act32) {
-    if (!tp_on()) return matmul(name, w, Mp, x_, hp.n_embd, 0, 1, act32);
+    // (attention kept whole on every shard: its output is the same everywhere, added as in one piece)
+    if (!tp_on() || (tp_att_whole_ && !strcmp(name, "gemm_o"))) return matmul(name, w, Mp, x_, hp.n_embd, 0, 1, act32);
     if (!tp_part_) tp_part_ = buf((size_t)max_chunk * hp.n_embd * 4);
     matmul(name, w, Mp, tp_part_, hp.n_embd, 0, 0, act32);
     tp_reduce(cur_T_);
@@ -197,6 +260,10 @@
     progs_.push_back(p);
     k_tp_add_ = cl_.kernel(p, "tp_add");
     k_tp_pack_ = cl_.kernel(p, "tp_pack");
+    k_tp_moe_mask_ = cl_.kernel(p, "tp_moe_mask");
+    k_tp_moe_scatter_ = cl_.kernel(p, "tp_moe_scatter");
+    k_tp_moe_tiles1_ = cl_.kernel(p, "tp_moe_tiles1");
+    k_tp_moe_combine_ = cl_.kernel(p, "tp_moe_combine");
   }
   // after load_weights: the cut tensors are on the GPU; their host copies go (27B over 2 GPUs: ~7.5 GB of RAM each)
   void tp_loaded() {
