@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-02: launcher "Failed" pop-ups (issue #5)
+
+- **Every start and stop showed "Failed:" over and over in Windows PowerShell 5.1**: there `Start-Process
+  -PassThru` gives a `$null` ExitCode once the process ends, unless its handle was taken while it ran, so a start
+  that went well counted as failed. The launcher now takes the handle (start / stop and recording), and clears
+  the finished process before showing a message box: the timer goes on ticking while one is open, which showed
+  the same box again every 0.5 s. The box now also gives the exit code. PowerShell 7 was not affected.
+
 ## 2026-11-01 (night): switches for Arc B-series tuning
 
 - **Switches to measure on GPUs with XMX** (B580 / B60), in `zero/xe2/engine_xe2.h`: `ARC_GEMM_GRF=128` (the prompt

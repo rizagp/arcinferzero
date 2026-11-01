@@ -481,6 +481,7 @@ function Start-Action([string[]]$argList) {
   $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$arcServer`"") + $argList + @("-Port", [int]$portBox.Value)
   $script:actProc = Start-Process -FilePath $shell -ArgumentList $a -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $script:actOut -RedirectStandardError $script:actErr
+  $null = $script:actProc.Handle  # (Windows PowerShell 5.1: without the handle taken now, ExitCode is $null once it exits)
   Update-Status
 }
 # record / record-stop: its own process (the server's start / stop goes on beside it)
@@ -493,6 +494,7 @@ function Start-Rec([string[]]$argList) {
   $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$arcServer`"") + $argList
   $script:recProc = Start-Process -FilePath $shell -ArgumentList $a -WindowStyle Hidden -PassThru `
     -RedirectStandardOutput $script:recOut -RedirectStandardError $script:recErr
+  $null = $script:recProc.Handle  # (as in Start-Action)
 }
 function Start-Selected([switch]$Speech) {
   if ($Speech) {
@@ -638,26 +640,29 @@ $timer.Add_Tick({
       if ($last) { $msg.Text = "$last" }
       if ($script:actWhat -eq "start" -and -not $script:actProc.HasExited) { Show-LoadBar }
       if ($script:actProc.HasExited) {
+        # (cleared before any message box: the timer goes on ticking while one is open, and would show it again)
+        $code = $script:actProc.ExitCode
+        $script:actProc = $null
         $loadBar.Visible = $false
-        if ($script:actProc.ExitCode -ne 0) {
+        Update-Status
+        if ($code -ne 0) {
           $err = Get-Content $script:actErr -Raw -ErrorAction SilentlyContinue
           $tail = Get-Content $script:actOut -Tail 8 -ErrorAction SilentlyContinue
-          [void][System.Windows.Forms.MessageBox]::Show("Failed:`n$(($tail -join "`n"))`n$err", "arcinferzero")
+          [void][System.Windows.Forms.MessageBox]::Show("Failed (exit code $code):`n$(($tail -join "`n"))`n$err", "arcinferzero")
         } elseif ($script:actWhat -eq "start" -and ($openWebChk.Checked -or $script:openWeb)) {
           $script:openWeb = $false
           Start-Process "$(Base)/"  # (the web UI, in the default browser)
         }
-        $script:actProc = $null
-        Update-Status
       }
     }
     if ($script:recProc -and $script:recProc.HasExited) {
-      $out = @(Get-Content $script:recOut -ErrorAction SilentlyContinue | Where-Object { $_ })
-      if ($script:recProc.ExitCode -ne 0) {
-        $err = Get-Content $script:recErr -Raw -ErrorAction SilentlyContinue
-        [void][System.Windows.Forms.MessageBox]::Show("Recording failed:`n$(($out -join "`n"))`n$err", "arcinferzero")
-      } elseif ($out.Count) { $msg.Text = ($out -join "  ") }
+      $code = $script:recProc.ExitCode
       $script:recProc = $null
+      $out = @(Get-Content $script:recOut -ErrorAction SilentlyContinue | Where-Object { $_ })
+      if ($code -ne 0) {
+        $err = Get-Content $script:recErr -Raw -ErrorAction SilentlyContinue
+        [void][System.Windows.Forms.MessageBox]::Show("Recording failed (exit code $code):`n$(($out -join "`n"))`n$err", "arcinferzero")
+      } elseif ($out.Count) { $msg.Text = ($out -join "  ") }
     }
     if (($script:tick++ % 4) -eq 0) { Update-Status }
   })
