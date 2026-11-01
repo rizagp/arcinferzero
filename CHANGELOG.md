@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-01 (evening): XMX check at 32 tokens per sub-group
+
+- **`ARC_GEMM_TM=32` kept DP4a on XMX GPUs**: the XMX check's 64 test tokens gave its split-K case an empty grid
+  at 32 tokens per sub-group, so the check failed and `bench/gemm_sweep.ps1`'s TM 32 rows measured DP4a. It now
+  tests 4 tiles of whatever TM is set (64 tokens at the default 16, unchanged). Found in a DeepSeek review.
+- `ARC_GEMM_TM` takes only 16 or 32 (others warn and use 16; `gemm.cl` stops at build time on any other TM).
+
 ## 2026-11-01 (later): multi-GPU MoE, experts in RAM
 
 - **Qwen3.6 35B-A3B over several GPUs** (`runz --gpus N`, and its fine-tunes such as Ornith 1.5 35B): the routed

@@ -22,6 +22,9 @@
 #ifndef TM
 #define TM 16  // tokens per sub-group (16 or 32)
 #endif
+#if TM != 16 && TM != 32
+#error "TM must be 16 or 32"
+#endif
 #define TMV (TM / 16)
 #ifndef CG
 #define CG 1  // 16-column groups per work-group

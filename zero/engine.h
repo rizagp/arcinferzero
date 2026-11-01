@@ -2065,8 +2065,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     static const std::string e = getenv("ARC_GEMM_DEFS") ? std::string(" ") + getenv("ARC_GEMM_DEFS") : std::string();
     return e;
   }
-  static int gemm_tm() {
-    static const int tm = getenv("ARC_GEMM_TM") ? std::max(1, atoi(getenv("ARC_GEMM_TM"))) : 16;
+  static int gemm_tm() {  // (16 or 32: gemm.cl keeps TM / 16 activation vectors per lane)
+    static const int tm = [] {
+      const int t = getenv("ARC_GEMM_TM") ? atoi(getenv("ARC_GEMM_TM")) : 16;
+      if (t == 16 || t == 32) return t;
+      fprintf(stderr, "arcinferzero: ARC_GEMM_TM=%d not supported (16 or 32): 16\n", t);
+      return 16;
+    }();
     return tm;
   }
   static const char* xmx_defs() {
@@ -2095,8 +2100,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   //  must fail)
   bool xmx_ = false;
   bool xmx_check() {
-    if (gemm_tm() % 8) return false;
-    const int M = 64, N = 32, K = 1024, nsb = K / 256, ng = 2 * N / 16;  // (weights for 2 * N rows: two experts)
+    // (M: 4 tiles of tm tokens, so every work-group shape below covers at least one; 64 with the default tm 16)
+    const int M = 4 * gemm_tm(), N = 32, K = 1024, nsb = K / 256, ng = 2 * N / 16;  // (weights for 2 * N rows: two experts)
     uint32_t seed = 12345;
     auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
     auto rndf = [&](float lo, float span) { return lo + (float)(rnd() % 10000) * (span / 10000.0f); };
