@@ -38,6 +38,20 @@ before they reach the residual stream:
 2. The GPUs meet at a barrier.
 3. Each GPU adds every part to its residual stream, in rank order.
 
+That is for generation (1-63 rows: the cost of a sum is its latency). Prompt chunks (64 rows or more, since
+2026-11-02) sum through a **reduce-scatter in f16** instead, as the bytes are what costs there (4 B60s, 35B: 65-80 %
+of a split prompt went to the sums):
+1. Each GPU converts its part to f16 and copies every row but its own block (rows `[T·r/N, T·(r+1)/N)`) to host memory.
+2. After a barrier, each GPU sums its own block over all parts (its own part in f32, in rank order), rounds the sum
+   to f16 once, adds that value to its residual stream and copies it to host memory.
+3. After a second barrier, each GPU adds the other blocks' sums.
+
+Per GPU and sum about 3 (N - 1) / N part sizes of f16 cross PCIe, against 1 + N part sizes of f32 before: 4.4x fewer
+bytes on 4 GPUs, 4x on 2. `ARC_TP_SUM=f32` keeps the one-step f32 sum for prompts too. Accuracy (ARC_TP_SIM on the
+laptop, 1,687-token prompt + 8 tokens, KL against one GPU): 27B mean 0.0016-0.0018, max 0.0035 (f32 sums 0.0009-0.0012),
+greedy text the same; 35B within the split's own noise (f16 vs f32 sums at the same split 0.0025-0.019 at the prompt's
+last position, 2 vs 4 GPUs with f32 sums 0.0168).
+
 All GPUs compute the same float sum, so their residual streams stay identical. Host memory is used because Arc B60s on
 Windows have no peer access to each other: `mgpu_probe` on 4× B60 showed every direct copy failing, and copies through
 host memory taking ~16 µs for 20 KB.
@@ -177,5 +191,5 @@ One B60 runs the 27B IQ3_S at 21.5 tok/s, reading 11.3 GB per token in 45.3 ms. 
   B rows instead of 1, so their cost per token falls), DeltaNet snapshots, the prompt cache and MTP on a split model.
 - MoE models: Flash Next (hyper-connections, its two-pass precise mode) and Gemma 4 26B; the 35B is split (above).
   Measured numbers of the 35B over B60s.
-- Fewer host round trips per sum (an event the next GPU waits on instead of a host wait and a barrier), and f16 parts
-  for prompts (half the bytes).
+- Fewer host round trips per sum (an event the next GPU waits on instead of a host wait and a barrier). The f16
+  reduce-scatter for prompts is in (2026-11-02), not yet measured on B60s.

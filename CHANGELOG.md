@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-02: multi-GPU prompt sums in f16, reduce-scatter
+
+- **A split model's prompt chunks sum through a reduce-scatter in f16** (`zero/mgpu`, `tp.cl`): each GPU sums one
+  block of rows over all parts and shares that sum, instead of every GPU reading every part in f32. About 4.4x fewer
+  bytes through host memory per sum on 4 GPUs, 4x on 2: on 4x B60 the split 35B's prompt spent 65-80 % of its time
+  in the sums and ran slower than one GPU. Not yet measured there. Generation keeps the one-step f32 sum;
+  `ARC_TP_SUM=f32` for the old sum everywhere. KL against one GPU (laptop, split simulated): 27B 0.0016-0.0018 mean
+  (f32 sums 0.0009-0.0012), the same greedy text; one GPU unchanged (bit-identical).
+
 ## 2026-11-02: 128 registers for the prompt GEMM on discrete GPUs
 
 - **Arc B-series (one card or several): the dense prompt GEMM now uses 128 registers per thread**, from the B60

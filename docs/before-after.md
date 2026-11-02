@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-02, split prompts sum through an f16 reduce-scatter** (multi-GPU only). Bytes through host memory per
+  sum and GPU, in f32 part sizes: 4 GPUs 5 -> 1.1 (4.4x fewer), 2 GPUs 3 -> 0.75 (4x). Speed: to be measured on the 4x
+  B60 (before: 35B prompt 3,232 tok/s on 1 GPU, 2,040-2,122 on 2-4). Accuracy, ARC_TP_SIM on the laptop, 1,687-token
+  prompt + 8 tokens against one GPU: 27B KL mean 0.0016 (2 GPUs) / 0.0018 (4), max 0.0035, before 0.0012 / 0.0009;
+  greedy text the same. One GPU: bit-identical to the build before.
+
 - **2026-11-02, dense prompt GEMM with 128 registers per thread on discrete GPUs** (measured by the owner of 4x Arc
   Pro B60, issue #4; one B60, Qwen3.8 27B IQ3_S, 4,096-token prompt, best of 3): 449.7 -> 617.5 tok/s (+37 %); the XMX
   check passed. DP4a only: 406.5. The MoE expert GEMMs keep 256 (`ARC_MOE_GRF=128` to measure). iGPUs, with XMX or

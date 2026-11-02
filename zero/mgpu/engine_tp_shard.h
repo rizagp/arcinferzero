@@ -48,6 +48,8 @@
   std::unordered_map<std::string, GgufTensor> tp_cut_;     // (name -> this shard's part)
   using TpRuns = std::vector<std::pair<int64_t, int64_t>>;  // [begin, end) ranges, in order
   cl_kernel k_tp_add_ = nullptr, k_tp_pack_ = nullptr;
+  cl_kernel k_tp_half_ = nullptr, k_tp_rs_sum_ = nullptr, k_tp_rs_add_ = nullptr;  // (the f16 reduce-scatter)
+  cl_mem tp_h_ = nullptr;  // (f16 [max_chunk][E]: this GPU's part to send, then its rows' sums)
   cl_mem tp_ab_ = nullptr;  // (a split model's padded alpha / beta rows, see gdn_ab)
   cl_mem tp_host_ = nullptr;  // (the shared host memory as this GPU's kernel argument)
   cl_mem tp_part_ = nullptr;                                // (the partial output of a projection, [max_chunk][E])
@@ -231,6 +233,8 @@
     tp_reduce(cur_T_);
   }
   void tp_reduce(int rows);  // (zero/engine_tp.h)
+  void tp_reduce_rs(int rows);
+  void tp_wrap_host();
   // rows of a matrix the GEMM must see in whole tiles of 16: a split model's DeltaNet alpha / beta (2 x its v-heads:
   // 24 for the 27B's 12 over 4 GPUs) padded with rows of zeros; unchanged in one piece
   int tp_rows(int n) const { return tp_on() ? (n + 15) / 16 * 16 : n; }
@@ -260,6 +264,9 @@
     progs_.push_back(p);
     k_tp_add_ = cl_.kernel(p, "tp_add");
     k_tp_pack_ = cl_.kernel(p, "tp_pack");
+    k_tp_half_ = cl_.kernel(p, "tp_half");
+    k_tp_rs_sum_ = cl_.kernel(p, "tp_rs_sum");
+    k_tp_rs_add_ = cl_.kernel(p, "tp_rs_add");
     k_tp_moe_mask_ = cl_.kernel(p, "tp_moe_mask");
     k_tp_moe_scatter_ = cl_.kernel(p, "tp_moe_scatter");
     k_tp_moe_tiles1_ = cl_.kernel(p, "tp_moe_tiles1");

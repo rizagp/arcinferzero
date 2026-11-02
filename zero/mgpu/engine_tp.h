@@ -42,16 +42,31 @@ struct TpComm {
   }
 };
 
+inline void Engine::tp_wrap_host() {
+  if (tp_host_) return;
+  TpComm& c = *tp_;
+  tp_host_ = zrt::wrap(c.host, (size_t)2 * c.n * c.slot_floats * 4);
+  mems_.push_back(tp_host_);
+}
+
+// From this many rows (prompt chunks) the f16 reduce-scatter; fewer (a generated token, drafts) keep the one-step f32
+// sum, whose cost is its latency, not its bytes. ARC_TP_SUM=f32: the one-step f32 sum always (the build before).
+inline bool tp_rs_rows(int rows, int n) {
+  static const int min_rows = [] {
+    const char* e = getenv("ARC_TP_SUM");
+    return e != nullptr && std::string(e) == "f32" ? INT_MAX : 64;
+  }();
+  return rows >= min_rows && rows >= n;
+}
+
 inline void Engine::tp_reduce(int rows) {
   TpComm& c = *tp_;
   const int r = opt.tp_rank, E = hp.n_embd;
   const size_t n = (size_t)rows * E;
   if (n > c.slot_floats) throw std::runtime_error("tensor parallel: more rows than the shared buffer holds");
   tp_build();
-  if (!tp_host_) {
-    tp_host_ = zrt::wrap(c.host, (size_t)2 * c.n * c.slot_floats * 4);
-    mems_.push_back(tp_host_);
-  }
+  tp_wrap_host();
+  if (tp_rs_rows(rows, c.n)) return tp_reduce_rs(rows);
   const int h = c.half[r];
   const cl_ulong off = (cl_ulong)h * c.n * c.slot_floats, stride = c.slot_floats;
   ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, c.host + off + (size_t)r * stride, tp_part_->ptr, n * 4, nullptr, 0, nullptr));
@@ -64,6 +79,50 @@ inline void Engine::tp_reduce(int rows) {
   set_args(k_tp_add_, 0, x_, tp_host_, off, nn, np, stride);
   size_t g1 = (n + 255) / 256 * 256, l1 = 256;
   run("tp_add", k_tp_add_, 1, &g1, &l1);
+  c.half[r] = h ^ 1;
+}
+
+// The f16 reduce-scatter (prompt chunks). GPU r owns rows [rows * r / N, rows * (r + 1) / N). In the half of the
+// buffer this sum uses (N f32 slots: room for N f16 parts and the f16 sums):
+//  1. its part to f16; every row but its own to its slot (put)
+//  2. after a barrier: its rows summed over all parts (tp_rs_sum), added to x, the sums to the shared sums (res)
+//  3. after a second barrier: the other GPUs' sums added to x (tp_rs_add)
+// Per GPU and sum about 3 (N - 1) / N part sizes of f16 cross PCIe, against 1 + N in f32 for the one-step sum: 4 B60s
+// 2.25 f16 (1.1 f32) instead of 5 f32 part sizes, 4.4x fewer bytes; 2 GPUs 4x. (Why one buffer half is enough: a GPU writes this half
+// again two sums later, after a barrier the others reach only once their GPU finished reading it.)
+inline void Engine::tp_reduce_rs(int rows) {
+  TpComm& c = *tp_;
+  const int r = opt.tp_rank, E = hp.n_embd, N = c.n;
+  const size_t n = (size_t)rows * E, i0 = (size_t)rows * r / N * E, i1 = (size_t)rows * (r + 1) / N * E;
+  if (!tp_h_) tp_h_ = buf((size_t)max_chunk * E * 2);
+  const int h = c.half[r];
+  const size_t stride = c.slot_floats;  // (halves per part)
+  char* region = (char*)(c.host + (size_t)h * N * c.slot_floats);
+  char* put = region + (size_t)r * stride * 2;
+  char* res = region + (size_t)N * stride * 2;
+  char* dev = (char*)tp_h_->ptr;
+  int nn = (int)n, a = (int)i0, b = (int)i1;
+  auto barrier = [&] {
+    const auto t0 = std::chrono::steady_clock::now();
+    zrt::sync();
+    c.barrier();
+    c.wait_ms[r] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  };
+  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn);
+  size_t g1 = (n + 255) / 256 * 256, l1 = 256;
+  run("tp_sum", k_tp_half_, 1, &g1, &l1);
+  if (i0 > 0) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, put, dev, i0 * 2, nullptr, 0, nullptr));
+  if (n > i1) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, put + i1 * 2, dev + i1 * 2, (n - i1) * 2, nullptr, 0, nullptr));
+  barrier();
+  const cl_ulong put_off = (cl_ulong)h * N * c.slot_floats * 2, str = stride, res_off = put_off + (cl_ulong)N * stride;
+  set_args(k_tp_rs_sum_, 0, x_, tp_part_, tp_host_, put_off, str, N, r, a, b, tp_h_);
+  size_t g2 = (i1 - i0 + 255) / 256 * 256;
+  if (i1 > i0) run("tp_sum", k_tp_rs_sum_, 1, &g2, &l1);
+  if (i1 > i0) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, res + i0 * 2, dev + i0 * 2, (i1 - i0) * 2, nullptr, 0, nullptr));
+  barrier();
+  ++c.reduces[r];
+  set_args(k_tp_rs_add_, 0, x_, tp_host_, res_off, nn, a, b);
+  run("tp_sum", k_tp_rs_add_, 1, &g1, &l1);
   c.half[r] = h ^ 1;
 }
 

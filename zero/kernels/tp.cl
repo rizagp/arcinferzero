@@ -10,6 +10,36 @@ __kernel void tp_add(__global float* x, __global const float* p, ulong off, int 
   x[i] = s;
 }
 
+// Prompt chunks (zero/mgpu/engine_tp.h, tp_reduce_rs): a reduce-scatter in f16. Each GPU sends the other GPUs' rows of
+// its part, sums its own rows over every part, sends that sum, and adds the others' sums. Half the bytes of f32 and
+// each part's row read once in all, not once per GPU. (half pointers: vload_half / vstore_half need no cl_khr_fp16)
+
+// f32 -> f16, rounded to nearest even
+__kernel void tp_half(__global const float* src, __global half* dst, int n) {
+  const int i = get_global_id(0);
+  if (i < n) vstore_half(src[i], i, dst);
+}
+
+// this GPU's values [i0, i1): the parts summed in rank order (its own from its memory in f32, the others' in f16 from
+// host memory), the sum rounded to f16 once into res (sent to the others) and that same value added to x, as the
+// other GPUs add it: every GPU's residual stream stays identical
+__kernel void tp_rs_sum(__global float* x, __global const float* part, __global const half* put, ulong put_off, ulong stride,
+                        int np, int me, int i0, int i1, __global half* res) {
+  const int i = i0 + get_global_id(0);
+  if (i >= i1) return;
+  float s = 0.0f;
+  for (int k = 0; k < np; ++k) s += k == me ? part[i] : vload_half(put_off + k * stride + i, put);
+  vstore_half(s, i, res);
+  x[i] += vload_half(i, res);
+}
+
+// the other GPUs' sums (every value outside [i0, i1)) added to x
+__kernel void tp_rs_add(__global float* x, __global const half* res, ulong res_off, int n, int i0, int i1) {
+  const int i = get_global_id(0);
+  if (i >= n || (i >= i0 && i < i1)) return;
+  x[i] += vload_half(res_off + i, res);
+}
+
 // Mixture of experts split by expert (each shard holds experts [e0, e1), global ids everywhere): the routing as in
 // one piece, then only this shard's (token, expert) pairs get slots and tiles; the combine sums the shard's experts
 // into a partial output that tp_reduce adds over the shards.
