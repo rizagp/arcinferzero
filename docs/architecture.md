@@ -79,9 +79,13 @@ zero/       the engine: engine.h (setup, memory, slots, sessions, dispatch) with
             engine_qwen.h, engine_flashnext.h, engine_moe.h, engine_drafters.h (forward passes by model family,
             included inside class Engine), clrt.h (OpenCL-style calls on Level Zero), xcache.h +
             expert_store.h (MoE experts on the SSD, GPU cache), serverz.cpp / runz.cpp, vision_gemma4v.h /
-            vision_qwen3vl.h / audio_gemma4a.h (encoders), kernels/ (gemm.cl DP4a GEMM, decode.cl JIT decode + GEMV,
-            ops.cl norms / DeltaNet / attention / quantization, moe.cl expert routing and GEMMs), npu/ (the NPU
-            next to the GPU: engine_npu.h, npu_rt.h graph runtime, npu_ir.h OpenVINO IR writer, probes), grf_probe.cpp
+            vision_qwen3vl.h / audio_gemma4a.h (encoders), kernels/ (gemm.cl DP4a / int8 XMX GEMM, gemm_x16.cl
+            f16 XMX GEMM (discrete GPUs, ARC_X16), decode.cl JIT decode + GEMV, ops.cl norms / DeltaNet / attention /
+            quantization, moe.cl expert routing and GEMMs, tp.cl the multi-GPU sums), npu/ (the NPU next to the
+            GPU: engine_npu.h, npu_rt.h graph runtime, npu_ir.h OpenVINO IR writer, probes), xe2/ (engine_xe2.h:
+            switches and the f16 XMX GEMM for discrete Arc cards only), mgpu/ (one model over several GPUs:
+            engine_tp.h TpEngine and the sums, engine_tp_shard.h what a shard holds, tp_mirror.h the server's
+            mirrored calls), mgpu_probe.cpp / event_probe.cpp (what syncing GPUs costs), grf_probe.cpp
 tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cache.h / server_chat.h /
             server_catalog.h / server_load.h, api_compat.h (Anthropic / Ollama / Responses formats), web_tools.h (web
             search / page fetch), server_files.h (the web UI's chat folders), doc_writer.h (DOCX / PDF / RTF
@@ -90,7 +94,8 @@ tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cac
             Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.py (ISTA GSQ checkpoint -> GGUF),
             tok_test.cpp, chat_render.cpp, gguf_dump.cpp, clinfo.cpp
 bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, peak_bench, ...), run_bench.ps1
-            (comparison with llama.cpp), prompt_bench.py, review_data.py (review data)
+            (comparison with llama.cpp), prompt_bench.py, review_data.py (review data); gemm_sweep.ps1 /
+            decode_try.ps1 / replay_probe.cpp (settings and launch costs to measure on a discrete card)
 scripts/    arc-server.ps1 (server in the background), arc-launcher.ps1 (launcher window, arc-launcher.cmd),
             pi-arc.ps1 (Pi launcher), install-pi.ps1 (commands and Pi's model list), pi-models.ps1 (writes that list)
 tests/      run_tests.ps1 and its reference data

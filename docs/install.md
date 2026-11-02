@@ -59,7 +59,7 @@ hand.
 | | Needed | Tested with |
 |---|---|---|
 | OS | Windows 11, 64-bit | Windows 11 Home 25H2 (build 26200) |
-| GPU | Intel Core Ultra with Intel Arc integrated graphics: Meteor Lake / Arrow Lake (Xe-LPG), and Lunar Lake / Panther Lake (Xe2 / Xe3: the 8-lane kernels are built with 16 lanes there, and the prompt GEMMs use XMX after a start-up check; a user ran the 35B on an Arc B390 at 1,182 tok/s prompt, 24 tok/s generation, before the XMX path existed). The engine needs OpenCL 3.0 with `cl_intel_subgroups` and `cl_khr_integer_dot_product` (DP4a). Discrete Arc GPUs are not supported. | Core Ultra 5 125H, Arc iGPU 112 EU |
+| GPU | Intel Core Ultra with Intel Arc integrated graphics: Meteor Lake / Arrow Lake (Xe-LPG), and Lunar Lake / Panther Lake (Xe2 / Xe3: the 8-lane kernels are built with 16 lanes there, and the prompt GEMMs use XMX after a start-up check; a user ran the 35B on an Arc B390 at 1,182 tok/s prompt, 24 tok/s generation, before the XMX path existed). The engine needs OpenCL 3.0 with `cl_intel_subgroups` and `cl_khr_integer_dot_product` (DP4a). Discrete Arc B-series cards (B580, Pro B60, Pro B70) work experimentally, one or several for one model (`--gpus N`): [xe2-tuning.md](xe2-tuning.md), [multi-gpu.md](multi-gpu.md). The kernels are compiled through OpenCL, so a card OpenCL does not list (an eGPU without Resizable BAR, as a user reports) cannot run them unless another card of the same kind is listed. | Core Ultra 5 125H, Arc iGPU 112 EU; Arc Pro B60 x1-4 (a user) |
 | Memory | 16 GB works for the 4B / E4B models; 32 GB for the 12B–35B models and long contexts. The iGPU can use part of the RAM (`bin\clinfo.exe`, "global mem": set in Intel Graphics Software; 20.4 GiB of 32 GB on the test laptop now); arcinferzero uses all of it but 1.2 GiB for the driver, the rest of the RAM stays with Windows. Each model's context follows that setting. | 32 GB LPDDR5x-6400 |
 | CPU | AVX2 (every Core Ultra has it; the build uses `/arch:AVX2`) | |
 | Graphics driver | Intel Arc & Iris Xe graphics driver (it contains the OpenCL runtime; nothing else to install) | 32.0.101.9033 |
@@ -99,6 +99,10 @@ command-line tool for runs, benchmarks and accuracy checks) and `bin\clinfo.exe`
 read `zero\kernels\*.cl` and `webui\` from there. They are built with the C++ runtime inside (`/MT`) and the OpenMP
 runtime `vcomp140.dll`, which `build.ps1` copies into `bin\` from Visual Studio's redistributable folder: the folder
 runs on a PC without Visual Studio or the Visual C++ Redistributable.
+
+For discrete cards, the package also holds `mgpu_probe.exe`, `event_probe.exe` and `bench\replay_probe.exe` (what
+moving data and syncing between GPUs, and launching kernels, cost). To build them:
+`.\build.ps1 zero\mgpu_probe.cpp zero\event_probe.cpp bench\replay_probe.cpp`.
 
 Check that the GPU is usable:
 

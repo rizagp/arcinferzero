@@ -245,6 +245,21 @@ file in `%USERPROFILE%\.arcinferzero\zero\models` works too.
 Stop the server (`arc-server stop`) before using the laptop for other heavy GPU work (games, video editing), or
 before moving or rebuilding the arcinferzero folder.
 
+**Discrete Arc cards (experimental).** On a PC with Arc B-series cards (B580, Pro B60, Pro B70), the same server
+runs one model over several of them:
+
+```powershell
+.\bin\serverz.exe -m <model.gguf> --gpus 4 --slots 4
+```
+
+- It supports Qwen dense models and the 35B-A3B.
+- A model that cannot be split loads on one GPU.
+- MTP / DFlash2, images and the disk caches are off on a split model for now.
+- If a GPU hangs, `/health` answers 503 until a restart.
+
+What to measure on such a card, and the switches: [docs/xe2-tuning.md](docs/xe2-tuning.md). The split and its
+failsafes: [docs/multi-gpu.md](docs/multi-gpu.md).
+
 ## 4. Web UI and other apps
 
 While the server is running:
