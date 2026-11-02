@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-02 (night): an f16 XMX prompt GEMM for discrete GPUs (`ARC_X16=1`)
+
+- **`kernels/gemm_x16.cl`**: the prompt GEMM for W8 weights (the 27B's IQ3_S) in f16 on the XMX engines. Weights are
+  decoded to f16 once per 16 columns with their scales applied, activations are made f16 once per GEMM, and one
+  DPAS accumulator per 8 tokens runs over the whole row. The int8 XMX kernel rescaled every 32-value block on the
+  vector unit, so it was only ~10 % faster than DP4a on a B60.
+- Off until a B60 measures it: `ARC_X16=1` on a discrete GPU with XMX, checked against DP4a at start.
+  `bench/gemm_sweep.ps1` has rows for it (X16, X16TM, X16GRF). Checked on the laptop with DPAS emulated
+  (`ARC_X16_TRY=1`): KL against DP4a 0.00069 on the 27B. iGPUs: unchanged, logits bit-identical.
+
 ## 2026-11-02 (night): fixes from a second audit (DeepSeek, static)
 
 - **A split shard out of memory ended the server** instead of loading the model on one GPU: its allocations now

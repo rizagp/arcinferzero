@@ -101,6 +101,38 @@ A replay saving several us a kernel there would make it worth building (35B: up 
 Whatever is built for the B-series goes in `zero/xe2/` and kernels of its own, chosen on discrete GPUs only: the
 iGPU kernels stay as they are.
 
+## 6. The f16 XMX prompt GEMM (`ARC_X16=1`, 2026-11-02)
+
+The int8 XMX GEMM (`gemm.cl -DXMX`) was only ~10 % faster than DP4a on a B60 (27B: 450 vs 406 tok/s). Every 16- or
+32-value block of a W8 weight row has its own scale, so each int8 DPAS (8 tokens x 16 columns x 32 values) starts
+from zero and its 8 results are scaled one by one on the vector unit: about as much work as the DP4a dot products it
+replaced. At 617 tok/s the 27B's prompt does ~33 int8 TOPS, about 17 % of the B60's XMX peak.
+
+`kernels/gemm_x16.cl` works like the f16 GEMMs of vLLM and llama.cpp's SYCL backend instead:
+- each 16-column group's weights are decoded to f16 once with their scales applied (times 256, so small weights stay
+  normal f16) and used for 8 to 32 tokens;
+- the activations are made f16 once per GEMM (`act_half`), each row divided by its largest scale, so every value
+  stays within +-127 whatever the activations;
+- one f32 DPAS accumulator per 8 tokens runs over the whole row (`intel_sub_group_f16_f16_matrix_mad_k16`);
+- the row's scale is multiplied back at the end.
+
+It covers the W8 layouts (100..103). That is the 27B's IQ3_S, decoded just in time. Other weight types keep
+`gemm.cl`.
+
+The kernel is off until a B60 measures it: `ARC_X16=1` turns it on, on a discrete GPU with XMX only. At start it is
+checked against the DP4a kernel on random data: every W8 layout, per-32 and per-256 activation scales, stored,
+split-K, added and fused SwiGLU. It is taken only when the error is under 0.5 % of the result's size. f16 rounding
+gives ~0.03 %; a wrong layout gives ~100 %.
+
+`ARC_X16_TRY=1` runs the kernel anywhere, with DPAS emulated by shuffles where the GPU has none. That is how it was
+checked on the 125H laptop (Qwen3.8 27B IQ3_S): the check's largest error was 3.1e-4, and the next-token top-10 was
+unchanged.
+
+```powershell
+.\bench\gemm_sweep.ps1 -Models C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # rows X16, X16TM, X16GRF
+$env:ARC_X16=1; .\bin\runz.exe C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --bench-pp 4096 --n 64; Remove-Item Env:ARC_X16
+```
+
 ## Not done yet (needs an Xe2 card to develop on)
 
 - An XMX kernel built around the 2D block loads of Xe2 (`cl_intel_subgroup_2d_block_io`).

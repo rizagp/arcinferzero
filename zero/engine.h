@@ -244,6 +244,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       xmx_ = xmx_check();
       if (xmx_) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)\n");
     }
+    if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
     {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
       // (kept on the host and read row by row: the token embedding when the model has its own output head, Gemma 4
       //  E2B / E4B's per-layer embeddings; E4B's bar stalled at ~60 % and jumped with them counted)
@@ -2080,8 +2081,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       asr_src_ = read_file(opt.kernel_dir + "/asr.cl");
       if (asr_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/asr.cl");
     }
+    if (which == "x16" && x16_src_.empty()) {  // (the f16 XMX prompt GEMM of discrete GPUs, zero/xe2/engine_xe2.h)
+      x16_src_ = read_file(opt.kernel_dir + "/gemm_x16.cl");
+      if (x16_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gemm_x16.cl");
+    }
     const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_src_ : which == "moe" ? moe_src_
-                             : which == "asr" ? asr_src_ : ops_src_;
+                             : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : ops_src_;
     auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);
@@ -3774,6 +3779,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         stage_owner_[w.role] = &w;
       }
     }
+    if (x16_ && x16_matmul(name, w, wq, wh, Mp, C, ldc, c_off, a, act32)) return;  // (zero/xe2/engine_xe2.h)
     const int cg = xe2_cg_for(w.N);
     cl_kernel k = gemm_kernel(w.gemm_qtype, act32, -1, cg);
     int M = Mp, N = w.N, K = w.K;

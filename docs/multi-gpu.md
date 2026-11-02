@@ -72,7 +72,8 @@ The limits:
 - N at most half the k-heads, at most the kv-heads, at most the FFN width / 256;
 - 2 to 4 GPUs for the 27B and 4B.
 
-MTP / DFlash2 drafting, slots (batch decoding) and the NPU are off in a split model.
+MTP / DFlash2 drafting and the NPU are off in a split model. Slots (batched decoding) work since 2026-11-02 (see
+below).
 
 ## Mixture of experts (Qwen3.6 35B-A3B, 2026-11-01)
 

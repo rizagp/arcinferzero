@@ -80,6 +80,16 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-02, an f16 XMX prompt GEMM for W8 weights** (`ARC_X16=1`, discrete GPUs with XMX; off by default
+  until measured). Before, on a Pro B60, 27B 4K prompt: int8 XMX 450 tok/s, DP4a 406, int8 XMX with 128 registers
+  617. After: to be measured on the B60. This laptop has no XMX, so DPAS was emulated (`ARC_X16_TRY=1`) on Qwen3.8 27B
+  IQ3_S, `--perplexity USAGE.md`, 4 chunks of 512:
+  - perplexity 6.2847 -> 6.2797;
+  - KL against the DP4a path: mean 0.00069, max 0.0178;
+  - same top token: 98.6 %.
+  The start-time check's largest error was 3.1e-4 of the result. Without `ARC_X16` the logits are bit-identical
+  (35B, one GPU).
+
 - **2026-11-02, batched decoding over a split model** (multi-GPU only). Laptop, ARC_TP_SIM (one iGPU: ratios only),
   `runz --bench-batch 4`: 27B over 2 "GPUs" 4.0 -> 12.4 tok/s together with 4 slots (3.26x); 35B over 4 10.2 -> 24.6
   (2.41x; one GPU 2.82x). Batched logits bit-identical to each slot alone (8 steps x 4 slots); one GPU bit-identical
