@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-02 (late): B60 checklist items
+
+- **Split MoE prompts: gate / up through moe_rg** as the down projection already was. Before, gate / up ran the
+  per-tile kernel. Laptop (simulated 2-GPU split, 35B, 1K prompt): 498.7 -> 511.9 tok/s; KL to one GPU 0.0113 ->
+  0.0066. `ARC_TP_RG_GU=0`: as before.
+- `ARC_GEMV_MT_GRF=128` (the 2-8 token GEMV's register file, discrete GPUs) and `ARC_TP_RS_MIN=N` (the f16
+  reduce-scatter's row threshold), for measuring on B60s.
+- The XMX checks run once per process, not once per GPU of a split model.
+- `tp_half` no longer writes a GPU's own rows (only range-checks them). Bit-identical.
+- One GPU: logits bit-identical; split 27B and split 35B with gate / up per tile: bit-identical to before.
+
 ## 2026-11-02 (night): an f16 XMX prompt GEMM for discrete GPUs (`ARC_X16=1`)
 
 - **`kernels/gemm_x16.cl`**: the prompt GEMM for W8 weights (the 27B's IQ3_S) in f16 on the XMX engines. Weights are

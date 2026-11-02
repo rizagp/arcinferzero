@@ -133,6 +133,14 @@ unchanged.
 $env:ARC_X16=1; .\bin\runz.exe C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --bench-pp 4096 --n 64; Remove-Item Env:ARC_X16
 ```
 
+## 7. Smaller switches (2026-11-02)
+
+- `ARC_GEMV_MT_GRF=128`: the 2-8 token GEMV (MTP / DFlash2 verification, batched slots) with the default register
+  file instead of 256 registers per thread. Discrete GPUs only. `bench\decode_try.ps1` has a row for it
+  ("mtp MT_GRF=128").
+- The XMX checks run once per process. A split model's GPUs are the same device, and each shard checked again: 4
+  B60s took 8.7-14.9 s to load.
+
 ## Not done yet (needs an Xe2 card to develop on)
 
 - An XMX kernel built around the 2D block loads of Xe2 (`cl_intel_subgroup_2d_block_io`).

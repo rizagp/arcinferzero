@@ -16,12 +16,13 @@ __kernel void tp_add(__global float* x, __global const float* p, ulong off, int 
 
 // f32 -> f16, rounded to nearest even. A value beyond lim (65504 / GPUs: the sum of every GPU's part must fit f16 too)
 // or not a number sets *flag: then every GPU sums this projection in f32 instead (tp_reduce_rs)
-__kernel void tp_half(__global const float* src, __global half* dst, int n, __global int* flag, float lim) {
+// (this GPU's own rows [i0, i1) are only checked: tp_rs_sum reads them in f32 and writes its sums over them)
+__kernel void tp_half(__global const float* src, __global half* dst, int n, __global int* flag, float lim, int i0, int i1) {
   const int i = get_global_id(0);
   if (i >= n) return;
   const float v = src[i];
   if (!(fabs(v) <= lim)) *flag = 1;
-  vstore_half(v, i, dst);
+  if (i < i0 || i >= i1) vstore_half(v, i, dst);
 }
 
 // this GPU's values [i0, i1): the parts summed in rank order (its own from its memory in f32, the others' in f16 from

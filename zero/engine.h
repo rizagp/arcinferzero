@@ -241,8 +241,18 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: discrete cards only, B580 / B60 and
       // the multi-GPU shards on them; iGPUs with XMX too, Lunar / Arrow Lake, keep the iGPU kernels)
       xe2_ = !zrt::integrated() || getenv("ARC_XMX_TRY") != nullptr;
-      xmx_ = xmx_check();
-      if (xmx_) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)\n");
+      // (once per process: a split model's GPUs are all the same device (ClRt::open_devices), the check's settings
+      //  come from the environment; 4 B60s loaded in 8.7-14.9 s, each shard checking again)
+      static std::mutex xmx_mu;
+      static int xmx_known = -1;
+      {
+        std::lock_guard<std::mutex> g(xmx_mu);
+        if (xmx_known < 0) {
+          xmx_known = xmx_check() ? 1 : 0;
+          if (xmx_known) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)\n");
+        }
+      }
+      xmx_ = xmx_known == 1;
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
     {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
@@ -3757,7 +3767,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       }
       // (two-pass mode, 2-4 tokens: gemv_mt_v with the residuals as TB further slots, -DQ2F, both passes in one launch)
       const bool fuse = q2_fuse_ && vk && a <= 1;
-      cl_kernel k = kernel("decode", std::string("-cl-intel-256-GRF-per-thread ") + "-DQT=" +
+      cl_kernel k = kernel("decode", xe2_gemv_mt_grf() + "-DQT=" +
                                          std::to_string(w.type) + " -DGROWS=" + std::to_string(gr) + " -DTB=" +
                                          std::to_string(fuse ? 2 * tb : tb) + head_defs(w) + mt_lazy_opt() +
                                          (fuse ? " -DQ2F" + q2_defs_ : std::string()),

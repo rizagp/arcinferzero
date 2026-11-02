@@ -44,6 +44,12 @@
     static const std::string g = grf_env("ARC_GEMV_GRF");
     return xe2_ ? g : std::string();
   }
+  // ARC_GEMV_MT_GRF=128: the 2-8 token GEMV (gemv_mt / gemv_mt_v: MTP and DFlash2 verification, batched slots) with
+  // the default register file instead of 256 registers per thread (256 everywhere else, and always on the iGPUs)
+  std::string xe2_gemv_mt_grf() const {
+    static const bool g128 = getenv("ARC_GEMV_MT_GRF") && std::string(getenv("ARC_GEMV_MT_GRF")) == "128";
+    return xe2_ && g128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+  }
 
   // ---- the f16 XMX prompt GEMM (kernels/gemm_x16.cl) for the W8 layouts (the 27B's IQ3_S, decoded just in time).
   // Off until measured on a B60: ARC_X16=1 on a discrete GPU with XMX. ARC_X16_TRY=1 anywhere, DPAS emulated where
@@ -74,10 +80,16 @@
     const bool on = getenv("ARC_X16") && atoi(getenv("ARC_X16")) != 0 && cl_.xmx && !zrt::integrated();
     if (!tr && !on) return;
     x16_emu_ = !cl_.xmx;
-    x16_ = x16_check();
-    if (x16_)
-      fprintf(stderr, "arcinferzero: f16 XMX on for the W8 prompt GEMMs%s (results checked against DP4a)\n",
-              x16_emu_ ? " (DPAS emulated: tests)" : "");
+    static std::mutex mu;  // (once per process, as xmx_check: a split model's GPUs are all the same device)
+    static int known = -1;
+    std::lock_guard<std::mutex> g(mu);
+    if (known < 0) {
+      known = x16_check() ? 1 : 0;
+      if (known)
+        fprintf(stderr, "arcinferzero: f16 XMX on for the W8 prompt GEMMs%s (results checked against DP4a)\n",
+                x16_emu_ ? " (DPAS emulated: tests)" : "");
+    }
+    x16_ = known == 1;
   }
   // aq_ / asc_ (act32: scales per 32 values, else per 256) of Mp rows to f16 in x16_ah_, the rows' scales in x16_rs_
   void x16_act(cl_mem aq, cl_mem asc, int Mp, int K, int act32) {

@@ -100,10 +100,13 @@ inline void Engine::tp_wrap_host() {
 
 // From this many rows (prompt chunks) the f16 reduce-scatter; fewer (a generated token, drafts) keep the one-step f32
 // sum, whose cost is its latency, not its bytes. ARC_TP_SUM=f32: the one-step f32 sum always (the build before).
+// ARC_TP_RS_MIN=N: the reduce-scatter from N rows instead of 64 (to measure on B60s; at least the GPU count)
 inline bool tp_rs_rows(int rows, int n) {
   static const int min_rows = [] {
     const char* e = getenv("ARC_TP_SUM");
-    return e != nullptr && std::string(e) == "f32" ? INT_MAX : 64;
+    if (e != nullptr && std::string(e) == "f32") return INT_MAX;
+    const char* m = getenv("ARC_TP_RS_MIN");
+    return m ? std::max(1, atoi(m)) : 64;
   }();
   return rows >= min_rows && rows >= n;
 }
@@ -186,7 +189,7 @@ inline void Engine::tp_reduce_rs(int rows) {
   c.flags[r] = 0;
   const cl_ulong fo = (cl_ulong)r * sizeof(int);
   float lim_n = lim / N;
-  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn, from(tp_flag_, fo), lim_n);
+  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn, from(tp_flag_, fo), lim_n, a, b);
   size_t g1 = (n + 255) / 256 * 256, l1 = 256;
   run("tp_sum", k_tp_half_, 1, &g1, &l1);
   if (i0 > 0) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, put, dev, i0 * 2, nullptr, 0, nullptr));

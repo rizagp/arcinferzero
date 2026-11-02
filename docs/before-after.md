@@ -80,6 +80,10 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-02, split MoE prompts: gate / up through moe_rg** (multi-GPU only). Laptop, ARC_TP_SIM (one iGPU:
+  ratios only), Qwen3.6 35B over 2, `--bench-pp 1024`: 498.7 -> 511.9 tok/s. KL against one GPU, 5 positions with
+  the same context: mean 0.0113 -> 0.0066. One GPU bit-identical; split 27B bit-identical.
+
 - **2026-11-02, an f16 XMX prompt GEMM for W8 weights** (`ARC_X16=1`, discrete GPUs with XMX; off by default
   until measured). Before, on a Pro B60, 27B 4K prompt: int8 XMX 450 tok/s, DP4a 406, int8 XMX with 128 registers
   617. After: to be measured on the B60. This laptop has no XMX, so DPAS was emulated (`ARC_X16_TRY=1`) on Qwen3.8 27B

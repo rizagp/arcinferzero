@@ -47,7 +47,9 @@ of a split prompt went to the sums):
 3. After a second barrier, each GPU adds the other blocks' sums.
 
 Per GPU and sum about 3 (N - 1) / N part sizes of f16 cross PCIe, against 1 + N part sizes of f32 before: 4.4x fewer
-bytes on 4 GPUs, 4x on 2. `ARC_TP_SUM=f32` keeps the one-step f32 sum for prompts too. Accuracy (ARC_TP_SIM on the
+bytes on 4 GPUs, 4x on 2. `ARC_TP_SUM=f32` keeps the one-step f32 sum for prompts too. `ARC_TP_RS_MIN=N` moves the
+64-row threshold, to measure on B60s. A GPU's own block is only range-checked by the f16 conversion (`tp_half`), not
+written: `tp_rs_sum` reads it in f32 (bit-identical, 1/N fewer writes). Accuracy (ARC_TP_SIM on the
 laptop, 1,687-token prompt + 8 tokens, KL against one GPU): 27B mean 0.0016-0.0018, max 0.0035 (f32 sums 0.0009-0.0012),
 greedy text the same; 35B within the split's own noise (f16 vs f32 sums at the same split 0.0025-0.019 at the prompt's
 last position, 2 vs 4 GPUs with f32 sums 0.0168).
@@ -95,6 +97,10 @@ file, cache tables).
 - **Off in a split model:** decode + GEMM for prompt experts (it decodes every expert of a layer; moe_rg runs the
   prompt chunks instead, the same results bit for bit on one GPU), and the cached / missing split of a token's
   experts (ARC_XSPLIT): with experts missing it gave run-to-run differences in a split model, see QUEUE F30.
+- **Gate / up through moe_rg too (2026-11-02).** Until then only the down projection of a split prompt chunk took
+  moe_rg; gate / up ran the per-tile kernel. Laptop, ARC_TP_SIM, 35B over 2, 1,024-token prompt: 498.7 -> 511.9
+  tok/s. KL against one GPU over the 5 positions before the greedy texts part: mean 0.0113 -> 0.0066 (one GPU's
+  long chunks are decode + GEMM, which moe_rg equals). `ARC_TP_RG_GU=0`: per tile as before.
 
 Checked with `ARC_TP_SIM=1` on the laptop (Qwen3.6 35B-A3B UD-IQ4_XS, 1,687 tokens of `docs/architecture.md`, then
 32 greedy tokens):

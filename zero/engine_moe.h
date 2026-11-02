@@ -170,8 +170,12 @@
     // (Gemma 4 26B-A4B, F 704 padded to 768: no decode + GEMM, so gate / up take moe_rg at every chunk size from
     //  rg_min as the down projection does; ARC_G4_RG_GU=0: per tile)
     static const bool g4_rg_gu = !getenv("ARC_G4_RG_GU") || atoi(getenv("ARC_G4_RG_GU")) != 0;
+    // (multi-GPU: no decode + GEMM, so gate / up take moe_rg at every chunk size from rg_min, as the down projection
+    //  already did, instead of the per-tile kernel; ARC_TP_RG_GU=0: per tile as before)
+    static const bool tp_rg_gu = !getenv("ARC_TP_RG_GU") || atoi(getenv("ARC_TP_RG_GU")) != 0;
     // (two passes: every prompt chunk through moe_rg, which runs both; decode + GEMM has one)
-    const bool use_rg = rg_ok && (q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu)),
+    const bool use_rg = rg_ok && (q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
+                                  (tp_moe() && tp_rg_gu)),
                rg_down = rg_ok && (q2g || T < rg_max || !gemm_ok);
     const bool use_gemm = !use_rg && gemm_ok && tm == 16 && T >= gemm_min;
     const std::string xdef = xc_ ? " -DXCACHE" : "";
