@@ -246,9 +246,14 @@ Other failsafes:
 - **The same layout on every GPU:** shards whose GPUs chose another weight layout, chunk or context than GPU 0 would
   run different passes and miss each other's barriers; the load fails with the values to give instead.
 - **`serverz`:** a model that cannot be split (Gemma 4, e.g. for transcripts; Flash Next) or a split that fails to
-  load is loaded on one GPU instead, with a line in the log.
+  load is loaded on one GPU instead, with a line in the log. A shard that runs out of GPU or host memory while it
+  is made counts as such a failure (`zrt::oom_throws`: its allocation throws instead of ending the process).
+  `ARC_TP_OOM=r` (tests) fails shard r's first allocation of 256 MB or more.
 
-While a split model is loaded, GPU 0's other users (Whisper, Qwen3-ASR, images) share its wait limit too.
+Only the split model's own work takes the wait limit (`zrt::tp_guarded`: the shard threads, and the server's thread
+inside a mirrored call). GPU 0's other users (Whisper, Qwen3-ASR, images) wait as always, so a long wait of theirs
+never marks the split model faulty. A faulted split model that is left unfreed gives the GPUs their waits back
+(`TpEngine::disarm`), so the next model loaded does not inherit its limit.
 
 `ARC_TP_HANG=r:k` (tests) makes shard r stop for good at its k-th sum; `ARC_TP_HANG=r:k:wait` makes it throw there as
 a GPU wait that gave up. Laptop, `ARC_TP_TIMEOUT=5`: runz ended with

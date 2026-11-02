@@ -16,6 +16,7 @@
 typedef uint32_t ze_result_t;
 #define ZE_RESULT_SUCCESS 0u
 #define ZE_RESULT_NOT_READY 1u  // (a synchronize whose timeout passed first)
+#define ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY 0x70000002u
 typedef struct _ze_driver_handle_t* ze_driver_handle_t;
 typedef struct _ze_device_handle_t* ze_device_handle_t;
 typedef struct _ze_context_handle_t* ze_context_handle_t;

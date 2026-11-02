@@ -287,6 +287,15 @@ class TpEngine {
   // a wait gave up on a GPU, or a thread was given up on: such a TpEngine is never deleted (TpHold), as a thread
   // still running on it would touch freed memory
   bool faulted() const { return comm_.fault; }
+  // the GPUs' waits back to no limit, no abort, no fault flag: from shutdown, and for a faulted split model that is
+  // left without being freed (TpHold), so the next model on these GPUs does not inherit them
+  void disarm() {
+    for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
+      zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
+      zrt::devs[r]->abort = nullptr;
+      zrt::devs[r]->fault = nullptr;
+    }
+  }
   // Conversation slots (EngineOptions::slots): every shard binds the same slot; forward() feeds the bound one.
   int slot_count() const { return shards_[0]->slot_count(); }
   int batch_rows() const { return shards_[0]->batch_rows(); }
@@ -341,11 +350,20 @@ class TpEngine {
     // made together (kernels built, the XMX check, buffers allocated on several GPUs of one context at once), 3 and 4
     // B60s ended at random in the driver's "Abort was called at 252 line" (issue #4, 2026-10-31).
     // ARC_TP_PARALLEL_LOAD=1: the others together again (faster to load; for tests)
+    const int oom_rank = getenv("ARC_TP_OOM") ? atoi(getenv("ARC_TP_OOM")) : -1;
     auto make = [&, o](int r) mutable {
       EngineOptions so = o;
       so.tp_rank = r;
       so.tp_size = n;
-      shards_[r] = std::make_unique<Engine>(path, so);
+      zrt::oom_throws = true;  // (failsafe: a shard short of memory throws, the server loads on one GPU instead)
+      zrt::oom_test = r == oom_rank;
+      try {
+        shards_[r] = std::make_unique<Engine>(path, so);
+      } catch (...) {
+        zrt::oom_throws = zrt::oom_test = false;
+        throw;
+      }
+      zrt::oom_throws = zrt::oom_test = false;
       shards_[r]->tp_ = &comm_;
     };
     run_on({0}, make);
@@ -365,8 +383,15 @@ class TpEngine {
                                  std::to_string(shards_[r]->max_chunk) + ", ctx " + std::to_string(shards_[r]->ctx) +
                                  "): give --budget, --chunk and --ctx");
     comm_.slot_floats = (size_t)e0.max_chunk * e0.hp.n_embd;
-    comm_.host = (float*)zrt::host_alloc((size_t)2 * n * comm_.slot_floats * 4);
-    comm_.flags = (int*)zrt::host_alloc((size_t)n * sizeof(int));
+    zrt::oom_throws = true;
+    try {
+      comm_.host = (float*)zrt::host_alloc((size_t)2 * n * comm_.slot_floats * 4);
+      comm_.flags = (int*)zrt::host_alloc((size_t)n * sizeof(int));
+    } catch (...) {
+      zrt::oom_throws = false;
+      throw;
+    }
+    zrt::oom_throws = false;
     for (int r = 0; r < n; ++r) comm_.flags[r] = 0;
     size_t vocab = 0;
     for (int r = 0; r < n; ++r) vocab += (size_t)shards_[r]->n_logits();
@@ -378,11 +403,7 @@ class TpEngine {
     // (first the GPUs' waits back to no limit and no abort: a shard's destructor waits for its GPU, and a wait that
     //  threw there would end the process. After a wait gave up on a GPU (fault) its work may still be queued: then
     //  nothing is freed, the server says to restart)
-    for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
-      zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
-      zrt::devs[r]->abort = nullptr;
-      zrt::devs[r]->fault = nullptr;
-    }
+    disarm();
     const bool fault = comm_.fault;
     if (!w_.empty() && !fault) {  // (after a failure too: the GPUs that answer get their memory back, for a load again)
       std::vector<int> made;
@@ -462,6 +483,7 @@ class TpEngine {
 
   void loop(int r) {
     zrt::cur = zrt::devs[r];
+    zrt::tp_guarded = true;
     for (;;) {
       std::function<void(int)> job;
       {
@@ -540,6 +562,8 @@ inline void TpMirror::start(Engine* e, std::function<void(Engine&)> f, Gather g,
     throw std::runtime_error("a GPU's shard failed earlier: restart (or load the model again)");
   }
   t.comm().cancel_now = false;
+  was_guarded_ = zrt::tp_guarded;
+  zrt::tp_guarded = true;  // (shard 0's waits on this thread take GPU 0's limit: zrt::sync)
   for (int r = 1; r < t.gpus(); ++r) {  // (the fields the server sets on its engine before a call)
     Engine& s = t.shard(r);
     s.rope_shift = e->rope_shift;
@@ -552,6 +576,7 @@ inline void TpMirror::start(Engine* e, std::function<void(Engine&)> f, Gather g,
   } catch (...) {
     --e->tp_depth_;
     e_ = nullptr;
+    zrt::tp_guarded = was_guarded_;
     throw;
   }
 }
@@ -562,6 +587,7 @@ inline void TpMirror::finish() {
   Engine& e = *e_;
   --e.tp_depth_;
   if (nested_) return;
+  zrt::tp_guarded = was_guarded_;
   TpEngine& t = *e.tp_front_;
   TpComm& c = t.comm();
   const bool threw = std::uncaught_exceptions() > uncaught_;

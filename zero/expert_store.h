@@ -155,7 +155,10 @@ struct ExpertStore {
       for (size_t i = 0; i < ram_n_; ++i) ram_rec_[i].store(nullptr, std::memory_order_relaxed);
     }
   }
-  uint64_t ram_bytes() const { return ram_used_; }
+  uint64_t ram_bytes() const {  // (the prefetch thread adds to it: read under its lock)
+    std::lock_guard<std::mutex> g(ram_mu_);
+    return ram_used_;
+  }
   std::atomic<uint64_t> ram_hits{0};
 
   // ---- reads: up to kQD unbuffered reads in flight. dst must be 4 KB aligned (host USM is). set: which of the two
@@ -233,7 +236,7 @@ struct ExpertStore {
   uint64_t ram_cap_ = 0, ram_used_ = 0, ram_left_ = 0;
   char* ram_next_ = nullptr;
   std::vector<char*> ram_pieces_;
-  std::mutex ram_mu_;
+  mutable std::mutex ram_mu_;
   std::vector<Req> ram_todo_[2];
   std::vector<size_t> ram_at_[2];
 

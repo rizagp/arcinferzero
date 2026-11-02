@@ -1095,8 +1095,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     const std::vector<BatchSeq> seqs = batch_;
     batch_.clear();
     head_rows(0, R, out_norm_, nullptr);
-    if (batch_logits_host_.size() < (size_t)hp.n_vocab * R) batch_logits_host_.resize((size_t)hp.n_vocab * batch_rows_);
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * R * 4, batch_logits_host_.data(), 0,
+    const size_t V = (size_t)n_logits();  // (= hp.n_vocab; a split model's shard: its vocabulary rows)
+    if (batch_logits_host_.size() < V * R) batch_logits_host_.resize(V * batch_rows_);
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, V * R * 4, batch_logits_host_.data(), 0,
                                  nullptr, nullptr));
     const size_t E4 = (size_t)hp.n_embd * 4;
     for (int b = 0; b < B; ++b) {  // each slot's hidden states (verify_done) and DFlash2 rows of the pass

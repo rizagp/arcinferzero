@@ -28,6 +28,7 @@ struct TpMirror {
   Gather g_ = kNone;
   int rows_ = 0;
   int uncaught_ = 0;
+  bool was_guarded_ = false;  // (zrt::tp_guarded of the calling thread before: set during the call)
   void start(Engine* e, std::function<void(Engine&)> f, Gather g, int rows);
   void finish();
 };

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-02 (night): fixes from a second audit (DeepSeek, static)
+
+- **A split shard out of memory ended the server** instead of loading the model on one GPU: its allocations now
+  throw while it is made (`ARC_TP_OOM=r` tests it).
+- **Whisper / Qwen3-ASR on GPU 0 shared the split model's wait limit**: a long wait of theirs could mark the split
+  model faulty. The limit now applies only to the split model's own work.
+- **A faulted split model left its wait limit on the GPUs** for the next model loaded; it is now taken back.
+- `verify_batch` reads this engine's own logits rows (a split shard has a part of the vocabulary; not reachable yet,
+  a split model has no MTP); the RAM tier's size is read under its lock. One GPU: logits bit-identical.
+
 ## 2026-11-02 (evening): multi-GPU self audit and failsafes
 
 - **f16 sums out of range**: a prompt chunk's partial sum beyond f16 (65504 / GPUs) on any GPU makes every GPU sum

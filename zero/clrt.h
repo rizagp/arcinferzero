@@ -115,10 +115,18 @@ inline ze_driver_handle_t driver = nullptr;
 inline Dev dev0;
 inline std::vector<Dev*> devs{&dev0};  // devs[i]: GPU i (open_devices)
 inline thread_local Dev* cur = nullptr;
+// (a thread doing a split model's work: its shard thread, or the server's thread inside a mirrored call. Only its
+//  waits take the GPU's limit and abort: Whisper / Qwen3-ASR on GPU 0 wait as always, and their long waits never
+//  mark the split model faulty)
+inline thread_local bool tp_guarded = false;
+// (a split model's shard being made: an allocation that fails throws instead of ending the process, so the server
+//  can load the model on one GPU instead. ARC_TP_OOM=r (tests): the first allocation of 256 MB or more on shard r fails)
+inline thread_local bool oom_throws = false;
+inline thread_local bool oom_test = false;
 inline Dev& D() { return cur ? *cur : dev0; }
 inline void sync() {
   Dev& d = D();
-  if (d.sync_timeout_ns == UINT64_MAX && !d.abort) {
+  if (!tp_guarded || (d.sync_timeout_ns == UINT64_MAX && !d.abort)) {
     ZE_CHECK(zeCommandListHostSynchronize(d.cl, UINT64_MAX));
     return;
   }
@@ -220,6 +228,11 @@ inline char* staging(size_t n) {
 inline void* host_alloc(size_t n) {
   ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
   void* p = nullptr;
+  if (oom_throws) {
+    if (zeMemAllocHost(ctx, &hd, n, 4096, &p) != ZE_RESULT_SUCCESS)
+      throw std::runtime_error("host allocation of " + std::to_string(n >> 20) + " MB failed");
+    return p;
+  }
   ZE_CHECK(zeMemAllocHost(ctx, &hd, n, 4096, &p));
   return p;
 }
@@ -230,12 +243,17 @@ inline bool (*oom_hook)() = nullptr;
 inline void* device_alloc(size_t n) {
   ze_device_mem_alloc_desc_t dd{ZE_STYPE_DEVICE_MEM_ALLOC_DESC, nullptr, 0, 0};
   void* p = nullptr;
-  ze_result_t r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
+  ze_result_t r = ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY;
+  if (oom_test && n >= (256u << 20)) oom_test = false;
+  else r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
   for (int i = 0; r != ZE_RESULT_SUCCESS && i < 8 && oom_hook && oom_hook(); ++i)
     r = zeMemAllocDevice(ctx, &dd, std::max<size_t>(n, 64), 4096, D().dev, &p);
   if (r != ZE_RESULT_SUCCESS) {
-    fprintf(stderr, "arcinferzero: device allocation of %.1f MB failed (0x%x; %.2f GiB allocated)\n", n / 1e6, r,
-            D().device_bytes / 1073741824.0);
+    char msg[160];
+    snprintf(msg, sizeof msg, "device allocation of %.1f MB failed on GPU %d (0x%x; %.2f GiB allocated)", n / 1e6,
+             D().index, r, D().device_bytes / 1073741824.0);
+    if (oom_throws) throw std::runtime_error(msg);
+    fprintf(stderr, "arcinferzero: %s\n", msg);
     exit(1);
   }
   D().device_bytes += n;
