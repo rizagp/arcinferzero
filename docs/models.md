@@ -7,7 +7,7 @@
 |---|---|---|
 | `qwen35` | Qwen3.5 (0.8B–27B dense), Qwen3.6, Qwen3.8 27B | hybrid Gated DeltaNet + gated attention; MTP speculative decoding; image input with a Qwen3-VL `mmproj` next to the model (encoded on the GPU; Qwen3.5 4B and 9B, Qwen3.8 27B) |
 | `qwen35moe` | Qwen3.6-35B-A3B: standard GGUFs (e.g. Unsloth UD-IQ4_XS / UD-Q3_K_M) or ISTA-DASLab GSQ 2-bit | mixture of experts (256 experts, 8 active); standard GGUF experts (IQ / Q3_K / Q4_K / Q5_K / Q6_K / Q8_0 / Q4_0) load as they are; GSQ converted from the safetensors checkpoint with `tools/convert_gsq.py`; Unsloth's MTP repository adds speculative decoding and its `mmproj` image input (arcinferzero: both together; the automatic context reserves 128K tokens of context, then sizes the expert cache: 131K tokens with ~80 % of the UD-IQ4_XS experts cached; up to 262K with `--ctx`, with a smaller cache; context sweep in docs/speed-progress.md) |
-| `gemma4` | Gemma 4 12B, Gemma 4 E4B, Gemma 4 26B-A4B (Google's QAT Q4_0 GGUFs) | sliding-window + global attention, per-layer embeddings (E4B); image and audio input (`mmproj`: 12B gemma4uv / gemma4ua, E4B gemma4v ViT and gemma4a conformer, 26B gemma4v with 72-dim heads, on the GPU); speculative decoding with the Gemma 4 assistant drafters (`mtp-*.gguf`; 12B, E4B, 26B). 26B-A4B: a dense FFN beside 128 routed experts (8 active, GELU, f32 router) streamed from the SSD like the 35B's. Accuracy: float attention (f32 q / K, f16 V; E4B's global layers in prompts read an int8 copy of K / V, `ARC_G4_ATT8=0`: float); 26B and 12B run their matmuls on two int8 passes (value and rounding residual: KL 0.0042 / 0.0002), E4B on one (KL 0.00088) |
+| `gemma4` | Gemma 4 12B, Gemma 4 E4B, Gemma 4 26B-A4B, Gemma 4 31B (Google's QAT Q4_0 GGUFs) | sliding-window + global attention, per-layer embeddings (E4B); image and audio input (`mmproj`: 12B gemma4uv / gemma4ua, E4B gemma4v ViT and gemma4a conformer, 26B gemma4v with 72-dim heads, on the GPU); speculative decoding with the Gemma 4 assistant drafters (`mtp-*.gguf`; 12B, E4B, 26B). 26B-A4B: a dense FFN beside 128 routed experts (8 active, GELU, f32 router) streamed from the SSD like the 35B's. Accuracy: float attention (f32 q / K, f16 V; E4B's global layers in prompts read an int8 copy of K / V, `ARC_G4_ATT8=0`: float); 26B and 12B run their matmuls on two int8 passes (value and rounding residual: KL 0.0042 / 0.0002), E4B on one (KL 0.00088) |
 | `qwen4exp` | Qwen3.8 Flash Next (ISTA-DASLab GSQ-RCO IQ3_S, GGUF in 2 parts) | **arcinferzero only**; 4 hyper-connection streams, Gated DeltaNet + gated attention with QSA sparse attention, 512 experts (10 active) streamed from the SSD, PLE n-gram table read from part 2 per token; no MTP block; images with an `mmproj-*` next to it (bartowski/Qwen3.8-Flash-Next-GGUF `mmproj-Qwen3.8-Flash-Next-f16.gguf`, 0.9 GB) (incoai/Qwen3.8-Flash-Next-DFlash2 drafts with `--dflash DIR`: same text, ~79 % accepted, no faster on this laptop's SSD: QUEUE F21.16); runs up to 262,144 tokens, accuracy measured up to a 3.5K-token prompt (KL 0.0143 / 0.0147 (363 tokens); 0.0186 / 0.0177 at 3.5K (QSA); `ARC_FN_PRECISE=1` 0.0127 / 0.0132) |
 
 **Fine-tunes of these architectures run as they are.** Checked 2026-11-01: Ornith 1.5 35B-A3B (ornith-ai, MIT; a
@@ -24,6 +24,38 @@ Weight types: `Q4_0`, `Q8_0`, `Q2_K`, `Q3_K`, `Q4_K`, `Q5_K`, `Q6_K`, `IQ1_S`, `
 `IQ4_XS` (mixed per tensor, e.g. Unsloth dynamic or ISTA-DASLab GSQ-RCO quants), plus `F32/F16/BF16` small matrices;
 GSQ 2-bit experts (`tools/convert_gsq.py`); `Q4_0` drafter matrices (requantized to Q8_0 at load).
 
+
+## Gemma 4 31B on a 32 GB laptop (2026-11-02)
+
+The QAT Q4_0 file is 17.7 GB of weights:
+- 60 layers;
+- sliding layers with 16 kv-heads of 256;
+- global layers with 4 kv-heads of 512 and K shared as V.
+
+It runs as the 12B does: two int8 passes, float attention. Measured on a 536-token code prompt against the f32
+reference:
+- KL 0.00000 in the prompt path (max 0.00003) and the decode path (max 0.00007);
+- the top token agrees 536 / 536.
+
+Speed:
+- generation 3.1-3.6 tok/s, ~91 % of the bandwidth; 7.8 tok/s with its Unsloth drafter in the server (2.2x, the
+  same text);
+- a 2K prompt at ~48 tok/s.
+
+One int8 pass (`ARC_G4_ONE=1`, a test switch) reaches 75.6 tok/s on prompts, but its KL is 0.0103 (max 0.45, top
+token 514 / 536), too close to the limit for a default.
+
+What limits it is memory, not speed. Its float sliding-window rings take ~1.2 MB per token, so it gets only a small
+context. Engine::plan_tight applies when a dense model's weights fill more than 85 % of an iGPU's share:
+- part of the weights go into host memory (the same DRAM, read at ~91 % of device memory's speed, bit-identical
+  results, generation within 1 %), as much as the RAM free at load beyond the share less 4 GiB allows;
+- prompt chunks of 1024 (no slower than 2048);
+- sliding-window rings with a margin of one chunk instead of 4096 rows.
+
+With ~25 GB of RAM free that gives 2,048 tokens of context (1,024 with images), down from 4,096 that did not fit. A
+first version that ignored the free RAM put 5.3 GiB in host memory, filled the share with context, and left 2 GB of
+RAM: generation fell to 1.2 tok/s. More free RAM (fewer programs open) gives it more context, and the context is
+planned again at every start.
 
 ## About the results table
 

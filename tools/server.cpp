@@ -29,6 +29,8 @@
 #include "sampler.h"
 #include "web_tools.h"
 #include "server_files.h"
+#include "server_memory.h"
+#include "server_projects.h"
 #include "pdf_render.h"  // (PDF pages as images, for OCR models: server_ocr.h)
 #include "doc_writer.h"
 #include "xlsx.h"
@@ -940,6 +942,43 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
                               "read its source with read_file and call create_file again: that makes a new version.");
       return reply(200, r);
     }
+    if (rq.path == "/v1/tools/list_files" && a["scope"].str() == "project") {  // (the chat's project folder)
+      proj::Project p;
+      if (!rq.local_peer) return fail(403, "a project's files are only for this computer");
+      if (!memo::valid_project(a["project_id"].str()) || !proj::find(a["project_id"].str(), p))
+        return fail(400, "this chat is not in a project (scope \"project\" lists a project's folder)");
+      const std::string kind = files::lower(a["kind"].str()), q = files::lower(a["name_contains"].str());
+      const double hours = a["within_hours"].as_number(0);
+      const int limit = (int)std::clamp(a["limit"].as_number(50), 1.0, 300.0);
+      bool more = false;
+      const int64_t now = (int64_t)std::time(nullptr);
+      Json d = Json::array();
+      for (const proj::Entry& e : proj::walk(p, 20000, more)) {
+        if (!kind.empty() && files::kind_of(e.rel) != kind) continue;
+        if (!q.empty() && files::lower(e.rel).find(q) == std::string::npos) continue;
+        if (hours > 0 && now - e.modified > hours * 3600) continue;
+        if ((int)d.size() >= limit) {
+          more = true;
+          break;
+        }
+        Json j = Json::object();
+        j.set("file_id", "project:" + p.id + "/" + e.rel);
+        j.set("path", e.rel);
+        j.set("kind", files::kind_of(e.rel));
+        j.set("bytes", (double)e.bytes);
+        j.set("modified", when(e.modified));
+        d.push(j);
+      }
+      Json r = Json::object();
+      r.set("project", p.name);
+      r.set("folder", p.folder);
+      r.set("files", d);
+      r.set("count", (double)d.size());
+      r.set("note", std::string(more ? "more files than these (newest first): narrow with name_contains or kind. " : "") +
+                        "read one with read_file {\"file_id\": \"project:...\"}; files you write with create_file go to the "
+                        "chat's own folder: to put one into the project, the user copies it, or run_command (they allow it)");
+      return reply(200, r);
+    }
     if (rq.path == "/v1/tools/list_files") {
       const std::string kind = files::lower(a["kind"].str()), q = files::lower(a["name_contains"].str()), chat = a["chat_id"].str();
       const double hours = a["within_hours"].as_number(0);
@@ -990,8 +1029,49 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
     }
     // the call's file: by its id, or by its name (models often pass the name they see: the newest file of that
     // name, this chat's first)
+    // a project's file ("project:<id>/<path>", tools/server_projects.h): its Info from the file itself; its stamp (size
+    // and time) keys the document cache, so a file that changed is read again (files::doc_index)
+    // Only the chat's own project (the call's project_id, set by the web UI) and on this computer: a document or page
+    // the model read cannot send it into another project's files
+    std::string proj_err;
+    proj::Project chat_proj;  // (the call's project, read from projects.json once a call)
+    bool chat_proj_read = false;
+    auto project_file = [&](const std::string& fid, files::Info& i) {
+      std::filesystem::path f;
+      std::string id, rel;
+      if (!proj::split_id(fid, id, rel)) return false;
+      if (!rq.local_peer) {
+        proj_err = "a project's files are only for this computer";
+        return false;
+      }
+      if (id != a["project_id"].str()) {
+        proj_err = "project:" + id + " is not this chat's project: only the files of the chat's own project can be read";
+        return false;
+      }
+      if (!chat_proj_read) {
+        chat_proj_read = true;
+        if (!memo::valid_project(id) || !proj::find(id, chat_proj)) chat_proj.id.clear();
+      }
+      if (chat_proj.id != id) {
+        proj_err = "no project " + id;
+        return false;
+      }
+      if (!proj::resolve_in(chat_proj, rel, f, proj_err)) return false;
+      std::error_code ec;
+      i = files::Info();
+      i.path = f.string();
+      i.name = rel;
+      i.kind = files::kind_of(rel);
+      i.bytes = std::filesystem::file_size(f, ec);
+      const auto t = std::filesystem::last_write_time(f, ec);
+      i.created = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count() - 11644473600LL;
+      i.id = fid;
+      i.stamp = (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(t.time_since_epoch()).count();
+      return true;
+    };
     auto find_file = [&](files::Info& i) {
       std::string id = a["file_id"].str();
+      if (id.rfind("project:", 0) == 0) return project_file(id, i);
       if (id.rfind("file-", 0) == 0) id = id.substr(5);
       if (id.rfind("/files/", 0) == 0) id = id.substr(7);
       if (files::valid_id(id, 16) && st.get(id, i)) return true;
@@ -1022,9 +1102,28 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         ixs.push_back(v.ix);
       } else if (!a["file_id"].str().empty()) {
         files::Info i;
-        if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+        if (!find_file(i)) return fail(404, !proj_err.empty() ? proj_err : "no file " + a["file_id"].str() + " (list_files shows the saved files)");
         targets.push_back(i);
-      } else if (files::valid_id(a["chat_id"].str())) {  // (every document of this chat)
+      } else if (files::valid_id(a["chat_id"].str()) || memo::valid_project(a["project_id"].str())) {  // (every document of this chat, and of its project)
+        proj::Project pr;
+        if (rq.local_peer && memo::valid_project(a["project_id"].str()) && proj::find(a["project_id"].str(), pr)) {
+          // (its documents and sources, newest first: at most 60 files and 32 MB a search, each read again when it
+          //  changed; programs, archives and models are left out)
+          static const std::set<std::string> text = {"docx", "pdf", "xlsx", "xlsm", "pptx", "rtf", "txt", "md", "csv", "tsv",
+              "json", "html", "htm", "xml", "py", "js", "ts", "tsx", "jsx", "c", "cc", "cpp", "h", "hpp", "cs", "java", "go",
+              "rs", "ps1", "sh", "bat", "cmd", "yml", "yaml", "toml", "ini", "cfg", "sql", "css", "cl", "lua", "rb", "php"};
+          bool more = false;
+          size_t taken = 0;
+          uint64_t bytes = 0;
+          for (const proj::Entry& e : proj::walk(pr, 20000, more)) {
+            if (!text.count(files::ext_of(e.rel)) || bytes + e.bytes > (32ull << 20)) continue;
+            files::Info i;
+            if (!project_file("project:" + pr.id + "/" + e.rel, i)) continue;
+            targets.push_back(i);
+            bytes += e.bytes;
+            if (++taken >= 60) break;
+          }
+        }
         const std::string chat = a["chat_id"].str();
         const auto uses = st.uses();
         for (const files::Info& i : st.list()) {
@@ -1035,7 +1134,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
               (u != uses.end() && std::find(u->second.begin(), u->second.end(), chat) != u->second.end()))
             targets.push_back(i);
         }
-      } else return fail(400, "file_id (or chat_id: every document of the chat) required");
+      } else return fail(400, "file_id (or chat_id / project_id: every document of the chat / project) required");
       struct Found { double score; size_t file, chunk; };
       std::vector<Found> all;
       for (size_t f = 0; f < targets.size(); ++f) {
@@ -1172,7 +1271,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
     if (rq.path == "/v1/tools/digest_file") {
       files::Info i;
       if (files::is_virtual(a["file_id"].str())) return fail(400, "digest_file reads saved files; a chat or transcript: read_file");
-      if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+      if (!find_file(i)) return fail(404, !proj_err.empty() ? proj_err : "no file " + a["file_id"].str() + " (list_files shows the saved files)");
       auto ix = files::doc_index(i);
       if (!ix) return fail(500, "cannot read the file");
       if (ix->doc.paras.empty()) return fail(400, ix->doc.note.empty() ? "no text in the file" : ix->doc.note);
@@ -1269,7 +1368,17 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       // notes were thrown away and the document read again, minutes); unfinished ones go on with the same part size
       const std::string chat = a["chat_id"].str();
       std::filesystem::path notes_path;
-      if (files::valid_id(chat)) notes_path = std::filesystem::path(st.chat_dir_make(chat)) / (i.name + " (notes).md");
+      // (a project's file "docs/plan.md": "plan.md (project 1a2b3c4d) (notes).md", in the chat's folder itself and not
+      //  the same file as a chat upload of that name)
+      std::string notes_name = i.name;
+      if (i.id.rfind("project:", 0) == 0) {
+        uint32_t h = 2166136261u;
+        for (unsigned char c : i.id) h = (h ^ c) * 16777619u;
+        char b[12];
+        snprintf(b, sizeof b, "%08x", h);
+        notes_name = std::filesystem::path(i.name).filename().string() + " (project " + b + ")";
+      }
+      if (files::valid_id(chat)) notes_path = std::filesystem::path(st.chat_dir_make(chat)) / (notes_name + " (notes).md");
       const std::string same_file = "<!-- digest of " + i.id + ",", same_parts = same_file + " parts of " + std::to_string(part) + " characters,";
       std::string mark = same_parts + " focus: ";
       for (char c : focus) mark += c == '\n' ? ' ' : c == '-' ? '_' : c;  // (no "-->" inside the comment)
@@ -1393,7 +1502,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         r.set("updated", when(v.at));
         ix = v.ix;
       } else {
-        if (!find_file(i)) return fail(404, "no file " + a["file_id"].str() + " (list_files shows the saved files)");
+        if (!find_file(i)) return fail(404, !proj_err.empty() ? proj_err : "no file " + a["file_id"].str() + " (list_files shows the saved files)");
         r.set("file_id", i.id);
         r.set("filename", i.name);
         r.set("kind", i.kind);
@@ -1452,7 +1561,8 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       const int from = std::max(1, page_num(pg.c_str())),
                 to = !by_pages ? 0 : pg.find('-') != std::string::npos ? std::max(from, page_num(pg.c_str() + pg.find('-') + 1)) : from;
       // scanned pages among them, not transcribed yet: the loaded vision model reads them now (kScanPagesPerCall)
-      const std::string seer = vis.model ? vis.model() : "";
+      // (a project's file: not here, as their text is kept by file id in a chat's folder; copied into the chat, it is)
+      const std::string seer = vis.model && i.id.rfind("project:", 0) != 0 ? vis.model() : "";
       std::vector<int> want;
       for (int p : ix->doc.unread)
         if (p >= from && p <= to) want.push_back(p);
@@ -1599,13 +1709,22 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       if (cmd.size() > 8000) return fail(400, "command too long (8000 characters at most): split it, e.g. write a script with Set-Content in parts, then run it");
       const std::string chat = a["chat_id"].str();
       const std::string cwd = files::valid_id(chat) ? st.chat_dir_make(chat) : app_dir();
+      // (a project's chat: its terminal starts in the project's folder; the session's state stays in the chat's)
+      std::string start = cwd;
+      {
+        proj::Project p;
+        std::error_code e2;
+        if (memo::valid_project(a["project_id"].str()) && proj::find(a["project_id"].str(), p) &&
+            std::filesystem::is_directory(std::filesystem::path(p.folder), e2))
+          start = p.folder;
+      }
       // session: the chat's terminal (its folder and environment carried from one command to the next, kept in the
-      // chat's folder); reset: that terminal closed, the next one starts fresh in the chat's folder
+      // chat's folder); reset: that terminal closed, the next one starts fresh in the chat's (or project's) folder
       const std::filesystem::path state = std::filesystem::path(cwd) / ".terminal.json";
       std::error_code ec;
       if (reset) std::filesystem::remove(state, ec);
       auto where = [&](Json& r) {  // (the session's folder and venv now)
-        std::string s, dir = cwd, venv;
+        std::string s, dir = start, venv;
         Json j;
         if (session && files::Store::read(state.string(), s) && Json::try_parse(s.rfind("\xEF\xBB\xBF", 0) == 0 ? s.substr(3) : s, j)) {
           if (!j["cwd"].str().empty()) dir = j["cwd"].str();
@@ -1623,7 +1742,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       std::string path = term::exe_dir();
       if (std::filesystem::is_directory(std::filesystem::path(app_dir()) / "bin", ec)) path = (std::filesystem::path(app_dir()) / "bin").string() + ";" + path;
       // (the page closed the request, Stop or Esc: the command ends with it, not at its timeout)
-      term::Result t = term::run(cmd, cwd, path, tmo, session ? state.string() : "", [&] { return rs.client_gone(); });
+      term::Result t = term::run(cmd, start, path, tmo, session ? state.string() : "", [&] { return rs.client_gone(); });
       if (t.cancelled) return;  // (nobody reads the reply)
       // the output as the model can take it: within the same share of its context as a read_file part (64 KB is
       // ~16K tokens, more than a small model's whole context): the start and the end of a longer one
@@ -1776,6 +1895,7 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
         j.set("at", c["at"].as_number(0));
         j.set("model", c["model"].str(""));
         j.set("snippet", c["snippet"].str(""));
+        if (!c["project"].str().empty()) j.set("project", c["project"].str());  // (tools/server_projects.h)
         d.push(j);
       }
       Json r = Json::object();
@@ -2249,6 +2369,53 @@ int main(int argc, char** argv) {
     if (rq.path == "/v1/files" || rq.path.rfind("/v1/files/", 0) == 0 || rq.path.rfind("/files/", 0) == 0 ||
         rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)
       return files_api(rq, rs);
+    // the web UI's memory (tools/server_memory.h): the Settings panel, and the model's remember / forget
+    if (rq.path == "/v1/memory") {
+      // (a project's memory only for a project in the list: no folder made for any 16 hex digits)
+      // (the query read as memo::api reads it; this computer only first, there)
+      const std::string q = "&" + rq.query + "&";
+      const size_t p = q.find("&project=");
+      const std::string pid = p == std::string::npos ? "" : q.substr(p + 9, q.find('&', p + 9) - p - 9);
+      proj::Project known;
+      if (rq.local_peer && rq.method == "PUT" && memo::valid_project(pid) && !proj::find(pid, known)) {
+        Json e = Json::object(), r = Json::object();
+        e.set("message", "no project " + pid);
+        r.set("error", e);
+        return rs.send(404, "application/json", r.dump());
+      }
+      return memo::api(rq, rs);
+    }
+    // the web UI's projects (tools/server_projects.h)
+    if (rq.path == "/v1/projects" || rq.path.rfind("/v1/projects/", 0) == 0) return proj::api(rq, rs);
+    if (rq.method == "POST" && (rq.path == "/v1/tools/remember" || rq.path == "/v1/tools/forget")) {
+      auto fail = [&](int code, const std::string& m) {
+        Json e = Json::object(), r = Json::object();
+        e.set("message", m);
+        r.set("error", e);
+        return rs.send(code, "application/json", r.dump());
+      };
+      if (!rq.local_peer) return fail(403, "the memory is only for this computer (the web UI on 127.0.0.1)");
+      try {
+        const Json j = Json::parse(rq.body);
+        const std::string project = j["project"].as_string();
+        if (!project.empty() && !memo::valid_project(project)) return fail(400, "project: 16 hex digits");
+        proj::Project known;
+        if (!project.empty() && !proj::find(project, known)) return fail(404, "no project " + project);
+        if (rq.path == "/v1/tools/remember") return rs.send(200, "application/json", memo::remember(project, j["fact"].as_string()).dump());
+        // (forget in a project's chat: the project's notes, else the global ones)
+        Json r;
+        try {
+          r = memo::forget(project, j["match"].as_string());
+        } catch (const std::exception& e) {
+          if (project.empty() || std::string(e.what()).rfind("no note contains", 0) != 0) throw;
+          r = memo::forget("", j["match"].as_string());
+          r.set("scope", "global");
+        }
+        return rs.send(200, "application/json", r.dump());
+      } catch (const std::exception& e) {
+        return fail(400, e.what());
+      }
+    }
     if (rq.method == "POST" && (rq.path == "/v1/tools/create_file" || rq.path == "/v1/tools/list_files" ||
                                 rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/search_file" ||
                                 rq.path == "/v1/tools/search_chats" || rq.path == "/v1/tools/digest_file" ||

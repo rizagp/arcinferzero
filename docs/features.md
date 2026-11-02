@@ -102,6 +102,14 @@ chat's folder (each command allowed by the user), chats search.
 - **Speech to text only**: `serverz -m none` runs Qwen3-ASR / Whisper without a chat model (a 2:43 voice message in
   25 s); a chat model loads later on request.
 
+## 9b. Memory and projects (2026-11-02)
+
+- **Memory:** "remember that …" saves a dated note in `MEMORY.md` in the data folder. Every new chat starts with
+  the notes, whatever the model. You can see and edit them in Settings > Memory.
+- **Projects**, like Claude's Projects: a project is a folder of yours (a Google Drive folder through Drive for desktop
+  too). Its chats read the folder's files, follow its `AGENTS.md`, keep a memory of their own and open the terminal
+  there. Paths outside the folder are refused, links and junctions included. ([USAGE.md](../USAGE.md), section 4)
+
 ## 10. More hardware
 
 - **NPU next to the GPU** for prompts (`--npu on`): Qwen3.8 27B +15 %, Gemma 4 12B +10 %

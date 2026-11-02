@@ -24,7 +24,9 @@
 // every token; only its own (token, expert) pairs get slots and tiles (tp_moe_mask / tp_moe_scatter / tp_moe_tiles1
 // after the routing), its experts stream into its own cache (XCache's range), and the combine writes the shard's
 // part (rank 0 adds the gated shared expert, which every shard computes) for tp_reduce. A model with fewer kv-heads
-// than GPUs (the 35B has 2) keeps its attention layers whole on every shard (the same output everywhere: no sum).
+// than GPUs (the 35B has 2) keeps its attention whole on every shard (the same output everywhere, no sum), or with
+// ARC_TP_ATT_QSPLIT=1 divides it by q-head where the GPUs split the kv-heads and their q-heads evenly (35B over 4: 4
+// q-heads of one kv-head per shard, tp_att_qsplit_).
 
  public:
   TpComm* tp_ = nullptr;  // (set by TpEngine before the first forward)
@@ -43,6 +45,12 @@
   TpRange tpk_, tpkv_, tpf_, tpv_;  // this shard's k-heads, kv-heads, FFN columns, vocabulary rows: [begin, end)
   TpRange tpe_{0, 0};               // (MoE) this shard's routed experts
   bool tp_att_whole_ = false;       // (attention layers whole on every shard: fewer kv-heads than GPUs)
+  // (fewer kv-heads than GPUs, but the GPUs divide them evenly and each kv-head's q-heads too: each shard holds a part
+  //  of one kv-head's q-heads, that kv-head's K / V in full (on N / kv-heads shards), wo's columns of its q-heads, and
+  //  the attention output is summed like the other layers'. 35B over 4: 4 q-heads of one kv-head each, the kernels'
+  //  4 q-heads per kv-head of the 9B. ARC_TP_ATT_QSPLIT=1 turns it on)
+  bool tp_att_qsplit_ = false;
+  TpRange tpq_{0, 0};  // (this shard's q-heads, global ids; with tp_att_qsplit_ only)
   cl_kernel k_tp_moe_mask_ = nullptr, k_tp_moe_scatter_ = nullptr, k_tp_moe_tiles1_ = nullptr, k_tp_moe_combine_ = nullptr;
   // rank r's part of `total` in whole units (the first total / unit % N ranks one unit more)
   static TpRange tp_range(int64_t total, int64_t unit, int N, int r) {
@@ -78,9 +86,22 @@
     };
     // (k-heads in pairs: a pair's 2 x 128 v-values are one 256-value block of ssm_out's columns)
     need(hp.ssm_nk > 0 && hp.ssm_nk % 2 == 0 && hp.ssm_nk / 2 >= N && hp.ssm_nv % hp.ssm_nk == 0, "DeltaNet heads");
-    // (MoE: fewer kv-heads than GPUs keeps the attention whole on every shard, it is a small part of the weights)
+    // (MoE: fewer kv-heads than GPUs keeps the attention whole on every shard, it is a small part of the weights; or
+    //  divides it by q-head where that splits evenly, see tp_att_qsplit_)
     tp_att_whole_ = moe && hp.n_head_kv < N;
-    need(tp_att_whole_ || (hp.n_head_kv >= N && hp.n_head % hp.n_head_kv == 0 && (hp.n_head / hp.n_head_kv * hp.head_dim) % 256 == 0),
+    {
+      const int nkv = hp.n_head_kv, hpg_g = nkv > 0 ? hp.n_head / nkv : 0, per = nkv > 0 ? N / nkv : 0;
+      // (opt-in until B60s measure it: it adds a sum per attention layer, which costs more than it saves at short
+      //  contexts, and saves K / V reads and attention work at long ones)
+      const bool want = getenv("ARC_TP_ATT_QSPLIT") && atoi(getenv("ARC_TP_ATT_QSPLIT")) != 0;
+      if (tp_att_whole_ && want && nkv > 0 && N % nkv == 0 && hpg_g % per == 0 && (hpg_g / per * hp.head_dim) % 256 == 0) {
+        tp_att_whole_ = false;
+        tp_att_qsplit_ = true;
+        const int g = r / per, sub = r % per, nq = hpg_g / per;
+        tpq_ = {(int64_t)g * hpg_g + (int64_t)sub * nq, (int64_t)g * hpg_g + (int64_t)(sub + 1) * nq};
+      }
+    }
+    need(tp_att_whole_ || tp_att_qsplit_ || (hp.n_head_kv >= N && hp.n_head % hp.n_head_kv == 0 && (hp.n_head / hp.n_head_kv * hp.head_dim) % 256 == 0),
          "attention heads");
     if (moe) {
       need(hp.n_expert >= N && hp.n_expert_used > 0, "experts");
@@ -91,7 +112,9 @@
     }
     need(hp.n_vocab % 16 == 0, "vocabulary");
     tpk_ = tp_range(hp.ssm_nk, 2, N, r);
-    tpkv_ = tp_att_whole_ ? TpRange{0, hp.n_head_kv} : tp_range(hp.n_head_kv, 1, N, r);
+    tpkv_ = tp_att_whole_ ? TpRange{0, hp.n_head_kv}
+            : tp_att_qsplit_ ? TpRange{r / (N / hp.n_head_kv), r / (N / hp.n_head_kv) + 1}
+                             : tp_range(hp.n_head_kv, 1, N, r);
     tpf_ = moe ? TpRange{0, 0} : tp_range(hp.n_ff, 256, N, r);
     if (moe) tpe_ = tp_range(hp.n_expert, 1, N, r);
     tpv_ = tp_range(hp.n_vocab, 16, N, r);
@@ -100,14 +123,15 @@
     hp.ssm_nv = hp.ssm_nk * (tpg_.nv / tpg_.nk);
     hp.ssm_d_inner = hp.ssm_nv * hp.ssm_d_state;
     hp.n_head_kv = (int)(tpkv_.second - tpkv_.first);
-    hp.n_head = hp.n_head_kv * hpg;
+    hp.n_head = tp_att_qsplit_ ? (int)(tpq_.second - tpq_.first) : hp.n_head_kv * hpg;
     hp.n_ff = (int)(tpf_.second - tpf_.first);
     opt.mtp = false;
     opt.dflash.clear();
     opt.npu = 0;  // (slots stay: batched decoding over a split model, TpEngine::forward_batch)
     if (moe)
       fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads%s, experts %lld-%lld of %d, %lld of %d vocabulary rows\n",
-              r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv, tp_att_whole_ ? " (whole on every GPU)" : "",
+              r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv,
+              tp_att_whole_ ? " (whole on every GPU)" : tp_att_qsplit_ ? (" (q-heads " + std::to_string(tpq_.first) + "-" + std::to_string(tpq_.second - 1) + " of " + std::to_string(tpg_.nh) + ")").c_str() : "",
               (long long)tpe_.first, (long long)tpe_.second - 1, hp.n_expert, (long long)(tpv_.second - tpv_.first), tpg_.vocab);
     else
       fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads, %d of %d FFN columns, %lld of %d vocabulary rows\n",
@@ -209,7 +233,8 @@
       if (s == "ssm_a" || s == "ssm_dt.bias") return tp_slice(t, {}, tp_vheads(1));
       if (s == "ssm_out.weight") return tp_slice(t, {}, tp_vheads(D));
     } else if (il < hp.n_layer && !tp_att_whole_) {
-      const int64_t hpg = tpg_.nh / tpg_.nkv, g0 = tpkv_.first, g1 = tpkv_.second, q0 = g0 * hpg, q1 = g1 * hpg;
+      const int64_t hpg = tpg_.nh / tpg_.nkv, g0 = tpkv_.first, g1 = tpkv_.second;
+      const int64_t q0 = tp_att_qsplit_ ? tpq_.first : g0 * hpg, q1 = tp_att_qsplit_ ? tpq_.second : g1 * hpg;
       if (s == "attn_q.weight") {  // (each head's rows: query then gate, 2 * head_dim)
         const int64_t per = (int64_t)t.dims[1] / tpg_.nh;
         return tp_slice(t, {{q0 * per, q1 * per}}, {});

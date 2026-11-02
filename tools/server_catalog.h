@@ -242,7 +242,8 @@ static std::vector<ModelInfo> scan_models() {
       {"Qwen3.5-4B-UD-Q4_K_XL.gguf", {"qwen3.5-4b", "4b"}},
       {"gemma-4-12b-it-qat-q4_0.gguf", {"gemma4-12b", "g12"}},
       {"gemma-4-E4B_q4_0-it.gguf", {"gemma4-e4b", "e4b"}},
-      {"gemma-4-26B_q4_0-it.gguf", {"gemma4-26b", "g26"}}};
+      {"gemma-4-26B_q4_0-it.gguf", {"gemma4-26b", "g26"}},
+      {"gemma-4-31B_q4_0-it.gguf", {"gemma4-31b", "g31"}}};
   std::vector<ModelInfo> out;
   for (size_t i = 0; i < cands.size(); ++i) {
     const Cand& c = cands[i];
@@ -469,12 +470,13 @@ static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
          (eo.slots > 1 ? "|slots" + std::to_string(eo.slots) + "/" + std::to_string(Engine::kSlotCtxFloor) : std::string()) +
          "|md" + std::to_string(eo.mtp_drafts) + "|" +  // (DFlash2 drafter: its weights and buffers; 4-bit V)
          (eo.min_chunk ? "/" + std::to_string(eo.min_chunk) : std::string()) + "|" + (eo.mtp ? "mtp" : "-") + "|" + (eo.attn_int8 ? "i8" : "f32") + "|" + std::to_string(device_global_mem()) +
-         "|m20";  // engine memory layout version (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
+         "|m23";  // engine memory layout version (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
                  // for 27B, m6: MoE prompt GEMM staging, m7: MoE buffers shared, m8: MoE MTP 1 draft, Q3_K experts, m9: memory parts in the cache,
                  // m12: streamed MoE reserves 128K of context before the expert cache, m13: streamed MoE chunk 8192, m14: slot_bytes with every
                  // slot buffer, f16 K / V with --attn-f32, m15: --q2 Gemma MoE chunk 2048, m16: Gemma 4 always two-pass, m17: shared-KV Gemma
                  // sliding rings, m18: Gemma int8 KV copies only for the drafter's layers,
-                 // m19: GPU share - 1.2 GB, no Windows reserve, m20: Gemma streamed experts' cache floor 0.6);
+                 // m19: GPU share - 1.2 GB, no Windows reserve, m20: Gemma streamed experts' cache floor 0.6,
+                 // m21: a dense model over 70 % of an iGPU's share: weights in host memory, chunk 1024, smaller rings, m22: those bounded by the free RAM, not remembered, m23: over 85 %, was 70 %);
                  // bump on changes
 }
 // "ctx\tresident" lines (older lines without the second field are computed again)
@@ -485,6 +487,7 @@ struct AutoCtx {
   int ctx = 4096;
   bool resident = false;
   double dev = 0, keep = 0, snap = 0, reserve = 0, weights = 0, mtp = 0, buffers = 0, context = 0, per_1k = 0;
+  double host_gb = 0;  // (weights the probe put in host memory, Engine::plan_tight: the load puts the same; not cached)
 };
 static bool cached_ctx(const std::string& key, AutoCtx& r) {
   std::ifstream f(ctx_cache_file());
@@ -552,6 +555,9 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
     trained = (int)g.get_int(g.get_str("general.architecture") + ".context_length", 32768);
   }
   AutoCtx m1, m2;  // (memory counts of each probe)
+  // (a model that nearly fills the share, Engine::plan_tight: contexts under 4096 too, in steps of 1024, and the result
+  //  not remembered, as its weights in host memory follow the RAM free at each start)
+  bool tight = false, host = false;
   auto fit = [&](double budget_gb, bool& res, AutoCtx& mo) {
     EngineOptions e2 = eo;
     e2.ctx = std::min(16384, trained);
@@ -566,11 +572,17 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
     // (--slots N: N - 1 more KV caches, states and snapshots of the same context)
     auto need = [&](int c) { return base + probe.ctx_bytes(c) + (double)(std::max(eo.slots, 1) - 1) * probe.slot_bytes(c); };
     int ctx = 0;
+    tight = tight || probe.tight();
+    host = host || probe.host_weight_bytes() > 0;
+    if (probe.tight())
+      for (int c = 1024; c < 4096; c += 1024)
+        if (need(c) <= budget) ctx = c;
     for (int c = 4096; c <= trained; c += 4096)
       if (need(c) <= budget) ctx = c;
     if (trained % 4096 && need(trained) <= budget) ctx = trained;
+    const int cc = std::max(ctx, probe.tight() ? 1024 : 4096);  // (the numbers shown: the context chosen)
     {
-      const int cc = std::max(ctx, 4096);
+      mo.host_gb = (double)probe.host_weight_bytes() / gib;
       const Engine::MemParts mp = probe.mem_parts(cc);
       mo.dev = (double)probe.device_mem();
       mo.keep = (0.95 + 0.22) * gib;
@@ -584,14 +596,15 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
     }
     fprintf(stderr, "--ctx auto: %d tokens with %s weights (trained %d; %.2f GiB of GPU memory without the context, "
                     "%.2f GiB with it, device %.2f GiB)\n", ctx, res ? "resident" : "just-in-time", trained, base / gib,
-            (base + probe.ctx_bytes(std::max(ctx, 4096))) / gib, probe.device_mem() / gib);
+            (base + probe.ctx_bytes(cc)) / gib, probe.device_mem() / gib);
     return ctx;
   };
   bool res = false;
+  auto floor_of = [&] { return tight ? 1024 : 4096; };
   if (budget_given) {
-    const int c = std::max(4096, fit(eo.w8_budget_gb, res, m1));
+    const int c = fit(eo.w8_budget_gb, res, m1);
     r = m1;
-    r.ctx = c;
+    r.ctx = std::max(floor_of(), c);
     r.resident = res;
   } else {
     const int c_res = fit(1e9, res, m1);  // everything resident
@@ -601,12 +614,13 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
       r.resident = true;
     } else {
       bool r2 = false;
-      const int c = std::max(4096, fit(eo.w8_budget_gb, r2, m2));
+      const int c = fit(eo.w8_budget_gb, r2, m2);
       r = m2;
-      r.ctx = c;
+      r.ctx = std::max(floor_of(), c);
       r.resident = r2;
     }
   }
+  if (host || tight) return r;  // (not remembered: see tight above)
   std::error_code ec;
   fs::create_directories(fs::path(ctx_cache_file()).parent_path(), ec);
   {

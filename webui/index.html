@@ -48,6 +48,16 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 .side-head h2 { margin: 0; font-size: 21px; font-weight: 700; flex: 1; }
 .iconbtn { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); flex: none; }
 .iconbtn:hover:not(:disabled) { background: var(--active); color: var(--text); }
+.projbar { display: flex; gap: 6px; align-items: center; padding: 4px 12px 0; }
+.projbar select { flex: 1; min-width: 0; border: 0; border-radius: 8px; background: var(--head); color: var(--text); font: inherit; padding: 7px 10px; }
+#projdlg { border: 0; border-radius: 12px; background: var(--panel, var(--bg)); color: var(--text); width: min(560px, 92vw); padding: 16px; }
+#projdlg::backdrop { background: rgba(0, 0, 0, .35); }
+#projdlg .pdpath { font-size: 13px; opacity: .8; word-break: break-all; margin: 6px 0; }
+#projdlg .pdlist { max-height: 50vh; overflow: auto; border-radius: 8px; background: var(--head); }
+#projdlg .pdlist div { padding: 7px 12px; cursor: pointer; }
+#projdlg .pdlist div:hover { background: rgba(127, 127, 127, .15); }
+#projdlg .pdfoot { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+#projdlg .pdnote { flex: 1; font-size: 12px; opacity: .8; }
 .search { padding: 4px 12px 8px; }
 .search input { width: 100%; border: 0; border-radius: 8px; background: var(--head); color: var(--text); font: inherit; padding: 8px 12px; outline: none; }
 .list { flex: 1; overflow-y: auto; }
@@ -366,6 +376,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <button class="iconbtn" id="filesside" title="Files" aria-label="Files" style="display:none"><svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg></button>
       <button class="iconbtn" id="gearside" title="Settings" aria-label="Settings" style="display:none"><svg viewBox="0 0 24 24"><use href="#g-gear"/></svg></button>
     </div>
+    <div class="projbar"><select id="projsel" aria-label="Project" title="A project: chats that work in a folder of yours, with its instructions (AGENTS.md) and memory"></select>
+      <button class="iconbtn" id="projdel" title="Remove this project from the list (its folder and memory stay)" aria-label="Remove project" hidden><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg></button></div>
     <div class="search"><input id="search" placeholder="Search chats" aria-label="Search chats"></div>
     <div class="jobsbar" id="jobsbar" hidden><span id="jobstxt"></span><button id="stopall" title="Stop every answer that runs">Stop all</button></div>
     <div class="list" id="convlist"></div>
@@ -461,6 +473,14 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <div class="opt col"><div class="lab">System prompt<small>Sent at the start of every conversation</small></div><textarea id="sys" placeholder="Optional"></textarea></div>
         </div>
         <div class="sec">
+          <h3>Memory</h3>
+          <div class="opt"><div class="lab">Use memory<small>What you asked the model to remember ("remember that…"), read by every new chat</small></div>
+            <label class="switch"><input type="checkbox" id="memon"><span></span></label></div>
+          <div class="opt col"><div class="lab">Notes<small id="memhelp">MEMORY.md in the arcinferzero folder</small></div>
+            <textarea id="memtext" placeholder="Nothing remembered yet"></textarea>
+            <div><button class="fbtn" id="memsave" title="Save these notes (a chat already started keeps the notes it started with)">Save notes</button></div></div>
+        </div>
+        <div class="sec">
           <h3>Data</h3>
           <div class="opt"><div class="lab">Saved in the arcinferzero folder<small id="datasum">…</small></div></div>
           <div class="opt"><button class="fbtn" id="clrchats" title="Delete every chat; the files stay (Files panel)">Clear chats</button>
@@ -540,6 +560,13 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
     </div>
   </section>
 
+  <dialog id="projdlg" aria-label="New project">
+    <div><b>New project: pick its folder</b></div>
+    <div class="pdpath" id="pdpath">This computer</div>
+    <div class="pdlist" id="pdlist"></div>
+    <div class="pdfoot"><span class="pdnote" id="pdnote">The model reads the folder's files and its AGENTS.md; it writes into it only through the terminal, which asks you.</span>
+      <button class="fbtn" id="pdup">Up</button><button class="fbtn" id="pduse" disabled>Use this folder</button><button class="fbtn" id="pdcancel">Cancel</button></div>
+  </dialog>
   <aside class="termpane" id="termpane" hidden aria-label="Terminal">
     <div class="termhead">
       <div class="who"><b>Terminal</b><div id="termwhere"></div></div>
@@ -575,6 +602,7 @@ if (prefs.think === undefined) prefs.think = prefs.thinking === false ? "off" : 
 function loadPrefs() {
   $("web").checked = !!prefs.web;
   $("ftools").checked = prefs.ftools !== false;  // (on unless turned off)
+  $("memon").checked = prefs.memon !== false;
   // (term2: the model's access to the chat's terminal: "ask" (the first command of each session waits for Run, the
   //  default), "each" (every command), "off"; the earlier "ask" asked every time and "auto" once, so both are "ask")
   $("term").value = ["each", "off"].includes(prefs.term2) ? prefs.term2 : "ask";
@@ -588,7 +616,7 @@ function loadPrefs() {
   applyTheme();
 }
 function savePrefs() {
-  prefs = { ...prefs, web: $("web").checked, ftools: $("ftools").checked, term2: $("term").value, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
+  prefs = { ...prefs, web: $("web").checked, ftools: $("ftools").checked, memon: $("memon").checked, term2: $("term").value, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
     temp: $("temp").value, sys: $("sys").value, tts: $("tts").value, theme: $("theme").value, speech: $("speech").value };
   if ($("thinkmode").value) prefs.think = $("thinkmode").value;
   store.set("arcinferzero-prefs", prefs);
@@ -598,7 +626,145 @@ function applyTheme() {
   else delete document.documentElement.dataset.theme;
 }
 loadPrefs();
-["web", "ftools", "term", "ttsrate", "temp", "sys", "tts", "thinkmode", "speech"].forEach((id) => $(id).addEventListener("change", savePrefs));
+["web", "ftools", "memon", "term", "ttsrate", "temp", "sys", "tts", "thinkmode", "speech"].forEach((id) => $(id).addEventListener("change", savePrefs));
+// ---- memory (QUEUE F32.2, tools/server_memory.h): MEMORY.md in the arcinferzero folder, what the user asked the model
+// to remember. A chat takes the notes as they are when it starts and keeps that copy (saved with it): notes that
+// change later reach new chats only, so a chat's system text never changes and the server's prompt cache holds.
+let memory = { text: "", chars: 0, cap: 8000 }, memServed = false;  // (false: the page is not on this computer, or no server)
+const chatMem = new Map();  // (chat id -> the notes it started with; null: a chat from before memory, without it)
+// memory in this chat's prompt and tools: on in Settings, served (this computer), and not a chat from before memory
+const memIn = (id) => $("memon").checked && memServed && chatMem.get(id) !== null;
+async function loadMemory() {
+  try {
+    const r = await fetch("/v1/memory");
+    if (!r.ok) return;
+    memory = await r.json();
+    memServed = true;
+    $("memtext").value = memory.text || "";
+    $("memhelp").textContent = "MEMORY.md in the arcinferzero folder · " + k1(memory.chars || 0) + " of " + k1(memory.cap || 8000) +
+      " characters (the model's remember stops at that; merge old notes then)";
+  } catch (e) {}
+}
+$("memsave").addEventListener("click", async () => {
+  try {
+    const r = await fetch("/v1/memory", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("memtext").value }) });
+    const j = await r.json().catch(() => ({}));
+    note(r.ok ? "notes saved: new chats read them" : "saving the notes failed: " + (j.error?.message || "HTTP " + r.status));
+  } catch (e) { note("saving the notes failed: " + (e.message || e)); }
+  loadMemory();
+});
+// a chat's notes: the copy it started with (taken at its first message with memory on; "" without it, nothing kept);
+// a project's chat: the global notes and the project's
+function memFor(id) {
+  if (!memIn(id) || !id) return "";
+  if (!chatMem.has(id)) {
+    const p = projInfo.get(projectOf(id));
+    chatMem.set(id, (memory.text || "") + (p?.memory?.trim() ? "\n(this project, " + p.name + ":)\n" + p.memory : ""));
+  }
+  return chatMem.get(id);
+}
+// ---- projects (QUEUE F32.3 / F32.4, tools/server_projects.h): chats that work in a folder of the user's, with the
+// folder's AGENTS.md as instructions and a memory of their own. The sidebar shows one project's chats at a time;
+// a new chat joins the project shown. A chat keeps its project and the instructions it started with (chat.json:
+// project, instructions), so its system text stays the same while it runs.
+let projects = [], curProj = prefs.proj || "";
+const projInfo = new Map();   // (project id -> {name, folder, instructions, instructions_file, memory})
+const chatProj = new Map();   // (chat id -> its project id, "" for none)
+const chatInstr = new Map();  // (chat id -> the instructions it started with)
+const projectOf = (id) => (id && chatProj.has(id) ? chatProj.get(id) : curProj) || "";
+async function loadProjInfo(pid) {
+  if (!pid) return;
+  try {
+    const r = await fetch("/v1/projects/" + pid);
+    if (r.ok) projInfo.set(pid, await r.json());
+  } catch (e) {}
+}
+async function loadProjects() {
+  try {
+    const j = await (await fetch("/v1/projects")).json();
+    projects = Array.isArray(j.data) ? j.data : [];
+  } catch (e) { projects = []; }
+  if (curProj && !projects.some((p) => p.id === curProj)) curProj = "";
+  const sel = $("projsel");
+  sel.replaceChildren();
+  const opt = (v, t) => { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); };
+  opt("", "No project");
+  for (const p of projects) opt(p.id, "Project: " + p.name + (p.exists === false ? " (folder missing)" : ""));
+  opt("+new", "New project…");
+  sel.value = curProj;
+  $("projdel").hidden = !curProj;
+  await loadProjInfo(curProj);
+  renderConvs();
+}
+$("projsel").addEventListener("change", async () => {
+  const v = $("projsel").value;
+  if (v === "+new") { $("projsel").value = curProj; return openProjDlg(); }
+  curProj = v;
+  prefs.proj = curProj;
+  store.set("arcinferzero-prefs", prefs);
+  $("projdel").hidden = !curProj;
+  await loadProjInfo(curProj);
+  newChat();
+});
+$("projdel").addEventListener("click", async () => {
+  const p = projects.find((x) => x.id === curProj);
+  if (!p || !confirm("Remove the project \"" + p.name + "\" from the list? Its folder, its chats and its memory stay; adding the same folder again brings it back.")) return;
+  try { await fetch("/v1/projects/" + p.id, { method: "DELETE" }); } catch (e) {}
+  curProj = "";
+  prefs.proj = "";
+  store.set("arcinferzero-prefs", prefs);
+  await loadProjects();
+  newChat();
+});
+// the folder picker (the server lists the folders: a browser page cannot give a real path)
+let pdAt = "";
+async function pdShow(path) {
+  let j = {};
+  try { j = await (await fetch("/v1/projects/browse" + (path ? "?path=" + encodeURIComponent(path) : ""))).json(); } catch (e) {}
+  pdAt = path ? j.path || path : "";
+  $("pdpath").textContent = pdAt || "This computer";
+  $("pduse").disabled = !pdAt || !!j.refused;
+  $("pdnote").textContent = j.refused ? "Not this folder: " + j.refused : j.error ? j.error.message : "The model reads the folder's files and its AGENTS.md; it writes into it only through the terminal, which asks you.";
+  const box = $("pdlist");
+  box.replaceChildren();
+  for (const f of j.folders || []) {
+    const d = document.createElement("div");
+    d.textContent = (pdAt ? "📁 " : "") + f;
+    d.addEventListener("click", () => pdShow(pdAt ? pdAt.replace(/\\$/, "") + "\\" + f : f));
+    box.appendChild(d);
+  }
+  $("pdup").disabled = !pdAt;
+}
+function openProjDlg() { pdShow(""); $("projdlg").showModal(); }
+$("pdup").addEventListener("click", async () => {
+  let j = {};
+  try { j = await (await fetch("/v1/projects/browse?path=" + encodeURIComponent(pdAt))).json(); } catch (e) {}
+  pdShow(j.parent || "");
+});
+$("pdcancel").addEventListener("click", () => $("projdlg").close());
+$("pduse").addEventListener("click", async () => {
+  const r = await fetch("/v1/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder: pdAt }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { $("pdnote").textContent = "Not added: " + (j.error?.message || "HTTP " + r.status); return; }
+  $("projdlg").close();
+  curProj = j.id;
+  prefs.proj = curProj;
+  store.set("arcinferzero-prefs", prefs);
+  projInfo.set(j.id, j);
+  await loadProjects();
+  newChat();
+});
+// a project chat's system text: where it works and the project's instructions (the copy it started with)
+function projSystem(id) {
+  const pid = projectOf(id), p = projInfo.get(pid);
+  if (!pid || !p) return "";
+  if (!chatInstr.has(id)) chatInstr.set(id, p.instructions || "");
+  const ins = chatInstr.get(id);
+  return "Project: " + p.name + " (the folder " + p.folder + "). This chat works in it: list_files with scope \"project\" " +
+    "lists its files (file_id \"project:...\"), read_file / search_file / digest_file read them, and the terminal starts " +
+    "in its folder. create_file writes into this chat's own files; to put a file into the project folder, use run_command " +
+    "(the user allows it). remember keeps notes with this project." + (ins.trim() ? "\nThe project's instructions (" + (p.instructions_file || "AGENTS.md") + "):\n" + ins : "");
+}
 $("tempon").addEventListener("change", () => { $("temp").disabled = $("temp").hidden = !$("tempon").checked; savePrefs(); });
 $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
@@ -1070,7 +1236,9 @@ function compactable() {
   return history.length - 2 - lead;
 }
 function sysMessages(id = convId, spoken = voice.on) {  // (spoken: the job's own Talk state, not the one on screen now)
-  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", spoken ? VOICE_SYSTEM : "", spoken && toolsOn(id) ? WEB_VOICE_SYSTEM : ""].filter(Boolean).join("\n\n");
+  // (the notes last: the part that differs most between chats; fixed within one, see memFor)
+  const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", spoken ? VOICE_SYSTEM : "", spoken && toolsOn(id) ? WEB_VOICE_SYSTEM : "",
+    projSystem(id), memIn(id) ? MEM_SYSTEM(memFor(id)) : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -1281,7 +1449,7 @@ const FILE_TOOLS = [
     description: "List the user's saved files (uploads, documents you wrote): id, name, kind, size, upload time. To find " +
       "files the user means ('the files I uploaded today').",
     parameters: { type: "object", properties: {
-      scope: { type: "string", enum: ["all", "chat"], description: "chat: this conversation's only" },
+      scope: { type: "string", enum: ["all", "chat", "project"], description: "chat: this conversation's only; project: the project folder's files" },
       kind: { type: "string", enum: ["image", "audio", "video", "document"] },
       name_contains: { type: "string" },
       within_hours: { type: "number", description: "uploaded in the last N hours" },
@@ -1309,7 +1477,7 @@ const FILE_TOOLS = [
       required: ["file_id"] } } },
   { type: "function", function: { name: "search_file",
     description: "Passages of a long document that answer a question (BM25 word search), with section and pages; without " +
-      "file_id, every document of this chat. Use the document's own words (names, terms, numbers); retry with others.",
+      "file_id, every document of this chat (and of its project). Use the document's own words (names, terms, numbers); retry with others.",
     parameters: { type: "object", properties: {
       query: { type: "string", description: "keywords, e.g. \"anggaran pemasaran 2026\"" },
       file_id: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
@@ -1390,7 +1558,21 @@ function termShellNote(shell) {
     (v5 ? "This is 5.1: no && or || between commands (use ; or if ($?) { ... }), no ternary ?: and no ?? or ?., " +
       "Set-Content / Out-File write UTF-16 or ANSI unless -Encoding utf8 (which adds a BOM). " : "");
 }
-const toolsOn = (id) => $("web").checked || $("ftools").checked || termOffered(id);
+// ---- memory tools (see loadMemory): the model writes notes only when the user asks it to remember or forget
+const MEM_TOOLS = [
+  { type: "function", function: { name: "remember",
+    description: "Save a note the user asked you to remember (\"remember that...\", \"ingat ya...\") for every later chat. " +
+      "One short sentence in the user's language, as a fact (e.g. \"Prefers answers in Indonesian\"). Only when asked.",
+    parameters: { type: "object", properties: { fact: { type: "string" },
+      for_every_chat: { type: "boolean", description: "leave it out (a project's chat: the note stays with the project); " +
+        "true only if the user explicitly says it is for all chats, not just this project" } }, required: ["fact"] } } },
+  { type: "function", function: { name: "forget",
+    description: "Delete saved notes the user asked you to forget: every note that contains the given text.",
+    parameters: { type: "object", properties: { match: { type: "string", description: "a part of the note's text" } }, required: ["match"] } } }];
+const MEM_SYSTEM = (notes) => "Memory: notes the user asked you to keep across chats. Use them where they matter; do not " +
+  "list them unasked. When the user asks you to remember or forget something, call remember / forget (never on your " +
+  "own); a note saved now reaches the next chats.\nNotes:\n" + (notes.trim() || "(none yet)");
+const toolsOn = (id) => $("web").checked || $("ftools").checked || termOffered(id) || memIn(id);
 const MAX_ROUNDS = 8;
 // While talking (F24.5), the tools run in the background: a call gets an immediate answer ("search #n started"), the
 // AI says it is looking, and the conversation goes on; when results arrive they come as a message of their own and
@@ -1460,6 +1642,28 @@ function toolCard(el) {
     d.appendChild(det);
   }, file: (f) => toolCardFile(d, f), el: d };
 }
+// remember / forget (tools/server_memory.h): the global notes; this chat keeps the copy it started with (memFor)
+async function runMemTool(name, args, card, signal, chat) {
+  card.status.textContent = "· saving…";
+  const body = name === "remember" ? { fact: String(args.fact ?? "") } : { match: String(args.match ?? "") };
+  // (a project's chat: its project's notes, unless remember was asked for every chat)
+  const pid = projectOf(chat);
+  if (pid && !(name === "remember" && args.for_every_chat === true)) body.project = pid;
+  let res, j = {};
+  try {
+    res = await fetch("/v1/tools/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+    j = await res.json().catch(() => ({}));
+  } catch (e) { card.status.textContent = "· failed"; return "error: " + (e.message || e); }
+  if (!res.ok) {
+    const m = j.error?.message || "HTTP " + res.status;
+    card.status.textContent = "· failed: " + m;
+    return "error: " + m;
+  }
+  loadMemory();
+  if (body.project) loadProjInfo(body.project);
+  card.status.textContent = name === "remember" ? (j.note ? "· " + j.note : "· remembered" + (body.project ? " (this project)" : "")) : "· " + (j.forgotten?.length || 0) + " forgotten";
+  return JSON.stringify(j);
+}
 // one call: its card shows what runs and the outcome; returns the text the model gets as the tool's result
 async function runTool(call, card, signal, job) {
   const name = call.function.name;
@@ -1469,6 +1673,7 @@ async function runTool(call, card, signal, job) {
   if (!args) { card.status.textContent = "invalid arguments"; return "error: the arguments are not valid JSON"; }
   if (["list_files", "read_file", "search_file", "create_file", "search_chats", "digest_file"].includes(name)) return runFileTool(name, args, card, signal, job);
   if (name === "run_command") return runTermTool(args, card, signal, job);
+  if (name === "remember" || name === "forget") return runMemTool(name, args, card, signal, job?.id || convId);
   if (name === "terminal_panel") return panelTermTool(String(args.action || ""), card, signal, job);
   if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
@@ -1639,7 +1844,7 @@ function termUsable(id) { return $("term").value !== "off" && !!id && !!terms.ge
 const termOffered = (id) => $("term").value !== "off" && !!id;
 async function termRun(id, command, timeout_s, signal) {
   const res = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" }, signal,
-    body: JSON.stringify({ command, chat_id: id, session: true, timeout_s }) });
+    body: JSON.stringify({ command, chat_id: id, session: true, timeout_s, project_id: projectOf(id) || undefined }) });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) return { ok: false, error: j.error?.message || "HTTP " + res.status };
   const t = termOf(id);
@@ -1788,11 +1993,17 @@ function toolLabel(name, args) {
   if (name === "search_chats") return name + (args.query ? " \u201c" + args.query + "\u201d" : " (newest)");
   if (name === "run_command") return name;
   if (name === "terminal_panel") return name + " " + (args.action || "");
+  if (name === "remember") return name + " “" + (args.fact || "") + "”";
+  if (name === "forget") return name + " “" + (args.match || "") + "”";
   return name + " " + (args.query ?? args.url ?? "") + (args.offset ? " @" + args.offset : "");
 }
 async function runFileTool(name, args, card, signal, job) {
   const body = { ...args }, chat = job?.id || convId;  // (the job's chat: another one may be on screen)
-  if (name === "list_files") { if (args.scope === "chat") body.chat_id = chat || "-"; delete body.scope; }
+  // (the chat's own project only, never one the model names: the server reads only that project's files)
+  delete body.project_id;
+  if (projectOf(chat)) body.project_id = projectOf(chat);
+  // (scope "project": as it is, the server says when there is none)
+  if (name === "list_files" && args.scope !== "project") { if (args.scope === "chat") body.chat_id = chat || "-"; delete body.scope; }
   if (name === "create_file") body.chat_id = chat || ensureConv();  // (into this chat's folder)
   if ((name === "read_file" || name === "search_file" || name === "digest_file") && chat) body.chat_id = chat;  // (a name: this chat's file first; no file: this chat's documents; digest_file: its notes file here)
   if (name === "search_chats" && chat) body.chat_id = chat;  // (this chat left out: it is in the prompt)
@@ -1858,7 +2069,8 @@ async function streamTurn(el, st, onOverflow, job) {
       const sv = caps.ocr && ocrSaveFor.get(job.id);
       if (sv) { body.ocr_save = { name: sv.name, folder: sv.folder, append: !job.ocrFresh }; body.chat_id = job.id; }
     }
-    if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termOffered(job.id) ? TERM_TOOLS : [])];
+    if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termOffered(job.id) ? TERM_TOOLS : []),
+      ...(memIn(job.id) ? MEM_TOOLS : [])];
     // (the last turn after the tool rounds: the same tools, so the prompt cache holds, but no call can be written; the
     //  tools left out made the server process the whole chat again, and a call written anyway left an empty answer)
     if (toolsOn(job.id) && job.noTools) body.tool_choice = "none";
@@ -2286,6 +2498,7 @@ function snippetOf(h) {
 // this chat's id, made at its first file or save (its folder on the server: chats\<date> <title> (<id>))
 function ensureConv() {
   if (!convId) convId = "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  if (!chatProj.has(convId)) chatProj.set(convId, curProj);  // (a new chat joins the project shown)
   return convId;
 }
 let saving = Promise.resolve();
@@ -2314,8 +2527,13 @@ function saveConv(force, job) {
   const c = { id, title: titleOf(h), at: Date.now(), model: job ? job.model : modelId, snippet: snippetOf(h), history: closedCalls(h) };
   const t = terms.get(id);  // (its terminal: open or not, and its log)
   if (t && (t.open || t.log.length)) c.terminal = { open: t.open, cwd: t.cwd, venv: t.venv, shell: t.shell, log: t.log.filter((x) => !x.running) };
+  if (typeof chatMem.get(id) === "string") c.memory = chatMem.get(id);  // (the notes it started with: its system text stays the same)
+  if (projectOf(id)) {  // (its project, and the instructions it started with)
+    c.project = projectOf(id);
+    if (chatInstr.has(id)) c.instructions = chatInstr.get(id);
+  }
   const body = JSON.stringify(c);
-  convs = [{ id: c.id, title: c.title, at: c.at, model: c.model, snippet: c.snippet }, ...convs.filter((x) => x.id !== c.id)];
+  convs = [{ id: c.id, title: c.title, at: c.at, model: c.model, snippet: c.snippet, project: c.project }, ...convs.filter((x) => x.id !== c.id)];
   renderConvs();
   // (one save after another: the newest state wins)
   saving = saving.then(() => fetch("/v1/chats/" + c.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body }))
@@ -2330,7 +2548,11 @@ function renderConvs() {
   $("newchat").title = slotsFull() ? busyNote() : "New chat";
   $("jobstxt").textContent = nrun + " chat" + (nrun === 1 ? "" : "s") + " answering" + (nwait ? ", " + nwait + " waiting" : "");
   box.replaceChildren();
-  const shown = convs.filter((c) => !q || String(c.title).toLowerCase().includes(q) || String(c.snippet || "").toLowerCase().includes(q));
+  // (the project shown: its chats; no project: the chats outside every project, and those of a project removed from
+  //  the list)
+  const known = new Set(projects.map((p) => p.id));
+  const shown = convs.filter((c) => (known.has(c.project || "") ? c.project : "") === curProj &&
+    (!q || String(c.title).toLowerCase().includes(q) || String(c.snippet || "").toLowerCase().includes(q)));
   if (!shown.length) {
     const n = document.createElement("div");
     n.className = "none";
@@ -2423,6 +2645,13 @@ async function openConv(id) {
   if (seq !== openSeq) return;  // (another chat was opened or started while this one loaded: that one stays)
   resetChat();
   convId = id;
+  // (its project and instructions; its notes: the copies it started with; a chat from before memory existed keeps
+  //  none, so its prompt is as it was)
+  if (!job && !chatProj.has(id)) chatProj.set(id, typeof c.project === "string" ? c.project : "");
+  if (!job && !chatInstr.has(id) && typeof c.instructions === "string") chatInstr.set(id, c.instructions);
+  if (chatProj.get(id) && !projInfo.has(chatProj.get(id))) await loadProjInfo(chatProj.get(id));
+  if (!job && !chatMem.has(id) && (typeof c.memory === "string" || (Array.isArray(c.history) && c.history.length)))
+    chatMem.set(id, typeof c.memory === "string" ? c.memory : null);
   if (!terms.has(id) && c.terminal) terms.set(id, { open: !!c.terminal.open, cwd: c.terminal.cwd || "", venv: c.terminal.venv || "", shell: c.terminal.shell,
     log: Array.isArray(c.terminal.log) ? c.terminal.log : [] });
   if (terms.get(id)?.open && !terms.get(id).shell) termProbe(id);  // (a terminal saved before the shell was asked)
@@ -3188,6 +3417,8 @@ input.addEventListener("paste", (e) => {
 
 showEmpty("New conversation");
 loadConvs();
+loadMemory();
+loadProjects();
 // ---- Transcripts (Whisper on the server, /v1/transcripts): audio and video files to text and subtitles. The list
 // over the side (files uploaded in 16-MB pieces, the server's queue with its progress), the transcript in place of the
 // chat: the media with the word being played lit, a word clicked plays from it, a segment double-clicked is edited

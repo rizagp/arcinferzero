@@ -101,6 +101,9 @@ struct EngineOptions {
   int npu = -1;
   // tensor parallel (zero/engine_tp.h, --gpus): this engine is shard tp_rank of a model split over tp_size GPUs
   int tp_rank = 0, tp_size = 1;
+  // weights in host memory (iGPU: the same DRAM, read at ~91 % of device memory's speed, not counted in the GPU share),
+  // GiB: < 0 automatic (a dense model whose weights fill more than 85 % of the share: Gemma 4 31B), 0 none
+  double host_weights_gb = -1;
 };
 
 class VisionQwen3VL;
@@ -199,6 +202,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);
+    for (void* p : host_ptrs_) zeMemFree(zrt::ctx, p);  // (weights in host memory: plan_tight)
+    host_ptrs_.clear();
     if (cl_.queue) clReleaseCommandQueue(cl_.queue);
     if (cl_.ctx) clReleaseContext(cl_.ctx);
     dfl_close();  // (the DFlash2 drafter's mapped safetensors file)
@@ -236,7 +241,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  window + a chunk + 4096 rows, 4.1 GB at 8192 on the 26B, which left the expert cache at 39 %. 26B, ctx 16K,
     //  chunk 8192 / 4096 / 2048: expert cache 39 / 64 / 77 %, 4K prompt 216 / 184 / 217 tok/s, generation after a
     //  14K prompt 9.9 / 12.3 / 13.0 tok/s)
-    max_chunk = o.chunk > 0 ? o.chunk : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : (w8_resident ? 512 : 4096);
+    plan_tight();  // (a dense model that nearly fills the GPU share: weights in host memory, smaller chunks and rings)
+    max_chunk = o.chunk > 0 ? o.chunk : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
     if (!opt.dry) build_kernels();
@@ -270,6 +276,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       if (!opt.dry) loadp::begin(total);
       load_weights();
       tp_loaded();  // (a split model: the host copies of its cut tensors freed)
+      if (host_bytes_ && !opt.dry)
+        fprintf(stderr, "arcinferzero: %.2f GiB of the weights in host memory (outside the GPU share); prompt chunks of %d, "
+                        "sliding-window rings of %d rows\n", host_bytes_ / 1073741824.0, max_chunk,
+                std::min(ctx, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256));
       if (!opt.dry) loadp::step(loadp::st().what, total, total);
     }
     {
@@ -779,11 +789,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     return m;
   }
   size_t loaded_bytes() const { return mem_load_; }
+  bool tight() const { return tight_; }                  // (plan_tight: weights over 85 % of an iGPU's share)
+  size_t host_weight_bytes() const { return host_bytes_; }  // (weights in host memory: plan_tight)
   size_t ctx_bytes(int c) const {
     c = (c + 15) / 16 * 16;
     size_t n = ctx_buf_bytes(c);
     if (hp.swa_rings) {
-      const int swa_cap = std::min(c, (hp.n_swa + max_chunk + 4096 + 255) / 256 * 256);
+      const int swa_cap = std::min(c, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256);
       for (const Layer& L : layers_)
         if (L.kv_src < 0) {
           const size_t cap = L.swa ? swa_cap : c;
@@ -1712,6 +1724,36 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // Gemma 4: the layer whose KV cache layer il uses (its own, or llama.cpp's KV reuse rule)
   int g4_kv_layer(int il) const { return il >= hp.n_layer_kv ? hp.n_layer_kv - (hp.swa[il] ? 2 : 1) : il; }
   int swa_cap_ = 0, written_hi_ = 0;  // Gemma: sliding-window ring capacity, highest position written + 1
+  // ---- a dense model that nearly fills the GPU share (iGPU, weights over 85 % of it: Gemma 4 31B, 17.7 GB in a 19.2 GiB
+  // share, left ~4K tokens of context): part of its weights in host memory (the same DRAM; ~91 % of device memory's
+  // read speed, measured 64.4 vs 70.8 GB/s; not counted in the share), prompt chunks of 1024, and the sliding-window
+  // rings' margin for moving back one chunk instead of 4096 rows (the rings were 1.2 MB per token per 1K rows: 11 GB
+  // at the full 9,216). Models that fit with room (Qwen3.8 27B: 68 % of this laptop's share): unchanged (tight_ false,
+  // host_left_ 0)
+  bool tight_ = false;
+  size_t host_left_ = 0, host_bytes_ = 0;  // (weights still to put in host memory; put there)
+  std::vector<void*> host_ptrs_;           // (freed by release_all)
+  int swa_margin() const { return tight_ ? std::min(max_chunk, 4096) : 4096; }
+  void plan_tight() {
+    if (opt.tp_size > 1 || hp.moe || stream_) return;
+    double total = 0;
+    const bool tied = !f_.find("output.weight");
+    for (const GgufTensor& t : f_.tensors)
+      if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight") total += (double)t.nbytes;
+    const double budget = (double)device_mem() - kDriverSlack, GiB = 1073741824.0;
+    tight_ = zrt::integrated() && total > 0.85 * budget;
+    double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
+    if (opt.host_weights_gb < 0 && tight_) {
+      // (what leaves 45 % of the share for the rest, but no more than the RAM free now beyond the share, less 4 GiB:
+      //  host memory is RAM all the same. Gemma 4 31B, 24.8 GB free: 5.3 GiB in host memory and a share filled with
+      //  context left 2.1 GB free, and generation fell from 3.1 to 1.2 tok/s (paging))
+      MEMORYSTATUSEX ms{sizeof ms};
+      GlobalMemoryStatusEx(&ms);
+      want = std::max(0.0, std::min(total - 0.55 * budget, (double)ms.ullAvailPhys - budget - 4.0 * GiB));
+    }
+    if (const char* e = getenv("ARC_HOST_WEIGHTS_GB")) want = std::max(0.0, atof(e)) * GiB;  // (tests: 0 turns it off)
+    host_left_ = (size_t)want;
+  }
   // MTP block and speculative-decoding state
   Layer mtp_;
   GpuWeight eh_proj_;
@@ -2308,18 +2350,35 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   cl_mem upload_padded(uint32_t type, const uint8_t* data, size_t nbytes) {
     const size_t bb = gguf_sb_bytes(type), bp = raw_padded_sb_bytes(type), nsb = nbytes / bb;
     const size_t total = nsb * bp + kRawSlack;
+    // (in host memory while plan_tight's share of the weights lasts: the first matrices loaded; the same bytes and
+    //  kernels, so the logits are bit-identical)
+    const bool host = host_left_ >= total;
+    if (host) {
+      host_left_ -= total;
+      host_bytes_ += total;
+    }
     if (opt.dry) {
-      gpu_bytes += total;
+      if (!host) gpu_bytes += total;
       return nullptr;
     }
     loadp::add((double)nbytes);
     cl_int err;
-    cl_mem m = clCreateBuffer(cl_.ctx, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR, total, nullptr, &err);
-    CL_CHECK(err);
-    mems_.push_back(m);
-    gpu_bytes += total;
-    uint8_t* dst = (uint8_t*)clEnqueueMapBuffer(cl_.queue, m, CL_TRUE, CL_MAP_WRITE, 0, total, 0, nullptr, nullptr, &err);
-    CL_CHECK(err);
+    cl_mem m;
+    uint8_t* dst;
+    if (host) {
+      void* p = zrt::host_alloc(total);
+      host_ptrs_.push_back(p);
+      m = zrt::wrap(p, total);
+      mems_.push_back(m);
+      dst = (uint8_t*)p;
+    } else {
+      m = clCreateBuffer(cl_.ctx, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR, total, nullptr, &err);
+      CL_CHECK(err);
+      mems_.push_back(m);
+      gpu_bytes += total;
+      dst = (uint8_t*)clEnqueueMapBuffer(cl_.queue, m, CL_TRUE, CL_MAP_WRITE, 0, total, 0, nullptr, nullptr, &err);
+      CL_CHECK(err);
+    }
     const int64_t chunks = (int64_t)((nsb + 4095) / 4096);
 #pragma omp parallel for schedule(static)
     for (int64_t ch = 0; ch < chunks; ++ch) {
@@ -2331,7 +2390,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       }
     }
     memset(dst + nsb * bp, 0, kRawSlack);
-    CL_CHECK(clEnqueueUnmapMemObject(cl_.queue, m, dst, 0, nullptr, nullptr));
+    if (!host) CL_CHECK(clEnqueueUnmapMemObject(cl_.queue, m, dst, 0, nullptr, nullptr));
     return m;
   }
 
@@ -3127,7 +3186,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // layers that share another layer's KV (E2B / E4B) read its ring later in the same pass over the same key range,
     // so the ring is enough for them too (they kept full caches before 2026-10-22: E4B 13,921-token prompt in a
     // 16K context, ring vs full, logits bit-identical with and without the drafter; ~115 KB less per token)
-    swa_cap_ = std::min(ctx, (hp.n_swa + max_chunk + 4096 + 255) / 256 * 256);
+    swa_cap_ = std::min(ctx, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256);
     if (hp.n_ple) {
       ple_tok_embd_ = &f_.get("per_layer_token_embd.weight");
       ple_model_proj_ = load_w("per_layer_model_proj.weight");
@@ -3679,7 +3738,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // (Gemma 4 E2B / E4B (per-layer embeddings): one int8 pass for the matmuls, the float attention kept; the
     //  user's limit is KL 0.015 and the one-pass E4B measured 0.0010 with int8 attention as well (2026-10-23).
     //  ARC_G4_Q2MM=1: two passes there too, as before)
-    const bool g4_one = hp.gemma && hp.n_ple > 0 && !(getenv("ARC_G4_Q2MM") && atoi(getenv("ARC_G4_Q2MM")) != 0);
+    // (ARC_G4_ONE=1: one pass on any Gemma 4, to measure its KL)
+    const bool g4_one = hp.gemma && ((hp.n_ple > 0 && !(getenv("ARC_G4_Q2MM") && atoi(getenv("ARC_G4_Q2MM")) != 0)) ||
+                                     (getenv("ARC_G4_ONE") && atoi(getenv("ARC_G4_ONE")) != 0));
     // (Qwen3 dense, Qwen3-ASR: two passes too. 72-token prompt against f32: one pass KL 0.0064 prompt / 0.0093 decode,
     //  two passes < 0.00001; 2048-token prompt 1376 -> 901 tok/s, generation 24.5 -> 22.2 tok/s. ARC_Q3_Q2=0: one pass)
     const bool q3_one = getenv("ARC_Q3_Q2") && atoi(getenv("ARC_Q3_Q2")) == 0;
@@ -3741,7 +3802,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       rd_bytes += raw_bytes(w);
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);
       cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(w.type) + " -DGROWS=" + std::to_string(grows) + head_defs(w) +
-                                         (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()),
+                                         (q2_fuse_ ? " -DQ2F" + q2_defs_ : std::string()) + (vk ? std::string() : xe2_gemv_pf()),
                            vk ? "gemv_v" : "gemv");
       q2_fused_ = q2_fuse_;
       set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a);

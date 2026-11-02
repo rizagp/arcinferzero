@@ -88,7 +88,8 @@ zero/       the engine: engine.h (setup, memory, slots, sessions, dispatch) with
             mirrored calls), mgpu_probe.cpp / event_probe.cpp (what syncing GPUs costs), grf_probe.cpp
 tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cache.h / server_chat.h /
             server_catalog.h / server_load.h, api_compat.h (Anthropic / Ollama / Responses formats), web_tools.h (web
-            search / page fetch), server_files.h (the web UI's chat folders), doc_writer.h (DOCX / PDF / RTF
+            search / page fetch), server_files.h (the web UI's chat folders), server_memory.h (MEMORY.md, remember /
+            forget), server_projects.h (projects: a folder, its AGENTS.md, its files to the tools), doc_writer.h (DOCX / PDF / RTF
             from Markdown), doc_reader.h + inflate.h (reading DOCX / PDF: outline, BM25 search),
             server_terminal.h (the terminal tool), ref_forward.cpp (f32 CPU reference: Qwen3.5, Qwen3.5-MoE, Gemma 4, Flash
             Next), gemma4v_ref.cpp (f32 Gemma 4 image encoder), convert_gsq.py (ISTA GSQ checkpoint -> GGUF),

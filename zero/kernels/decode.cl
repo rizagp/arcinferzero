@@ -680,12 +680,28 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
     const int rs1 = has ? (short)absum[Q2_AB + (size_t)(2 * b + 1) * M] : 0;
 #endif
 #endif
+#ifdef GEMV_PF
+    // (discrete GPUs, ARC_GEMV_PF=1, zero/xe2/engine_xe2.h: every row's reads of this step issued before the first
+    //  row is decoded, GROWS x WIN_CALLS loads in flight instead of WIN_CALLS; the same values, the same sums)
+    uint pre[GROWS][WIN_CALLS];
 #pragma unroll
     for (int r = 0; r < GROWS; ++r) {
+      __global const uint* src = (__global const uint*)(raw + ((size_t)min(r0 + r, N - 1) * nsb + sp) * BBP);
+#pragma unroll
+      for (int c = 0; c < WIN_CALLS; ++c) pre[r][c] = intel_sub_group_block_read(src + c * 16);
+    }
+#endif
+#pragma unroll
+    for (int r = 0; r < GROWS; ++r) {
+#ifdef GEMV_PF
+#pragma unroll
+      for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = pre[r][c];
+#else
       const int n = min(r0 + r, N - 1);
       __global const uint* src = (__global const uint*)(raw + ((size_t)n * nsb + sp) * BBP);
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = intel_sub_group_block_read(src + c * 16);
+#endif
       sub_group_barrier(CLK_LOCAL_MEM_FENCE);
       uint w[8];
       int sc0, sc1, mn0, mn1;

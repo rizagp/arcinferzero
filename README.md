@@ -72,6 +72,7 @@ builds everything, downloads the models you pick and connects the [Pi](https://p
 | Qwen3.5 4B | 911 tok/s (2K) | 17.6 tok/s | 0.0021 |
 | Gemma 4 E4B (Google QAT) | 724 tok/s (4K), 615 (14K) | 32 tok/s with its drafter | 0.00088 |
 | Gemma 4 12B (Google QAT) | 137 tok/s (4K), 102 (14K); +10 % with `--npu on` | 19.0 tok/s with its drafter | 0.0002 (two-pass int8 activations) |
+| Gemma 4 31B (Google QAT, dense; 32 GB laptop: ~2K context, see docs/models.md) | ~48 tok/s (2K) | 3.6 tok/s; 7.8 with its drafter | 0.00000 (two-pass int8 activations) |
 | Gemma 4 26B-A4B (Google QAT, MoE, experts on the SSD) | 252 tok/s (4K), 210 (14K) | ~25 tok/s with its drafter; 14 after a 14K prompt without | 0.0042 (two-pass int8 activations) |
 
 | vs llama.cpp (same file, same laptop) | arcinferzero | llama.cpp Vulkan | llama.cpp SYCL |
@@ -92,7 +93,7 @@ these rows: [docs/models.md](docs/models.md).
 | Family | Models | Input | Drafts tokens with |
 |---|---|---|---|
 | Qwen3.5 / 3.6 / 3.8 | 0.8B-27B dense, 35B-A3B MoE, Flash Next (512 experts) | text, images (`mmproj`) | MTP block, DFlash2 |
-| Gemma 4 | E4B, 12B, 26B-A4B MoE (Google's QAT Q4_0) | text, images, audio | Gemma 4 assistant drafters |
+| Gemma 4 | E4B, 12B, 26B-A4B MoE, 31B (Google's QAT Q4_0) | text, images, audio | Gemma 4 assistant drafters |
 | OCR | Xiaomi-OCR-0 | images, PDFs | |
 | Speech to text | Qwen3-ASR, Whisper large-v3 | audio, video | |
 

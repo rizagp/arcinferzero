@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-11-02 (night): Gemma 4 31B, memory and projects in the web UI, B60 switches
+
+**Gemma 4 31B QAT** (`g31` in setup and the catalog; Google's Q4_0, Unsloth's drafter)
+- KL against the f32 reference on a 536-token prompt: 0.00000 on the prompt path and the decode path (max 7e-5),
+  the same top token at every position.
+- A tight-memory mode for a dense model whose weights fill more than 85 % of an iGPU's share
+  (`Engine::plan_tight`): part of the weights in host memory (bit-identical logits), prompt chunks of 1024,
+  sliding-window rings with a margin of one chunk, `--ctx auto` from 1024 tokens. Only the 31B here; the other
+  models plan as before. The host share is bounded by the RAM free at the start and is not cached; the server's load
+  places the same amount its context probe did.
+- On this laptop: generation 3.6 tok/s, 7.8 with the drafter; context 2048 (1024 with vision).
+
+**Web UI memory and projects**
+- `MEMORY.md` in the data folder: the model's `remember` / `forget` tools and Settings > Memory. A chat keeps the
+  notes it started with; chats from before memory keep their prompt.
+- Projects: a folder of yours, with its `AGENTS.md` (or `CLAUDE.md`) as instructions, a memory of its own, its
+  files for the file tools (`project:<id>/<path>`) and the terminal opening there.
+- Self audit: a chat reads only its own project's files; memory and projects only on this computer; `forget`
+  removes at most 3 notes; the user folder, AppData and key folders cannot be projects; project files have a
+  document cache of their own; a removed project's chats show under "No project"; a project file's digest notes
+  get their own name.
+- `AGENTS.md` for coding agents (Claude Code reads it through `CLAUDE.md`).
+
+**Discrete GPUs and multi-GPU** (off by default; no change on the iGPU)
+- `ARC_GEMV_PF=1`: the single-token GEMV issues all its rows' reads first (bit-identical; a row in
+  `bench/decode_try.ps1`).
+- `ARC_TP_ATT_QSPLIT=1`: the 35B's attention split by q-head over 4 GPUs (KL to one GPU 0.011 vs 0.008 whole).
+
 ## 2026-11-02 (late night): self audit of the day's B60 work
 
 Three independent reviews (f16 XMX GEMM, multi-GPU changes, event probe and scripts). Each finding was checked in

@@ -334,7 +334,8 @@ class HttpServer {
       const size_t n = strlen(pre);
       return p.compare(0, n, pre) == 0 && (p.size() == n || p[n] == '/');
     };
-    for (const char* pre : {"/v1/files", "/files", "/v1/chats", "/v1/transcripts", "/v1/live", "/v1/tools", "/v1/server", "/sessions"})
+    for (const char* pre : {"/v1/files", "/files", "/v1/chats", "/v1/transcripts", "/v1/live", "/v1/tools", "/v1/server", "/sessions",
+                            "/v1/memory", "/v1/projects"})
       if (under(pre)) return false;
     const std::string m = rq.method == "OPTIONS" ? rq.header("access-control-request-method") : rq.method;
     if (m == "GET" || m == "HEAD") return true;

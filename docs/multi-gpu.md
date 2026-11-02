@@ -94,6 +94,18 @@ file, cache tables).
 - **Attention whole when the kv-heads are few.** The 35B has 2 kv-heads. Over 3 or 4 GPUs its 10 attention layers
   stay whole on every GPU (the same output everywhere, no sum: 70 sums per token instead of 80), while DeltaNet and
   the experts are divided. Over 2 GPUs everything is divided.
+- **Or by q-head (`ARC_TP_ATT_QSPLIT=1`, 2026-11-02, opt-in).** The rule: N a multiple of the kv-heads, and each
+  kv-head's q-heads divisible by N / kv-heads. Over 4 GPUs the 35B then gives each GPU 4 q-heads of one kv-head:
+  - that kv-head's K / V on 2 GPUs;
+  - `wo`'s columns of its q-heads;
+  - the output summed like the other layers'.
+
+  The kernels run at 4 q-heads per kv-head, as for the 9B. Each GPU reads half the K / V and does a quarter of the
+  attention, for 10 more sums per token: a gain at long contexts and prompts, a small loss at short ones (estimated
+  for B60s: ~0.57 ms more sums against ~0.3 ms less reading per token). Laptop, ARC_TP_SIM, 1,687-token prompt, KL to
+  one GPU over the positions before the greedy texts part: 0.0109, against 0.0076 with the attention whole. Both are
+  within the 4-GPU split's own range (0.0074-0.0115), and 2 GPUs are bit-identical to before. It stays off until
+  B60s measure it.
 - **Off in a split model:** decode + GEMM for prompt experts (it decodes every expert of a layer; moe_rg runs the
   prompt chunks instead, the same results bit for bit on one GPU), and the cached / missing split of a token's
   experts (ARC_XSPLIT): with experts missing it gave run-to-run differences in a split model, see QUEUE F30.

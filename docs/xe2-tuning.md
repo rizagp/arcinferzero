@@ -13,8 +13,9 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GEMV_MT_GRF=128` | 256 | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
+| `ARC_GEMV_PF=1` | off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60 to measure) | 7 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
-| `ARC_TP_*` | | the multi-GPU sums (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`) | [multi-gpu.md](multi-gpu.md) |
+| `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
 
 The tools: `bench\gemm_sweep.ps1` (prompt), `bench\decode_try.ps1` (generation), `bin\mgpu_probe.exe` and
 `bin\event_probe.exe` (several GPUs), `bin\replay_probe.exe` (kernel launches), `bin\clinfo.exe` (what the driver

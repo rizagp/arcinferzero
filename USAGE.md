@@ -235,8 +235,9 @@ same folder (or use `pi-arc flash` / `arc-server start -Model flash`). The first
 to `%USERPROFILE%\.arcinferzero\zero\` (~9.5 minutes); later loads through the server take ~21–26 s. It writes ~6–7
 tokens/s (the expert cache holds about a fifth of the experts at 131K); prompts: 166 tokens/s at 4K, ~145-163 at
 9-32K, ~123 at 125K. The automatic context is 131,072; up to 262,144 with `--ctx`. The difference from the CPU
-reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. Its precise mode makes it more exact
-(0.0127 at 3.5K, under the 0.015 limit) at about half the prompt speed: `arc-server start -Model flash -Precise`
+reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. That is accepted for text work such as
+summaries, where it does not change what is said. For work that needs exactness (code, numbers, quotes), its precise
+mode makes it more exact (0.0127 at 3.5K, under the 0.015 limit) at about half the prompt speed: `arc-server start -Model flash -Precise`
 (`pi-arc flash --precise`, the launcher's "Accuracy" box; kept on a restart and a model switch like `-Npu`,
 `-NoPrecise` turns it off; the server's own option `--precise`, or `ARC_FN_PRECISE=1`). This model has no MTP block;
 it reads images with its projector next to it (bartowski's `mmproj-Qwen3.8-Flash-Next-f16.gguf`); the packaged single
@@ -294,6 +295,36 @@ While the server is running:
     (the Windows voice that reads answers aloud and its rate), **Advanced** (your own temperature instead of the
     model maker's recommended sampling, which the server takes from the model file; a system prompt), the theme,
     **Data** (what is stored; clear the chats, or the chats and their files).
+  - **Memory**: tell the model "remember that …" (or "ingat ya …") and it saves one dated note with its `remember`
+    tool; "forget …" removes the notes that contain those words.
+    - The notes live in `%USERPROFILE%\.arcinferzero\MEMORY.md`, which you can read and edit by hand or in Settings >
+      Memory (Save notes).
+    - Every new chat starts with them, whatever the model.
+    - A chat keeps the notes it started with, so a note saved now reaches the next chats. This way a running chat's
+      prompt never changes and the prompt cache holds.
+    - The model is told to save only when you ask, but `remember` does not ask you first (a web page or file could
+      talk a model into it): check Settings > Memory now and then. It stops at ~8,000 characters (~2,000 tokens) and
+      asks to merge old notes. `forget` removes at most 3 notes at a time; remove more in Settings.
+    - Settings > Memory > Use memory turns it off. Chats from before memory existed keep their prompt without it.
+    - Memory and projects work in the web UI on this computer only, not from another device (`--host 0.0.0.0`).
+  - **Projects** (the project menu over the chat list), like Claude's Projects: a project is a folder of yours.
+    - New project… opens a folder picker on this computer. A Google Drive folder works too, through Google Drive for
+      desktop (`G:\My Drive\…`), though Google Docs' own files there are only links.
+    - A project's chats see only that project (the server refuses another project's files). A folder that holds
+      your whole user folder, AppData, `.ssh` and Windows' folders cannot be a project. Their model:
+      - reads the folder's files: `list_files` with scope `project`, then `read_file` / `search_file` /
+        `digest_file` on `project:<id>/<path>`;
+      - follows the folder's `AGENTS.md` (or `CLAUDE.md`) as instructions;
+      - has a memory of its own besides the global one (`projects\<id>\MEMORY.md` in the data folder, never in your
+        folder);
+      - opens its terminal in the folder.
+    - The model writes documents into the chat's own files. It changes the project folder only through the terminal,
+      which asks you first.
+    - The folder must be an existing one, not a whole drive, not Windows' or the programs' folders, and not the
+      arcinferzero data folder. Paths that leave it (`..`, junctions, links) are refused, and junctions are not
+      listed.
+    - Removing a project from the list keeps its folder, chats and memory; adding the folder again brings it back.
+    - "No project" shows the chats outside every project.
   - There is no answer length limit to set: an answer may use the rest of the context (the reasoning is bounded by
     the server's thinking budget), and **Compact** in the chat header (or automatically when the context is nearly
     full) summarizes the earlier messages.

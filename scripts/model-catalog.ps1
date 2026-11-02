@@ -21,6 +21,11 @@ $ArcModels = @(
     plain = "Google's Gemma: good with pictures and documents, many languages."
     files = @("gemma-4-12b-it-qat-q4_0.gguf", "mmproj-gemma-4-12b-it-qat-q4_0.gguf", "mtp-gemma-4-12B-it.gguf")
     drafter = @{ repo = "unsloth/gemma-4-12B-it-qat-GGUF"; file = "mtp-gemma-4-12B-it.gguf" } },
+  # (31B: 17.7 GB, part of it in host memory on a 32 GB laptop: ~20K tokens of context, ~3 tok/s; Engine::plan_tight)
+  [pscustomobject]@{ key = "g31"; name = "Gemma 4 31B (Google's largest dense Gemma; slow; drafter)"; repo = "google/gemma-4-31B-it-qat-q4_0-gguf"; gb = 19.1; ram = 32
+    plain = "Google's biggest Gemma: careful answers, many languages, but ~3 words a second. 32 GB laptops."
+    files = @("gemma-4-31B_q4_0-it.gguf", "gemma-4-31B-it-mmproj.gguf", "mtp-gemma-4-31B-it.gguf")
+    drafter = @{ repo = "unsloth/gemma-4-31B-it-qat-GGUF"; file = "mtp-gemma-4-31B-it.gguf" } },
   # (its projector: images and audio, also for transcripts with -Whisper)
   [pscustomobject]@{ key = "e4b"; name = "Gemma 4 E4B (images, audio; drafter)"; repo = "google/gemma-4-E4B-it-qat-q4_0-gguf"; gb = 6.2; ram = 16
     plain = "Google's small Gemma: hears audio and sees pictures. 16 GB laptops."

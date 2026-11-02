@@ -38,7 +38,7 @@ From the sources: once the graphics driver, Visual Studio Build Tools (C++) and 
 
 ```powershell
 .\setup.cmd                    # checks, builds, asks which models to download, connects Pi
-.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 35b-gsq 9b 4b g12 e4b, whisper asr: speech to text; all, none)
+.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 35b-gsq 9b 4b g12 g31 e4b, whisper asr: speech to text; all, none)
 .\setup.cmd -Tests             # also build the test tools and run the regression tests (needs the 4B)
 ```
 
@@ -152,6 +152,7 @@ in the same folder as the model: download them from the same repository in the s
 | `9b` | Qwen3.5 9B (with MTP head) | `hf download unsloth/Qwen3.5-9B-MTP-GGUF Qwen3.5-9B-UD-Q4_K_XL.gguf` | 6.1 GB |
 | `4b` | Qwen3.5 4B (with MTP head) | `hf download unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-UD-Q4_K_XL.gguf` | 3.0 GB |
 | `g12` | Gemma 4 12B QAT (Google, Q4_0) + image projector; drafter from Unsloth, copied into the model's snapshot folder | `hf download google/gemma-4-12B-it-qat-q4_0-gguf` and `hf download unsloth/gemma-4-12B-it-qat-GGUF mtp-gemma-4-12B-it.gguf` | 7.0 + 0.2 + 0.3 GB |
+| `g31` | Gemma 4 31B QAT (Google, Q4_0) + image projector; drafter from Unsloth, copied into the model's snapshot folder. On a 32 GB laptop part of its weights go into host memory (see USAGE.md) | `hf download google/gemma-4-31B-it-qat-q4_0-gguf` and `hf download unsloth/gemma-4-31B-it-qat-GGUF mtp-gemma-4-31B-it.gguf` | 17.7 + 1.2 + 0.3 GB |
 | `e4b` | Gemma 4 E4B QAT (Google, Q4_0); drafter from Unsloth, copied into the model's snapshot folder | `hf download google/gemma-4-E4B-it-qat-q4_0-gguf gemma-4-E4B_q4_0-it.gguf gemma-4-E4B-it-mmproj.gguf` (images, audio) and `hf download unsloth/gemma-4-E4B-it-qat-GGUF mtp-gemma-4-E4B-it.gguf` | 5.2 + 0.1 GB |
 | `g26` | Gemma 4 26B-A4B QAT (Google, Q4_0) + image projector; drafter `mtp-gemma-4-26B-A4B-it.gguf` from Unsloth's Gemma 4 26B-A4B QAT GGUF repository, copied next to the model (optional: ~25 tok/s with it) | `hf download google/gemma-4-26B-A4B-it-qat-q4_0-gguf` | 14.4 + 1.2 GB |
 | `35b` | Qwen3.6 35B-A3B UD-IQ4_XS (Unsloth's MTP repository: MTP block + image projector) | `hf download unsloth/Qwen3.6-35B-A3B-MTP-GGUF Qwen3.6-35B-A3B-UD-IQ4_XS.gguf mmproj-BF16.gguf` | 18.2 GB + projector |

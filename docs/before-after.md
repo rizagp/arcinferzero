@@ -80,6 +80,21 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-02, Gemma 4 31B (new) and a tight-memory mode for dense models that nearly fill an iGPU's share**
+  (Engine::plan_tight). It applies when weights are over 85 % of the share, so only the 31B among the models here:
+  27B, 35B and E4B plan the same contexts as before.
+  - Before: the 31B planned 4,096 tokens, which did not fit (rings of 9,216 rows at chunk 4096).
+  - After: chunk 1024, rings of one chunk's margin, and part of the weights in host memory, bounded by the RAM
+    free. 2,048 tokens of context with ~25 GB of RAM free (1,024 with images).
+  - Host-memory weights: logits bit-identical to none.
+  - Prompt (2K): chunk 1024 48.6 tok/s vs chunk 2048 47.8.
+  - Generation: 3.08 vs 3.11 tok/s with and without host weights; 3.62 plain and 7.82 with the drafter in the
+    server (the same answer).
+  - KL against f32 (536-token code prompt): 0.00000 prompt and decode.
+- **2026-11-02, split 35B attention by q-head** (`ARC_TP_ATT_QSPLIT=1`, opt-in, multi-GPU only). ARC_TP_SIM 4
+  shards: KL to one GPU 0.0109 vs 0.0076 with the attention whole (both in the 4-shard range); 2 shards
+  bit-identical. Speed: to be measured on B60s.
+
 - **2026-11-02, split MoE prompts: gate / up through moe_rg** (multi-GPU only). Laptop, ARC_TP_SIM (one iGPU:
   ratios only), Qwen3.6 35B over 2, `--bench-pp 1024`: 498.7 -> 511.9 tok/s. KL against one GPU, 5 positions with
   the same context: mean 0.0113 -> 0.0066. One GPU bit-identical; split 27B bit-identical.

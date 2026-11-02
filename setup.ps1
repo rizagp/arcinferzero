@@ -1,7 +1,7 @@
 # arcinferzero setup: everything needed on this laptop, in one command. Safe to run again: done steps are skipped.
 #
 #   setup                        check the requirements, build, choose models to download, connect Pi
-#   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq 9b 4b g12 e4b whisper asr, all, none)
+#   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq 9b 4b g12 g31 e4b whisper asr, all, none)
 #   setup -Tests                 also build the test tools and run the regression tests (needs the 4B model)
 #   setup -NoPi                  leave Pi alone
 #   setup -Yes                   do not ask (pip installs, downloads of the models given with -Models)
@@ -27,7 +27,7 @@ setup: everything arcinferzero needs on this laptop, in one command. Safe to run
 
 USAGE
   setup                          check, build, ask which models to download, connect Pi
-  setup -Models 27b,4b           download these without asking: 27b 35b 35b-gsq 9b 4b g12 e4b, whisper asr
+  setup -Models 27b,4b           download these without asking: 27b 35b 35b-gsq 9b 4b g12 g31 e4b, whisper asr
                                  (speech to text), or all / none
   setup -Tests                   also build the test tools and run the regression tests (needs the 4B model)
   setup -NoPi                    leave Pi alone
@@ -61,6 +61,7 @@ MODELS
   9b   Qwen3.5 9B (Unsloth UD-Q4_K_XL, MTP)                6.1 GB
   4b   Qwen3.5 4B (Unsloth UD-Q4_K_XL, MTP)                3.0 GB
   g12  Gemma 4 12B (Google QAT Q4_0) + image projector + drafter  7.4 GB
+  g31  Gemma 4 31B (Google QAT Q4_0) + image projector + drafter  19.1 GB (32 GB RAM; slow)
   e4b  Gemma 4 E4B (Google QAT Q4_0) + projector (images, audio) + drafter  6.2 GB
   whisper  Whisper large-v3 (faster-whisper): transcripts with words' times, live text   3.1 GB
   asr  Qwen3-ASR 1.7B Q8_0 + its projector: the default speech model                  2.4 GB
@@ -218,13 +219,13 @@ $want = @()
 if ($Models) {
   if ($Models -contains "all") { $want = @($catalog | ForEach-Object { $_.key }) }
   elseif ($Models -notcontains "none") {
-    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 e4b whisper asr, all or none" } }
+    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 g31 e4b whisper asr, all or none" } }
     $want = $Models
   }
 } elseif (-not $Yes) {
   $a = Read-Host "  Models to download (e.g. '27b 4b whisper asr'; Enter = none)"
   $want = @(($a -split "[,;\s]+") | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
-  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 e4b whisper asr" } }
+  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 g31 e4b whisper asr" } }
 }
 $todo = @($catalog | Where-Object { $want -contains $_.key -and -not $_.have })
 if ($todo | Where-Object { $_.key -eq "35b-gsq" }) {  # its tokenizer comes from the 4B GGUF

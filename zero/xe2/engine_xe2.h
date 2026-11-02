@@ -44,6 +44,12 @@
     static const std::string g = grf_env("ARC_GEMV_GRF");
     return xe2_ ? g : std::string();
   }
+  // ARC_GEMV_PF=1: the single-token GEMV (gemv, codebook / K types) issues every row's reads of a step before decoding
+  // the first (GROWS x more loads in flight: a B60's GEMV reached ~55 % of its bandwidth; QUEUE F31.4). Bit-identical
+  std::string xe2_gemv_pf() const {
+    static const bool pf = getenv("ARC_GEMV_PF") && atoi(getenv("ARC_GEMV_PF")) != 0;
+    return xe2_ && pf ? std::string(" -DGEMV_PF") : std::string();
+  }
   // ARC_GEMV_MT_GRF=128: the 2-8 token GEMV (gemv_mt / gemv_mt_v: MTP and DFlash2 verification, batched slots) with
   // the default register file instead of 256 registers per thread (256 everywhere else, and always on the iGPUs)
   std::string xe2_gemv_mt_grf() const {

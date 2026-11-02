@@ -10,6 +10,7 @@
 #   GEMV_GRF=256   plain, the single-token GEMV with 256 registers per thread (ARC_GEMV_GRF=256)
 #   GVROWS=1/2/4   plain, rows per sub-group of the codebook GEMV (ARC_GVROWS; default: by matrix size)
 #   mtp MT_GRF=128 mtp, the 2-8 token GEMV of the verification with the default register file (ARC_GEMV_MT_GRF=128)
+#   GEMV_PF=1      plain, the single-token GEMV issuing all its rows' reads of a step first (ARC_GEMV_PF=1)
 param(
   [Parameter(Mandatory = $true)][string[]]$Models,
   [string]$DFlash = "",
@@ -19,7 +20,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
-$vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF")
+$vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF")
 # (Qwen chat format, thinking off: the answer starts right away)
 $q = Join-Path ([IO.Path]::GetTempPath()) "arcinferzero-decode-try.txt"
 $text = "<|im_start|>user`nWrite a Python module with a class LRUCache (get, put, a capacity, O(1) operations using " +
@@ -70,5 +71,6 @@ foreach ($model in $Models) {
   Line "GEMV_GRF=256" (Invoke-Run $model @() @{ ARC_GEMV_GRF = "256" })
   foreach ($g in 1, 2, 4) { Line "GVROWS=$g" (Invoke-Run $model @() @{ ARC_GVROWS = "$g" }) }
   Line "mtp MT_GRF=128" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "128" })
+  Line "GEMV_PF=1" (Invoke-Run $model @() @{ ARC_GEMV_PF = "1" })
 }
 Remove-Item $q -ErrorAction SilentlyContinue

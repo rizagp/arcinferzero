@@ -26,6 +26,18 @@
   when Brave gives nothing) and `POST /v1/tools/web_fetch` `{"url": ..., "offset": 0}` (a page as plain text, in
   windows of 12K characters); public http(s) addresses only (every host and redirect is resolved first: nothing on
   this machine or the local network). `--no-web-tools` turns them off.
+- The web UI's memory and projects (`tools/server_memory.h`, `tools/server_projects.h`). They are served while a
+  model loads, and only on this computer (not over the network), to the server's own page or a client that sends no
+  Origin:
+  - `GET` / `PUT /v1/memory[?project=<id>]` reads or sets the notes as one text (a project in the list);
+  - `POST /v1/tools/remember` `{"fact", "project"?}` and `POST /v1/tools/forget` `{"match", "project"?}` add or
+    remove a note; forget removes at most 3 notes a call, and in a project it falls back to the global notes;
+  - `GET` / `POST /v1/projects` `{"folder", "name"?}` lists projects or adds one;
+  - `GET` / `DELETE /v1/projects/<id>` reads a project with its AGENTS.md and memory, or removes it from the list;
+  - `GET /v1/projects/browse?path=` returns the folder picker's listing;
+  - the file tools take `project:<id>/<path>` together with `"project_id": "<id>"` (the chat's project: another
+    project's files are refused), and `list_files` takes `{"scope": "project", "project_id"}`;
+  - `run_command` takes `project_id`, so a project chat's terminal starts in its folder.
 - Llama.cpp clients such as Unsloth Studio connect as to a llama-server: they read the context size and the token
   statistics from the fields above.
 - Sampling and output (chat): `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `frequency_penalty`,

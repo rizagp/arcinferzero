@@ -111,6 +111,9 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     }
     eo.ctx = a.ctx;
     if (!so.budget_given) eo.w8_budget_gb = a.resident ? 1e9 : eo.w8_budget_gb;
+    // (the weights the probe put in host memory: the load puts the same, not fewer when RAM got scarcer since, so the
+    //  context chosen still fits on the GPU)
+    if (a.host_gb > 0 && eo.host_weights_gb < 0) eo.host_weights_gb = a.host_gb;
   }
   eo.stream_reserve = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;  // (streamed experts' cache)
   if (so.gpus > 1) {

@@ -793,6 +793,10 @@ inline DocCache& virtual_doc_cache() {  // (chats and transcripts: search_chats 
   static DocCache c;
   return c;
 }
+inline DocCache& project_doc_cache() {  // (a project's files: search_file reads up to 60 of them a call)
+  static DocCache c;
+  return c;
+}
 inline void doc_index_forget(const std::string& id) {
   DocCache& c = doc_cache();
   std::lock_guard<std::mutex> g(c.mu);
@@ -804,11 +808,15 @@ inline void doc_index_forget(const std::string& id) {
 }
 inline constexpr uint64_t kMaxReadBytes = 512ull << 20;
 inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
-  DocCache& c = doc_cache();
+  // (a project's file (tools/server_projects.h) is not stored by its bytes' hash: its write time and size are in the
+  //  key, so a changed file is read again; its own cache, so a project search does not push the chats' documents out)
+  const bool in_project = i.id.rfind("project:", 0) == 0;
+  DocCache& c = in_project ? project_doc_cache() : doc_cache();
+  const std::string key = in_project ? i.id + "#" + std::to_string(i.stamp) + "/" + std::to_string(i.bytes) : i.id;
   {
     std::lock_guard<std::mutex> g(c.mu);
     for (auto it = c.lru.begin(); it != c.lru.end(); ++it)
-      if (it->first == i.id) {
+      if (it->first == key) {
         c.lru.splice(c.lru.begin(), c.lru, it);
         return it->second;
       }
@@ -829,7 +837,7 @@ inline std::shared_ptr<const rdoc::Index> doc_index(const Info& i) {
   }
   auto ix = std::make_shared<const rdoc::Index>(std::move(d));
   std::lock_guard<std::mutex> g(c.mu);
-  c.add(i.id, ix, 8);
+  c.add(key, ix, in_project ? 64 : 8);
   return ix;
 }
 
