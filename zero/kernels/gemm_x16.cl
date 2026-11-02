@@ -72,83 +72,130 @@ inline int2 x16_dec(uint w, float s, float mn) {
   return as_int2(convert_half4_rte(fma(convert_float4(as_char4(w)), (float4)(s), (float4)(-mn))));
 }
 
-// grid (N * rows, WGY), local (16, WGY), rows = M / (X16_TM * WGY): the work-group and row-group order of gemm.cl
+// one 16-block's scale and min of column group cg (lane = column) for values 64j + 16c ..
+#if SC32
+#define X16_SC(cg, j, c) (d[cg] * (float)(char)((hsc[cg][j] >> (8 * ((c) & 2))) & 0xFF))  // (bytes 0 and 2: the 32-blocks)
+#else
+#define X16_SC(cg, j, c) (d[cg] * (float)(char)((hsc[cg][j] >> (8 * (c))) & 0xFF))
+#endif
+#if HAS_MIN
+#define X16_MN(cg, j, c) (dmin[cg] * (float)((hmn[cg][j] >> (8 * (c))) & 0xFF))
+#else
+#define X16_MN(cg, j, c) 0.0f
+#endif
+
+#ifndef X16_CG
+#define X16_CG 1  // 16-column groups per sub-group: their weights decoded once per k-step, each 8-token A read used X16_CG times
+#endif
+
+// grid (N / X16_CG * rows, WGY), local (16, WGY), rows = M / (X16_TM * WGY): the work-group and row-group order of
+// gemm.cl, each sub-group X16_CG * 16 columns x X16_TM tokens
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void gemm_x16(__global const uint* restrict wq, __global const uint* restrict wh,
                        __global const half* restrict ah, __global const float* restrict rs, __global float* restrict C,
                        int M, int N, int K, int ldc, int c_off, int accumulate, int rgroup, int s_begin, int s_end) {
-  const int NC = N / SG, rows = M / (X16_TM * (int)get_local_size(1));
+  const int NC = N / (SG * X16_CG), rows = M / (X16_TM * (int)get_local_size(1));
   const int w = get_group_id(0), grp = w / (rgroup * NC), rem = w % (rgroup * NC);
   const int rin = min(rgroup, rows - grp * rgroup);
-  const int g = rem / rin, row = grp * rgroup + rem % rin;
+  const int g0 = (rem / rin) * X16_CG, row = grp * rgroup + rem % rin;
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * X16_TM;
-  const int nsb = K / 256, lane = get_sub_group_local_id();
-  __global const uint* wqp = wq + (size_t)g * nsb * (4 * DPJ * SG);
-  __global const uint* whp = wh + (size_t)g * nsb * (HDR * SG);
+  const int nsb = K / 256;
   __global const ushort* ap = (__global const ushort*)ah + (size_t)m0 * K;
 
-  float8 acc[NRG];
+  float8 acc[X16_CG][NRG];
 #pragma unroll
-  for (int i = 0; i < NRG; ++i) acc[i] = (float8)(0.0f);
+  for (int cg = 0; cg < X16_CG; ++cg)
+#pragma unroll
+    for (int i = 0; i < NRG; ++i) acc[cg][i] = (float8)(0.0f);
 
   for (int s = s_begin; s < s_end; ++s) {
-    __global const uint* hp = whp + s * HDR * SG;
-    const uint2 hd = intel_sub_group_block_read2(hp);
-    const float d = as_float(hd.s0) * WSCALE;
-    const uint4 hs4 = intel_sub_group_block_read4(hp + 2 * SG);
-    const uint hsc[4] = {hs4.s0, hs4.s1, hs4.s2, hs4.s3};
+    float d[X16_CG];
+    uint hsc[X16_CG][4];
 #if HAS_MIN
-    const float dmin = as_float(hd.s1) * WSCALE;
-    const uint4 hm4 = intel_sub_group_block_read4(hp + 6 * SG);
-    const uint hmn[4] = {hm4.s0, hm4.s1, hm4.s2, hm4.s3};
+    float dmin[X16_CG];
+    uint hmn[X16_CG][4];
 #endif
 #pragma unroll
+    for (int cg = 0; cg < X16_CG; ++cg) {
+      __global const uint* hp = wh + ((size_t)(g0 + cg) * nsb + s) * (HDR * SG);
+      const uint2 hd = intel_sub_group_block_read2(hp);
+      d[cg] = as_float(hd.s0) * WSCALE;
+      const uint4 hs4 = intel_sub_group_block_read4(hp + 2 * SG);
+      hsc[cg][0] = hs4.s0, hsc[cg][1] = hs4.s1, hsc[cg][2] = hs4.s2, hsc[cg][3] = hs4.s3;
+#if HAS_MIN
+      dmin[cg] = as_float(hd.s1) * WSCALE;
+      const uint4 hm4 = intel_sub_group_block_read4(hp + 6 * SG);
+      hmn[cg][0] = hm4.s0, hmn[cg][1] = hm4.s1, hmn[cg][2] = hm4.s2, hmn[cg][3] = hm4.s3;
+#endif
+    }
+#pragma unroll
     for (int j = 0; j < 4; ++j) {
+      const int k0 = s * 256 + j * 64;
+#if X16_CG == 1
       // ---- this lane's column, values 64j .. 64j + 63 of the superblock, as 4 x 16 f16 (16-blocks c = 0..3)
-      __global const uint* dp = wqp + (s * 4 + j) * DPJ * SG;
+      __global const uint* dp = wq + ((size_t)g0 * nsb * 4 + s * 4 + j) * DPJ * SG;
       const uint8 r0 = intel_sub_group_block_read8(dp), r1 = intel_sub_group_block_read8(dp + 8 * SG);
       const uint wd[16] = {r0.s0, r0.s1, r0.s2, r0.s3, r0.s4, r0.s5, r0.s6, r0.s7,
                            r1.s0, r1.s1, r1.s2, r1.s3, r1.s4, r1.s5, r1.s6, r1.s7};
       int8 B[4];
 #pragma unroll
       for (int c = 0; c < 4; ++c) {
-#if SC32
-        const float sc = d * (float)(char)((hsc[j] >> (8 * (c & 2))) & 0xFF);  // (bytes 0 and 2: the two 32-blocks)
-#else
-        const float sc = d * (float)(char)((hsc[j] >> (8 * c)) & 0xFF);
-#endif
-#if HAS_MIN
-        const float mn = dmin * (float)((hmn[j] >> (8 * c)) & 0xFF);
-#else
-        const float mn = 0.0f;
-#endif
+        const float sc = X16_SC(0, j, c), mn = X16_MN(0, j, c);
         const int2 p0 = x16_dec(wd[4 * c], sc, mn), p1 = x16_dec(wd[4 * c + 1], sc, mn);
         const int2 p2 = x16_dec(wd[4 * c + 2], sc, mn), p3 = x16_dec(wd[4 * c + 3], sc, mn);
         B[c] = (int8)(p0.s0, p0.s1, p1.s0, p1.s1, p2.s0, p2.s1, p3.s0, p3.s1);
       }
       // ---- 8 tokens at a time: lane l of row r holds its values l, 16 + l, 32 + l, 48 + l (one per 16-block)
-      const int k0 = s * 256 + j * 64;
 #pragma unroll
       for (int i = 0; i < NRG; ++i) {
         ushort4 a[8];
 #pragma unroll
         for (int r = 0; r < 8; ++r) a[r] = intel_sub_group_block_read_us4(ap + (size_t)(8 * i + r) * K + k0);
-        acc[i] = x16_mad(as_short8((ushort8)(a[0].s0, a[1].s0, a[2].s0, a[3].s0, a[4].s0, a[5].s0, a[6].s0, a[7].s0)), B[0], acc[i]);
-        acc[i] = x16_mad(as_short8((ushort8)(a[0].s1, a[1].s1, a[2].s1, a[3].s1, a[4].s1, a[5].s1, a[6].s1, a[7].s1)), B[1], acc[i]);
-        acc[i] = x16_mad(as_short8((ushort8)(a[0].s2, a[1].s2, a[2].s2, a[3].s2, a[4].s2, a[5].s2, a[6].s2, a[7].s2)), B[2], acc[i]);
-        acc[i] = x16_mad(as_short8((ushort8)(a[0].s3, a[1].s3, a[2].s3, a[3].s3, a[4].s3, a[5].s3, a[6].s3, a[7].s3)), B[3], acc[i]);
+        acc[0][i] = x16_mad(as_short8((ushort8)(a[0].s0, a[1].s0, a[2].s0, a[3].s0, a[4].s0, a[5].s0, a[6].s0, a[7].s0)), B[0], acc[0][i]);
+        acc[0][i] = x16_mad(as_short8((ushort8)(a[0].s1, a[1].s1, a[2].s1, a[3].s1, a[4].s1, a[5].s1, a[6].s1, a[7].s1)), B[1], acc[0][i]);
+        acc[0][i] = x16_mad(as_short8((ushort8)(a[0].s2, a[1].s2, a[2].s2, a[3].s2, a[4].s2, a[5].s2, a[6].s2, a[7].s2)), B[2], acc[0][i]);
+        acc[0][i] = x16_mad(as_short8((ushort8)(a[0].s3, a[1].s3, a[2].s3, a[3].s3, a[4].s3, a[5].s3, a[6].s3, a[7].s3)), B[3], acc[0][i]);
       }
+#else
+      // ---- one 16-block c at a time: the X16_CG groups' weights for it (4 words of int8 per lane = 16 f16), then
+      // each 8-token row group's 16 values of it read once and multiplied with every group (sums in the order of
+      // X16_CG 1: per accumulator c = 0..3 within j)
+#pragma unroll
+      for (int c = 0; c < 4; ++c) {
+        int8 B[X16_CG];
+#pragma unroll
+        for (int cg = 0; cg < X16_CG; ++cg) {
+          const uint4 wv = intel_sub_group_block_read4(wq + ((size_t)(g0 + cg) * nsb * 4 + s * 4 + j) * DPJ * SG + 4 * c * SG);
+          const float sc = X16_SC(cg, j, c), mn = X16_MN(cg, j, c);
+          const int2 p0 = x16_dec(wv.s0, sc, mn), p1 = x16_dec(wv.s1, sc, mn);
+          const int2 p2 = x16_dec(wv.s2, sc, mn), p3 = x16_dec(wv.s3, sc, mn);
+          B[cg] = (int8)(p0.s0, p0.s1, p1.s0, p1.s1, p2.s0, p2.s1, p3.s0, p3.s1);
+        }
+#pragma unroll
+        for (int i = 0; i < NRG; ++i) {
+          ushort a[8];
+#pragma unroll
+          for (int r = 0; r < 8; ++r) a[r] = intel_sub_group_block_read_us(ap + (size_t)(8 * i + r) * K + k0 + 16 * c);
+          const short8 av = as_short8((ushort8)(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]));
+#pragma unroll
+          for (int cg = 0; cg < X16_CG; ++cg) acc[cg][i] = x16_mad(av, B[cg], acc[cg][i]);
+        }
+      }
+#endif
     }
   }
 
   // ---- C: each row's result times its activation scale (rs) and 1 / WSCALE; accumulate as gemm.cl
 #pragma unroll
+  for (int cg = 0; cg < X16_CG; ++cg)
+#pragma unroll
   for (int i = 0; i < NRG; ++i) {
-    const float res[8] = {acc[i].s0, acc[i].s1, acc[i].s2, acc[i].s3, acc[i].s4, acc[i].s5, acc[i].s6, acc[i].s7};
+    const float res[8] = {acc[cg][i].s0, acc[cg][i].s1, acc[cg][i].s2, acc[cg][i].s3,
+                          acc[cg][i].s4, acc[cg][i].s5, acc[cg][i].s6, acc[cg][i].s7};
 #pragma unroll
     for (int r = 0; r < 8; ++r) {
       const int m = m0 + 8 * i + r;
-      __global uint* cp = (__global uint*)(C + c_off + (size_t)m * ldc + g * SG);
+      __global uint* cp = (__global uint*)(C + c_off + (size_t)m * ldc + (g0 + cg) * SG);
       float v = res[r] * (rs[m] * (1.0f / WSCALE));
       if (accumulate == 1) {
         v += as_float(intel_sub_group_block_read(cp));

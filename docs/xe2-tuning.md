@@ -128,8 +128,15 @@ gives ~0.03 %; a wrong layout gives ~100 %.
 checked on the 125H laptop (Qwen3.8 27B IQ3_S): the check's largest error was 3.1e-4, and the next-token top-10 was
 unchanged.
 
+`ARC_X16_CG=2` / `4` (2026-11-02): each sub-group covers 2 or 4 column groups. Their weights are decoded once per
+k-step, and each 8-token read of the activations feeds 2 or 4 DPAS instead of one. With one group, every 16
+columns read the whole activation block again from L2, about 16 flop per byte, which caps the kernel far below
+XMX's rate (inferred). sycl-tla's BMG GEMM uses 32 x 64 per sub-group and 256 x 256 per work-group. Each
+accumulator still adds its 16-blocks in the same order, so CG 1 / 2 / 4 give the same logits bit for bit (checked
+with DPAS emulated, 27B).
+
 ```powershell
-.\bench\gemm_sweep.ps1 -Models C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # rows X16, X16TM, X16GRF
+.\bench\gemm_sweep.ps1 -Models C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # rows X16, X16TM, X16GRF, X16CG
 $env:ARC_X16=1; .\bin\runz.exe C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --bench-pp 4096 --n 64; Remove-Item Env:ARC_X16
 ```
 

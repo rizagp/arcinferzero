@@ -20,6 +20,7 @@
 #   X16         ARC_X16=1: the f16 XMX GEMM (kernels/gemm_x16.cl) for W8 weights, e.g. the 27B's IQ3_S [off]
 #   X16TM       with X16 on: ARC_X16_TM, tokens per sub-group 8, 16 or 32 [32]
 #   X16GRF      with X16 on: ARC_X16_GRF, registers per thread 256 or 128 [256]
+#   X16CG       with X16 on: ARC_X16_CG, 16-column groups per sub-group 1, 2 or 4 [1]
 param(
   [Parameter(Mandatory = $true)][string[]]$Models,
   [int]$Tokens = 4096,
@@ -30,7 +31,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
 $vars = @("ARC_NO_XMX", "ARC_GEMM_TM", "ARC_GEMM_RG", "ARC_GEMM_WGY", "ARC_GEMM_SPLIT", "ARC_GEMM_GRF", "ARC_MOE_GRF", "ARC_GEMM_CG",
-          "ARC_X16", "ARC_X16_TM", "ARC_X16_GRF")
+          "ARC_X16", "ARC_X16_TM", "ARC_X16_GRF", "ARC_X16_CG")
 
 # one run: the settings in $set (name -> value; CHUNK goes to the command line), returns tok/s and the GEMM path
 function Invoke-Run([string]$model, [hashtable]$set) {
@@ -51,6 +52,7 @@ function Invoke-Run([string]$model, [hashtable]$set) {
       "X16" { if ($set[$k] -eq "on") { $env:ARC_X16 = "1" } }
       "X16TM" { $env:ARC_X16 = "1"; $env:ARC_X16_TM = "$($set[$k])" }
       "X16GRF" { $env:ARC_X16 = "1"; $env:ARC_X16_GRF = "$($set[$k])" }
+      "X16CG" { $env:ARC_X16 = "1"; $env:ARC_X16_CG = "$($set[$k])" }
     }
   }
   $o = & $runz @args2 2>&1 | Out-String
@@ -81,6 +83,7 @@ $grid = [ordered]@{
   X16   = @("off", "on")
   X16TM = @(8, 16, 32)
   X16GRF = @(256, 128)
+  X16CG = @(1, 2, 4)
 }
 $defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; CG = 1; ACT = 32; X16 = "off" }
 
@@ -109,7 +112,7 @@ foreach ($model in $Models) {
   }
   $set = @{}
   foreach ($p in $best.Keys) { if ($null -ne $best[$p] -and $p -ne "ACT") { $set[$p] = $best[$p] } }
-  if ($best["X16"] -ne "on") { $set.Remove("X16TM"); $set.Remove("X16GRF") }  # (they turn the f16 GEMM on)
+  if ($best["X16"] -ne "on") { $set.Remove("X16TM"); $set.Remove("X16GRF"); $set.Remove("X16CG") }  # (they turn the f16 GEMM on)
   $r = Invoke-Run $model $set
   $desc = ($set.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " "
   Line "best of each together" $r

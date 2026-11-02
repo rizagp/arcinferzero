@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-02 (night, 2): B60 queue F31.1 and F31.2
+
+- **`ARC_X16_CG=2 / 4`**: the f16 XMX GEMM covers 2 or 4 column groups per sub-group, so each activation read feeds
+  that many DPAS. With 1 group, every 16 columns re-read the activations from L2, which likely caps it far below
+  XMX's rate. Logits are bit-identical for CG 1 / 2 / 4 (27B, DPAS emulated). `gemm_sweep.ps1` has an X16CG row.
+- **`bin\event_probe.exe`** (in the package): can GPUs wait on each other's events through host memory, without
+  peer access, and what does a sum cost that way against today's host wait and CPU barrier? It also checks the
+  failsafe (the host releases a GPU waiting on a dead peer) and the driver's memory-wait extension. Laptop
+  (`--sim 2`, one iGPU, a test of the tool): parts intact, 22.4 -> 16.7 us per sum, failsafe works.
+
 ## 2026-11-02 (late): B60 checklist items
 
 - **Split MoE prompts: gate / up through moe_rg** as the down projection already was. Before, gate / up ran the

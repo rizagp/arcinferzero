@@ -69,10 +69,22 @@
     }();
     return tm;
   }
-  cl_kernel x16_kernel(int qtype) {
+  // ARC_X16_CG=2 / 4: 16-column groups per sub-group (default 1). Each 8-token read of the activations then feeds 2 or
+  // 4 DPAS instead of 1 (sycl-tla's BMG GEMM: 32 x 64 per sub-group); a matrix whose groups it does not divide keeps 1
+  static int x16_cg_for(int N) {
+    static const int cg = [] {
+      const int c = getenv("ARC_X16_CG") ? atoi(getenv("ARC_X16_CG")) : 1;
+      if (c == 1 || c == 2 || c == 4) return c;
+      fprintf(stderr, "arcinferzero: ARC_X16_CG=%d not supported (1, 2 or 4): 1\n", c);
+      return 1;
+    }();
+    return (N / 16) % cg == 0 ? cg : 1;
+  }
+  cl_kernel x16_kernel(int qtype, int cg = 1) {
     static const bool g128 = getenv("ARC_X16_GRF") && std::string(getenv("ARC_X16_GRF")) == "128";
     return kernel("x16", std::string(g128 ? "" : "-cl-intel-256-GRF-per-thread ") + "-DQTYPE=" + std::to_string(qtype) +
-                             " -DX16_TM=" + std::to_string(x16_tm()) + (x16_emu_ ? " -DX16_EMU" : ""),
+                             " -DX16_TM=" + std::to_string(x16_tm()) + (cg != 1 ? " -DX16_CG=" + std::to_string(cg) : "") +
+                             (x16_emu_ ? " -DX16_EMU" : ""),
                   "gemm_x16");
   }
   void x16_init() {
@@ -116,14 +128,15 @@
     const int tm = x16_tm();
     if (qtype < 100 || qtype > 103 || Mp % tm || N % 16 || K % 256) return false;
     x16_act(aq, asc, Mp, K, act32);
-    cl_kernel k = x16_kernel(qtype);
+    const int cg = x16_cg_for(N);
+    cl_kernel k = x16_kernel(qtype, cg);
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
     static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
     const int nsb = K / 256, splits = K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
     int wgy = 1;
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
-    size_t gws[2] = {(size_t)N * (Mp / tm / wgy), (size_t)wgy}, lws[2] = {16, (size_t)wgy};
+    size_t gws[2] = {(size_t)N / cg * (Mp / tm / wgy), (size_t)wgy}, lws[2] = {16, (size_t)wgy};
     for (int sp = 0; sp < splits; ++sp) {
       int s0 = nsb * sp / splits, s1 = nsb * (sp + 1) / splits, ac = sp == 0 ? a : 1, M = Mp;
       set_args(k, 0, wq, wh, x16_ah_, x16_rs_, C, M, N, K, ldc, c_off, ac, rgroup, s0, s1);
@@ -186,8 +199,9 @@
                   run("x16_check", k, 2, gws, lws);
                 } else {
                   x16_act(ba, bs, M, K, a32);
-                  cl_kernel k = x16_kernel(q);
-                  size_t gws[2] = {(size_t)N * (M / x16_tm() / 2), 2}, lws[2] = {16, 2};
+                  const int cg = x16_cg_for(N);  // (N 64: every ARC_X16_CG)
+                  cl_kernel k = x16_kernel(q, cg);
+                  size_t gws[2] = {(size_t)N / cg * (M / x16_tm() / 2), 2}, lws[2] = {16, 2};
                   set_args(k, 0, bq, bh, x16_ah_, x16_rs_, bc, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
                   run("x16_check", k, 2, gws, lws);
                 }

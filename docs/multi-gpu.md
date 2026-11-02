@@ -267,6 +267,37 @@ a GPU wait that gave up. Laptop, `ARC_TP_TIMEOUT=5`: runz ended with
 "GPU 1 did not reach the sum within 5 s" after ~15 s; the server answered that request with HTTP 500 after 17 s,
 `/health` 503, the next requests at once with the error.
 
+## Sums without the CPU in the middle? `bin\event_probe.exe` (2026-11-02)
+
+Today each sum of a generated token goes through the CPU:
+1. each GPU copies its part to host memory;
+2. its thread waits for it;
+3. the threads meet at a spin barrier;
+4. each GPU reads every part.
+
+On 4 B60s that is ~57 us per sum, ~7 of the 27B's 18.7 ms per token.
+
+Level Zero lets a GPU wait on an event that another GPU signals. The event comes from a pool made for several
+devices, which the driver keeps in host memory (compute-runtime `event.cpp`), so no peer access is needed. Whether
+that holds on Windows B60s is what the probe measures:
+- whether the pool can be made;
+- whether a 20 KB part arrives intact GPU a -> host -> GPU b, waited on by the GPU, for every pair;
+- microseconds per sum, today's path against events, for 2..N GPUs;
+- whether a GPU waiting on an event that no GPU will signal is released by the host (the failsafe);
+- whether the driver has the experimental GPU memory waits (`zexCommandListAppendWaitOnMemory64`).
+
+On the laptop, `--sim 2` runs two command lists on the one iGPU. That is a test of the tool, not of a link:
+- pairs intact;
+- 22.4 us per sum today vs 16.7 with events;
+- the failsafe released the waiting list in 0.05 ms;
+- the zex functions are present.
+
+If the B60s show a clear gain, the decode sums get an `ARC_TP_SYNC=event` path (QUEUE F31.3).
+
+```powershell
+.\bin\event_probe.exe
+```
+
 ## Not yet
 
 - The launcher (a choice of which GPUs), and with `serverz --gpus`: MTP / DFlash2, images, the prompt and session
