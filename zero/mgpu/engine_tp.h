@@ -156,9 +156,30 @@ class TpEngine {
     }
     return logits_;
   }
-  void reset() {
+  void reset() {  // (the bound slot)
     run_all([&](int r) { shards_[r]->reset(); });
     std::fill(comm_.half.begin(), comm_.half.end(), 0);
+  }
+  // Conversation slots (EngineOptions::slots): every shard binds the same slot; forward() feeds the bound one.
+  int slot_count() const { return shards_[0]->slot_count(); }
+  int batch_rows() const { return shards_[0]->batch_rows(); }
+  bool batch_ok() const { return shards_[0]->batch_ok(); }
+  void bind(int s) { run_all([&](int r) { shards_[r]->bind(s); }); }
+  // One generation step of several slots (row b: the next token of slots[b]), as Engine::forward_batch: a step's sums
+  // carry B rows for the latency of one. Returns B rows of the full vocabulary's logits.
+  const std::vector<float>& forward_batch(const std::vector<int>& slots, const std::vector<int>& toks) {
+    const int B = (int)slots.size();
+    run_all([&](int r) { shards_[r]->forward_batch(slots, toks); });
+    const size_t V = logits_.size();
+    if (batch_logits_.size() < V * B) batch_logits_.resize(V * B);
+    size_t at = 0;
+    for (int r = 0; r < n_; ++r) {
+      const size_t per = (size_t)shards_[r]->n_logits();
+      const std::vector<float>& l = shards_[r]->batch_logits_host();
+      for (int b = 0; b < B; ++b) std::copy(l.begin() + b * per, l.begin() + (b + 1) * per, batch_logits_.begin() + b * V + at);
+      at += per;
+    }
+    return batch_logits_;
   }
 
  private:
@@ -242,7 +263,7 @@ class TpEngine {
   bool quit_ = false;
   bool broken_ = false;  // (a shard failed during a call: the others' barrier count and parts are out of step)
   int pending_ = 0;
-  std::vector<float> logits_;
+  std::vector<float> logits_, batch_logits_;
 
   void loop(int r) {
     zrt::cur = zrt::devs[r];

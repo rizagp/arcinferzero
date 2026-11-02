@@ -16,7 +16,8 @@
 // one, FFN columns 256 at a time, vocabulary rows 16 at a time; the first GPUs take one unit more): the 27B over 3
 // GPUs holds 6 / 6 / 4 k-heads, 2 / 1 / 1 kv-heads.
 // The output projections (ssm_out, attn_output, ffn_down) write partial sums that tp_out adds over the shards
-// (TpComm::reduce) before they reach x_. MTP, DFlash2, slots and the NPU are off in a split model.
+// (TpComm::reduce) before they reach x_. MTP, DFlash2 and the NPU are off in a split model; slots and batched
+// decoding work as on one GPU (each shard holds its part of every slot's state).
 //
 // Mixture of experts (qwen35moe: Qwen3.6 35B, Ornith): the routed experts are divided instead of FFN columns, shard r
 // holding experts [e0, e1) (global ids everywhere: the router, the expert file, the cache tables). Every shard routes
@@ -29,6 +30,7 @@
   TpComm* tp_ = nullptr;  // (set by TpEngine before the first forward)
   int n_logits() const { return lm_head_.N; }  // this engine's logits per row (its vocabulary rows when split)
   const std::vector<float>& logits_host() const { return logits_host_; }
+  const std::vector<float>& batch_logits_host() const { return batch_logits_host_; }  // (rows of n_logits())
 
  private:
   struct TpGlobal { int nk = 0, nv = 0, nh = 0, nkv = 0, ff = 0, vocab = 0; };
@@ -97,8 +99,7 @@
     hp.n_ff = (int)(tpf_.second - tpf_.first);
     opt.mtp = false;
     opt.dflash.clear();
-    opt.npu = 0;
-    opt.slots = 1;
+    opt.npu = 0;  // (slots stay: batched decoding over a split model, TpEngine::forward_batch)
     if (moe)
       fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads%s, experts %lld-%lld of %d, %lld of %d vocabulary rows\n",
               r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv, tp_att_whole_ ? " (whole on every GPU)" : "",

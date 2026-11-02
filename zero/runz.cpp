@@ -68,7 +68,7 @@ static std::string peak_note(Engine& eng, double gbs) {
 
 // --gpus N: the model split over N GPUs (zero/engine_tp.h): the prompt (or --bench-pp N), then greedy generation
 static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, const std::vector<int>& toks, int n_gen,
-                  int bench_pp, const std::string& dump_logits, bool show, const std::string& kl_ref) {
+                  int bench_pp, const std::string& dump_logits, bool show, const std::string& kl_ref, int bench_batch) {
   TpEngine tp(model, eo, gpus);
   Engine& e0 = tp.shard(0);
   Vocab vocab(e0.gguf());
@@ -92,6 +92,66 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     for (int i = 0; i < bench_pp; ++i) prompt[i] = 1000 + (i * 7919) % 50000;
   }
   if (prompt.empty()) { fprintf(stderr, "no tokens\n"); return 1; }
+  if (bench_batch > 1) {  // batched decoding over the split model's slots: bit-identical to each slot alone, then the speed
+    const int NS = bench_batch, K = 8;
+    if (!tp.batch_ok() || tp.slot_count() < NS) { fprintf(stderr, "--bench-batch: no batched decoding for this model\n"); return 1; }
+    if ((int)prompt.size() < NS + 8) { fprintf(stderr, "--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS + 8); return 1; }
+    const size_t V = (size_t)tp.vocab();
+    auto fnv = [&](const float* p) {
+      uint64_t h = 1469598103934665603ull;
+      const uint8_t* b = (const uint8_t*)p;
+      for (size_t i = 0; i < V * 4; ++i) h = (h ^ b[i]) * 1099511628211ull;
+      return h;
+    };
+    auto argmax = [&](const float* p) { return (int)(std::max_element(p, p + V) - p); };
+    // slot s: the prompt less its last s tokens (each slot its own conversation)
+    auto feed = [&](int s) -> const std::vector<float>& {
+      tp.bind(s);
+      tp.reset();
+      return tp.forward(prompt.data(), (int)prompt.size() - s);
+    };
+    std::vector<std::vector<uint64_t>> alone(NS), batched(NS);
+    std::vector<int> sl(NS), tk(NS);
+    for (int s = 0; s < NS; ++s) {  // each slot alone, K greedy steps
+      int t = argmax(feed(s).data());
+      for (int k = 0; k < K; ++k) {
+        const std::vector<float>& l = tp.forward(&t, 1);
+        alone[s].push_back(fnv(l.data()));
+        t = argmax(l.data());
+      }
+    }
+    for (int s = 0; s < NS; ++s) {
+      sl[s] = s;
+      tk[s] = argmax(feed(s).data());
+    }
+    for (int k = 0; k < K; ++k) {  // the same K steps, every slot in one pass
+      const std::vector<float>& l = tp.forward_batch(sl, tk);
+      for (int s = 0; s < NS; ++s) {
+        batched[s].push_back(fnv(&l[s * V]));
+        tk[s] = argmax(&l[s * V]);
+      }
+    }
+    const bool same = alone == batched;
+    printf("batched vs each slot alone, %d slots x %d steps: logits %s\n", NS, K, same ? "bit-identical" : "DIFFER");
+    const int reps = 16;
+    for (int B = 1; B <= std::min(NS, tp.batch_rows()); ++B) {
+      double best = 1e30, one = 1e30, wait = 0;
+      std::vector<int> bs(sl.begin(), sl.begin() + B), bt(tk.begin(), tk.begin() + B);
+      for (int round = 0; round < 3; ++round) {
+        const auto [w0, n0] = syncs();
+        auto t0 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r) tp.forward_batch(bs, bt);
+        const double ms = ms_since(t0) / reps;
+        if (ms < best) { best = ms; wait = (syncs().first - w0) / reps; }
+        t0 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r) tp.forward(&bt[0], 1);
+        one = std::min(one, ms_since(t0) / reps);
+      }
+      printf("B %d: %.1f ms per batched step (%.1f tok/s together, %.2f ms waiting for the sums) | one slot alone %.1f ms (%.1f tok/s): %.2fx\n",
+             B, best, 1000.0 * B / best, wait, one, 1000.0 / one, one * B / best);
+    }
+    return same ? 0 : 1;
+  }
   if (!kl_ref.empty()) {  // (--kl-ref with every position's reference log-probs: the prompt fed token by token, as --kl-decode)
     FILE* fi = fopen(kl_ref.c_str(), "rb");
     if (!fi) { fprintf(stderr, "cannot open %s\n", kl_ref.c_str()); return 1; }
@@ -228,7 +288,8 @@ static int run_main(int argc, char** argv) {
             "  --kl-decode           with --kl-ref: through the token-by-token generation path\n"
             "  --slots-check         two conversations (the prompt's halves) alone, then held at once in slots 0 and 1\n"
             "                        with their steps interleaved and batched: every logit must be bit for bit the same\n"
-            "  --bench-batch N       time of a batched decoding step over 1..N slots against one slot alone\n"
+            "  --bench-batch N       time of a batched decoding step over 1..N slots against one slot alone; with --gpus,\n"
+            "                        first a check that the batched steps' logits equal each slot's alone, bit for bit\n"
             "  --perplexity F        perplexity of a text file (llama-perplexity method: second half of each chunk scored)\n"
             "  --ppl-ctx N           chunk length (default 512)   --ppl-chunks N   chunks to score (default all)\n"
             "  --ppl-dump F          write the chunks' token ids to F (for ref_forward)\n"
@@ -338,7 +399,10 @@ static int run_main(int argc, char** argv) {
   eo.ctx = std::max(ctx, need);
   eo.chunk = chunk;
   warn_gpu_neighbours();
-  if (gpus > 1) return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref);
+  if (gpus > 1) {
+    if (bench_batch > 1) eo.slots = std::min(bench_batch, Engine::kMaxSlots);  // (a split model's slots: made at load)
+    return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref, bench_batch);
+  }
   Engine eng(model, eo);
   Vocab vocab(eng.gguf());
   printf("loaded: %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB | W8 %s | chunk %d | ctx %d | load %.0f ms\n",

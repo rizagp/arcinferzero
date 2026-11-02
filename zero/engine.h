@@ -952,7 +952,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     batch_.clear();
     head_rows(0, B, out_norm_, nullptr);
     if (batch_logits_host_.size() < (size_t)hp.n_vocab * B) batch_logits_host_.resize((size_t)hp.n_vocab * batch_rows_);
-    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)hp.n_vocab * B * 4, batch_logits_host_.data(), 0,
+    // (rows of n_logits(): the vocabulary, or a split model's shard of it)
+    CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * B * 4, batch_logits_host_.data(), 0,
                                  nullptr, nullptr));
     for (const BatchSeq& q : seqs) {
       point_to(q.slot);

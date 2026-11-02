@@ -80,6 +80,11 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-02, batched decoding over a split model** (multi-GPU only). Laptop, ARC_TP_SIM (one iGPU: ratios only),
+  `runz --bench-batch 4`: 27B over 2 "GPUs" 4.0 -> 12.4 tok/s together with 4 slots (3.26x); 35B over 4 10.2 -> 24.6
+  (2.41x; one GPU 2.82x). Batched logits bit-identical to each slot alone (8 steps x 4 slots); one GPU bit-identical
+  to the build before. Speed on B60s: to be measured.
+
 - **2026-11-02, split prompts sum through an f16 reduce-scatter** (multi-GPU only). Bytes through host memory per
   sum and GPU, in f32 part sizes: 4 GPUs 5 -> 1.1 (4.4x fewer), 2 GPUs 3 -> 0.75 (4x). Speed: to be measured on the 4x
   B60 (before: 35B prompt 3,232 tok/s on 1 GPU, 2,040-2,122 on 2-4). Accuracy, ARC_TP_SIM on the laptop, 1,687-token

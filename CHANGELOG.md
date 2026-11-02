@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-02: batched decoding over a split model
+
+- **Slots and batched decoding with `--gpus`**: a split model keeps its conversation slots (each GPU its part of
+  every slot's state) and `TpEngine::forward_batch` runs several slots' generation steps in one pass, the sums
+  carrying all their rows at once. `runz --gpus N --bench-batch M` checks the batched logits against each slot alone
+  (bit-identical for the 27B over 2 and the 35B over 4, simulated on the laptop) and times 1..M slots. Not yet in
+  `serverz`. One GPU: logits bit-identical.
+
 ## 2026-11-02: multi-GPU prompt sums in f16, reduce-scatter
 
 - **A split model's prompt chunks sum through a reduce-scatter in f16** (`zero/mgpu`, `tp.cl`): each GPU sums one

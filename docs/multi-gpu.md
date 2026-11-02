@@ -185,6 +185,22 @@ One B60 runs the 27B IQ3_S at 21.5 tok/s, reading 11.3 GB per token in 45.3 ms. 
 | 3 | ~50 tok/s (the largest part ~37 %) | ~2.5x |
 | 4 | ~65-70 tok/s | ~3x (a 4096-token chunk moves 80 MB per sum through host memory at ~6.6 GB/s) |
 
+## Batched decoding over a split model
+
+Since 2026-11-02 a split model holds conversation slots like one GPU does (each GPU its part of every slot's KV
+cache and DeltaNet state), and `TpEngine::forward_batch` runs one generation step of several slots in one pass: the
+weights are read once for all of them, and each of the step's sums carries B rows for the latency of one, so the
+cost of the sums per token falls with B. In `runz`:
+
+```powershell
+.\bin\runz.exe <model.gguf> --bench-pp 512 --gpus 4 --bench-batch 8
+```
+
+It first checks that 8 greedy steps of every slot batched give the same logits as each slot alone, bit for bit, then
+times a batched step for 1..N slots against one slot alone. Laptop (ARC_TP_SIM, one iGPU: only the ratios mean
+something): both checks bit-identical; 4 slots together 3.26x one slot's tokens per second (27B over 2) and 2.41x
+(35B over 4; one GPU 2.82x). `serverz --gpus` (and so `--slots` with it) is not there yet.
+
 ## Not yet
 
 - The server and launcher (`serverz --gpus`, a choice of which GPUs): slots and batch decoding (a step's sums carry
