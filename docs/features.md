@@ -106,8 +106,14 @@ chat's folder (each command allowed by the user), chats search.
 
 - **NPU next to the GPU** for prompts (`--npu on`): Qwen3.8 27B +15 %, Gemma 4 12B +10 %
   ([npu-experiment.md](npu-experiment.md)).
-- **Several GPUs** for one dense Qwen model (`runz --gpus N`, tensor parallel; each GPU reads 1/N of the weights per
-  token; the KL on 2-4 shards matches one GPU's) ([multi-gpu.md](multi-gpu.md)).
+- **Several GPUs** for one Qwen model, dense or the 35B-A3B MoE (`runz` / `serverz --gpus N`, tensor parallel):
+  - each GPU reads 1/N of the weights per token, and the KL on 2-4 shards matches one GPU's;
+  - batched slots work over the split;
+  - failsafes cover a GPU that hangs.
+
+  On 4 Arc Pro B60s the 27B generates 2.44x faster ([multi-gpu.md](multi-gpu.md)).
+- **Discrete Arc B-series cards** (B580 / Pro B60 / B70, experimental): their own switches in `zero/xe2/`, XMX for
+  the prompt GEMMs after a start-up check, and scripts that measure each setting ([xe2-tuning.md](xe2-tuning.md)).
 - Xe2 / Xe3 iGPUs (Lunar Lake, Panther Lake) build the 8-lane kernels with 16 lanes; XMX engines are used after a
   start-up check where the GPU has them.
 

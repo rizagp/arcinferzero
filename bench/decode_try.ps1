@@ -31,9 +31,16 @@ function Invoke-Run([string]$model, [string[]]$extra, [hashtable]$envs) {
   $best = $null
   for ($i = 0; $i -lt 2; ++$i) {
     foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
-    foreach ($k in $envs.Keys) { Set-Item "Env:$k" $envs[$k] }
-    $o = & $runz $model --text-file $q --n $N @extra 2>&1 | Out-String
-    foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+    # (stderr lines of runz are output, not errors that stop the script; the variables are removed even after Ctrl+C)
+    $eap = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = "Continue"
+      foreach ($k in $envs.Keys) { Set-Item "Env:$k" $envs[$k] }
+      $o = & $runz $model --text-file $q --n $N @extra 2>&1 | Out-String
+    } finally {
+      $ErrorActionPreference = $eap
+      foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+    }
     $m = [regex]::Match($o, "generation: \d+ tokens in [\d.]+ ms \(([\d.]+) t/s\)")
     if (-not $m.Success) {
       $err = ($o -split "`n" | Where-Object { $_ -match "error|cannot|failed|exception" } | Select-Object -First 1)

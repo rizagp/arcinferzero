@@ -45,7 +45,7 @@ struct EngineHold {
 struct TpHold {
   void operator()(TpEngine* t) const {
     if (t && t->faulted()) {
-      t->disarm();
+      t->disarm(true);
       fprintf(stderr, "multi-GPU: the split model's memory is left after a GPU fault: restart the server to free it\n");
       return;
     }

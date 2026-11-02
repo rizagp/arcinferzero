@@ -1,5 +1,48 @@
 # Changelog
 
+## 2026-11-02 (late night): self audit of the day's B60 work
+
+Three independent reviews (f16 XMX GEMM, multi-GPU changes, event probe and scripts). Each finding was checked in
+the code before it was fixed.
+
+**`event_probe`**
+- Events were reused every 2 sums. A GPU that ran ahead could pass its wait on a peer's signal from 2 sums earlier
+  and read stale data. The probe now uses a ring of 3 events and checks the data of 200 sums. QUEUE F31.3's design
+  is corrected to match.
+- A wait that never ends now releases every GPU and stops the probe instead of hanging it.
+- Every call's result is checked.
+- Output is unbuffered, so nothing is lost when it goes to a file.
+- On real GPUs, one thread per GPU appends the work, as the engine does.
+
+**f16 XMX GEMM**
+- Weights are decoded times 16, not 256. With 256, a weight of 256 or more became inf and its column NaN.
+- The f16 activations' buffer is reserved with the others, so the memory plan counts it (143 MB on the 27B).
+- Chunks of 41-127 tokens whose size is not a multiple of 32 now use 16 or 8 tokens per sub-group instead of
+  falling back to DP4a. A 48-token prompt: KL against DP4a 0.00019.
+- The start-up check covers more cases and goes through the engine's own launch.
+- The check's verdict is kept per device. A GPU wait that gives up during the check (this applies to
+  `xmx_check` too) is not taken as a verdict.
+- `act_half` is built without the GEMM.
+- Checked: CG 1 / 2 / 4 bit-identical; 27B KL against DP4a 0.00069, unchanged by the new scale.
+
+**Multi-GPU**
+- A faulted split model now also sets every GPU's abort, so a given-up thread stops polling its wait.
+- The wait-limit fields are atomic.
+- The weight upload's staging buffer comes from the throwing allocation, so a shard short of host memory falls back
+  to one GPU.
+- Freeing a half-built shard keeps the first error.
+
+**Also**
+- A fused SwiGLU is never cut into split-K pieces (gemm.cl too; no model reached it).
+- `gemm_sweep.ps1` / `decode_try.ps1`:
+  - environment variables are removed even after Ctrl+C;
+  - stderr no longer stops a sweep;
+  - X16 rows are skipped where the f16 GEMM does not run;
+  - X16 is never combined with DP4a only.
+
+**Regression:** one GPU bit-identical; split 27B as before; split 35B as before with `ARC_TP_RG_GU=0`, and equal to
+b3da0bf by default; f16 fallback equal to f32; the server's wait fault, OOM fallback and E4B tests pass.
+
 ## 2026-11-02 (night, 2): B60 queue F31.1 and F31.2
 
 - **`ARC_X16_CG=2 / 4`**: the f16 XMX GEMM covers 2 or 4 column groups per sub-group, so each activation read feeds

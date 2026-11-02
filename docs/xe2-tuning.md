@@ -1,4 +1,24 @@
-# Tuning on Arc B-series GPUs (Xe2: B580, Pro B60)
+# Tuning on Arc B-series GPUs (Xe2: B580, Pro B60, Pro B70)
+
+All the switches (environment variables; each is read once per process):
+
+| Switch | Default | What it does | Section |
+|---|---|---|---|
+| `ARC_GEMM_GRF=256` | 128 on discrete cards | the dense prompt GEMM's register file | 1 |
+| `ARC_MOE_GRF=128` | 256 | the MoE expert GEMMs' register file | 1 |
+| `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
+| `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
+| `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
+| `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
+| `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
+| `ARC_GEMV_MT_GRF=128` | 256 | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
+| `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
+| `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
+| `ARC_TP_*` | | the multi-GPU sums (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`) | [multi-gpu.md](multi-gpu.md) |
+
+The tools: `bench\gemm_sweep.ps1` (prompt), `bench\decode_try.ps1` (generation), `bin\mgpu_probe.exe` and
+`bin\event_probe.exe` (several GPUs), `bin\replay_probe.exe` (kernel launches), `bin\clinfo.exe` (what the driver
+offers).
 
 The engine was written and tuned on a Core Ultra 5 125H (Xe-LPG iGPU, no XMX). On Xe2 cards the prompt GEMMs use
 XMX (DPAS), but their settings are still the iGPU's, and only the owners of these cards can measure what is faster.
@@ -123,6 +143,18 @@ The kernel is off until a B60 measures it: `ARC_X16=1` turns it on, on a discret
 checked against the DP4a kernel on random data: every W8 layout, per-32 and per-256 activation scales, stored,
 split-K, added and fused SwiGLU. It is taken only when the error is under 0.5 % of the result's size. f16 rounding
 gives ~0.03 %; a wrong layout gives ~100 %.
+
+Changes from the self audit (2026-11-02):
+- Weights are decoded times 16, not 256. 256 turned any weight of 256 or more into inf, and its column into NaN.
+- The f16 activations' buffer (143 MB for the 27B at 4096-token chunks) is reserved with the other buffers, so the
+  memory plan counts it.
+- A short chunk (padded to 16 rows) takes 16 or 8 tokens per sub-group instead of falling back to `gemm.cl`.
+- The start-up check goes through the engine's own launch, with:
+  - a partial row group, a column offset and a row stride wider than N;
+  - a matrix whose column groups CG does not divide;
+  - activation scales spread over three decades.
+- The check's verdict is kept per device, and a GPU wait that gives up during it is not taken as a verdict.
+- A fused SwiGLU is never cut into split-K pieces (this also applies to `gemm.cl`; no model does it yet).
 
 `ARC_X16_TRY=1` runs the kernel anywhere, with DPAS emulated by shuffles where the GPU has none. That is how it was
 checked on the 125H laptop (Qwen3.8 27B IQ3_S): the check's largest error was 3.1e-4, and the next-token top-10 was

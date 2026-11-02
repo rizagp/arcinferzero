@@ -290,12 +290,16 @@ class TpEngine {
   // a wait gave up on a GPU, or a thread was given up on: such a TpEngine is never deleted (TpHold), as a thread
   // still running on it would touch freed memory
   bool faulted() const { return comm_.fault; }
-  // the GPUs' waits back to no limit, no abort, no fault flag: from shutdown, and for a faulted split model that is
-  // left without being freed (TpHold), so the next model on these GPUs does not inherit them
-  void disarm() {
+  // the GPUs' waits back to no limit and no fault flag, so the next model on these GPUs does not inherit them. From
+  // shutdown: no abort either (the shards' destructors wait for their GPUs, and a wait that threw there would end the
+  // process). For a faulted split model left unfreed (TpHold, release_stuck): every GPU's abort set instead, so a
+  // thread given up on but still polling its wait leaves it rather than polling that GPU's list forever (only split
+  // models' threads read it, zrt::tp_guarded; the next split model sets every GPU's again, start)
+  void disarm(bool release_stuck = false) {
+    static std::atomic<bool> gone{true};
     for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
+      zrt::devs[r]->abort = release_stuck ? &gone : nullptr;
       zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
-      zrt::devs[r]->abort = nullptr;
       zrt::devs[r]->fault = nullptr;
     }
   }
@@ -343,7 +347,7 @@ class TpEngine {
     for (int r = 0; r < n; ++r) {  // (GPU 0's waits keep no abort: the server's other users, Whisper, share it)
       zrt::devs[r]->sync_timeout_ns = (uint64_t)(comm_.timeout_s * 1e9);
       zrt::devs[r]->fault = &comm_.fault;
-      if (r > 0) zrt::devs[r]->abort = &comm_.failed;
+      zrt::devs[r]->abort = r > 0 ? &comm_.failed : nullptr;  // (GPU 0: an abort a faulted model left, disarm, cleared)
     }
     stuck_.assign(n, 0);
     shards_.resize(n);

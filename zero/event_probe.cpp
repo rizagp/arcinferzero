@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[i], "--sums") && i + 1 < argc) sums = std::max(50, atoi(argv[++i]));
     else if (!strcmp(argv[i], "--sim") && i + 1 < argc) sim = std::max(2, atoi(argv[++i]));
   }
+  setvbuf(stdout, nullptr, _IONBF, 0);  // (output redirected to a file: none lost if an error ends the process)
   if (!ze_load()) { fprintf(stderr, "cannot load ze_loader.dll (Level Zero, part of the Intel graphics driver)\n"); return 1; }
   HMODULE zl = GetModuleHandleA("ze_loader.dll");
   AppendSignal = (PFN_sig)GetProcAddress(zl, "zeCommandListAppendSignalEvent");
@@ -128,7 +129,7 @@ int main(int argc, char** argv) {
   std::vector<ze_device_handle_t> pdev;
   for (const Gpu& x : g)
     if (std::find(pdev.begin(), pdev.end(), x.dev) == pdev.end()) pdev.push_back(x.dev);
-  ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, ZE_EVENT_POOL_FLAG_HOST_VISIBLE, (uint32_t)(2 * N + 1)};
+  ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, ZE_EVENT_POOL_FLAG_HOST_VISIBLE, (uint32_t)(3 * N + 1)};
   ze_event_pool_handle_t pool = nullptr;
   const ze_result_t pr = zeEventPoolCreate(ctx, &pd, (uint32_t)pdev.size(), pdev.data(), &pool);
   printf("\nevent pool for %zu device(s): %s", pdev.size(), pr == 0 ? "made\n" : "");
@@ -136,12 +137,22 @@ int main(int argc, char** argv) {
     printf("error 0x%x: GPU-side sums are not possible with this driver\n", pr);
     return 0;
   }
-  std::vector<ze_event_handle_t> ev(2 * N + 1);
-  for (int i = 0; i < 2 * N + 1; ++i) {
+  // (3 events per GPU, used in turn by sums s % 3: see event_path)
+  std::vector<ze_event_handle_t> ev(3 * N + 1);
+  for (int i = 0; i < 3 * N + 1; ++i) {
     ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, (uint32_t)i, ZE_EVENT_SCOPE_FLAG_HOST, ZE_EVENT_SCOPE_FLAG_HOST};
     ZE_CHECK(zeEventCreate(pool, &ed, &ev[i]));
   }
-  auto E = [&](int half, int r) { return ev[half * N + r]; };
+  auto E = [&](int slot, int r) { return ev[slot * N + r]; };
+  // (a GPU wait that never ends: every event signalled from the host so the lists drain, then the probe ends; a
+  //  process left with a list stuck on a GPU wait can hang in the driver's cleanup)
+  auto give_up = [&](const char* what) {
+    printf("%s: stopping\n", what);
+    for (auto e : ev) zeEventHostSignal(e);
+    for (const Gpu& x : g) zeCommandListHostSynchronize(x.cl, kWait);
+    fflush(stdout);
+    _Exit(0);
+  };
 
   // ---- 1b. every pair: GPU a's part (a pattern) to host memory, signalling; GPU b waits on the GPU, reads it
   bool all_ok = true;
@@ -168,16 +179,10 @@ int main(int argc, char** argv) {
       all_ok = all_ok && ok;
       printf("  GPU %d -> host -> GPU %d through an event: %s\n", a, b,
              ok ? "intact" : ra || rb ? "did not finish within 5 s" : "WRONG DATA");
-      if (ra || rb) {
-        printf("GPU-side waits do not work here: stopping\n");
-        return 0;
-      }
+      if (ra || rb) give_up("GPU-side waits do not work here");
     }
 
   // ---- 2. microseconds per sum, M sums in a row
-  auto reset_all = [&] {
-    for (auto e : ev) zeEventHostReset(e);
-  };
   // today: each GPU's thread copies its part, waits for its GPU, meets the others at a spin barrier, then its GPU
   // reads all parts (the read waited for before the next sum, as tp_add finishes before the next layer's work)
   auto host_path = [&](int n) {
@@ -207,29 +212,69 @@ int main(int argc, char** argv) {
     for (auto& t : th) t.join();
     return (now_us() - t0) / sums;
   };
-  // events: per sum and GPU, appended ahead by one CPU thread: reset its event of this half, copy its part signalling
-  // it, wait on the GPU for the others' events, read all parts. The CPU waits once at the end.
-  auto event_path = [&](int n) {
-    reset_all();
-    const double t0 = now_us();
-    for (int s = 0; s < sums; ++s) {
-      const int h = s & 1;
-      char* half = host + (size_t)h * N * part;
-      for (int r = 0; r < n; ++r) {  // (every GPU's copy appended before any wait: lists sharing a queue, --sim)
-        if (s >= 2) AppendReset(g[r].cl, E(h, r));
-        zeCommandListAppendMemoryCopy(g[r].cl, half + r * part, g[r].part, part, E(h, r), 0, nullptr);
-      }
-      for (int r = 0; r < n; ++r) {
-        std::vector<ze_event_handle_t> others;
+  // events: per sum s and GPU r: copy its part to host memory signalling event E(s % 3, r), wait on the GPU for the
+  // other GPUs' E(s % 3, k), read all parts. Before the copy, E((s + 1) % 3, r) is reset for sum s + 1: it last
+  // served sum s - 2, whose waits every GPU has passed (each signalled sum s - 1, which GPU r waited for at s - 1,
+  // after its own wait for s - 2), and no GPU waits for sum s + 1 before r's signal of s, which comes after the reset.
+  // (Two events per GPU in turn are not enough: a GPU ahead could pass its wait for s on a peer's signal of s - 2
+  // that the peer has not reset yet.) The host buffer's halves alternate as in engine_tp.h: a part of sum s
+  // overwrites that of s - 2, read by every GPU before it signalled s - 1.
+  // Appended by one thread per GPU, as the engine does; --sim: by one thread, every copy of a sum before any wait
+  // (the lists may share one queue, where a wait ahead of the signal it needs would hold it forever).
+  // check: each part filled with (sum, GPU) first, and each GPU's read of every part logged and compared after.
+  std::vector<uint32_t> tags((size_t)sums * N);
+  for (int s = 0; s < sums; ++s)
+    for (int r = 0; r < N; ++r) tags[(size_t)s * N + r] = 0x5a000000u | ((uint32_t)s << 4) | (uint32_t)r;
+  uint32_t* log = nullptr;
+  ZE_CHECK(zeMemAllocHost(ctx, &hd, (size_t)sums * N * N * 4, 4096, (void**)&log));
+  bool data_ok = true;
+  auto append_sum = [&](int n, int s, int r, bool copy_part, bool wait_read, bool check) {
+    const int slot = s % 3;
+    char* half = host + (size_t)(s & 1) * N * part;
+    if (copy_part) {
+      if (s >= 2) ZE_CHECK(AppendReset(g[r].cl, E((s + 1) % 3, r)));
+      if (check) ZE_CHECK(zeCommandListAppendMemoryFill(g[r].cl, g[r].part, &tags[(size_t)s * N + r], 4, part, nullptr, 0, nullptr));
+      ZE_CHECK(zeCommandListAppendMemoryCopy(g[r].cl, half + r * part, g[r].part, part, E(slot, r), 0, nullptr));
+    }
+    if (wait_read) {
+      ze_event_handle_t others[64];
+      uint32_t no = 0;
+      for (int k = 0; k < n; ++k)
+        if (k != r) others[no++] = E(slot, k);
+      ZE_CHECK(AppendWait(g[r].cl, no, others));
+      ZE_CHECK(zeCommandListAppendMemoryCopy(g[r].cl, g[r].parts, half, part * n, nullptr, 0, nullptr));
+      if (check)
         for (int k = 0; k < n; ++k)
-          if (k != r) others.push_back(E(h, k));
-        AppendWait(g[r].cl, (uint32_t)others.size(), others.data());
-        zeCommandListAppendMemoryCopy(g[r].cl, g[r].parts, half, part * n, nullptr, 0, nullptr);
+          ZE_CHECK(zeCommandListAppendMemoryCopy(g[r].cl, log + ((size_t)s * N + r) * N + k, (char*)g[r].parts + k * part, 4, nullptr, 0, nullptr));
+    }
+  };
+  auto event_path = [&](int n, bool check) {
+    for (int i = 0; i < 3 * N; ++i) zeEventHostReset(ev[i]);
+    const int m = check ? std::min(sums, 200) : sums;
+    const double t0 = now_us();
+    if (sim) {
+      for (int s = 0; s < m; ++s) {
+        for (int r = 0; r < n; ++r) append_sum(n, s, r, true, false, check);
+        for (int r = 0; r < n; ++r) append_sum(n, s, r, false, true, check);
       }
+    } else {
+      std::vector<std::thread> th;
+      for (int r = 0; r < n; ++r)
+        th.emplace_back([&, r] {
+          for (int s = 0; s < m; ++s) append_sum(n, s, r, true, true, check);
+        });
+      for (auto& t : th) t.join();
     }
     bool ok = true;
-    for (int r = 0; r < n; ++r) ok = zeCommandListHostSynchronize(g[r].cl, (uint64_t)sums * 1000000ull) == 0 && ok;
-    return ok ? (now_us() - t0) / sums : -1.0;
+    for (int r = 0; r < n; ++r) ok = zeCommandListHostSynchronize(g[r].cl, (uint64_t)m * 1000000ull + kWait) == 0 && ok;
+    if (!ok) give_up("a GPU-side wait did not finish");
+    const double t = (now_us() - t0) / m;
+    if (check)
+      for (int s = 0; s < m; ++s)
+        for (int r = 0; r < n; ++r)
+          for (int k = 0; k < n; ++k)
+            if (log[((size_t)s * N + r) * N + k] != tags[(size_t)s * N + k]) data_ok = false;
+    return t;
   };
   printf("\nmicroseconds per sum of a 20 KB part (%d sums in a row, median of 5 runs):\n", sums);
   double best_host = 1e9, best_ev = 1e9;
@@ -237,31 +282,29 @@ int main(int argc, char** argv) {
     std::vector<double> th, te;
     host_path(n);  // (warm-up)
     for (int k = 0; k < 5; ++k) th.push_back(host_path(n));
-    bool ev_ok = event_path(n) >= 0;
-    for (int k = 0; k < 5 && ev_ok; ++k) {
-      const double t = event_path(n);
-      if (t < 0) ev_ok = false;
-      else te.push_back(t);
-    }
-    const double mh = median(th), me = ev_ok ? median(te) : -1;
-    char evs[32] = "did not finish";
-    if (ev_ok) snprintf(evs, sizeof evs, "%.1f us", me);
-    printf("  %d GPUs: today's path %.1f us, events %s\n", n, mh, evs);
-    if (n == N) best_host = mh, best_ev = ev_ok ? me : 1e9;
+    event_path(n, true);  // (warm-up, and every part of 200 sums checked)
+    for (int k = 0; k < 5; ++k) te.push_back(event_path(n, false));
+    const double mh = median(th), me = median(te);
+    printf("  %d GPUs: today's path %.1f us, events %.1f us (data of 200 sums %s)\n", n, mh, me,
+           data_ok ? "right" : "WRONG: a GPU read a part before it was written");
+    if (n == N) best_host = mh, best_ev = data_ok ? me : 1e9;
   }
 
   // ---- 3. the failsafe: a GPU waiting on an event nothing signals, released by the host
   {
-    ze_event_handle_t dead = ev[2 * N];
+    ze_event_handle_t dead = ev[3 * N];
     zeEventHostReset(dead);
-    AppendWait(g[0].cl, 1, &dead);
+    ZE_CHECK(AppendWait(g[0].cl, 1, &dead));
     const ze_result_t before = zeCommandListHostSynchronize(g[0].cl, 100000000ull);  // (100 ms: must not finish)
     const double t0 = now_us();
     zeEventHostSignal(dead);
     const ze_result_t after = zeCommandListHostSynchronize(g[0].cl, kWait);
-    printf("\nfailsafe: GPU 0 waiting on an event no GPU signals: %s; released by the host: %s (%.2f ms)\n",
-           before == ZE_RESULT_NOT_READY ? "still waiting after 100 ms (as it should)" : "did NOT wait",
+    char bs[48];
+    if (before == ZE_RESULT_NOT_READY) snprintf(bs, sizeof bs, "still waiting after 100 ms (as it should)");
+    else snprintf(bs, sizeof bs, "did NOT wait (0x%x)", before);
+    printf("\nfailsafe: GPU 0 waiting on an event no GPU signals: %s; released by the host: %s (%.2f ms)\n", bs,
            after == 0 ? "yes" : "NO", (now_us() - t0) / 1000);
+    if (after != 0) give_up("the host could not release a GPU wait");
   }
 
   // ---- 4. the experimental GPU memory waits (a counter in host memory instead of events)

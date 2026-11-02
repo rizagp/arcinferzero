@@ -11,7 +11,9 @@
 //
 // act_half: the int8 activations (aq, scales asc per 32 or per 256 values) to f16, divided by the row's largest scale
 // (rs[m]) so every value is within +-127: no f16 overflow whatever the activations. The GEMM multiplies rs[m] back.
-// Weights are decoded times 256 (WSCALE; values of LLM weights are far below 255) so small ones stay normal f16.
+// Weights are decoded times 16 (WSCALE): weights down to ~4e-6 stay normal f16 (DPAS may flush subnormals), and up to
+// ~4000 do not overflow (256 before: a weight of 256 or more became inf, and its column NaN).
+// -DACT_ONLY: act_half alone (built without the GEMM).
 // -DX16_EMU: DPAS emulated with shuffles (tests on GPUs without XMX: same products, f32 sums in another order).
 
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
@@ -21,7 +23,7 @@
 #define X16_TM 32  // tokens per sub-group: X16_TM / 8 accumulators
 #endif
 #define NRG (X16_TM / 8)
-#define WSCALE 256.0f
+#define WSCALE 16.0f
 
 #define SC32 (QTYPE & 1)
 #define HAS_MIN (QTYPE >= 102)
@@ -46,6 +48,7 @@ __kernel void act_half(__global const char* restrict aq, __global const float* r
   }
 }
 
+#ifndef ACT_ONLY
 #ifdef X16_EMU
 // one DPAS 8 x 16 x 16 (f16, f32 sums): a: lane l holds A[r][l] in component r; b: lane n = column n, its 16 values
 // as 8 pairs (k = 2i low half, 2i + 1 high); result: component r = row r, lane = column
@@ -207,3 +210,4 @@ __kernel void gemm_x16(__global const uint* restrict wq, __global const uint* re
     }
   }
 }
+#endif  // ACT_ONLY

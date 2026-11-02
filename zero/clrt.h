@@ -102,9 +102,10 @@ struct Dev {
   int index = 0;
   // (a split model's GPUs, zero/mgpu/engine_tp.h: sync() gives up after this long, or once *abort is set because
   //  another GPU failed, instead of waiting forever for a GPU that hangs; one GPU: no limit, as always)
-  uint64_t sync_timeout_ns = UINT64_MAX;
-  const std::atomic<bool>* abort = nullptr;
-  std::atomic<bool>* fault = nullptr;  // (set when a wait gave up on its GPU: the split model is not trusted again)
+  // (atomic: TpEngine sets and restores them while a thread it gave up on may still be waiting in sync())
+  std::atomic<uint64_t> sync_timeout_ns{UINT64_MAX};
+  std::atomic<const std::atomic<bool>*> abort{nullptr};
+  std::atomic<std::atomic<bool>*> fault{nullptr};  // (set when a wait gave up on its GPU: the split model is not trusted again)
 };
 // a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
 struct GpuWaitError : std::runtime_error {
@@ -126,21 +127,23 @@ inline thread_local bool oom_test = false;
 inline Dev& D() { return cur ? *cur : dev0; }
 inline void sync() {
   Dev& d = D();
-  if (!tp_guarded || (d.sync_timeout_ns == UINT64_MAX && !d.abort)) {
+  if (!tp_guarded || (d.sync_timeout_ns.load() == UINT64_MAX && !d.abort.load())) {
     ZE_CHECK(zeCommandListHostSynchronize(d.cl, UINT64_MAX));
     return;
   }
   const auto t0 = std::chrono::steady_clock::now();  // (in pieces of 100 ms: see Dev::sync_timeout_ns)
-  for (;;) {
+  for (;;) {  // (the limit and abort read again each piece: TpEngine::disarm can call a wait off)
     const ze_result_t r = zeCommandListHostSynchronize(d.cl, 100000000ull);
     if (r == ZE_RESULT_SUCCESS) return;
     if (r != ZE_RESULT_NOT_READY) ZE_CHECK(r);
-    if (d.abort && d.abort->load(std::memory_order_relaxed))
+    const std::atomic<bool>* ab = d.abort.load();
+    if (ab && ab->load(std::memory_order_relaxed))
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": wait left, another GPU failed");
-    if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > d.sync_timeout_ns) {
-      if (d.fault) d.fault->store(true);
+    const uint64_t lim = d.sync_timeout_ns.load();
+    if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > lim) {
+      if (std::atomic<bool>* f = d.fault.load()) f->store(true);
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": its work did not finish within " +
-                         std::to_string(d.sync_timeout_ns / 1000000000ull) + " s (the GPU hangs?)");
+                         std::to_string(lim / 1000000000ull) + " s (the GPU hangs?)");
     }
   }
 }
@@ -214,17 +217,6 @@ inline ze_event_handle_t ev_get() {
   D().ev_free.pop_back();
   return e;
 }
-inline char* staging(size_t n) {
-  if (n > D().stage_n) {
-    if (D().stage) { sync(); zeMemFree(ctx, D().stage); }
-    D().stage_n = std::max(n, (size_t)1 << 22);
-    ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
-    void* p = nullptr;
-    ZE_CHECK(zeMemAllocHost(ctx, &hd, D().stage_n, 4096, &p));
-    D().stage = (char*)p;
-  }
-  return D().stage;
-}
 inline void* host_alloc(size_t n) {
   ze_host_mem_alloc_desc_t hd{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
   void* p = nullptr;
@@ -235,6 +227,18 @@ inline void* host_alloc(size_t n) {
   }
   ZE_CHECK(zeMemAllocHost(ctx, &hd, n, 4096, &p));
   return p;
+}
+inline char* staging(size_t n) {
+  if (n > D().stage_n) {
+    // (the new one first, through host_alloc: a split model's shard short of memory throws (oom_throws) and leaves
+    //  the old buffer in place)
+    const size_t sz = std::max(n, (size_t)1 << 22);
+    char* p = (char*)host_alloc(sz);
+    if (D().stage) { sync(); zeMemFree(ctx, D().stage); }
+    D().stage = p;
+    D().stage_n = sz;
+  }
+  return D().stage;
 }
 // Called when the GPU runs out of memory (the share is shared with every other program: a browser or the desktop
 // taking more makes a launch or allocation fail): frees some memory (the engine shrinks its expert cache) and returns

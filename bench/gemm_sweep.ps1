@@ -55,8 +55,16 @@ function Invoke-Run([string]$model, [hashtable]$set) {
       "X16CG" { $env:ARC_X16 = "1"; $env:ARC_X16_CG = "$($set[$k])" }
     }
   }
-  $o = & $runz @args2 2>&1 | Out-String
-  foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+  # (stderr lines of runz are output here, not errors that stop the sweep; the variables are removed even after
+  #  Ctrl+C, so later runs in this shell do not pick them up)
+  $eap = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = "Continue"
+    $o = & $runz @args2 2>&1 | Out-String
+  } finally {
+    $ErrorActionPreference = $eap
+    foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+  }
   $tps = [regex]::Matches($o, "pp\d+ run \d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s") | ForEach-Object { [double]$_.Groups[1].Value }
   $path = if ($o -match "XMX on for the prompt GEMMs") { "XMX" } elseif ($o -match "XMX results differ") { "DP4a (XMX differed!)" } else { "DP4a" }
   if ($o -match "f16 XMX on for the W8") { $path += " + f16 XMX (W8)" }
@@ -99,20 +107,25 @@ foreach ($model in $Models) {
   $base = Invoke-Run $model @{}
   Line "defaults" $base
   $best = @{}
+  $x16_ran = $false
   foreach ($p in $grid.Keys) {
     if ($p -eq "MOEGRF" -and -not $base.moe) { continue }  # (a dense model has no expert GEMMs)
+    # (the f16 GEMM's own settings only where it ran: a model without W8 weights never takes it)
+    if ($p -in @("X16TM", "X16GRF", "X16CG") -and -not $x16_ran) { continue }
     $bv = $null; $bt = 0
     foreach ($v in $grid[$p]) {
       if ($defaults.ContainsKey($p) -and "$($defaults[$p])" -eq "$v") { $r = $base }  # (the default: measured above)
       else { $r = Invoke-Run $model @{ $p = $v } }
       Line "$p=$v" $r
+      if ($p -eq "X16" -and $v -eq "on") { $x16_ran = $r.path -match "f16 XMX \(W8\)" }
       if ($r.tps -gt $bt) { $bt = $r.tps; $bv = $v }
     }
     $best[$p] = $bv
   }
   $set = @{}
   foreach ($p in $best.Keys) { if ($null -ne $best[$p] -and $p -ne "ACT") { $set[$p] = $best[$p] } }
-  if ($best["X16"] -ne "on") { $set.Remove("X16TM"); $set.Remove("X16GRF"); $set.Remove("X16CG") }  # (they turn the f16 GEMM on)
+  # (the f16 GEMM's settings turn it on: only when it won, and never together with DP4a only)
+  if ($best["X16"] -ne "on" -or $best["XMX"] -eq "off") { $set.Remove("X16"); $set.Remove("X16TM"); $set.Remove("X16GRF"); $set.Remove("X16CG") }
   $r = Invoke-Run $model $set
   $desc = ($set.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " "
   Line "best of each together" $r

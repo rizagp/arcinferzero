@@ -170,14 +170,20 @@ into groups of 8 layers.
 Several GPUs and GPU tuning:
 
 ```powershell
-.\bin\runz.exe model.gguf --bench-pp 512 --n 64 --gpus 2     # a dense Qwen model split over 2 GPUs (2, 3, 4, ...)
+.\bin\runz.exe model.gguf --bench-pp 512 --n 64 --gpus 2     # a Qwen model (dense or 35B-A3B) split over 2 GPUs (2, 3, 4, ...)
+.\bin\serverz.exe -m model.gguf --gpus 4 --slots 4           # the server on a split model
 .\bin\mgpu_probe.exe                                         # the GPUs, and what moving data between them costs
+.\bin\event_probe.exe                                        # whether GPUs can sync without the CPU in the middle
 .\bench\gemm_sweep.ps1 -Models model.gguf                     # the prompt GEMM's settings swept on this GPU
 .\bench\decode_try.ps1 -Models model.gguf                     # generation: plain, MTP, DFlash2, GEMV switches
 ```
 
-What to run on an Arc B-series card (B580 / B60): [docs/xe2-tuning.md](xe2-tuning.md).
+What to run on an Arc B-series card (B580 / B60 / B70): [docs/xe2-tuning.md](xe2-tuning.md).
 
-`--gpus N` splits the model's heads and FFN columns over N GPUs, and each reads 1/N of the weights per token. The
-server does not use it yet; see [docs/multi-gpu.md](multi-gpu.md). `ARC_TP_SIM=1` runs the split on one GPU
-(a correctness test).
+`--gpus N` (runz and serverz) splits the model over N GPUs, and each reads 1/N of the weights per token:
+- the heads and FFN columns are divided, and the 35B-A3B's experts too;
+- `--slots` gives batched decoding over the split.
+
+Not yet on a split model: MTP / DFlash2, images, and the prompt and session caches on disk. A model that cannot be
+split loads on one GPU. A GPU that hangs makes `/health` answer 503 until a restart. Details and failsafes:
+[docs/multi-gpu.md](multi-gpu.md). `ARC_TP_SIM=1` runs the split on one GPU (a correctness test).

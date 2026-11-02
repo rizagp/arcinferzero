@@ -171,7 +171,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     try {
       init(o);
     } catch (...) {
-      release_all();
+      try {
+        release_all();
+      } catch (...) {  // (a split model's GPU wait that gave up while freeing: the first error is the one to report)
+      }
       throw;
     }
   }
@@ -2229,6 +2232,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
             run("xmx_check", k, 2, gws, lws);
           });
         }
+    } catch (const zrt::GpuWaitError&) {
+      throw;  // (a split model's GPU that hangs: not a verdict on XMX, which is kept for the process)
     } catch (const std::exception& e) {
       fprintf(stderr, "arcinferzero: XMX kernels do not build here (%s): DP4a\n", e.what());
       return false;
@@ -3345,6 +3350,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     const int big_w = std::max({hp.conv_dim(), 2 * hp.n_ff, ldq});
     x_ = buf(M * hp.hce() * 4);
     aq_ = buf(M * maxK * (q2mm_ ? 2 : 1));
+    x16_reserve(M, maxK);  // (the f16 XMX GEMM's activations, when it is on: zero/xe2/engine_xe2.h)
     if (hp.hc) {
       hc_xn_ = buf(M * hp.hce() * 4);
       hc_gate_ = buf(M * hp.hce() * 4);
@@ -3804,7 +3810,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
                                std::to_string(K) + " is not a multiple of " + std::to_string(tm) + " x 16 x 256");
     // (ARC_GEMM_SPLIT: superblocks per split-K piece, default 17; 0: no split-K)
     static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
-    const int nsb = K / 256, splits = K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
+    // (the fused SwiGLU needs the whole sum in one piece: silu(gate) * (u1 + u2), not silu(gate) * u1 + u2; no model
+    //  fuses it over rows longer than 8192 yet)
+    const int nsb = K / 256, splits = a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
     int wgy = 1;
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
     size_t gws[2] = {(size_t)N * (Mp / tm / wgy), (size_t)wgy}, lws[2] = {16 * (size_t)cg, (size_t)wgy};

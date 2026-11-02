@@ -259,8 +259,22 @@ Other failsafes:
 
 Only the split model's own work takes the wait limit (`zrt::tp_guarded`: the shard threads, and the server's thread
 inside a mirrored call). GPU 0's other users (Whisper, Qwen3-ASR, images) wait as always, so a long wait of theirs
-never marks the split model faulty. A faulted split model that is left unfreed gives the GPUs their waits back
-(`TpEngine::disarm`), so the next model loaded does not inherit its limit.
+never marks the split model faulty.
+
+Two consequences:
+- The server's own GPU 0 work outside a mirrored call (reading logits, sampling) waits without a limit, as on one GPU.
+- Whisper runs on GPU 0's command list too, so a guarded wait there also waits for any Whisper work queued ahead of it.
+
+A faulted split model that is left unfreed (`TpEngine::disarm(true)`) does two things:
+- it gives the GPUs their limits back, so the next model loaded does not inherit them;
+- it sets every GPU's abort, so a thread given up on that is still polling its wait leaves it instead of polling
+  forever.
+
+The limit, abort and fault fields of a GPU are atomic, because they are written while such a thread may read them.
+
+During loading, the staging buffer for the weight upload also comes from the allocation that throws, so a shard
+short of host memory there falls back to one GPU as well. Freeing a half-built shard swallows a second error
+(a GPU wait that gives up while freeing) and keeps the first.
 
 `ARC_TP_HANG=r:k` (tests) makes shard r stop for good at its k-th sum; `ARC_TP_HANG=r:k:wait` makes it throw there as
 a GPU wait that gave up. Laptop, `ARC_TP_TIMEOUT=5`: runz ended with
