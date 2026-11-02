@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-02: 128 registers for the prompt GEMM on discrete GPUs
+
+- **Arc B-series (one card or several): the dense prompt GEMM now uses 128 registers per thread**, from the B60
+  owner's sweep (issue #4: Qwen3.8 27B 450 -> 617 tok/s). `ARC_GEMM_GRF=256` for the old build; the MoE expert
+  GEMMs keep 256 until measured (`ARC_MOE_GRF=128`).
+- The `zero/xe2` switches act on discrete GPUs only: iGPUs with XMX (Lunar Lake, Arrow Lake) keep the iGPU kernels,
+  where 128 registers made the 35B's prompt about 3x slower on the 125H. iGPUs: the same kernel builds as before,
+  logits bit-identical.
+- `bench\gemm_sweep.ps1`: GRF 128 is the default it sweeps from; new `MOEGRF` row for MoE models.
+
 ## 2026-11-02: launcher "Failed" pop-ups (issue #5)
 
 - **Every start and stop showed "Failed:" over and over in Windows PowerShell 5.1**: there `Start-Process

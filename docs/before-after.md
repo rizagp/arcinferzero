@@ -80,6 +80,14 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-02, dense prompt GEMM with 128 registers per thread on discrete GPUs** (measured by the owner of 4x Arc
+  Pro B60, issue #4; one B60, Qwen3.8 27B IQ3_S, 4,096-token prompt, best of 3): 449.7 -> 617.5 tok/s (+37 %); the XMX
+  check passed. DP4a only: 406.5. The MoE expert GEMMs keep 256 (`ARC_MOE_GRF=128` to measure). iGPUs, with XMX or
+  not, keep 256: on the 125H (35B, forced on with `ARC_XMX_TRY`) 128 gave 519 -> 194 tok/s, and 148 with the MoE
+  GEMMs at 128 too. Laptop default: the same kernel builds as before, logits bit-identical. Same B60, Qwen3.6
+  35B-A3B (`--gpus N`, before this change): prompt 3,232 / 2,076 / 2,122 / 2,040 tok/s on 1 / 2 / 3 / 4 GPUs, 65-80
+  % of the split runs waiting on the sums through host memory; generation 77.5 / 92.2 / 95.3 / 101.7 tok/s.
+
 - **2026-11-01, multi-GPU MoE (Qwen3.6 35B-A3B) and experts in RAM.** One GPU: logits bit-identical to the build
   before (1,687-token prompt + 32 tokens; full cache, and 1.2 GiB at 50 % hits); speed best of two 608 vs 612 tok/s
   prompt, 21.6 vs 21.8 tok/s generation (noise). Split (ARC_TP_SIM, one iGPU: speeds mean nothing): KL to one GPU

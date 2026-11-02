@@ -234,7 +234,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     q2_init();
     if (!opt.dry) build_kernels();
     if (!opt.dry && (cl_.xmx || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
-      xe2_ = true;  // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them)
+      // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: discrete cards only, B580 / B60 and
+      // the multi-GPU shards on them; iGPUs with XMX too, Lunar / Arrow Lake, keep the iGPU kernels)
+      xe2_ = !zrt::integrated() || getenv("ARC_XMX_TRY") != nullptr;
       xmx_ = xmx_check();
       if (xmx_) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)\n");
     }
@@ -2079,7 +2081,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
     return t == 2 ? " -DTP=8" : t == 3 ? " -DTP=8 -DDBG_NOBCAST" : " -DXMX -DTP=8";
   }
-  // (xe2_gemm_grf / cg: zero/xe2/engine_xe2.h, the defaults on GPUs without XMX)
+  // (xe2_gemm_grf / moe_grf / cg: zero/xe2/engine_xe2.h, the defaults on GPUs without XMX)
   cl_kernel gemm_kernel(int qtype, bool act32, int xmx = -1, int cg = 1) {
     return kernel("gemm", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
                               (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) +
@@ -2089,7 +2091,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   }
   // the mixture-of-experts prompt GEMM over slot tiles (gemm.cl MOE_TILES; W8 layouts 100..103, per-32 scales)
   cl_kernel moe_gemm_kernel(int qtype, int xmx = -1) {
-    return kernel("gemm", xe2_gemm_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
+    return kernel("gemm", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
                               ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() : ""),
                   "gemm");
   }
