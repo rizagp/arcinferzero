@@ -79,6 +79,28 @@ without peer access between the cards on Windows every sum goes through host mem
 generation gains 19-31 % (77.5 -> 92.2 / 95.3 / 101.7 tok/s). The 35B fits one 24 GB card, so for now: **1 GPU for
 long prompts, 2 GPUs for generation** (most of the gain; 3-4 add little).
 
+## 5. Kernel launches per token: would replaying a recorded step help? (`bin\replay_probe.exe`)
+
+vLLM's CUDA graphs (a step recorded once, replayed) gave +72 % generation on a B70. Ours launches every kernel on its
+own: 933 per token for the 27B, 692 for the 35B-A3B (`ARC_LAUNCH_STATS=1 runz ... --n 32` prints them and the host
+time). On the laptop the host takes 3.6 / 2.6 ms per token, hidden behind the GPU's work, but the GPU idles ~7 us
+between kernels (step time against the kernels' own time: 35B 5.2 ms of 51.8, 27B 6.8 of 208.7).
+
+`replay_probe` times 700 dependent kernels appended as the engine does against a recorded list replayed. Laptop:
+4,096-float kernels 1.36 -> 1.07 ms, 65,536-float ones 1.95 -> 2.01: a replay saves ~0.4 us a kernel at most, under
+1 % of a token. The idle time between kernels is the GPU's own (one kernel finishes before the next starts), so
+fewer kernels (fused) is the way there, not a replay. On a B-series card:
+
+```powershell
+.\bin\replay_probe.exe --kernels 700 --floats 4096
+.\bin\replay_probe.exe --kernels 700 --floats 65536
+$env:ARC_LAUNCH_STATS=1; .\bin\runz.exe <35B-A3B gguf> --bench-pp 256 --n 32; Remove-Item Env:ARC_LAUNCH_STATS
+```
+
+A replay saving several us a kernel there would make it worth building (35B: up to a third of a 13 ms token).
+Whatever is built for the B-series goes in `zero/xe2/` and kernels of its own, chosen on discrete GPUs only: the
+iGPU kernels stay as they are.
+
 ## Not done yet (needs an Xe2 card to develop on)
 
 - An XMX kernel built around the 2D block loads of Xe2 (`cl_intel_subgroup_2d_block_io`).

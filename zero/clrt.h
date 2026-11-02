@@ -435,7 +435,21 @@ inline cl_int clReleaseMemObject(cl_mem m) {
   return CL_SUCCESS;
 }
 // a buffer argument (a registered cl_mem) becomes its USM pointer; anything else is passed as given
+// ARC_LAUNCH_STATS=1 (diagnostics, runz prints them per generated token): kernel launches, and the host time spent
+// setting their arguments and appending them (the CPU's share of a step, against the GPU's)
+namespace zrt {
+inline const bool launch_stats = getenv("ARC_LAUNCH_STATS") != nullptr;
+inline std::atomic<uint64_t> launch_n{0}, launch_ns{0}, setarg_ns{0};
+struct LaunchTimer {
+  std::atomic<uint64_t>& acc;
+  std::chrono::steady_clock::time_point t0 = launch_stats ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  ~LaunchTimer() {
+    if (launch_stats) acc += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+  }
+};
+}  // namespace zrt
 inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
+  zrt::LaunchTimer lt{zrt::setarg_ns};
   if (sz == sizeof(void*) && v) {
     ZMem* m = *(ZMem* const*)v;
     if (m && zrt::D().mems.count(m)) {
@@ -447,6 +461,8 @@ inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
 }
 inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim, const size_t*, const size_t* g,
                                      const size_t* l, cl_uint, const cl_event*, cl_event* ev) {
+  zrt::LaunchTimer lt{zrt::launch_ns};
+  if (zrt::launch_stats) ++zrt::launch_n;
   if (ev) *ev = nullptr;
   uint32_t ls[3] = {1, 1, 1}, gs[3] = {1, 1, 1};
   for (cl_uint d = 0; d < dim; ++d) gs[d] = (uint32_t)g[d];
