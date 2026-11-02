@@ -18,17 +18,21 @@
 #include <thread>
 
 // a shard left its barrier because another one failed (its own error is the one to report)
+// (a barrier's own timeout is one too: the shards are out of step after either)
 struct TpAbort : std::runtime_error {
   TpAbort() : std::runtime_error("another GPU's shard failed") {}
+  explicit TpAbort(const std::string& m) : std::runtime_error(m) {}
 };
 
 struct TpComm {
   int n = 1;
   size_t slot_floats = 0;  // rows x n_embd of one part
   float* host = nullptr;   // pinned host memory: [2 halves][n shards][slot_floats]
+  int* flags = nullptr;    // pinned host memory: per shard, its f16 part went out of range (tp_reduce_rs)
   std::vector<int> half;   // per shard: the half its next part goes to
   std::atomic<int> arrived{0}, gen{0};
   std::atomic<bool> failed{false};  // (a shard threw: the others leave their barrier instead of waiting forever)
+  std::atomic<bool> fault{false};   // (a wait gave up on a GPU, barrier or zrt::sync: never in step again, leaked at shutdown)
   std::atomic<int> first_failed{-1};  // (the shard that threw first: its error is the one to report)
   bool served = false;              // (serverz drives shard 0: TpEngine::serve)
   std::atomic<bool> cancel_now{false};  // (served: shard 0's answer to the request's cancel, for every shard)
@@ -64,8 +68,9 @@ struct TpComm {
         if (reached[k].load(std::memory_order_relaxed) != g + 1) late += " " + std::to_string(k);
       int none = -1;
       first_failed.compare_exchange_strong(none, r);
+      fault = true;
       failed = true;
-      throw std::runtime_error("multi-GPU: GPU" + late + " did not reach the sum within " + std::to_string((int)timeout_s) +
+      throw TpAbort("multi-GPU: GPU" + late + " did not reach the sum within " + std::to_string((int)timeout_s) +
                                " s (a GPU hangs?); restart (or load the model again)");
     }
   }
@@ -106,18 +111,23 @@ inline bool tp_rs_rows(int rows, int n) {
 inline void Engine::tp_reduce(int rows) {
   TpComm& c = *tp_;
   const int r = opt.tp_rank, E = hp.n_embd;
-  {  // (tests of the failsafe: ARC_TP_HANG=r:k, shard r stops for good at its k-th sum, as a GPU that hangs; once
-     //  per process, so the model loaded again afterwards runs)
-    static const std::pair<int, long> hang = [] {
+  {  // (tests of the failsafe: ARC_TP_HANG=r:k, shard r stops for good at its k-th sum, as a GPU that hangs;
+     //  ARC_TP_HANG=r:k:wait, it throws there as a GPU wait that gave up (zrt::sync's timeout); once per process)
+    struct Hang { int r = -1; long k = 0; bool wait = false; };
+    static const Hang hang = [] {
+      Hang h;
       const char* e = getenv("ARC_TP_HANG");
-      int hr = -1;
-      long hk = 0;
-      if (e && sscanf(e, "%d:%ld", &hr, &hk) == 2) return std::make_pair(hr, hk);
-      return std::make_pair(-1, 0L);
+      char mode[8] = {};
+      if (e && sscanf(e, "%d:%ld:%7s", &h.r, &h.k, mode) >= 2) h.wait = std::string(mode) == "wait";
+      return h;
     }();
     static std::atomic<bool> hung{false};
-    if (hang.first == r && c.reduces[r] + 1 == hang.second && !hung.exchange(true)) {
-      fprintf(stderr, "arcinferzero: ARC_TP_HANG: GPU %d stops at sum %ld\n", r, hang.second);
+    if (hang.r == r && c.reduces[r] + 1 == hang.k && !hung.exchange(true)) {
+      fprintf(stderr, "arcinferzero: ARC_TP_HANG: GPU %d %s at sum %ld\n", r, hang.wait ? "gives up a wait" : "stops", hang.k);
+      if (hang.wait) {
+        c.fault = true;
+        throw zrt::GpuWaitError("GPU " + std::to_string(r) + ": its work did not finish (ARC_TP_HANG)");
+      }
       for (;;) std::this_thread::sleep_for(std::chrono::seconds(60));
     }
   }
@@ -167,12 +177,37 @@ inline void Engine::tp_reduce_rs(int rows) {
     c.barrier(opt.tp_rank);
     c.wait_ms[r] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   };
-  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn);
+  // (failsafe: a part beyond f16's range, flagged by tp_half on any GPU, makes every GPU sum this one in f32)
+  static const float lim = getenv("ARC_TP_F16_LIMIT") ? (float)atof(getenv("ARC_TP_F16_LIMIT")) : 65504.0f;  // (tests)
+  if (!tp_flag_) {
+    tp_flag_ = zrt::wrap(c.flags, (size_t)N * sizeof(int));
+    mems_.push_back(tp_flag_);
+  }
+  c.flags[r] = 0;
+  const cl_ulong fo = (cl_ulong)r * sizeof(int);
+  float lim_n = lim / N;
+  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn, from(tp_flag_, fo), lim_n);
   size_t g1 = (n + 255) / 256 * 256, l1 = 256;
   run("tp_sum", k_tp_half_, 1, &g1, &l1);
   if (i0 > 0) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, put, dev, i0 * 2, nullptr, 0, nullptr));
   if (n > i1) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, put + i1 * 2, dev + i1 * 2, (n - i1) * 2, nullptr, 0, nullptr));
   barrier();
+  bool over = false;  // (every GPU reads all flags after the barrier: they decide alike; a flag is cleared for the
+  for (int k = 0; k < N; ++k) over = over || ((volatile int*)c.flags)[k] != 0;  // next sum only after the next barrier)
+  if (over) {  // the one-step f32 sum in the same buffer half (no GPU reads its f16 parts any more)
+    static std::atomic<long> warned{0};
+    if (r == 0 && warned++ < 3) fprintf(stderr, "arcinferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
+    const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
+    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, c.host + off + (size_t)r * stride, tp_part_->ptr, n * 4, nullptr, 0, nullptr));
+    barrier();
+    ++c.reduces[r];
+    int np = N;
+    cl_ulong st = stride;
+    set_args(k_tp_add_, 0, x_, tp_host_, off, nn, np, st);
+    run("tp_add", k_tp_add_, 1, &g1, &l1);
+    c.half[r] = h ^ 1;
+    return;
+  }
   const cl_ulong put_off = (cl_ulong)h * N * c.slot_floats * 2, str = stride, res_off = put_off + (cl_ulong)N * stride;
   set_args(k_tp_rs_sum_, 0, x_, tp_part_, tp_host_, put_off, str, N, r, a, b, tp_h_);
   size_t g2 = (i1 - i0 + 255) / 256 * 256;
@@ -249,6 +284,9 @@ class TpEngine {
   }
   void set_broken() { broken_ = true; }
   bool broken() const { return broken_; }  // (serverz loads the model again)
+  // a wait gave up on a GPU, or a thread was given up on: such a TpEngine is never deleted (TpHold), as a thread
+  // still running on it would touch freed memory
+  bool faulted() const { return comm_.fault; }
   // Conversation slots (EngineOptions::slots): every shard binds the same slot; forward() feeds the bound one.
   int slot_count() const { return shards_[0]->slot_count(); }
   int batch_rows() const { return shards_[0]->batch_rows(); }
@@ -292,6 +330,7 @@ class TpEngine {
     for (int r = 0; r < n; ++r) comm_.reached[r] = 0;
     for (int r = 0; r < n; ++r) {  // (GPU 0's waits keep no abort: the server's other users, Whisper, share it)
       zrt::devs[r]->sync_timeout_ns = (uint64_t)(comm_.timeout_s * 1e9);
+      zrt::devs[r]->fault = &comm_.fault;
       if (r > 0) zrt::devs[r]->abort = &comm_.failed;
     }
     stuck_.assign(n, 0);
@@ -317,8 +356,18 @@ class TpEngine {
     else
       for (int r : rest) run_on({r}, make);
     Engine& e0 = *shards_[0];
+    // (failsafe: the shards run the same passes only with the same weight layout and chunk; GPUs with different free
+    //  memory could choose otherwise, and their barriers would then not meet)
+    for (int r = 1; r < n; ++r)
+      if (shards_[r]->w8_resident != e0.w8_resident || shards_[r]->max_chunk != e0.max_chunk || shards_[r]->ctx != e0.ctx)
+        throw std::runtime_error("--gpus: GPU " + std::to_string(r) + " chose another weight layout than GPU 0 (W8 " +
+                                 (shards_[r]->w8_resident ? "resident" : "just-in-time") + ", chunk " +
+                                 std::to_string(shards_[r]->max_chunk) + ", ctx " + std::to_string(shards_[r]->ctx) +
+                                 "): give --budget, --chunk and --ctx");
     comm_.slot_floats = (size_t)e0.max_chunk * e0.hp.n_embd;
     comm_.host = (float*)zrt::host_alloc((size_t)2 * n * comm_.slot_floats * 4);
+    comm_.flags = (int*)zrt::host_alloc((size_t)n * sizeof(int));
+    for (int r = 0; r < n; ++r) comm_.flags[r] = 0;
     size_t vocab = 0;
     for (int r = 0; r < n; ++r) vocab += (size_t)shards_[r]->n_logits();
     logits_.assign(vocab, 0.0f);
@@ -326,7 +375,16 @@ class TpEngine {
   // the shards freed (each on its own GPU's thread), the threads ended, the shared memory freed; from the
   // destructor or a constructor that threw part way
   void shutdown() {
-    if (!w_.empty()) {  // (after a failure too: the GPUs that answer get their memory back, for a load again)
+    // (first the GPUs' waits back to no limit and no abort: a shard's destructor waits for its GPU, and a wait that
+    //  threw there would end the process. After a wait gave up on a GPU (fault) its work may still be queued: then
+    //  nothing is freed, the server says to restart)
+    for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
+      zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
+      zrt::devs[r]->abort = nullptr;
+      zrt::devs[r]->fault = nullptr;
+    }
+    const bool fault = comm_.fault;
+    if (!w_.empty() && !fault) {  // (after a failure too: the GPUs that answer get their memory back, for a load again)
       std::vector<int> made;
       for (int r = 0; r < (int)shards_.size(); ++r)
         if (shards_[r] && !(r < (int)stuck_.size() && stuck_[r])) made.push_back(r);
@@ -349,16 +407,14 @@ class TpEngine {
         w_[r].th.join();
       }
     }
-    for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
-      zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
-      zrt::devs[r]->abort = nullptr;
-    }
-    if (any_stuck) {  // (the stuck GPUs' shards and the shared memory they may still touch: left)
+    if (any_stuck || fault) {  // (the shards and the shared memory a stuck thread or a busy GPU may still touch: left)
       for (auto& sh : shards_) sh.release();
       return;
     }
     shards_.clear();  // (after a failure: whatever is left, freed here)
     if (comm_.host) zeMemFree(zrt::ctx, comm_.host);
+    if (comm_.flags) zeMemFree(zrt::ctx, comm_.flags);
+    comm_.flags = nullptr;
     comm_.host = nullptr;
   }
   struct Worker {
@@ -398,6 +454,7 @@ class TpEngine {
           fprintf(stderr, "arcinferzero: GPU %d does not answer: given up on\n", r);
         }
       pending_ = 0;
+      comm_.fault = true;
       broken_ = true;
       return;
     }
@@ -477,6 +534,11 @@ inline void TpMirror::start(Engine* e, std::function<void(Engine&)> f, Gather g,
   rows_ = rows;
   uncaught_ = std::uncaught_exceptions();
   TpEngine& t = *e->tp_front_;
+  if (t.broken()) {
+    --e->tp_depth_;
+    e_ = nullptr;
+    throw std::runtime_error("a GPU's shard failed earlier: restart (or load the model again)");
+  }
   t.comm().cancel_now = false;
   for (int r = 1; r < t.gpus(); ++r) {  // (the fields the server sets on its engine before a call)
     Engine& s = t.shard(r);
@@ -517,16 +579,30 @@ inline void TpMirror::finish() {
       std::rethrow_exception(x);
     } catch (const TpAbort&) {
       abort = true;
+    } catch (const zrt::GpuWaitError&) {
+      abort = true;
     } catch (...) {
     }
   }
+  bool same_sums = true;
+  for (int r = 1; r < t.gpus(); ++r) same_sums = same_sums && c.reduces[r] == c.reduces[0];
   if (threw || first) {
-    if (threw && all_threw && !abort) {  // (in step: every shard stopped on its own at the same point)
+    const bool in_step = threw && all_threw && !abort && !c.fault && same_sums && c.arrived.load() == 0;
+    if (in_step) {  // (every shard stopped on its own at the same point: a cancel, a context overflow)
       c.failed = false;
       c.first_failed = -1;
       return;
     }
     t.set_broken();
+    for (size_t k = 0; k < errs.size(); ++k) {  // (the other GPUs' own errors in the log: shard 0's may only say
+      if (!errs[k]) continue;                  //  that another failed)
+      try {
+        std::rethrow_exception(errs[k]);
+      } catch (const std::exception& x) {
+        fprintf(stderr, "multi-GPU: GPU %zu: %s\n", k + 1, x.what());
+      } catch (...) {
+      }
+    }
     if (threw) return;  // (shard 0's own error goes on)
     std::rethrow_exception(first);
   }

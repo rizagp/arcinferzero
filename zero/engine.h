@@ -188,9 +188,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
-    for (cl_kernel k : {k_tp_add_, k_tp_pack_, k_tp_moe_mask_, k_tp_moe_scatter_, k_tp_moe_tiles1_, k_tp_moe_combine_})
+    for (cl_kernel k : {k_tp_add_, k_tp_pack_, k_tp_moe_mask_, k_tp_moe_scatter_, k_tp_moe_tiles1_, k_tp_moe_combine_,
+                        k_tp_half_, k_tp_rs_sum_, k_tp_rs_add_})
       if (k) clReleaseKernel(k);
     k_tp_add_ = k_tp_pack_ = k_tp_moe_mask_ = k_tp_moe_scatter_ = k_tp_moe_tiles1_ = k_tp_moe_combine_ = nullptr;
+    k_tp_half_ = k_tp_rs_sum_ = k_tp_rs_add_ = nullptr;
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);

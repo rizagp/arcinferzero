@@ -56,6 +56,7 @@
   cl_kernel k_tp_add_ = nullptr, k_tp_pack_ = nullptr;
   cl_kernel k_tp_half_ = nullptr, k_tp_rs_sum_ = nullptr, k_tp_rs_add_ = nullptr;  // (the f16 reduce-scatter)
   cl_mem tp_h_ = nullptr;  // (f16 [max_chunk][E]: this GPU's part to send, then its rows' sums)
+  cl_mem tp_flag_ = nullptr;  // (the shared out-of-f16-range flags as this GPU's kernel argument)
   cl_mem tp_ab_ = nullptr;  // (a split model's padded alpha / beta rows, see gdn_ab)
   cl_mem tp_host_ = nullptr;  // (the shared host memory as this GPU's kernel argument)
   cl_mem tp_part_ = nullptr;                                // (the partial output of a projection, [max_chunk][E])

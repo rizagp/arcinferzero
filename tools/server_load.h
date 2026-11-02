@@ -41,8 +41,18 @@ struct EngineHold {
     if (own) delete e;
   }
 };
+// a split model: deleted, unless a GPU fault left a thread running on it (TpEngine::faulted: then left for good)
+struct TpHold {
+  void operator()(TpEngine* t) const {
+    if (t && t->faulted()) {
+      fprintf(stderr, "multi-GPU: the split model's memory is left after a GPU fault: restart the server to free it\n");
+      return;
+    }
+    delete t;
+  }
+};
 struct Loaded {  // destroyed in reverse order: the server before the tokenizer and engine it refers to
-  std::unique_ptr<TpEngine> tp;  // (--gpus: the split model, freed after everything that uses its shard 0)
+  std::unique_ptr<TpEngine, TpHold> tp;  // (--gpus: the split model, freed after everything that uses its shard 0)
   std::unique_ptr<Engine, EngineHold> eng;
   std::unique_ptr<Tokenizer> tok;
   std::unique_ptr<Server> srv;
@@ -53,6 +63,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   L->alias = alias;
   L->path = model;
   fprintf(stderr, "arcinferzero-server: loading %s\n", model.c_str());
+  const ServeOpts so_given = so;  // (failsafe: a split that cannot load loads on one GPU with these)
   if (so.gpus > 1) {  // (what a split model does not do yet: see ServeOpts::gpus)
     so.eo.mtp = false;
     so.eo.dflash.clear();
@@ -102,7 +113,16 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   }
   eo.stream_reserve = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;  // (streamed experts' cache)
   if (so.gpus > 1) {
-    L->tp = std::make_unique<TpEngine>(model, eo, so.gpus);
+    // (failsafe: a model that cannot be split (Gemma 4 for transcripts, Flash Next) or a split that fails to load
+    //  (memory, the GPUs' layouts) loads on one GPU instead, with every feature, rather than failing the server)
+    try {
+      L->tp.reset(new TpEngine(model, eo, so.gpus));
+    } catch (const std::exception& e) {
+      fprintf(stderr, "multi-GPU: %s; loading %s on one GPU instead\n", e.what(), alias.c_str());
+      ServeOpts one = so_given;
+      one.gpus = 1;
+      return load_model(model, alias, one);
+    }
     L->tp->serve();
     L->eng = std::unique_ptr<Engine, EngineHold>(&L->tp->shard(0), EngineHold{false});
   } else {
@@ -114,11 +134,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
           eng.hp.n_layer, eng.ctx, eng.slot_count() > 1 ? (" in each of " + std::to_string(eng.slot_count()) + " slots").c_str() : "",
           eng.max_chunk, eng.gpu_bytes / 1073741824.0, so.gpus > 1 ? (" on each of " + std::to_string(so.gpus) + " GPUs").c_str() : "",
           eng.w8_resident ? "W8 resident" : "W8 just-in-time");
-  if (so.gpus > 1) {  // (the shards reduce in the same order only with the same forward path)
-    for (int r = 1; r < so.gpus; ++r)
-      if (L->tp->shard(r).w8_resident != eng.w8_resident || L->tp->shard(r).max_chunk != eng.max_chunk)
-        throw std::runtime_error("--gpus: the GPUs chose different weight layouts (resident W8 / chunk); give --budget or --chunk");
-  } else {  // compile kernels before serving (all of the generation's after an update)
+  if (so.gpus == 1) {  // compile kernels before serving (all of the generation's after an update; --gpus: not yet)
     const auto tw = std::chrono::steady_clock::now();
     loadp::busy("warming up the kernels (first start after an update: up to a minute)");
     if (eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt))

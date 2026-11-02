@@ -104,6 +104,11 @@ struct Dev {
   //  another GPU failed, instead of waiting forever for a GPU that hangs; one GPU: no limit, as always)
   uint64_t sync_timeout_ns = UINT64_MAX;
   const std::atomic<bool>* abort = nullptr;
+  std::atomic<bool>* fault = nullptr;  // (set when a wait gave up on its GPU: the split model is not trusted again)
+};
+// a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
+struct GpuWaitError : std::runtime_error {
+  using std::runtime_error::runtime_error;
 };
 inline ze_context_handle_t ctx = nullptr;
 inline ze_driver_handle_t driver = nullptr;
@@ -123,10 +128,12 @@ inline void sync() {
     if (r == ZE_RESULT_SUCCESS) return;
     if (r != ZE_RESULT_NOT_READY) ZE_CHECK(r);
     if (d.abort && d.abort->load(std::memory_order_relaxed))
-      throw std::runtime_error("GPU " + std::to_string(d.index) + ": wait left, another GPU failed");
-    if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > d.sync_timeout_ns)
-      throw std::runtime_error("GPU " + std::to_string(d.index) + ": its work did not finish within " +
-                               std::to_string(d.sync_timeout_ns / 1000000000ull) + " s (the GPU hangs?)");
+      throw GpuWaitError("GPU " + std::to_string(d.index) + ": wait left, another GPU failed");
+    if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > d.sync_timeout_ns) {
+      if (d.fault) d.fault->store(true);
+      throw GpuWaitError("GPU " + std::to_string(d.index) + ": its work did not finish within " +
+                         std::to_string(d.sync_timeout_ns / 1000000000ull) + " s (the GPU hangs?)");
+    }
   }
 }
 // A second immediate command list for copies that run while `cl` executes kernels (the expert cache's prompt

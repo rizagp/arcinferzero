@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-02 (evening): multi-GPU self audit and failsafes
+
+- **f16 sums out of range**: a prompt chunk's partial sum beyond f16 (65504 / GPUs) on any GPU makes every GPU sum
+  that projection in f32 instead of turning it into inf / NaN (`ARC_TP_F16_LIMIT=0`, tests: bit-identical to f32).
+- **A GPU wait that gave up was taken as "in step"** (from a review): with 2 GPUs a hung GPU 1 could leave the
+  barrier count off by one and later sums silently wrong. Now any barrier or wait give-up breaks the split model
+  for good (`/health` 503); a clean failure needs every GPU to have stopped alike, the same sums and no barrier in
+  progress.
+- **Unloading after a GPU fault** could end the process (a wait throwing in a destructor) or free memory a GPU or
+  thread still used: the waits go back to no limit first, and after a fault nothing is freed until a restart.
+- Shards with another weight layout / chunk / context than GPU 0 fail at load (runz too); `serverz --gpus` loads a
+  model that cannot be split, or a split that fails, on one GPU; the three new sum kernels are released; a broken
+  model's mirror no longer writes to the other shards first. One GPU: logits bit-identical.
+
 ## 2026-11-02: `serverz --gpus`, with a failsafe for a GPU that hangs
 
 - **`serverz --gpus N`**: the server runs a split model (Qwen3.5 / 3.6 / 3.8 dense, the 35B-A3B) with `--slots` and

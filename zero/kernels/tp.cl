@@ -14,10 +14,14 @@ __kernel void tp_add(__global float* x, __global const float* p, ulong off, int 
 // its part, sums its own rows over every part, sends that sum, and adds the others' sums. Half the bytes of f32 and
 // each part's row read once in all, not once per GPU. (half pointers: vload_half / vstore_half need no cl_khr_fp16)
 
-// f32 -> f16, rounded to nearest even
-__kernel void tp_half(__global const float* src, __global half* dst, int n) {
+// f32 -> f16, rounded to nearest even. A value beyond lim (65504 / GPUs: the sum of every GPU's part must fit f16 too)
+// or not a number sets *flag: then every GPU sums this projection in f32 instead (tp_reduce_rs)
+__kernel void tp_half(__global const float* src, __global half* dst, int n, __global int* flag, float lim) {
   const int i = get_global_id(0);
-  if (i < n) vstore_half(src[i], i, dst);
+  if (i >= n) return;
+  const float v = src[i];
+  if (!(fabs(v) <= lim)) *flag = 1;
+  vstore_half(v, i, dst);
 }
 
 // this GPU's values [i0, i1): the parts summed in rank order (its own from its memory in f32, the others' in f16 from

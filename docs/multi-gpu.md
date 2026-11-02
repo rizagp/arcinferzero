@@ -233,7 +233,25 @@ A GPU that stops answering would otherwise leave the others at a barrier for goo
   requests fail at once. The way back is a restart: a GPU that hung keeps its memory and usually its fault until the
   driver resets it, so the server does not load the model again by itself.
 
-`ARC_TP_HANG=r:k` (tests) makes shard r stop for good at its k-th sum. Laptop, `ARC_TP_TIMEOUT=5`: runz ended with
+After such a fault (a barrier or GPU wait that gave up) the split model is never taken as "in step" again: a call
+counts as cleanly failed only when every GPU stopped on its own at the same point (a cancel, a context overflow), none
+left a barrier or gave up a wait, all made the same number of sums and none is inside a barrier. Unloading it frees
+nothing (a GPU may still run queued work; a thread given up on may still touch it): the memory waits for a restart.
+
+Other failsafes:
+- **f16 range:** a prompt chunk's partial sum beyond 65504 / N (the sum of N parts must fit f16 too), or not a
+  number, is flagged by the conversion kernel on any GPU; then every GPU sums that projection in f32 (logged up to
+  three times as "summed in f32 (failsafe)"). `ARC_TP_F16_LIMIT=0` (tests) sends every non-zero part there: the
+  logits then equal `ARC_TP_SUM=f32` bit for bit.
+- **The same layout on every GPU:** shards whose GPUs chose another weight layout, chunk or context than GPU 0 would
+  run different passes and miss each other's barriers; the load fails with the values to give instead.
+- **`serverz`:** a model that cannot be split (Gemma 4, e.g. for transcripts; Flash Next) or a split that fails to
+  load is loaded on one GPU instead, with a line in the log.
+
+While a split model is loaded, GPU 0's other users (Whisper, Qwen3-ASR, images) share its wait limit too.
+
+`ARC_TP_HANG=r:k` (tests) makes shard r stop for good at its k-th sum; `ARC_TP_HANG=r:k:wait` makes it throw there as
+a GPU wait that gave up. Laptop, `ARC_TP_TIMEOUT=5`: runz ended with
 "GPU 1 did not reach the sum within 5 s" after ~15 s; the server answered that request with HTTP 500 after 17 s,
 `/health` 503, the next requests at once with the error.
 
