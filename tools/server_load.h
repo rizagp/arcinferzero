@@ -30,9 +30,20 @@ struct ServeOpts {
   // --asr-slots: Qwen3-ASR parts decoded together (1-4; each slot past the first ~0.55 GiB of GPU memory, faster only
   // for clips of more than 4 minutes: the 14-minute file 129 -> 80 s with 4; 1 by default since 2026-10-30)
   int asr_slots = 1;
+  // --gpus N: the model split over N GPUs (zero/mgpu): the server drives shard 0, its calls mirrored on the others.
+  // Qwen3.5 / 3.6 / 3.8 text only for now: no MTP / DFlash2, images, saved prompts or sessions, warm-up
+  int gpus = 1;
+};
+// the engine a Loaded refers to: its own, or shard 0 of its TpEngine (which owns and frees it)
+struct EngineHold {
+  bool own = true;
+  void operator()(Engine* e) const {
+    if (own) delete e;
+  }
 };
 struct Loaded {  // destroyed in reverse order: the server before the tokenizer and engine it refers to
-  std::unique_ptr<Engine> eng;
+  std::unique_ptr<TpEngine> tp;  // (--gpus: the split model, freed after everything that uses its shard 0)
+  std::unique_ptr<Engine, EngineHold> eng;
   std::unique_ptr<Tokenizer> tok;
   std::unique_ptr<Server> srv;
   std::string alias, path;
@@ -42,6 +53,14 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   L->alias = alias;
   L->path = model;
   fprintf(stderr, "arcinferzero-server: loading %s\n", model.c_str());
+  if (so.gpus > 1) {  // (what a split model does not do yet: see ServeOpts::gpus)
+    so.eo.mtp = false;
+    so.eo.dflash.clear();
+    so.dflash_auto = false;
+    so.mmproj = "-";
+    so.prefix_cache = false;
+    so.sess_gb = 0;
+  }
   EngineOptions eo = so.eo;
   bool dfl_auto = false;
   if (eo.mtp && eo.dflash.empty() && so.dflash_auto) {  // (before --ctx auto: the drafter takes GPU memory)
@@ -82,13 +101,24 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     if (!so.budget_given) eo.w8_budget_gb = a.resident ? 1e9 : eo.w8_budget_gb;
   }
   eo.stream_reserve = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;  // (streamed experts' cache)
-  L->eng = std::make_unique<Engine>(model, eo);
+  if (so.gpus > 1) {
+    L->tp = std::make_unique<TpEngine>(model, eo, so.gpus);
+    L->tp->serve();
+    L->eng = std::unique_ptr<Engine, EngineHold>(&L->tp->shard(0), EngineHold{false});
+  } else {
+    L->eng = std::unique_ptr<Engine, EngineHold>(new Engine(model, eo));
+  }
   Engine& eng = *L->eng;
   L->tok = std::make_unique<Tokenizer>(eng.gguf());
-  fprintf(stderr, "loaded in %.1f s | %d layers | ctx %d%s | chunk %d | GPU %.2f GiB | weights %s\n", eng.load_ms / 1000,
+  fprintf(stderr, "loaded in %.1f s | %d layers | ctx %d%s | chunk %d | GPU %.2f GiB%s | weights %s\n", eng.load_ms / 1000,
           eng.hp.n_layer, eng.ctx, eng.slot_count() > 1 ? (" in each of " + std::to_string(eng.slot_count()) + " slots").c_str() : "",
-          eng.max_chunk, eng.gpu_bytes / 1073741824.0, eng.w8_resident ? "W8 resident" : "W8 just-in-time");
-  {  // compile kernels before serving (all of the generation's after an update)
+          eng.max_chunk, eng.gpu_bytes / 1073741824.0, so.gpus > 1 ? (" on each of " + std::to_string(so.gpus) + " GPUs").c_str() : "",
+          eng.w8_resident ? "W8 resident" : "W8 just-in-time");
+  if (so.gpus > 1) {  // (the shards reduce in the same order only with the same forward path)
+    for (int r = 1; r < so.gpus; ++r)
+      if (L->tp->shard(r).w8_resident != eng.w8_resident || L->tp->shard(r).max_chunk != eng.max_chunk)
+        throw std::runtime_error("--gpus: the GPUs chose different weight layouts (resident W8 / chunk); give --budget or --chunk");
+  } else {  // compile kernels before serving (all of the generation's after an update)
     const auto tw = std::chrono::steady_clock::now();
     loadp::busy("warming up the kernels (first start after an update: up to a minute)");
     if (eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt))

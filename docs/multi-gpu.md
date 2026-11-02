@@ -199,12 +199,48 @@ cost of the sums per token falls with B. In `runz`:
 It first checks that 8 greedy steps of every slot batched give the same logits as each slot alone, bit for bit, then
 times a batched step for 1..N slots against one slot alone. Laptop (ARC_TP_SIM, one iGPU: only the ratios mean
 something): both checks bit-identical; 4 slots together 3.26x one slot's tokens per second (27B over 2) and 2.41x
-(35B over 4; one GPU 2.82x). `serverz --gpus` (and so `--slots` with it) is not there yet.
+(35B over 4; one GPU 2.82x).
+
+## The server: `serverz --gpus N`
+
+```powershell
+.\bin\serverz.exe -m <model.gguf> --gpus 4 --slots 4 --ctx 32768
+```
+
+The server drives shard 0 as its one engine. Every engine call that changes a conversation's state (forward,
+batched steps, binding a slot, reset, the DeltaNet snapshots that let a conversation's next turn reuse its prefix)
+begins with a `TpMirror` (`zero/mgpu/tp_mirror.h`): on a served shard 0 the same call runs on the other shards' threads
+at once, and their logits are joined into shard 0's, so the server sees the whole vocabulary. On one GPU the guard
+is one pointer test (logits bit-identical to the build before). A request's cancel (the web UI's stop) is asked on
+shard 0 and its answer shared, so every shard stops at the same point.
+
+Not with `--gpus` yet: MTP / DFlash2, images, the prompt and session caches on disk, the warm-up. `--ctx auto`
+sizes the context as for one GPU (less than the split could hold).
+
+Checked over HTTP on the laptop (35B, ARC_TP_SIM 2): the same greedy answers as the one-GPU server (short questions
+and a 1,710-token prompt), two chats at once the same as each alone, a request cancelled mid-prompt then another one
+the same as before.
+
+### When a GPU hangs
+
+A GPU that stops answering would otherwise leave the others at a barrier for good, and the server with them:
+- **Barrier timeout:** a shard waiting longer than `ARC_TP_TIMEOUT` seconds (default 120, far beyond one layer of a
+  prompt chunk) stops every shard; the error names the GPUs that did not come.
+- **GPU waits** (`zrt::sync` on a split model's GPUs) wait in pieces of 100 ms: they give up after the same timeout,
+  or as soon as another shard failed. One GPU waits as before, with no limit.
+- **A thread stuck in the driver** 10 s after a failure is given up on (left running, its shard's memory left).
+- The request gets the error (HTTP 500), the server stays up, `/health` answers 503 ("restart the server") and later
+  requests fail at once. The way back is a restart: a GPU that hung keeps its memory and usually its fault until the
+  driver resets it, so the server does not load the model again by itself.
+
+`ARC_TP_HANG=r:k` (tests) makes shard r stop for good at its k-th sum. Laptop, `ARC_TP_TIMEOUT=5`: runz ended with
+"GPU 1 did not reach the sum within 5 s" after ~15 s; the server answered that request with HTTP 500 after 17 s,
+`/health` 503, the next requests at once with the error.
 
 ## Not yet
 
-- The server and launcher (`serverz --gpus`, a choice of which GPUs): slots and batch decoding (a step's sums carry
-  B rows instead of 1, so their cost per token falls), DeltaNet snapshots, the prompt cache and MTP on a split model.
+- The launcher (a choice of which GPUs), and with `serverz --gpus`: MTP / DFlash2, images, the prompt and session
+  caches on disk.
 - MoE models: Flash Next (hyper-connections, its two-pass precise mode) and Gemma 4 26B; the 35B is split (above).
   Measured numbers of the 35B over B60s.
 - Fewer host round trips per sum (an event the next GPU waits on instead of a host wait and a barrier). The f16

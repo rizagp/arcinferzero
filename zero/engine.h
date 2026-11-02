@@ -105,6 +105,8 @@ struct EngineOptions {
 
 class VisionQwen3VL;
 struct TpComm;
+class TpEngine;
+#include "mgpu/tp_mirror.h"  // (serverz --gpus: shard 0's calls run on every shard)
 
 class Engine {
   friend class VisionQwen3VL;
@@ -293,6 +295,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
  public:
   // Clears the KV cache and recurrent states.
   void reset() {
+    TP_MIRROR(reset(), TpMirror::kNone, 0);
     pos = 0;
     written_hi_ = 0;
     swa_lo_ = 0;
@@ -313,6 +316,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 
   // Feeds tokens at the current position; returns the logits for the last token.
   const std::vector<float>& forward(const int* tokens, int n) {
+    TP_MIRROR(forward(tokens, n), TpMirror::kLogits, 0);
     if (pos + n > ctx) throw std::runtime_error("context overflow");
     if (has_mtp) flush_mtp_pending();
     if (hp.ple_layer >= 0) ple_sync();
@@ -450,6 +454,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // Not with per-layer embeddings (Gemma E2B / E4B), an MTP block or a DFlash2 drafter (media_inline_ok).
   bool media_inline_ok() const { return !hp.n_ple && !mtp_block_ && !dfl_; }
   void set_media(const int* base, size_t n, const std::vector<const float*>* rows, const std::vector<int>* rpos) {
+    TP_MIRROR(set_media(base, n, rows, rpos), TpMirror::kNone, 0);
     media_base_ = base;
     media_n_ = n;
     media_ = rows;
@@ -463,6 +468,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // With rpos (3 ints per row: t, h, w) the rows get those rotary positions (Qwen M-RoPE image tokens).
   const std::vector<float>& forward_embd(const float* embd, int n, bool non_causal, bool logits,
                                          const int* rpos = nullptr) {
+    TP_MIRROR(forward_embd(embd, n, non_causal, logits, rpos), logits ? TpMirror::kLogits : TpMirror::kNone, 0);
     if (n <= 0 || n > max_chunk) throw std::runtime_error("forward_embd: 1..max_chunk rows");
     if (rpos) {
       if (!rpos_) rpos_ = buf((size_t)max_chunk * 3 * 4);
@@ -593,6 +599,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // Moves back to position P to reuse a cached prefix (models without recurrent state: swa_rings): possible
   // while the sliding-window rings still hold the n_swa positions before P. Qwen3.5 uses snapshot()/restore().
   bool rewind(int P) {
+    TP_MIRROR(rewind(P), TpMirror::kNone, 0);
     if (!hp.swa_rings || P < 0 || P > pos) return false;
     if (written_hi_ - 1 - swa_cap_ >= P - hp.n_swa) return false;  // those slots were overwritten since
     if (swa_lo_ > 0 && P - hp.n_swa < swa_lo_) return false;  // a loaded conversation keeps K/V from there
@@ -610,6 +617,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // Recurrent-state snapshots for prefix reuse: the attention KV cache is position-indexed, so restoring
   // the DeltaNet states (and the position) is enough to resume from an earlier point of the sequence.
   void snapshot(int slot) {
+    TP_MIRROR(snapshot(slot), TpMirror::kNone, 0);
     if (slot >= (int)snaps_.size()) snaps_.resize(slot + 1);
     Snap& s = snaps_[slot];
     const size_t sb = (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4, cb = conv_bytes();
@@ -672,8 +680,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       for (const auto& v : snaps_[slot].ring) n += v.size();
     return n;
   }
-  void drop_snapshot(int slot) { if (slot < (int)snaps_.size()) snaps_[slot].pos = -1; }
+  void drop_snapshot(int slot) {
+    TP_MIRROR(drop_snapshot(slot), TpMirror::kNone, 0);
+    if (slot < (int)snaps_.size()) snaps_[slot].pos = -1;
+  }
   bool restore(int slot) {
+    TP_MIRROR(restore(slot), TpMirror::kNone, 0);
     if (snapshot_pos(slot) < 0) return false;
     Snap& s = snaps_[slot];
     if (hp.swa_rings && !s.ring_ok) {  // (no copy taken yet: the rings still hold its window, or it cannot be used)
@@ -791,6 +803,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // A recurrent-state snapshot kept in host memory (no GPU memory): the server takes it where every conversation
   // of a client shares the prompt (the end of the system prompt), so a new conversation resumes there.
   void snapshot_host() {
+    TP_MIRROR(snapshot_host(), TpMirror::kNone, 0);
     hsnap_.S.clear();
     for (auto& L : layers_)
       if (hp.recurrent(L.il)) {
@@ -804,8 +817,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     hsnap_.pos = pos;
   }
   int host_snapshot_pos() const { return hsnap_.pos; }
-  void drop_host_snapshot() { hsnap_ = HostSnap(); }
+  void drop_host_snapshot() {
+    TP_MIRROR(drop_host_snapshot(), TpMirror::kNone, 0);
+    hsnap_ = HostSnap();
+  }
   bool restore_host() {
+    TP_MIRROR(restore_host(), TpMirror::kNone, 0);
     if (hsnap_.pos < 0) return false;
     size_t k = 0;
     for (auto& L : layers_)
@@ -901,6 +918,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     clFinish(cl_.queue);
   }
   void bind(int s) {
+    TP_MIRROR(bind(s), TpMirror::kNone, 0);
     if (s < 0 || s >= slot_count()) throw std::out_of_range("bind: slot " + std::to_string(s) + " out of range");
     if (s == slot_) return;
     if (!last_drafts_.empty() && !vrows_) throw std::runtime_error("bind: a verification pass is not settled");
@@ -921,6 +939,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   bool batch_ok() const { return (!hp.hc || !has_mtp) && opt.attn_int8 && slot_ptrs_.size() > 1; }
   bool batch_verify_ok() const { return batch_ok() && has_mtp && !gemma_mtp_ && !hp.hc; }
   const std::vector<float>& forward_batch(const std::vector<int>& slots, const std::vector<int>& toks) {
+    TP_MIRROR(forward_batch(slots, toks), TpMirror::kBatch, (int)slots.size());
     const int B = (int)slots.size();
     if (!batch_ok() || B < 1 || B != (int)toks.size() || B > batch_rows_)
       throw std::runtime_error("forward_batch: not for this model or too many rows");
@@ -1407,6 +1426,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // ---- cancellation (see cancel)
   std::vector<std::vector<uint8_t>> blk_;  // DeltaNet states at the start of the current block
   bool cancelled() {
+    if (tp_ && tp_served()) return tp_cancelled();  // (serverz --gpus: shard 0 decides for every shard)
     if (!cancel) return false;
     clFinish(cl_.queue);  // the check follows the work done, not just enqueued
     return cancel();

@@ -1863,7 +1863,7 @@ int main(int argc, char** argv) {
       {"--image-min-tokens", "a number of tokens"}, {"--image-max-tokens", "a number of tokens"},
       {"--mtp-drafts", "a number, e.g. 3"}, {"--think-budget", "a number of tokens"}, {"--preserve-thinking", ""},
       {"--kernels", "a folder"}, {"--session-cache-gb", "GiB, 0 = off"}, {"--session-dir", "a folder"},
-      {"--slots", "1..8"}, {"--no-swap", ""}, {"--no-web-tools", ""},
+      {"--slots", "1..8"}, {"--gpus", "2..64"}, {"--no-swap", ""}, {"--no-web-tools", ""},
       {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
       {"--asr", "auto (or on), off, or a Qwen3-ASR .gguf file"}, {"--asr-slots", "1..4"},
       {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""},
@@ -1949,6 +1949,7 @@ int main(int argc, char** argv) {
     else if (a == "--session-cache-gb") so.sess_gb = std::clamp(to_double(a, next()), 0.0, 4096.0);
     else if (a == "--session-dir") so.sess_dir = next();
     else if (a == "--slots") so.eo.slots = std::clamp(to_int(a, next()), 1, 8);
+    else if (a == "--gpus") so.gpus = std::clamp(to_int(a, next()), 1, 64);
     else if (a == "--no-swap") swap = false;
     else if (a == "--no-web-tools") web_tools = false;
     else if (a == "--whisper") whisper_opt = next();
@@ -2078,6 +2079,9 @@ int main(int argc, char** argv) {
             "  --npu on|off|force    the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU\n"
             "                        (Qwen3.8 27B +15 %%, Gemma 4 12B +10 %%; others off, force: on anyway);\n"
             "                        kept when a request switches models; default off (or ARC_NPU=1)\n"
+            "  --gpus N              the model split over N GPUs (Qwen3.5 / 3.6 / 3.8 dense and the 35B-A3B; docs/multi-gpu.md):\n"
+            "                        text chat with --slots and batched steps; no MTP / DFlash2, images, saved prompts\n"
+            "                        or sessions yet\n"
             "  --slots N             hold N conversations at once (default 1), each with its own KV cache and states\n"
             "                        of --ctx tokens (auto: the context that fits N of them; MoE with experts on the\n"
             "                        SSD: 128K in all, at least 32K each); requests in different slots take turns step\n"
@@ -2828,7 +2832,13 @@ int main(int argc, char** argv) {
         }
       }
     }
+    // (--gpus: a split model that a GPU failure broke, a GPU that hung or failed: /health says so (503), requests get
+    //  the error. Not loaded again here: a GPU that hung keeps its memory and usually its fault until the driver
+    //  resets it, so the way back is a restart of the server)
     std::shared_lock<std::shared_mutex> lk(swap_mu);
+    if (cur && cur->tp && cur->tp->broken() && rq.path == "/health")
+      return rs.send(503, "application/json",
+                     "{\"status\":\"error\",\"message\":\"a GPU failed or hangs: restart the server (arc-server restart)\"}");
     if (!cur) {  // (a chat request naming no model, or an unknown one, while none is loaded)
       Json err = Json::object(), r = Json::object();
       err.set("message", "no chat model is loaded (started with -m none, or the last model switch failed): name one in the request (\"model\": an id of /v1/models)");

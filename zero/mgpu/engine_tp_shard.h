@@ -28,6 +28,10 @@
 
  public:
   TpComm* tp_ = nullptr;  // (set by TpEngine before the first forward)
+  // serverz --gpus (zero/mgpu/tp_mirror.h): on shard 0 the TpEngine whose other shards mirror its calls
+  TpEngine* tp_front_ = nullptr;
+  int tp_depth_ = 0;  // (mirrored calls under way: only the outermost one is mirrored)
+  friend struct TpMirror;
   int n_logits() const { return lm_head_.N; }  // this engine's logits per row (its vocabulary rows when split)
   const std::vector<float>& logits_host() const { return logits_host_; }
   const std::vector<float>& batch_logits_host() const { return batch_logits_host_; }  // (rows of n_logits())
@@ -233,6 +237,8 @@
     matmul(name, w, Mp, tp_part_, hp.n_embd, 0, 0, act32);
     tp_reduce(cur_T_);
   }
+  bool tp_served() const;  // (zero/engine_tp.h: the server drives this split model)
+  bool tp_cancelled();
   void tp_reduce(int rows);  // (zero/engine_tp.h)
   void tp_reduce_rs(int rows);
   void tp_wrap_host();

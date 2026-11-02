@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-02: `serverz --gpus`, with a failsafe for a GPU that hangs
+
+- **`serverz --gpus N`**: the server runs a split model (Qwen3.5 / 3.6 / 3.8 dense, the 35B-A3B) with `--slots` and
+  batched steps. Shard 0 is the server's engine; its state-changing calls are mirrored on the other shards
+  (`zero/mgpu/tp_mirror.h`) and their logits joined; a request's cancel is decided once for all. Text chat only for
+  now (no MTP / DFlash2, images, prompt or session caches on disk). Over HTTP on the laptop (simulated split): the
+  same greedy answers as one GPU, two chats at once the same as each alone, cancel and the next request fine.
+- **Failsafe**: a shard waiting at a sum longer than `ARC_TP_TIMEOUT` s (default 120), or a split model's GPU wait that
+  long, stops every shard with an error naming the GPUs that did not come; a thread stuck in the driver is given up
+  on. The request fails, the server stays up, `/health` answers 503 until it is restarted. One GPU: no limit as
+  before, logits bit-identical.
+
 ## 2026-11-02: batched decoding over a split model
 
 - **Slots and batched decoding with `--gpus`**: a split model keeps its conversation slots (each GPU its part of

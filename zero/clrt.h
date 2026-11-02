@@ -8,8 +8,11 @@
 #include "ze_min.h"
 #include <dxgi1_4.h>
 #pragma comment(lib, "dxgi.lib")
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -97,6 +100,10 @@ struct Dev {
   uint64_t ev_mask = ~0ull;
   std::vector<Mapping>* maps = nullptr;  // (see clEnqueueMapBuffer)
   int index = 0;
+  // (a split model's GPUs, zero/mgpu/engine_tp.h: sync() gives up after this long, or once *abort is set because
+  //  another GPU failed, instead of waiting forever for a GPU that hangs; one GPU: no limit, as always)
+  uint64_t sync_timeout_ns = UINT64_MAX;
+  const std::atomic<bool>* abort = nullptr;
 };
 inline ze_context_handle_t ctx = nullptr;
 inline ze_driver_handle_t driver = nullptr;
@@ -104,7 +111,24 @@ inline Dev dev0;
 inline std::vector<Dev*> devs{&dev0};  // devs[i]: GPU i (open_devices)
 inline thread_local Dev* cur = nullptr;
 inline Dev& D() { return cur ? *cur : dev0; }
-inline void sync() { ZE_CHECK(zeCommandListHostSynchronize(D().cl, UINT64_MAX)); }
+inline void sync() {
+  Dev& d = D();
+  if (d.sync_timeout_ns == UINT64_MAX && !d.abort) {
+    ZE_CHECK(zeCommandListHostSynchronize(d.cl, UINT64_MAX));
+    return;
+  }
+  const auto t0 = std::chrono::steady_clock::now();  // (in pieces of 100 ms: see Dev::sync_timeout_ns)
+  for (;;) {
+    const ze_result_t r = zeCommandListHostSynchronize(d.cl, 100000000ull);
+    if (r == ZE_RESULT_SUCCESS) return;
+    if (r != ZE_RESULT_NOT_READY) ZE_CHECK(r);
+    if (d.abort && d.abort->load(std::memory_order_relaxed))
+      throw std::runtime_error("GPU " + std::to_string(d.index) + ": wait left, another GPU failed");
+    if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > d.sync_timeout_ns)
+      throw std::runtime_error("GPU " + std::to_string(d.index) + ": its work did not finish within " +
+                               std::to_string(d.sync_timeout_ns / 1000000000ull) + " s (the GPU hangs?)");
+  }
+}
 // A second immediate command list for copies that run while `cl` executes kernels (the expert cache's prompt
 // prefetch, xcache.h): on a copy engine when the device has one, else on another queue of the compute group.
 inline ze_command_list_handle_t copy_list() {
