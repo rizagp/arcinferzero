@@ -2,6 +2,14 @@
 
 ## 2026-11-03: launcher without serverz.exe
 
+- **H8 prompt GEMMs (QUEUE 31.12; built, not yet run, off by default: `ARC_H8=1`).** Weights and activations rotated
+  by a Walsh-Hadamard transform in blocks of up to 1024 values along K, both int8 with one scale per 256 values, so
+  the GEMM is pure int8 dot products with one multiply-add per 256 values instead of a rescale every 16 or 32
+  (zero/engine_h8.h, zero/kernels/h8.cl, gemm.cl QTYPE 110). One kernel for the iGPU (DP4a), Arc B-series (int8 DPAS,
+  checked against DP4a at start like every XMX layout) and split models (each shard rotates within its own K).
+  Accuracy simulated first on the CPU (`tools/ref_forward` `REF_HAD`): Qwen3.8 27B KL 0.00057 against f32 (plain
+  per-row int8 0.038), Gemma 4 E4B 0.00198. Two-pass models (Gemma 4 26B / 12B) and expert GEMMs keep their path.
+  `bench/gemm_sweep.ps1` has an H8 row for B-series owners.
 - **Second self audit of the web tools and multi-GPU** (a static review, each finding checked in the code; built, not
   yet run: the GPU was busy):
   - web tools: audio from a URL decoded with a 30-minute cap (~115 MB of samples instead of up to 700 MB) and 60 MB

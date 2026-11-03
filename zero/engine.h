@@ -245,6 +245,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     max_chunk = o.chunk > 0 ? o.chunk : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
+    h8_init();  // (H8 prompt GEMMs, ARC_H8=1: zero/engine_h8.h; after q2_init, before alloc_buffers)
     if (!opt.dry) build_kernels();
     if (!opt.dry && (cl_.xmx || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
       // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: discrete cards only, B580 / B60 and
@@ -2140,8 +2141,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       x16_src_ = read_file(opt.kernel_dir + "/gemm_x16.cl");
       if (x16_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gemm_x16.cl");
     }
+    if (which == "h8" && h8_src_.empty()) {  // (the H8 rotations, zero/engine_h8.h)
+      h8_src_ = read_file(opt.kernel_dir + "/h8.cl");
+      if (h8_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/h8.cl");
+    }
     const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_src_ : which == "moe" ? moe_src_
-                             : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : ops_src_;
+                             : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : ops_src_;
     auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);
@@ -2241,8 +2246,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     struct Soft { bool& f; ~Soft() { f = false; } } soft{cl_.soft_fail};
     cl_.soft_fail = true;
     try {
-      for (int q : {101, 100, 103, 102, 8, 12, 13, 14})
-        for (int a32 = 1; a32 >= 0; --a32) {
+      for (int q : {101, 100, 103, 102, 8, 12, 13, 14, 110})  // (110: H8, zero/engine_h8.h, per-256 activations only)
+        for (int a32 = q == 110 ? 0 : 1; a32 >= 0; --a32) {
           const std::string nm = std::to_string(q) + (a32 ? "/act32" : "");
           const int cg = xe2_cg_for(N);
           auto make = [&](int x) { return gemm_kernel(q, a32 != 0, x, cg); };
@@ -3410,6 +3415,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     x_ = buf(M * hp.hce() * 4);
     aq_ = buf(M * maxK * (q2mm_ ? 2 : 1));
     x16_reserve(M, maxK);  // (the f16 XMX GEMM's activations, when it is on: zero/xe2/engine_xe2.h)
+    h8_reserve(M, maxK);   // (the H8 GEMM's rotated activations and staged scales, ARC_H8=1: zero/engine_h8.h)
     if (hp.hc) {
       hc_xn_ = buf(M * hp.hce() * 4);
       hc_gate_ = buf(M * hp.hce() * 4);
@@ -3847,6 +3853,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       run(name, k, 1, &g1, &l1);
       return;
     }
+    if (h8_ok(w)) return h8_matmul(name, w, Mp, C, ldc, c_off, a, act32);  // (ARC_H8=1: zero/engine_h8.h)
     cl_mem wq = w.wq, wh = w.wh;
     if (!wq) {
       wq = stage_q_[w.role];
@@ -4198,6 +4205,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 #include "engine_qwen.h"  // (Qwen layers)
 #include "mgpu/engine_tp_shard.h"  // (multi-GPU, zero/mgpu/: this engine as one shard of a model split over GPUs)
 #include "xe2/engine_xe2.h"  // (tuning switches for GPUs with XMX, zero/xe2/; off on the iGPUs)
+#include "engine_h8.h"  // (H8 prompt GEMMs, QUEUE 31.12: Hadamard-rotated int8, ARC_H8=1)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
 

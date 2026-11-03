@@ -155,10 +155,79 @@ static float row_q8(const float* v, int n, int8_t* q) {  // symmetric int8, one 
   return amax / 127.0f;
 }
 
+// (REF_HAD=HB, QUEUE 31.12: the prompt GEMM as pure int8 products. Each token row and each weight row is rotated by a
+//  normalized Walsh-Hadamard transform in blocks of HB along K (the same rotation on both sides, so the exact product
+//  is unchanged: (Hx).(Hw) = x.w), then rounded to int8 with one scale per token row (REF_HAD_ACTB=B: per B values
+//  instead) and one per weight row; integer sums, one scale multiply per output. The rotation spreads the activations'
+//  outliers, which made plain per-row int8 too coarse (docs/npu-experiment.md: 27B KL 0.029 for a third of each
+//  matrix). HB: the largest power of two up to the value that divides K. REF_HAD_SEL = names, default every matrix
+//  but the output head and the embeddings.)
+static int had_block(const std::string& name, int K) {
+  const char* e = getenv("REF_HAD");
+  if (!e || atoi(e) < 2) return 0;
+  if (getenv("REF_HAD_SEL") ? !name_sel("REF_HAD_SEL", name) : name == "output.weight" || name == "token_embd.weight") return 0;
+  int hb = 1;
+  while (hb * 2 <= atoi(e) && K % (hb * 2) == 0) hb *= 2;
+  return hb >= 2 ? hb : 0;
+}
+static void fwht_blocks(float* v, int K, int hb) {  // (normalized: orthonormal, so the product is unchanged)
+  const float s = 1.0f / std::sqrt((float)hb);
+  for (int b0 = 0; b0 < K; b0 += hb) {
+    float* p = v + b0;
+    for (int len = 1; len < hb; len <<= 1)
+      for (int i = 0; i < hb; i += len << 1)
+        for (int j = i; j < i + len; ++j) {
+          const float a = p[j], b = p[j + len];
+          p[j] = a + b, p[j + len] = a - b;
+        }
+    for (int j = 0; j < hb; ++j) p[j] *= s;
+  }
+}
+static void matmul_had(const GgufTensor& t, const std::vector<float>& X0, int T, int K, int N, int hb, std::vector<float>& Y) {
+  const size_t rb = t.nbytes / N;
+  const int ab = getenv("REF_HAD_ACTB") ? std::max(1, atoi(getenv("REF_HAD_ACTB"))) : K;  // (activation scale block)
+  const int nab = (K + ab - 1) / ab;
+  std::vector<int8_t> xq((size_t)T * K);
+  std::vector<float> xs((size_t)T * nab);
+#pragma omp parallel for
+  for (int i = 0; i < T; ++i) {
+    std::vector<float> r(X0.begin() + (size_t)i * K, X0.begin() + (size_t)(i + 1) * K);
+    fwht_blocks(r.data(), K, hb);
+    for (int b = 0; b < nab; ++b) {
+      const int k0 = b * ab, n = std::min(ab, K - k0);
+      xs[(size_t)i * nab + b] = row_q8(r.data() + k0, n, &xq[(size_t)i * K + k0]);
+    }
+  }
+  Y.assign((size_t)T * N, 0.0f);
+#pragma omp parallel
+  {
+    std::vector<float> w(K);
+    std::vector<int8_t> wq(K);
+#pragma omp for schedule(dynamic, 16)
+    for (int n = 0; n < N; ++n) {
+      dequant_row(t.type, t.data + (size_t)n * rb, K, w.data());
+      fwht_blocks(w.data(), K, hb);
+      const float ws = row_q8(w.data(), K, wq.data());
+      for (int i = 0; i < T; ++i) {
+        const int8_t* x = &xq[(size_t)i * K];
+        double acc = 0;
+        for (int b = 0; b < nab; ++b) {
+          const int k0 = b * ab, k1 = std::min(K, k0 + ab);
+          int64_t s = 0;
+          for (int k = k0; k < k1; ++k) s += (int)wq[k] * x[k];
+          acc += (double)s * xs[(size_t)i * nab + b];
+        }
+        Y[(size_t)i * N + n] = (float)(acc * ws);
+      }
+    }
+  }
+}
+
 // Y[T][N] = X[T][K] * W^T ; W from GGUF (any supported type).
 static void matmul(const std::string& name, const std::vector<float>& X0, int T, std::vector<float>& Y) {
   const GgufTensor& t = F->get(name);
   const int K = (int)t.dims[0], N = (int)t.dims[1];
+  if (const int hb = had_block(name, K)) return matmul_had(t, X0, T, K, N, hb, Y);
   const std::vector<float> X = fake_quant(name, X0, K);
   const size_t rb = t.nbytes / N;
   const bool wq8 = name_sel("REF_WQ8", name);  // (REF_WQ8: the weight rows rounded as Q8_0, per 32 values)

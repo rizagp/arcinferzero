@@ -41,7 +41,20 @@
 #define Q6_K 14
 #define Q8_0 8
 
-#if QTYPE >= 100
+#if QTYPE == 110
+// H8 (QUEUE 31.12, kernels/h8.cl): weights and activations Hadamard-rotated, int8 with one scale per superblock each:
+// the W8 values layout, a header of one float per superblock, no per-16 / per-32 scales or mins; activations with
+// per-256 scales (never ACT32). The superblock's 256-value dot product is one integer sum.
+#define W8 1
+#define H8 1
+#define SC32 1
+#define HAS_MIN 0
+#define DPJ 16
+#define HDR 1
+#ifdef ACT32
+#error "H8 takes per-256 activation scales"
+#endif
+#elif QTYPE >= 100
 #define W8 1
 #define SC32 (QTYPE & 1)
 #define HAS_MIN (QTYPE >= 102)
@@ -162,7 +175,9 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
   for (int s = s_begin; s < s_end; ++s) {
     __global const uint* hp = whp + s * HDR * SG;
     // ---- per-superblock weight header
-#if defined(W8)
+#if defined(H8)
+    const float d = as_float(intel_sub_group_block_read(hp));
+#elif defined(W8)
     const uint2 hd = intel_sub_group_block_read2(hp);
     const float d = as_float(hd.s0), dmin = as_float(hd.s1);
     const uint4 hs4 = intel_sub_group_block_read4(hp + 2 * SG);
@@ -253,6 +268,8 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
       const int mn1 = mn0, mn3 = mn2;
 #elif QTYPE == Q8_0
       const float dlo = d8[2 * j], dhi = d8[2 * j + 1];
+#elif defined(H8)
+      // (no scales inside a superblock)
 #else
       const int sc0 = SBYTE(hsc[j], 0), sc1 = SBYTE(hsc[j], 1), sc2 = SBYTE(hsc[j], 2), sc3 = SBYTE(hsc[j], 3);
 #if HAS_MIN
@@ -378,6 +395,8 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
 #else
         isum[m] = fma(dlo, (float)acc0, fma(dhi, (float)acc1, isum[m]));
 #endif
+#elif defined(H8)
+        const int plo = acc0, phi = acc1;
 #else
         const int plo = MULS(acc0, sc0), phi = MULS(acc1, sc2);
 #endif

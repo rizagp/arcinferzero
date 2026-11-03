@@ -21,6 +21,8 @@
 #   X16TM       with X16 on: ARC_X16_TM, tokens per sub-group 8, 16 or 32 [32]
 #   X16GRF      with X16 on: ARC_X16_GRF, registers per thread 256 or 128 [256]
 #   X16CG       with X16 on: ARC_X16_CG, 16-column groups per sub-group 1, 2 or 4 [1]
+#   H8          ARC_H8=1: the H8 GEMM (QUEUE 31.12, zero/engine_h8.h): weights and activations Hadamard-rotated, int8
+#               with one scale per 256 values, no per-16 / per-32 rescaling [off]
 param(
   [Parameter(Mandatory = $true)][string[]]$Models,
   [int]$Tokens = 4096,
@@ -31,7 +33,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
 $vars = @("ARC_NO_XMX", "ARC_GEMM_TM", "ARC_GEMM_RG", "ARC_GEMM_WGY", "ARC_GEMM_SPLIT", "ARC_GEMM_GRF", "ARC_MOE_GRF", "ARC_GEMM_CG",
-          "ARC_X16", "ARC_X16_TM", "ARC_X16_GRF", "ARC_X16_CG")
+          "ARC_X16", "ARC_X16_TM", "ARC_X16_GRF", "ARC_X16_CG", "ARC_H8")
 
 # one run: the settings in $set (name -> value; CHUNK goes to the command line), returns tok/s and the GEMM path
 function Invoke-Run([string]$model, [hashtable]$set) {
@@ -53,6 +55,7 @@ function Invoke-Run([string]$model, [hashtable]$set) {
       "X16TM" { $env:ARC_X16 = "1"; $env:ARC_X16_TM = "$($set[$k])" }
       "X16GRF" { $env:ARC_X16 = "1"; $env:ARC_X16_GRF = "$($set[$k])" }
       "X16CG" { $env:ARC_X16 = "1"; $env:ARC_X16_CG = "$($set[$k])" }
+      "H8" { if ($set[$k] -eq "on") { $env:ARC_H8 = "1" } }
     }
   }
   # (stderr lines of runz are output here, not errors that stop the sweep; the variables are removed even after
@@ -70,6 +73,7 @@ function Invoke-Run([string]$model, [hashtable]$set) {
   if ($o -match "f16 XMX on for the W8") { $path += " + f16 XMX (W8)" }
   elseif ($o -match "f16 XMX results differ") { $path += " (f16 XMX differed!)" }
   elseif ($o -match "f16 XMX kernels do not build") { $path += " (f16 XMX did not build!)" }
+  if ($o -match "H8 on for the prompt GEMMs") { $path += " + H8" }
   if (-not $tps) {
     $err = ($o -split "`n" | Where-Object { $_ -match "error|cannot|failed|exception" } | Select-Object -First 1)
     return [pscustomobject]@{ tps = 0; path = "failed: $err"; moe = $false }
@@ -92,8 +96,9 @@ $grid = [ordered]@{
   X16TM = @(8, 16, 32)
   X16GRF = @(256, 128)
   X16CG = @(1, 2, 4)
+  H8    = @("off", "on")
 }
-$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; CG = 1; ACT = 32; X16 = "off" }
+$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; CG = 1; ACT = 32; X16 = "off"; H8 = "off" }
 
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function Line([string]$what, $r) { [string]::Format($inv, "{0,-28} {1,10:F1} tok/s  {2}", $what, $r.tps, $r.path) }
