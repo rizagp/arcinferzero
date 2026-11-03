@@ -18,7 +18,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
 
 The tools: `bench\gemm_sweep.ps1` (prompt), `bench\decode_try.ps1` (generation), `bin\mgpu_probe.exe` and
-`bin\event_probe.exe` (several GPUs), `bin\replay_probe.exe` (kernel launches), `bin\clinfo.exe` (what the driver
+`bin\event_probe.exe` (several GPUs), `bin\replay_probe.exe` (kernel launches), `bin\membw_probe.exe` (memory read
+bandwidth of the CPU, the GPU and both; docs/speed-progress.md), `bin\clinfo.exe` (what the driver
 offers).
 
 The engine was written and tuned on a Core Ultra 5 125H (Xe-LPG iGPU, no XMX). On Xe2 cards the prompt GEMMs use

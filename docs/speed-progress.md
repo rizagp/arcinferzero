@@ -444,6 +444,22 @@ Every measurement was taken on the same machine. Data sources: the arcinferzero 
 
 During token generation the model reads all of its weights once for every generated token. With a measured memory bandwidth of about 75 GB/s, the upper bound on generation speed is simply `75 GB/s ÷ weight size`. For example, Qwen3.8 27B with about 11 GB of weights can reach only about 6.5 tokens per second in theory, however good the kernels are.
 
+**Would the CPU read faster? (2026-11-03, `bin\membw_probe.exe`)** xenolith, a Gemma engine for Xe-LP laptops
+(Raptor Lake, DDR4), decodes on the CPU because there the CPU reads RAM faster than the iGPU. On this 125H it does
+not, and the two together add little. 1 GiB buffers, 3 s per test, two runs:
+
+| Reader | GB/s |
+|---|---:|
+| iGPU alone | 72.8-73.3 |
+| CPU alone, 1 / 4 / 8 / 12 / 18 threads | 20 / 45 / 59 / 60-64 / 49-71 |
+| iGPU + CPU 4 threads | 78.7-80.5 (iGPU 57-59 of it) |
+| iGPU + CPU 18 threads | 81.5-81.7 (iGPU 37 of it) |
+
+So decoding on the CPU would be slower here (its best, all 18 threads, matches the iGPU only on a quiet machine),
+and splitting each matrix's rows between the CPU and the iGPU could gain at most ~11 % of bandwidth (81.5 against
+73), before the cost of a CPU / GPU meeting point at every matrix (~900 kernels per 27B token). Not taken. The
+probe is in the package for other machines: `bin\membw_probe.exe [--threads 1,4,8,all] [--gib 1] [--seconds 3]`.
+
 So the most useful measure for generation is not tokens per second alone but **the share of bandwidth actually used**. In the first measurement Qwen3.8 27B used only 36 % of the bandwidth. The rest was lost in three places:
 
 - **Decoding the quantization format:** formats such as IQ3_S, IQ2_XXS and IQ4_XS need extra compute to unpack into weight values.
