@@ -5,8 +5,13 @@
 // process that connects to public addresses only (as web_fetch: no loopback, private, link-local... address, checked
 // on the address it connects to), on ports 80 and 443. Edge gets a new empty profile each run (no cookies, logins or
 // history of the user's), no extensions, no sync, WebRTC UDP off (it would bypass the proxy).
+// Only Edge's processes of a render running now may use the proxy: a connection is served when the process at its
+// other end is in one of those runs' jobs (its PID from the TCP table, then IsProcessInJob), so no other program of
+// the computer, nor a page in the user's own browser, gets a way to the web through it (self audit G7).
 #pragma once
+#include "web_tools.h"  // (first: it brings winsock2.h before windows.h; iphlpapi.h after both, self audit R11)
 #include <wincodec.h>
+#include <iphlpapi.h>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -15,10 +20,56 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include "web_tools.h"
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 namespace webv {
+
+// the jobs of the Edge runs going on now
+struct Jobs {
+  static std::mutex& mu() { static std::mutex m; return m; }
+  static std::vector<HANDLE>& list() { static std::vector<HANDLE> v; return v; }
+  static void add(HANDLE j) { std::lock_guard<std::mutex> g(mu()); list().push_back(j); }
+  static void remove(HANDLE j) {
+    std::lock_guard<std::mutex> g(mu());
+    auto& v = list();
+    v.erase(std::remove(v.begin(), v.end(), j), v.end());
+  }
+  // is the process pid in one of them
+  static bool has(DWORD pid) {
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!p) return false;
+    bool in = false;
+    {
+      std::lock_guard<std::mutex> g(mu());
+      for (HANDLE j : list()) {
+        BOOL b = FALSE;
+        if (IsProcessInJob(p, j, &b) && b) { in = true; break; }
+      }
+    }
+    CloseHandle(p);
+    return in;
+  }
+};
+
+// the process at the other end of a loopback connection to port `to` from port `from` (0: not found)
+inline DWORD peer_pid(USHORT from, USHORT to) {
+  ULONG sz = 0;
+  GetExtendedTcpTable(nullptr, &sz, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+  for (int tries = 0; tries < 3; ++tries) {
+    std::vector<char> b(sz + 4096);
+    sz = (ULONG)b.size();
+    if (GetExtendedTcpTable(b.data(), &sz, FALSE, AF_INET, TCP_TABLE_OWNER_PID_CONNECTIONS, 0) != NO_ERROR) continue;
+    const auto* t = (const MIB_TCPTABLE_OWNER_PID*)b.data();
+    for (DWORD k = 0; k < t->dwNumEntries; ++k) {
+      const MIB_TCPROW_OWNER_PID& r = t->table[k];
+      if (ntohs((USHORT)r.dwLocalPort) == from && ntohs((USHORT)r.dwRemotePort) == to && r.dwLocalAddr == htonl(INADDR_LOOPBACK))
+        return r.dwOwningPid;
+    }
+    return 0;
+  }
+  return 0;
+}
 
 // ---- the proxy
 class Proxy {
@@ -35,13 +86,14 @@ class Proxy {
 
  private:
   static constexpr int kMaxConns = 64;
+  static constexpr uint64_t kMaxTunnelBytes = 256ull << 20;  // (a page's one connection: a stream stops there)
   int port_ = 0;
   std::once_flag once_;
   std::atomic<int> active_{0};
 
   void start() {
-    WSADATA wd;
-    WSAStartup(MAKEWORD(2, 2), &wd);
+    static const bool wsa = [] { WSADATA wd; return WSAStartup(MAKEWORD(2, 2), &wd) == 0; }();  // (once: self audit L2)
+    if (!wsa) return;
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return;
     sockaddr_in a{};
@@ -61,10 +113,32 @@ class Proxy {
           Sleep(100);
           continue;
         }
-        if (active_ >= kMaxConns) { closesocket(c); continue; }
-        ++active_;
-        std::thread([this, c] {
-          serve(c);
+        if (active_.fetch_add(1) >= kMaxConns) {  // (taken, then given back when over: no burst past 64)
+          --active_;
+          closesocket(c);
+          continue;
+        }
+        const int me = port_;
+        std::thread([this, c, me] {
+          sockaddr_in pa{};
+          int pl = sizeof pa;
+          // (Edge's processes of a running render only, self audit G7. The TCP table can lag a new connection by a
+          //  moment: looked up again for up to ~100 ms before a refusal, and a refusal is logged, R5)
+          bool ok = false;
+          DWORD pid = 0;
+          if (getpeername(c, (sockaddr*)&pa, &pl) == 0)
+            for (int k = 0; k < 5 && !ok; ++k) {
+              pid = peer_pid(ntohs(pa.sin_port), (USHORT)me);
+              ok = pid && Jobs::has(pid);
+              if (!ok) Sleep(20);
+            }
+          if (ok) serve(c);
+          else {
+            static std::atomic<int> logged{0};
+            if (logged++ < 20)
+              fprintf(stderr, "web_view: proxy refused a connection from process %lu (not the web_view browser)\n", (unsigned long)pid);
+            refuse(c, "this proxy serves the web_view browser only");
+          }
           closesocket(c);
           --active_;
         }).detach();
@@ -90,7 +164,9 @@ class Proxy {
   }
   // a connection to host:port when every address it resolves to is public, else INVALID_SOCKET and why
   static SOCKET open(const std::string& host, int port, std::string& why) {
-    if (port != 80 && port != 443) { why = "port " + std::to_string(port) + " refused (80 and 443 only)"; return INVALID_SOCKET; }
+    // (any web port: the proxy serves only Edge's processes of a render, G7, so other ports than 80 / 443 are as safe
+    //  as in web_fetch; the services' ports refused as browsers do)
+    if (!webt::web_port_ok(port)) { why = "port " + std::to_string(port) + " refused (a port of another service, not the web)"; return INVALID_SOCKET; }
     const std::string h = webt::lower(host);
     if (h.empty() || h == "localhost" || (h.size() > 10 && h.compare(h.size() - 10, 10, ".localhost") == 0)) { why = "local address refused"; return INVALID_SOCKET; }
     addrinfo hints{}, *res = nullptr;
@@ -113,12 +189,13 @@ class Proxy {
     if (s == INVALID_SOCKET) why = "cannot connect to " + host;
     return s;
   }
-  // bytes both ways until either side closes, 60 s without any, or 10 minutes
+  // bytes both ways until either side closes, 60 s without any, 10 minutes, or kMaxTunnelBytes (self audit G8)
   static void pump(SOCKET a, SOCKET b) {
     std::vector<char> buf(64 << 10);
     const auto t0 = std::chrono::steady_clock::now();
+    uint64_t moved = 0;
     for (;;) {
-      if (std::chrono::steady_clock::now() - t0 > std::chrono::minutes(10)) return;
+      if (std::chrono::steady_clock::now() - t0 > std::chrono::minutes(10) || moved > kMaxTunnelBytes) return;
       fd_set r;
       FD_ZERO(&r);
       FD_SET(a, &r);
@@ -130,6 +207,7 @@ class Proxy {
         if (FD_ISSET(from, &r)) {
           const int k = recv(from, buf.data(), (int)buf.size(), 0);
           if (k <= 0 || !send_all(to, buf.data(), (size_t)k)) return;
+          moved += (uint64_t)k;
         }
     }
   }
@@ -215,13 +293,20 @@ inline std::wstring edge_path() {
   return {};
 }
 
-// one headless Edge run with args; its stdout (out) when capture; within ms, the whole process tree ended after
-inline bool edge_run(const std::wstring& args, int ms, std::string* out, std::string& err) {
+static constexpr size_t kMaxDom = 16u << 20;  // (--dump-dom output kept; more: cut, and *cut says so)
+
+// one headless Edge run with args; its stdout (out) when capture, *cut when it was longer than kMaxDom; within ms, the
+// whole process tree ended after. Its job: killed with its handle, at most 3 GB of memory together and 32 processes
+// (a heavy page fails in Edge, not the server: self audit O4); the proxy serves the processes in it only.
+inline bool edge_run(const std::wstring& args, int ms, std::string* out, std::string& err, bool* cut = nullptr) {
   const std::wstring exe = edge_path();
   if (exe.empty()) { err = "Microsoft Edge not found (it renders the page)"; return false; }
   HANDLE job = CreateJobObjectW(nullptr, nullptr);
+  if (!job) { err = "no job object for Edge (error " + std::to_string(GetLastError()) + ")"; return false; }
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
-  li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+  li.JobMemoryLimit = (SIZE_T)3 << 30;
+  li.BasicLimitInformation.ActiveProcessLimit = 32;
   SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
   SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
   HANDLE rd = nullptr, wr = nullptr;
@@ -260,19 +345,45 @@ inline bool edge_run(const std::wstring& args, int ms, std::string* out, std::st
     CloseHandle(job);
     return false;
   }
-  AssignProcessToJobObject(job, pi.hProcess);
+  // (not in the job, e.g. the server itself in a job that allows no nesting: Edge is not run at all, as nothing
+  //  would end its children, and the proxy would not serve them: self audit G1)
+  if (!AssignProcessToJobObject(job, pi.hProcess)) {
+    err = "Edge could not be put in a job (error " + std::to_string(GetLastError()) + ")";
+    TerminateProcess(pi.hProcess, 1);
+    if (rd) CloseHandle(rd);
+    CloseHandle(pi.hThread), CloseHandle(pi.hProcess), CloseHandle(job);
+    return false;
+  }
+  Jobs::add(job);
   ResumeThread(pi.hThread);
   std::thread reader;
   if (out)
     reader = std::thread([&] {
       char b[65536];
       DWORD n = 0;
-      while (ReadFile(rd, b, sizeof b, &n, nullptr) && n > 0)
-        if (out->size() < (16u << 20)) out->append(b, n);
+      while (ReadFile(rd, b, sizeof b, &n, nullptr) && n > 0) {
+        if (out->size() + n <= kMaxDom) out->append(b, n);
+        else if (cut) *cut = true;
+      }
     });
   const bool done = WaitForSingleObject(pi.hProcess, (DWORD)ms) == WAIT_OBJECT_0;
+  {  // (Edge stopped by the job's memory limit fails inside itself, silently: said here, R7)
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION q{};
+    if (QueryInformationJobObject(job, JobObjectExtendedLimitInformation, &q, sizeof q, nullptr) &&
+        q.PeakJobMemoryUsed + (64u << 20) >= li.JobMemoryLimit) {
+      err = "the page needed more than 3 GB of memory in the browser: it was stopped (the screenshot may be blank)";
+      fprintf(stderr, "web_view: %s\n", err.c_str());
+    }
+  }
   TerminateJobObject(job, 1);  // (its renderer and GPU processes too)
-  if (reader.joinable()) reader.join();
+  if (!done) TerminateProcess(pi.hProcess, 1);
+  Jobs::remove(job);
+  if (reader.joinable()) {
+    // (a process that kept the pipe open past the kill: the read is cancelled, so the join cannot outlive the wait)
+    for (int k = 0; k < 50 && WaitForSingleObject(reader.native_handle(), 100) == WAIT_TIMEOUT; ++k)
+      CancelSynchronousIo(reader.native_handle());
+    reader.join();
+  }
   if (rd) CloseHandle(rd);
   CloseHandle(pi.hThread), CloseHandle(pi.hProcess), CloseHandle(job);
   if (!done) err = "the page did not finish within " + std::to_string(ms / 1000) + " s";
@@ -316,14 +427,15 @@ inline bool png_rows(const std::string& png, int y0, int h, std::string& out, in
   if (SUCCEEDED(hr)) hr = fe->WriteSource(clip, nullptr);
   if (SUCCEEDED(hr)) hr = fe->Commit();
   if (SUCCEEDED(hr)) hr = enc->Commit();
-  if (SUCCEEDED(hr)) {
+  if (SUCCEEDED(hr)) {  // (each step checked: a null lock with a size would make assign undefined, self audit C1)
     HGLOBAL g = nullptr;
     STATSTG stt{};
-    mem->Stat(&stt, STATFLAG_NONAME);
-    GetHGlobalFromStream(mem, &g);
-    const void* p = GlobalLock(g);
-    out.assign((const char*)p, (size_t)stt.cbSize.QuadPart);
-    GlobalUnlock(g);
+    hr = mem->Stat(&stt, STATFLAG_NONAME);
+    if (SUCCEEDED(hr)) hr = GetHGlobalFromStream(mem, &g);
+    const void* p = SUCCEEDED(hr) ? GlobalLock(g) : nullptr;
+    if (p && stt.cbSize.QuadPart <= GlobalSize(g)) out.assign((const char*)p, (size_t)stt.cbSize.QuadPart);
+    else hr = E_FAIL;
+    if (p) GlobalUnlock(g);
   }
   for (IUnknown* u : std::initializer_list<IUnknown*>{fe, enc, mem, clip, fr, dec, in, f})
     if (u) u->Release();
@@ -338,11 +450,40 @@ inline bool read_bytes(const std::filesystem::path& p, std::string& out) {
 }
 
 struct View {
-  std::string png;     // the screen asked for (screen 0: the top)
-  std::string html;    // the page after its scripts ran ("" when that run failed)
-  int page_height = 0; // the rendered height the screenshot covered (screens * height when the page is longer)
-  std::string error;   // the screenshot's (empty: png holds it)
+  std::string png;        // the screen asked for (screen 0: the top)
+  std::string html;       // the page after its scripts ran ("" when that run failed)
+  bool html_cut = false;  // (it was longer than kMaxDom)
+  std::string error;      // the screenshot's (empty: png holds it)
+  std::string note;       // what else went wrong in a run that still gave something (the memory limit)
 };
+
+// the URL as one command-line argument: its host in ASCII form (an internationalized name as punycode, which is what
+// DNS and the checks see, R4; a host with any other odd byte: refused), and in the rest every byte that could end its
+// quotes or the line, or that the shell may read (a space, ", \, <, >, |, ^, `, {, }, a control byte, NUL, anything
+// not ASCII) percent-encoded; "" for a URL that is not http(s) (self audit G2)
+inline std::string arg_url(const std::string& url) {
+  const std::string l = webt::lower(url.substr(0, 8));
+  if (l.rfind("http://", 0) != 0 && l.rfind("https://", 0) != 0) return {};
+  const size_t hs = url.find("://") + 3, he = url.find_first_of("/?#", hs);
+  const std::string auth = url.substr(hs, he == std::string::npos ? std::string::npos : he - hs);
+  // (user@host:port: the host part converted, the rest of the authority kept as it is, but only plain characters)
+  const size_t at = auth.rfind('@');
+  std::string host = auth.substr(at == std::string::npos ? 0 : at + 1), tail;
+  if (!host.empty() && host[0] != '[' && host.rfind(':') != std::string::npos) tail = host.substr(host.rfind(':')), host.resize(host.rfind(':'));
+  const std::string ah = webt::ascii_host(host);
+  const std::string auth2 = (at == std::string::npos ? std::string() : auth.substr(0, at + 1)) + ah + tail;
+  if (ah.empty()) return {};
+  for (unsigned char c : auth2)
+    if (c <= 0x20 || c >= 0x7F || strchr("\"\\<>|^`{}", c)) return {};
+  static const char* hex = "0123456789ABCDEF";
+  std::string o = url.substr(0, hs) + auth2;
+  for (size_t k = he == std::string::npos ? url.size() : he; k < url.size(); ++k) {
+    const unsigned char c = (unsigned char)url[k];
+    if (c <= 0x20 || c >= 0x7F || strchr("\"\\<>|^`{}", c)) o += '%', o += hex[c >> 4], o += hex[c & 15];
+    else o += (char)c;
+  }
+  return o;
+}
 
 // url (http(s), its host already checked public) at width x height, screen n (0-5) down: two Edge runs at once
 inline View render(const std::string& url, int screen, int width = 1280, int height = 900) {
@@ -351,24 +492,25 @@ inline View render(const std::string& url, int screen, int width = 1280, int hei
   std::lock_guard<std::mutex> g(mu);
   const int port = Proxy::get().port();
   if (!port) { v.error = "the proxy for Edge could not start"; return v; }
+  const std::string safe = arg_url(url);
+  const std::wstring wurl = webt::widen(safe);
+  if (safe.empty() || wurl.empty()) { v.error = "not an http(s) URL"; return v; }
   static std::atomic<int> seq{0};
   std::error_code ec;
   const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
-  // (the first render: the folders an earlier server left, more than an hour old, removed; each is a whole Edge
-  //  profile, ~10-40 MB)
-  static std::once_flag swept;
-  std::call_once(swept, [&] {
+  // (every render: the profile folders left behind, more than 30 minutes old, removed (a render lasts 45 s at most,
+  //  one at a time); each is a whole Edge profile, ~10-40 MB: self audit L1)
+  {
     std::error_code e2;
     for (const auto& d : std::filesystem::directory_iterator(tmp, e2)) {
       if (!d.is_directory(e2) || d.path().filename().string().rfind("arcinferzero-view-", 0) != 0) continue;
       const auto age = std::filesystem::file_time_type::clock::now() - d.last_write_time(e2);
-      if (!e2 && age > std::chrono::hours(1)) std::filesystem::remove_all(d.path(), e2);
+      if (!e2 && age > std::chrono::minutes(30)) std::filesystem::remove_all(d.path(), e2);
     }
-  });
+  }
   const std::filesystem::path dir = tmp / ("arcinferzero-view-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(++seq));
   std::filesystem::create_directories(dir / "p1", ec);
   std::filesystem::create_directories(dir / "p2", ec);
-  const std::wstring wurl = webt::widen(url);
   auto common = [&](const char* profile) {
     return L"--headless=new --disable-gpu --hide-scrollbars --mute-audio --no-first-run --no-default-browser-check "
            L"--disable-extensions --disable-sync --disable-background-networking --disable-component-update "
@@ -384,14 +526,17 @@ inline View render(const std::string& url, int screen, int width = 1280, int hei
   const std::wstring a2 = common("p2") + L"--window-size=" + std::to_wstring(width) + L"," + std::to_wstring(height) +
                           L" --dump-dom \"" + wurl + L"\"";
   std::string e2;
-  std::thread t2([&] { edge_run(a2, 45000, &v.html, e2); });
+  std::thread t2([&] { edge_run(a2, 45000, &v.html, e2, &v.html_cut); });
   std::string e1;
   edge_run(a1, 45000, nullptr, e1);
   t2.join();
+  for (const std::string* e : {&e1, &e2})
+    if (e->find("3 GB") != std::string::npos) v.note = *e;
   std::string full;
+  int full_h = 0;  // (its height: always the window's, as Edge shoots the window, not the page)
   if (!read_bytes(shot, full) || full.empty()) {
     v.error = e1.empty() ? "Edge wrote no screenshot" : e1;
-  } else if (!png_rows(full, height * std::clamp(screen, 0, 5), height, v.png, v.page_height)) {
+  } else if (!png_rows(full, height * std::clamp(screen, 0, 5), height, v.png, full_h)) {
     v.error = "the screenshot could not be cut";
   }
   // (Edge's processes are ended, but Windows may hold their files a moment longer: tried again for a second)

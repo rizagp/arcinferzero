@@ -110,7 +110,7 @@
     } else {
       need(hp.n_ff % 256 == 0 && hp.n_ff / 256 >= N, "FFN width");
     }
-    need(hp.n_vocab % 16 == 0, "vocabulary");
+    need(hp.n_vocab % 16 == 0 && hp.n_vocab / 16 >= N, "vocabulary");  // (each GPU some rows of it: MG8)
     tpk_ = tp_range(hp.ssm_nk, 2, N, r);
     tpkv_ = tp_att_whole_ ? TpRange{0, hp.n_head_kv}
             : tp_att_qsplit_ ? TpRange{r / (N / hp.n_head_kv), r / (N / hp.n_head_kv) + 1}
@@ -178,6 +178,8 @@
     const int64_t K = (int64_t)t.dims[0], N = t.dims.size() > 1 ? (int64_t)t.dims[1] : 1;
     int blk = 1, bytes = 4;
     ggml_block_info(t.type, blk, bytes);
+    // (the row strides below assume whole blocks: a malformed file's odd row length is refused, not cut wrong, MG6)
+    if (blk <= 0 || K % blk) throw std::runtime_error("tensor parallel: " + t.name + "'s rows are not whole blocks");
     const size_t rb = (size_t)(K / blk) * bytes;
     const TpRuns R = rows.empty() ? TpRuns{{0, N}} : rows, Cc = cols.empty() ? TpRuns{{0, K}} : cols;
     int64_t n2 = 0, k2 = 0;
@@ -219,6 +221,7 @@
     if (auto it = tp_cut_.find(name); it != tp_cut_.end()) return it->second;
     const size_t dot = name.find('.', 4);
     const int il = atoi(name.c_str() + 4);
+    if (dot == std::string::npos || il < 0 || il > hp.n_layer) return t;  // ("blk.-1." or no layer: not a split tensor, MG7)
     const std::string s = name.substr(dot + 1);
     const int64_t D = hp.ssm_d_state, hd = hp.head_dim;
     if (il < hp.n_layer && hp.recurrent(il)) {

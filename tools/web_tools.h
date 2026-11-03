@@ -14,11 +14,13 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "normaliz.lib")  // (IdnToAscii)
 
 namespace webt {
 
@@ -27,6 +29,8 @@ struct Page {
   std::string url, content_type, body, error;  // url: after redirects
   std::string disposition;                     // (Content-Disposition: a download's file name)
   bool cut = false;                            // (the body stopped at max_bytes: there was more)
+  bool too_big = false;                        // (whole or nothing, and its Content-Length was over the limit: not read)
+  bool timed_out = false;                      // (the deadline came in the middle of the body: it is not whole)
 };
 
 struct Result {
@@ -100,13 +104,24 @@ inline bool public_addr(const sockaddr* sa) {
   return false;
 }
 
+// A host name as DNS knows it: an internationalized one (münchen.de) in its ASCII form (xn--mnchen-3ya.de), so the
+// name checked, the name connected to and the name Edge opens are one (self audit R4); "" when it has no such form
+inline std::string ascii_host(const std::string& h) {
+  if (std::all_of(h.begin(), h.end(), [](char c) { return (unsigned char)c < 0x80; })) return h;
+  const std::wstring w = widen(h);
+  wchar_t out[256];
+  const int n = w.empty() ? 0 : IdnToAscii(0, w.c_str(), (int)w.size(), out, 256);
+  return n > 0 ? narrow(out, (size_t)n) : std::string();
+}
+
 // Every address the host resolves to is public (empty error), else why not
-inline std::string check_host(const std::string& host) {
+inline std::string check_host(const std::string& host_in) {
+  const std::string host = ascii_host(host_in);
   if (host.empty()) return "no host";
   const std::string h = lower(host);
   if (h == "localhost" || (h.size() > 10 && h.compare(h.size() - 10, 10, ".localhost") == 0)) return "local address refused";
-  WSADATA wd;
-  WSAStartup(MAKEWORD(2, 2), &wd);
+  static const bool wsa = [] { WSADATA wd; return WSAStartup(MAKEWORD(2, 2), &wd) == 0; }();  // (once: self audit L2)
+  if (!wsa) return "no network (WSAStartup failed)";
   addrinfo hints{}, *res = nullptr;
   hints.ai_socktype = SOCK_STREAM;
   if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) return "cannot resolve " + host;
@@ -131,12 +146,47 @@ inline std::string resolve_url(const std::string& base, const std::string& loc) 
   return origin + dir + loc;
 }
 
+// A port the web tools may connect to: any, except the ones browsers refuse because other services listen there
+// (Chrome's restricted ports: FTP, SSH, telnet, mail, DNS, NetBIOS / SMB, LDAP, RPC, NFS, SIP, IRC, X11...), so a
+// page or a model cannot make the server or its browser talk to such a service on a public host
+inline bool web_port_ok(int port) {
+  static const int bad[] = {1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101,
+                            102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427,
+                            445, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989,
+                            990, 993, 995, 1719, 1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667,
+                            6668, 6669, 6697, 10080};
+  if (port < 1 || port > 65535) return false;
+  for (int b : bad) if (b == port) return false;
+  return true;
+}
+
+// An http(s) URL's host and port, as get() parses it (WinHttpCrackUrl): the one parser of a URL's host for the web
+// tools (self audit C3); false: not an http(s) URL
+inline bool url_host_port(const std::string& url, std::string& host, int& port) {
+  const std::wstring wu = widen(url);
+  if (wu.empty()) return false;
+  URL_COMPONENTS uc{};
+  uc.dwStructSize = sizeof uc;
+  wchar_t h[256] = {};
+  uc.lpszHostName = h, uc.dwHostNameLength = 256;
+  uc.dwUrlPathLength = (DWORD)-1, uc.dwExtraInfoLength = (DWORD)-1;
+  if (!WinHttpCrackUrl(wu.c_str(), (DWORD)wu.size(), 0, &uc) || (uc.nScheme != INTERNET_SCHEME_HTTP && uc.nScheme != INTERNET_SCHEME_HTTPS))
+    return false;
+  host = narrow(h, wcslen(h));
+  port = uc.nPort;
+  return !host.empty();
+}
+
 // GET a public http(s) URL: redirects followed by hand (each host checked), at most max_bytes of body, the whole
-// request within timeout_ms
-// (max_text: a body whose content type is text, HTML, JSON or XML stops there instead: a page is never read to the
-//  limit of a file to save, so 100 MB a request is for audio and documents only)
+// request within timeout_ms. limit, when given: the bytes this body may have, decided from its headers (status,
+// content type, file name) before any of it is read (0: none: a type that is refused); `whole` set by it: a file that
+// is whole or useless, so a Content-Length over the limit reads nothing (too_big) instead of its first part (a page
+// is still read up to the limit). cut: stopped at the limit; timed_out: the deadline came first (self audit O2, G3,
+// G5; R1-R3: the Content-Length test only for whole-or-nothing files, never for a page, a search or the GitHub API,
+// whose limits it does not concern; Content-Length counts compressed bytes, the limit decompressed ones)
 inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 15000, const std::string& accept_lang = "en-US,en;q=0.9",
-                const std::string& accept = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", size_t max_text = 0) {
+                const std::string& accept = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+                const std::function<size_t(const Page&, bool& whole)>& limit = {}) {
   Page p;
   const auto t0 = std::chrono::steady_clock::now();
   HINTERNET ses = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
@@ -180,6 +230,10 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
       break;
     }
     const std::string h8 = narrow(host, wcslen(host));
+    if (!web_port_ok(uc.nPort)) {  // (each hop: a redirect to such a port too)
+      p.error = "port " + std::to_string(uc.nPort) + " refused (a port of another service, not the web)";
+      break;
+    }
     if (!(p.error = check_host(h8)).empty()) break;
     HINTERNET con = WinHttpConnect(ses, host, uc.nPort, 0);
     const std::wstring target = std::wstring(path) + extra;
@@ -228,15 +282,22 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
           WinHttpCloseHandle(rq), WinHttpCloseHandle(con);
           continue;
         }
+        if (st != 304) p.error = "a redirect (HTTP " + std::to_string(st) + ") without a Location";  // (G9; a 304 is no redirect, R6)
       }
-      if (max_text) {
-        const std::string c = lower(p.content_type);
-        if (c.rfind("text/", 0) == 0 || c.find("html") != std::string::npos || c.find("json") != std::string::npos ||
-            c.find("xml") != std::string::npos)
-          max_bytes = std::min(max_bytes, max_text);
+      bool whole = false;
+      if (limit) max_bytes = std::min(max_bytes, limit(p, whole));
+      if (whole) {
+        DWORD cl = 0;  // (a whole-or-nothing file announcing more than its limit: nothing read)
+        sz = sizeof cl;
+        if (WinHttpQueryHeaders(rq, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &cl, &sz, WINHTTP_NO_HEADER_INDEX) &&
+            cl > max_bytes)
+          p.too_big = true;
       }
-      for (;;) {
-        if (left() <= 0) break;
+      for (; !p.too_big && max_bytes > 0;) {
+        if (left() <= 0) {  // (the deadline in the middle of the body: not whole)
+          p.timed_out = true;
+          break;
+        }
         receive_within(rq);
         DWORD avail = 0;
         if (!WinHttpQueryDataAvailable(rq, &avail) || !avail) break;
@@ -246,6 +307,7 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
         DWORD got = 0;
         if (!WinHttpReadData(rq, p.body.data() + old, avail, &got)) { p.body.resize(old); break; }
         p.body.resize(old + got);
+        if (got == 0) break;  // (a read of nothing: the end, not a reason to ask again until the deadline, G6)
         if (p.body.size() >= max_bytes) {
           p.body.resize(max_bytes);
           DWORD more = 0;  // (exactly max_bytes long is not cut)
@@ -261,7 +323,8 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
     WinHttpCloseHandle(rq), WinHttpCloseHandle(con);
     break;
   }
-  if (p.error.empty() && p.status >= 300 && p.status < 400) p.error = "too many redirects";
+  // (a 3xx with a Location still at the 6th hop; a 304 is left to the caller, which takes only 200)
+  if (p.error.empty() && p.status >= 300 && p.status < 400 && p.status != 304) p.error = "too many redirects";
   WinHttpCloseHandle(ses);
   // a body in Latin-1 / Windows-1252 (the content type or a meta tag says so) becomes UTF-8; a text only (a page, a
   // text file): a PDF or an image fetched to be saved keeps its bytes, whatever its first 2 KB hold
@@ -406,7 +469,8 @@ inline bool file_link(const std::string& url) {
   if (d == std::string::npos || (sl != std::string::npos && d < sl)) return false;
   static const char* exts[] = {"pdf", "doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "odt", "ods", "rtf", "csv",
                                "tsv", "txt", "md", "log", "json", "jsonl", "xml", "yaml", "yml", "png", "jpg", "jpeg",
-                               "gif", "webp", "bmp", "svg", "zip", "7z", "gz", "tgz", "rar", "mp3", "wav", "m4a", "mp4"};
+                               "gif", "webp", "bmp", "svg", "zip", "7z", "gz", "tgz", "rar", "mp3", "wav", "m4a", "aac",
+                               "flac", "ogg", "opus", "wma", "webm", "mp4"};  // (the audio as web_fetch's, G4)
   const std::string e = u.substr(d + 1);
   for (const char* x : exts) if (e == x) return true;
   return false;

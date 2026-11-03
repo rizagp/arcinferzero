@@ -401,8 +401,8 @@ While the server is running:
   turns pages into plain text; it only reaches public http(s) addresses (nothing on this machine or the local
   network). The model can also follow links and open files: a GitHub issue comes with all its comments and a list of
   the files attached to it; a PDF, Word, Excel or PowerPoint file (up to 20 MB) is read and saved in the chat's files;
-  an image is saved and shown to a model that sees images (Gemma 4, Qwen with its mmproj); an audio file (up to 100 MB)
-  is saved and written out by the speech model. **web_view** shows the model a page as a browser does: Microsoft Edge
+  an image is saved and shown to a model that sees images (Gemma 4, Qwen with its mmproj); an audio file (up to 60 MB, its
+  first 30 minutes) is saved and written out by the speech model. **web_view** shows the model a page as a browser does: Microsoft Edge
   opens it unseen and takes a screenshot (for a model that sees images) and the page's text after its scripts ran. Edge
   gets a new empty profile each time (nothing of yours) and can only reach public addresses. Other clients can use the
   same endpoints ([docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand));

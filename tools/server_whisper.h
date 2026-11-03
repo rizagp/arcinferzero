@@ -1116,8 +1116,9 @@ class Service {
   }
   // one clip's speech as text for another part of the server (web_fetch's audio files): the chat clips' way, and their
   // cache (status 429: too many waiting)
-  std::string transcribe_clip(const std::string& data, double& secs, int& status, const std::function<bool()>& gone) {
-    return clip_text(data, secs, status, gone);
+  std::string transcribe_clip(const std::string& data, double& secs, int& status, const std::function<bool()>& gone,
+                              double cap_seconds = 0) {
+    return clip_text(data, secs, status, gone, cap_seconds);
   }
 
  private:
@@ -1172,7 +1173,8 @@ class Service {
     secs = it->second.secs;
     return true;
   }
-  std::string clip_text(const std::string& data, double& secs, int& status, const std::function<bool()>& gone) {
+  // (cap_seconds: a shorter limit than the service's own, 0 none: web_fetch's 30 minutes, ~115 MB of samples)
+  std::string clip_text(const std::string& data, double& secs, int& status, const std::function<bool()>& gone, double cap_seconds = 0) {
     uint64_t h1 = 1469598103934665603ull, h2 = 0x9E3779B97F4A7C15ull;
     for (unsigned char b : data) {
       h1 = (h1 ^ b) * 1099511628211ull;
@@ -1189,7 +1191,8 @@ class Service {
     std::unique_lock<std::mutex> one(req_mu_);
     if (clip_cached(key, text, secs)) return text;  // (the same clip, transcribed for another request meanwhile)
     if (gone && gone()) throw std::runtime_error("the client left");
-    const std::vector<float> a = audio::decode_16k(std::vector<uint8_t>(data.begin(), data.end()), max_seconds);
+    const std::vector<float> a = audio::decode_16k(std::vector<uint8_t>(data.begin(), data.end()),
+                                                   cap_seconds > 0 ? std::min(cap_seconds, max_seconds) : max_seconds);
     whisper::Options o;
     o.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
     if (!asr_id.empty()) o.engine = "qwen3-asr";  // (the default speech model: Qwen3-ASR when loaded)

@@ -39,23 +39,31 @@
     folder) and its text returned, as `read_file` reads it; `file_id`, `filename`, `kind` in the reply;
   - an image (PNG, JPEG, GIF, WebP, BMP, up to 20 MB): saved the same way; the web UI shows it to a model that sees
     images after that round of tools;
-  - an audio file (MP3, M4A, AAC, WAV, FLAC, Ogg Opus, WebM, up to 100 MB): saved, and its speech as text by the
-    speech service (Qwen3-ASR, else Whisper; the chat clips' cache); without the service, saved only. Ogg Vorbis is
-    not decoded;
-  - anything else (archives, programs, video): refused (415). A file's first bytes must be of its kind.
+  - an audio file (MP3, M4A, AAC, WAV, FLAC, Ogg Opus, WMA, WebM, up to 60 MB): saved, and its first 30 minutes of
+    speech as text by the speech service (Qwen3-ASR, else Whisper; the chat clips' cache); without the service, saved
+    only. Ogg Vorbis is not decoded;
+  - anything else (archives, programs, video): refused (415), without reading its body. A file's first bytes must be
+    of its kind.
 
-  At most 4 fetches or views run at once (each may hold a 100 MB file); the others wait up to 2 minutes, then 429.
-  A page, text or JSON is read from its first 4 MB only.
+  The size each kind may have is decided from the headers before the body is read (a page or text 4 MB, a document or
+  image 20 MB, audio 60 MB; a Content-Length over it reads nothing: 413); a body cut at that size or at the 2-minute
+  deadline says so in the text. Any port of a public host, except those browsers refuse because other services listen
+  there (SSH 22, SMTP 25, DNS 53, SMB 139 / 445, LDAP, IRC...: Chrome's restricted ports), on every redirect too. At
+  most 4 fetches or views run at once; the others wait up to 2 minutes, then 429.
 - `POST /v1/tools/web_view` `{"url": ..., "screen": 0, "links": false, "chat_id": ...}`: the page as a browser shows it
   (tools/web_view.h). Microsoft Edge runs headless (on every Windows 11; not found: 502): a screenshot of one screen
   (1280 x 900; `screen` 1-5: further down), saved in the chat's files like an image from web_fetch, and the page's text
   after its scripts ran (pages built by scripts read too), in the same windows and with the same links as web_fetch.
   5-15 s a page, one at a time. Edge's own requests go through a proxy inside the server (127.0.0.1, a free port) that
-  connects to public addresses on ports 80 and 443 only, checked on the address it connects to: a page cannot make Edge
-  load anything on this machine or the local network, also through a redirect or a frame. Each run has a new empty
-  profile in %TEMP% (no cookies, logins or history; removed after, and left ones older than an hour at the next
-  start), no extensions or sync, WebRTC's direct UDP off; Edge's processes are in a job ended after 45 s at most, and
-  inherit no handle of the server's but their output pipe.
+  connects to public addresses on web ports only (as web_fetch), checked on the address it connects to: a page cannot
+  make Edge load anything on this machine or the local network, also through a redirect or a frame. The proxy serves
+  only Edge's processes of a render running now (the process at the other end of each connection must be in that
+  run's job), so no other program can use it. Each run has a new empty profile in %TEMP% (no cookies, logins or
+  history; removed after, and ones left behind swept at every render once 30 minutes old), no extensions or sync,
+  WebRTC's direct UDP off. Edge's processes are in a job: ended after 45 s at most, 3 GB of memory and 32 processes
+  together, inheriting no handle of the server's but their output pipe; the server refuses to run Edge outside such a
+  job. The URL reaches Edge's command line percent-encoded (no quote, space or control byte can leave its argument);
+  the page's HTML is read from its first 4 MB.
 - The web UI's memory and projects (`tools/server_memory.h`, `tools/server_projects.h`). They are served while a
   model loads, and only on this computer (not over the network), to the server's own page or a client that sends no
   Origin:

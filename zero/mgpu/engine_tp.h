@@ -10,7 +10,9 @@
 //
 // ARC_TP_SIM=1: the "GPUs" are all device 0, each shard with its own command list (tests the split on one GPU).
 #pragma once
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <exception>
 #include <immintrin.h>
@@ -52,7 +54,7 @@ struct TpComm {
       return;
     }
     std::chrono::steady_clock::time_point t0{};
-    for (int spins = 0; gen.load(std::memory_order_acquire) == g; ++spins) {
+    for (long long spins = 0; gen.load(std::memory_order_acquire) == g; ++spins) {  // (64-bit: an hour of yields, MG5)
       if (failed.load(std::memory_order_relaxed)) throw TpAbort();
       if (spins < 4096) {
         _mm_pause();  // (a token's sums come microseconds apart: spin)
@@ -269,6 +271,8 @@ class TpEngine {
     if (broken_) throw std::runtime_error("a GPU's shard failed earlier: restart (or load the model again)");
     {
       std::lock_guard<std::mutex> lk(mu_);
+      for (int r = 1; r < n_; ++r)  // (as run_on: never over a job still running, MG3)
+        if (w_[r].has || stuck_[r]) throw std::runtime_error("multi-GPU: GPU " + std::to_string(r) + " still has a job running");
       for (int r = 1; r < n_; ++r) {
         w_[r].job = job;
         w_[r].has = true;
@@ -295,8 +299,14 @@ class TpEngine {
   // process). For a faulted split model left unfreed (TpHold, release_stuck): every GPU's abort set instead, so a
   // thread given up on but still polling its wait leaves it rather than polling that GPU's list forever (only split
   // models' threads read it, zrt::tp_guarded; the next split model sets every GPU's again, start)
+  // set once a faulted split model was left unfreed (TpHold): no other split model in this process
+  static std::atomic<bool>& leaked_fault() {
+    static std::atomic<bool> v{false};
+    return v;
+  }
   void disarm(bool release_stuck = false) {
     static std::atomic<bool> gone{true};
+    if (release_stuck) leaked_fault() = true;
     for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
       zrt::devs[r]->abort = release_stuck ? &gone : nullptr;
       zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
@@ -341,7 +351,15 @@ class TpEngine {
     comm_.half.assign(n, 0);
     comm_.wait_ms.assign(n, 0.0);
     comm_.reduces.assign(n, 0);
-    if (const char* t = getenv("ARC_TP_TIMEOUT")) comm_.timeout_s = std::max(5.0, atof(t));
+    // (5 s to an hour: a huge value made the nanoseconds' cast below undefined, self audit MG5)
+    if (const char* t = getenv("ARC_TP_TIMEOUT")) {
+      const double v = atof(t);
+      comm_.timeout_s = std::isfinite(v) ? std::clamp(v, 5.0, 3600.0) : 120.0;
+    }
+    // (a split model left after a GPU fault, TpHold: its threads may still run and read every GPU's abort / fault;
+    //  a new split model would get its flags set by them, self audit MG2. One GPU then, the server's failsafe)
+    if (leaked_fault())
+      throw std::runtime_error("--gpus: a GPU fault earlier left a split model's threads running: restart the server for several GPUs");
     comm_.reached.reset(new std::atomic<int>[n]);
     for (int r = 0; r < n; ++r) comm_.reached[r] = 0;
     for (int r = 0; r < n; ++r) {  // (GPU 0's waits keep no abort: the server's other users, Whisper, share it)
@@ -373,13 +391,13 @@ class TpEngine {
       zrt::oom_throws = zrt::oom_test = false;
       shards_[r]->tp_ = &comm_;
     };
-    run_on({0}, make);
+    run_on({0}, make, false, false);  // (loads: no barrier to show progress, not watched)
     const bool together = getenv("ARC_TP_PARALLEL_LOAD") && atoi(getenv("ARC_TP_PARALLEL_LOAD")) != 0;
     std::vector<int> rest;
     for (int r = 1; r < n; ++r) rest.push_back(r);
-    if (together && !rest.empty()) run_on(rest, make);
+    if (together && !rest.empty()) run_on(rest, make, false, false);
     else
-      for (int r : rest) run_on({r}, make);
+      for (int r : rest) run_on({r}, make, false, false);
     Engine& e0 = *shards_[0];
     // (failsafe: the shards run the same passes only with the same weight layout and chunk; GPUs with different free
     //  memory could choose otherwise, and their barriers would then not meet)
@@ -412,12 +430,17 @@ class TpEngine {
     //  nothing is freed, the server says to restart)
     disarm();
     const bool fault = comm_.fault;
+    // (stuck_ read under mu_, as wait_done writes it and a stuck thread reads it there: self audit MG4)
+    auto is_stuck = [this](int r) {
+      std::lock_guard<std::mutex> g(mu_);
+      return r < (int)stuck_.size() && stuck_[r];
+    };
     if (!w_.empty() && !fault) {  // (after a failure too: the GPUs that answer get their memory back, for a load again)
       std::vector<int> made;
       for (int r = 0; r < (int)shards_.size(); ++r)
-        if (shards_[r] && !(r < (int)stuck_.size() && stuck_[r])) made.push_back(r);
+        if (shards_[r] && !is_stuck(r)) made.push_back(r);
       try {
-        if (!made.empty()) run_on(made, [this](int r) { shards_[r].reset(); }, true);
+        if (!made.empty()) run_on(made, [this](int r) { shards_[r].reset(); }, true, false);
       } catch (...) {}
     }
     {
@@ -428,7 +451,7 @@ class TpEngine {
     bool any_stuck = false;
     for (int r = 0; r < (int)w_.size(); ++r) {
       if (!w_[r].th.joinable()) continue;
-      if (r < (int)stuck_.size() && stuck_[r]) {
+      if (is_stuck(r)) {
         w_[r].th.detach();  // (a thread stuck in the driver: never joined; its shard and the shared memory leak)
         any_stuck = true;
       } else {
@@ -466,19 +489,36 @@ class TpEngine {
   // The workers' jobs waited for. Failsafe: once a shard failed, the others leave their barriers and GPU waits within
   // 100 ms; a thread still running 10 s later is stuck in the driver (its GPU hangs): it is given up on (left running,
   // detached at shutdown), the call ends with an error for it and the split model is broken until loaded again.
-  void wait_done(std::unique_lock<std::mutex>& lk) {
-    std::chrono::steady_clock::time_point since{};
+  // watch (the lockstep calls: passes, slots, the server's mirrored calls): when no barrier completes for timeout_s +
+  // 30 s, the same, without any shard having failed: a shard stuck inside a driver call throws nothing and sets
+  // nothing, and the request waited forever (self audit MG1). Not for loads and frees, which meet at no barrier.
+  void wait_done(std::unique_lock<std::mutex>& lk, bool watch = true) {
+    std::chrono::steady_clock::time_point since{}, moved = std::chrono::steady_clock::now();
+    int last_gen = comm_.gen.load(std::memory_order_acquire);
+    bool warned = false;
     while (!done_cv_.wait_for(lk, std::chrono::seconds(1), [&] { return pending_ == 0; })) {
-      if (!comm_.failed) continue;
       const auto now = std::chrono::steady_clock::now();
-      if (since == std::chrono::steady_clock::time_point{}) since = now;
-      if (now - since < std::chrono::seconds(10)) continue;
+      const int g = comm_.gen.load(std::memory_order_acquire);
+      if (g != last_gen) last_gen = g, moved = now, warned = false;
+      // (a line first, 30 s before giving up: a slow path between two sums can be told from a hang in the log, R9)
+      if (watch && !warned && now - moved > std::chrono::duration<double>(comm_.timeout_s)) {
+        warned = true;
+        fprintf(stderr, "arcinferzero: multi-GPU: no sum completed for %d s; given up on in 30 s more\n", (int)comm_.timeout_s);
+      }
+      const bool still = watch && now - moved > std::chrono::duration<double>(comm_.timeout_s + 30);
+      if (!comm_.failed && !still) continue;
+      if (!still) {
+        if (since == std::chrono::steady_clock::time_point{}) since = now;
+        if (now - since < std::chrono::seconds(10)) continue;
+      }
+      comm_.failed = true;  // (the others leave their barriers and waits)
       for (int r = 0; r < n_; ++r)
         if (w_[r].has) {
           stuck_[r] = 1;
           w_[r].has = false;
-          w_[r].err = std::make_exception_ptr(std::runtime_error("multi-GPU: GPU " + std::to_string(r) +
-                                                                 " does not answer (it hangs?); restart (or load the model again)"));
+          w_[r].err = std::make_exception_ptr(std::runtime_error(
+              "multi-GPU: GPU " + std::to_string(r) + (still ? " made no progress for " + std::to_string((int)comm_.timeout_s + 30) + " s" : " does not answer") +
+              " (it hangs?); restart (or load the model again)"));
           fprintf(stderr, "arcinferzero: GPU %d does not answer: given up on\n", r);
         }
       pending_ = 0;
@@ -517,10 +557,14 @@ class TpEngine {
       if (--pending_ == 0) done_cv_.notify_all();
     }
   }
-  void run_on(const std::vector<int>& ranks, std::function<void(int)> job, bool even_broken = false) {
+  void run_on(const std::vector<int>& ranks, std::function<void(int)> job, bool even_broken = false, bool watch = true) {
     if (broken_ && !even_broken) throw std::runtime_error("a GPU's shard failed earlier: restart (or load the model again)");
     {
       std::lock_guard<std::mutex> lk(mu_);
+      // (a job still running on a shard would have its count and result overwritten: never published over it, and
+      //  never to a shard given up on, MG3)
+      for (int r : ranks)
+        if (w_[r].has || stuck_[r]) throw std::runtime_error("multi-GPU: GPU " + std::to_string(r) + " still has a job running");
       for (int r : ranks) {
         w_[r].job = job;
         w_[r].has = true;
@@ -530,7 +574,7 @@ class TpEngine {
     }
     cv_.notify_all();
     std::unique_lock<std::mutex> lk(mu_);
-    wait_done(lk);
+    wait_done(lk, watch);
     std::exception_ptr err;
     for (int r : ranks)
       if (w_[r].err && (!err || r == comm_.first_failed)) err = w_[r].err;

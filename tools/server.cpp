@@ -126,7 +126,8 @@ static uint64_t gguf_bytes(const std::string& path) {
 
 // ---- web_fetch: what a fetched URL is (a page, a text, or a file to save: a document or an image)
 static constexpr size_t kWebFileMax = 20u << 20;    // (a document or an image larger than this is refused)
-static constexpr size_t kWebAudioMax = 100u << 20;  // (an audio file: ~1.5 hours of MP3 at 128 kbit/s)
+static constexpr size_t kWebAudioMax = 60u << 20;   // (an audio file: ~1 hour of MP3 at 128 kbit/s, 30 min transcribed)
+static constexpr double kWebAudioSeconds = 30 * 60;  // (the longest audio from a URL that is transcribed)
 static constexpr size_t kWebTextMax = 4u << 20;     // (a page or a text: its first 4 MB, as before files were fetched)
 static std::string url_decode(const std::string& s) {
   std::string o;
@@ -167,7 +168,10 @@ static std::string web_file_name(const webt::Page& pg) {
 // "html", "text", a file's extension to save it under (pdf, docx, xlsx, xlsm, pptx, png, jpg, gif, webp, bmp), or ""
 // (refused): by the content type, else (a generic one: application/octet-stream...) by the name's extension; a file's
 // first bytes must be of its kind (%PDF, a ZIP for Office, an image header), so no other file is saved under a name
-static std::string web_file_type(const std::string& ct_in, const std::string& name, const std::string& body) {
+// (the kind from the headers alone: "html", "text", a file's extension or "" refused; web_file_type checks the body,
+//  web_limit takes the size each may have from it before the body is read. One list of kinds for both, the same as
+//  kind_of's audio and web_tools.h file_link's: self audit G4)
+static std::string web_kind(const std::string& ct_in, const std::string& name) {
   const std::string ct = webt::lower(ct_in.substr(0, ct_in.find(';')));
   static const std::map<std::string, std::string> by_ct = {
       {"application/pdf", "pdf"}, {"application/x-pdf", "pdf"},
@@ -179,37 +183,49 @@ static std::string web_file_type(const std::string& ct_in, const std::string& na
       {"image/bmp", "bmp"}, {"audio/mpeg", "mp3"}, {"audio/mp3", "mp3"}, {"audio/mp4", "m4a"}, {"audio/x-m4a", "m4a"},
       {"audio/m4a", "m4a"}, {"audio/aac", "aac"}, {"audio/x-aac", "aac"}, {"audio/wav", "wav"}, {"audio/x-wav", "wav"},
       {"audio/wave", "wav"}, {"audio/vnd.wave", "wav"}, {"audio/flac", "flac"}, {"audio/x-flac", "flac"},
-      {"audio/ogg", "ogg"}, {"application/ogg", "ogg"}, {"audio/opus", "opus"}, {"audio/webm", "webm"}};
+      {"audio/ogg", "ogg"}, {"application/ogg", "ogg"}, {"audio/opus", "opus"}, {"audio/webm", "webm"},
+      {"audio/x-ms-wma", "wma"}};
   static const std::set<std::string> files_ext = {"pdf", "docx", "xlsx", "xlsm", "pptx", "png", "jpg", "jpeg", "gif", "webp", "bmp",
-                                                  "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"},
+                                                  "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus", "wma", "webm"},
                                      text_ext = {"txt", "md", "log", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml",
                                                  "toml", "ini", "cfg", "srt", "vtt", "py", "c", "cpp", "h", "hpp", "js",
                                                  "ts", "ps1", "sh", "bat", "cmd", "rs", "go", "java", "cs", "sql", "diff", "patch"};
   const std::string ext = files::ext_of(name);
-  std::string t;
-  if (auto it = by_ct.find(ct); it != by_ct.end()) t = it->second;
-  else if (ct.find("html") != std::string::npos) return "html";
-  else if (ct.rfind("text/", 0) == 0 || ct.find("json") != std::string::npos || ct.find("xml") != std::string::npos) return "text";
-  else if (ct.empty() || ct == "application/octet-stream" || ct == "binary/octet-stream" || ct == "application/force-download" ||
-           ct == "application/download" || ct == "application/x-download") {
-    if (files_ext.count(ext)) t = ext == "jpeg" ? "jpg" : ext;
-    else if (text_ext.count(ext) && body.find('\0') == std::string::npos) return "text";
-    else if (ct.empty()) return "html";  // (no type, no known extension: read as a page, as before)
-    else return "";
-  } else return "";
+  if (auto it = by_ct.find(ct); it != by_ct.end()) return it->second;
+  if (ct.find("html") != std::string::npos) return "html";
+  if (ct.rfind("text/", 0) == 0 || ct.find("json") != std::string::npos || ct.find("xml") != std::string::npos) return "text";
+  if (ct.empty() || ct == "application/octet-stream" || ct == "binary/octet-stream" || ct == "application/force-download" ||
+      ct == "application/download" || ct == "application/x-download") {
+    if (files_ext.count(ext)) return ext == "jpeg" ? "jpg" : ext;
+    if (text_ext.count(ext)) return "text";
+    if (ct.empty()) return "html";  // (no type, no known extension: read as a page, as before)
+  }
+  return "";
+}
+static bool web_audio(const std::string& t) { return files::kind_of("x." + t) == "audio" || t == "webm"; }
+// the bytes a fetched body may have, from its headers (0: refused, nothing read)
+static size_t web_limit(const std::string& ct, const std::string& name) {
+  const std::string k = web_kind(ct, name);
+  return k.empty() ? 0 : k == "html" || k == "text" ? kWebTextMax : web_audio(k) ? kWebAudioMax : kWebFileMax;
+}
+static std::string web_file_type(const std::string& ct, const std::string& name, const std::string& body) {
+  const std::string t = web_kind(ct, name);
+  if (t.empty() || t == "html") return t;
+  if (t == "text") return body.find('\0') == std::string::npos || webt::lower(ct).rfind("text/", 0) == 0 ? t : "";
   // its first bytes
   const bool pdf = body.compare(0, 5, "%PDF-") == 0 || body.substr(0, 1024).find("%PDF-") != std::string::npos,
              zip = body.compare(0, 4, "PK\x03\x04", 4) == 0;
   int w = 0, h = 0;
   if (t == "pdf") return pdf ? t : "";
   if (t == "docx" || t == "xlsx" || t == "xlsm" || t == "pptx") return zip ? t : "";
-  if (files::kind_of("x." + t) == "audio" || t == "webm") {  // (an MP3 / AAC frame or ID3 tag, MP4 ftyp, RIFF WAVE, fLaC, Ogg, WebM)
+  if (web_audio(t)) {  // (an MP3 / AAC frame or ID3 tag, MP4 ftyp, RIFF WAVE, fLaC, Ogg, WebM, WMA's ASF header)
     const auto b = [&](size_t k) { return k < body.size() ? (unsigned char)body[k] : 0u; };
     // (bytes at k, false past the end: std::string::compare at a position past a 3-byte body throws out_of_range)
     const auto at = [&](size_t k, std::string_view m) { return body.size() >= k + m.size() && body.compare(k, m.size(), m) == 0; };
     const bool ok = at(0, "ID3") || (b(0) == 0xFF && (b(1) & 0xE0) == 0xE0) || at(4, "ftyp") || (at(0, "RIFF") && at(8, "WAVE")) ||
-                    at(0, "fLaC") || at(0, "OggS") || at(0, std::string_view("\x1A\x45\xDF\xA3", 4));
-    return ok ? (t == "webm" ? "webm" : t) : "";
+                    at(0, "fLaC") || at(0, "OggS") || at(0, std::string_view("\x1A\x45\xDF\xA3", 4)) ||
+                    at(0, std::string_view("\x30\x26\xB2\x75\x8E\x66\xCF\x11", 8));
+    return ok ? t : "";
   }
   return files::image_size(body, w, h) ? t : "";
 }
@@ -2632,7 +2648,7 @@ int main(int argc, char** argv) {
       }
       const std::string url = in["url"].str();
       if (url.empty()) return fail(400, "url required");
-      // at most 4 fetches or views at once (each may hold a 100 MB file, or two Edge processes): the others wait up to
+      // at most 4 fetches or views at once (each may hold a 60 MB file, or two Edge processes): the others wait up to
       // 2 minutes, then 429; 64 connections at once could otherwise hold 6 GB of bodies
       struct Gate {
         static std::mutex& mu() { static std::mutex m; return m; }
@@ -2658,34 +2674,31 @@ int main(int argc, char** argv) {
       if (rq.path == "/v1/tools/web_view") {
         // the page as Edge shows it (tools/web_view.h): a screenshot of one screen (saved in the chat's files, shown to
         // a model that sees images by the web UI) and the text of the page after its scripts ran
-        const std::string lu = webt::lower(url.substr(0, 8));
-        if (lu.rfind("http://", 0) != 0 && lu.rfind("https://", 0) != 0) return fail(400, "an http(s) URL");
-        {  // (the first URL's host public, as web_fetch's; what the page loads goes through the proxy's own check)
-          const size_t hs = url.find("://") + 3, he = url.find_first_of("/?#", hs);
-          std::string host = url.substr(hs, he == std::string::npos ? std::string::npos : he - hs);
-          if (host.find('@') != std::string::npos) host = host.substr(host.rfind('@') + 1);
-          if (!host.empty() && host[0] == '[') host = host.substr(1, host.find(']') - 1);
-          else if (host.find(':') != std::string::npos) host = host.substr(0, host.find(':'));
-          const std::string why = webt::check_host(host);
-          if (!why.empty()) return fail(400, why);
-        }
+        // (the first URL's host public and its port a web port, parsed as get() parses a URL; what the page loads goes
+        //  through the proxy's own check)
+        std::string vhost;
+        int vport = 0;
+        if (!webt::url_host_port(url, vhost, vport)) return fail(400, "an http(s) URL");
+        if (!webt::web_port_ok(vport)) return fail(400, "port " + std::to_string(vport) + " refused (a port of another service, not the web)");
+        if (const std::string why = webt::check_host(vhost); !why.empty()) return fail(400, why);
         const int screen = (int)std::clamp<int64_t>(in["screen"].as_int(0), 0, 5);
         const webv::View v = webv::render(url, screen);
         if (v.png.empty() && v.html.empty()) return fail(502, v.error.empty() ? "the page could not be shown" : v.error);
         int hidden = 0;
         const bool all_links = in["links"].is_bool() && in["links"].as_bool();
-        text = v.html.empty() ? std::string() : webt::html_to_text(v.html, &title, url, all_links, &hidden);
+        // (its first 4 MB, as web_fetch reads a page: the conversion makes ~4 copies of it, self audit O3)
+        text = v.html.empty() ? std::string() : webt::html_to_text(v.html.substr(0, kWebTextMax), &title, url, all_links, &hidden);
+        if (v.html.size() > kWebTextMax || v.html_cut) text = "[the page's HTML was longer than 4 MB: its text from the first 4 MB]\n" + text;
+        if (!v.note.empty()) text = "[" + v.note + "]\n" + text;
         if (hidden > 0)
           text = "[" + std::to_string(hidden) + (hidden == 1 ? " link to another page is" : " links to other pages are") +
                  " shown as text only: to explore, web_view or web_fetch this URL again with \"links\": true for the URLs, "
                  "then open the ones you need]\n" + text;
         if (!v.png.empty()) {
           const std::string chat = files::valid_id(in["chat_id"].str()) ? in["chat_id"].str() : "";
-          std::string host = url.substr(url.find("://") + 3);
-          host = host.substr(0, host.find_first_of("/?#:"));
           files::Info fi;
           try {
-            fi = files::store().put(files::safe_name("screen " + std::to_string(screen + 1) + " of " + host + ".png"), v.png, chat);
+            fi = files::store().put(files::safe_name("screen " + std::to_string(screen + 1) + " of " + vhost + ".png"), v.png, chat);
           } catch (const std::exception& e) {
             return fail(500, std::string("cannot save the screenshot: ") + e.what());
           }
@@ -2695,7 +2708,8 @@ int main(int argc, char** argv) {
           r.set("bytes", (double)fi.bytes);
           text = "[screen " + std::to_string(screen + 1) + " of the page (1280 x 900, from the top" +
                  (screen ? ", " + std::to_string(screen * 900) + " pixels down" : std::string()) + "): saved in this chat's files as file_id \"" +
-                 fi.id + "\"; web_view with \"screen\": " + std::to_string(screen + 1) + " shows the next one]\n" + text;
+                 fi.id + "\"" + (screen < 5 ? "; web_view with \"screen\": " + std::to_string(screen + 1) +
+                 " shows the next one (blank where the page has ended)" : std::string("; the last screen web_view shows")) + "]\n" + text;
         } else {
           text = "[no screenshot: " + v.error + "]\n" + text;
         }
@@ -2705,15 +2719,40 @@ int main(int argc, char** argv) {
         r.set("source", "GitHub API (the issue and every comment)");
       } else {
         if (!gh_err.empty()) r.set("note", gh_err + "; the page itself was read instead (it may lack the comments)");
-        // (up to 100 MB for an audio file, 20 MB for a document or an image; a page or a text is read from its first
+        // (up to 60 MB for an audio file, 20 MB for a document or an image; a page or a text is read from its first
         //  4 MB, as before; the whole request within 2 minutes: a large file)
+        // (the size each kind may have, decided from the headers before the body: a refused type reads nothing, a
+        //  document over 20 MB stops there, self audit O2 / G3)
+        // (a file is whole or useless: one that announces more than its limit is not read at all; a page or a text is
+        //  read up to its 4 MB as before, self audit R1)
         const webt::Page pg = webt::get(url, kWebAudioMax, 120000, "en-US,en;q=0.9",
-                                        "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", kWebTextMax);
+                                        "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+                                        [](const webt::Page& h, bool& whole) {
+                                          const std::string k = web_kind(h.content_type, web_file_name(h));
+                                          whole = !k.empty() && k != "html" && k != "text";
+                                          return web_limit(h.content_type, web_file_name(h));
+                                        });
         if (!pg.error.empty()) return fail(502, pg.error);
         if (pg.status != 200) return fail(502, "HTTP " + std::to_string(pg.status) + " from " + pg.url);
         final_url = pg.url;
         const std::string name = web_file_name(pg);
+        // what it is from its headers first: a refused kind (nothing was read), then a file too large or not arrived
+        // whole (413 / 504, self audit R2 / R3), and only then its bytes (web_file_type: a file's first bytes)
+        const std::string kind = web_kind(pg.content_type, name);
+        if (kind.empty())
+          return fail(415, "unsupported content type " + (pg.content_type.empty() ? std::string("(none)") : pg.content_type) +
+                               (name.empty() ? "" : " (" + name + ")") +
+                               ": web pages, text, PDF, Word, Excel, PowerPoint, images and audio only");
+        const bool file = kind != "html" && kind != "text";
+        if (file) {
+          const size_t cap = web_audio(kind) ? kWebAudioMax : kWebFileMax;
+          if (pg.too_big || pg.cut || pg.body.size() > cap)
+            return fail(413, "the file is larger than " + std::to_string(cap >> 20) + " MB: not fetched");
+          if (pg.timed_out) return fail(504, "the file did not arrive whole within 2 minutes: not fetched");
+        }
         const std::string ty = web_file_type(pg.content_type, name, pg.body);
+        if (ty.empty())
+          return fail(415, "the content is not what its type (" + kind + ") says" + (name.empty() ? "" : " (" + name + ")"));
         if (ty == "html") {
           // (links to files with their URLs; the other links' URLs only when asked: "links": true)
           const bool all_links = in["links"].is_bool() && in["links"].as_bool();
@@ -2728,13 +2767,11 @@ int main(int argc, char** argv) {
           text = pg.body.substr(0, kWebTextMax);
           title = name;  // (a text file has no title of its own: its name, an attachment's "log.txt")
         }
-        else if (!ty.empty()) {
+        else {
           // a document or an image: saved into this chat's files (a file card for the user), its text read from there
           // with the reader read_file uses (PDF, Word, Excel, PowerPoint); an image is shown to a model that sees
           // images by the web UI, after this result
-          const bool is_audio = files::kind_of("x." + ty) == "audio" || ty == "webm";
-          const size_t cap = is_audio ? kWebAudioMax : kWebFileMax;
-          if (pg.cut || pg.body.size() > cap) return fail(413, "the file is larger than " + std::to_string(cap >> 20) + " MB: not fetched");
+          const bool is_audio = web_audio(ty);
           const std::string chat = files::valid_id(in["chat_id"].str()) ? in["chat_id"].str() : "";
           std::string fname = name.empty() ? "download" : name;  // (its extension the one of its kind)
           const std::string fe = files::ext_of(fname);
@@ -2761,7 +2798,9 @@ int main(int argc, char** argv) {
               double secs = 0;
               int st = 0;
               try {
-                const std::string t = wh->transcribe_clip(pg.body, secs, st, [&] { return rs.client_gone(); });
+                // (30 minutes at most: the whole clip is decoded in RAM, ~115 MB of samples then; the service's own
+                //  3 hours would be ~700 MB, self audit O1)
+                const std::string t = wh->transcribe_clip(pg.body, secs, st, [&] { return rs.client_gone(); }, kWebAudioSeconds);
                 char len[48];
                 snprintf(len, sizeof len, "%d:%02d", (int)secs / 60, (int)secs % 60);
                 text = head + "; " + len + " long; its speech as text, by " + wh->clip_model() + "]\n" +
@@ -2785,11 +2824,11 @@ int main(int argc, char** argv) {
               text = head + "[" + (ix && !ix->doc.note.empty() ? ix->doc.note : std::string("no text could be read from it")) + "]";
             else text = head + (ix->doc.note.empty() ? "" : "[" + ix->doc.note + "]\n") + ix->text(0, ix->doc.paras.size());
           }
-        } else {
-          return fail(415, "unsupported content type " + (pg.content_type.empty() ? std::string("(none)") : pg.content_type) +
-                               (name.empty() ? "" : " (" + name + ")") +
-                               ": web pages, text, PDF, Word, Excel, PowerPoint and images only");
         }
+        // (a page or text cut at its 4 MB or at the 2-minute deadline says so: the model is not told it read all, G5)
+        if (!file && (pg.cut || pg.timed_out))
+          text = "[only the first " + std::to_string(pg.body.size() >> 10) + " KB of it could be read (" +
+                 (pg.timed_out ? "the rest did not arrive within 2 minutes" : "4 MB at most") + ")]\n" + text;
       }
       // a window of the text: offset, max_chars, never more than the model's context takes in one read (as read_file;
       // before, 12,000 characters a fetch whatever the context) (cut on a UTF-8 character boundary)

@@ -2,11 +2,35 @@
 
 ## 2026-11-03: launcher without serverz.exe
 
+- **Second self audit of the web tools and multi-GPU** (a static review, each finding checked in the code; built, not
+  yet run: the GPU was busy):
+  - web tools: audio from a URL decoded with a 30-minute cap (~115 MB of samples instead of up to 700 MB) and 60 MB
+    at most; each kind's size decided from the headers before the body (a refused type or a too-large Content-Length
+    reads nothing); a body cut at its size or the deadline says so; a read of 0 bytes ends the loop; any web port
+    (browsers' restricted service ports refused) instead of 80 / 443 only, on every redirect too; one URL parser.
+  - web_view: Edge must run inside its job (else not at all), a timed-out run's read is cancelled so a request
+    cannot hang; the job holds at most 3 GB and 32 processes; the proxy serves only Edge's processes of a render
+    running now (no other program can tunnel through it), counts connections atomically and stops a tunnel at
+    256 MB; the URL is percent-encoded on Edge's command line; the DOM read from its first 4 MB; profile folders
+    swept at every render; WIC's buffer lock checked.
+  - multi-GPU: a pass with no barrier completing for `ARC_TP_TIMEOUT` + 30 s is given up on (a shard stuck inside
+    a driver call waited forever), with a log line 30 s before; after a fault left a split model unfreed, no new split
+    model in that process; a job is never published over one still running, the stuck list read under its lock;
+    `ARC_TP_TIMEOUT` 5-3600 s; odd row lengths, a bad layer number and a vocabulary too small for the GPU count
+    refused at load.
+  - the re-audit of these fixes: the size check from Content-Length applies only to files (whole or nothing; a page,
+    a search page or a GitHub API reply is read up to its limit as before, which the first fix had broken); a file too
+    large is 413 and one cut by the deadline 504 (both had come back as 415); a page or text that is not cut no longer
+    falls into the file path (a slip of the first fix, found in the re-check); internationalized hosts (münchen.de) are
+    checked and opened as punycode; the proxy looks a connection up again before refusing it and logs refusals; a page
+    stopped by Edge's 3 GB limit says so; a 304 is not reported as a redirect; `WSAStartup` once in `check_host` too.
+    tests/test_web_tools.cpp checks the kept links, the web ports, the URL parser, IDN hosts and web_view's
+    command-line URL.
 - **web_view** (new tool, tools/web_view.h): a page as a browser shows it. Microsoft Edge, headless, takes a
   screenshot of one screen (shown to a model that sees images) and gives the page's text after its scripts ran, so
   pages built by scripts are read too (a GitHub issue page: its comments). Edge's requests go through a proxy in the
   server that reaches public addresses on ports 80 / 443 only; a new empty profile each run, removed after.
-- **Audio from a URL**: web_fetch saves MP3, M4A, WAV, FLAC, Ogg Opus... (up to 100 MB) and returns its speech as
+- **Audio from a URL**: web_fetch saves MP3, M4A, WAV, FLAC, Ogg Opus... (up to 60 MB, 30 minutes transcribed) and returns its speech as
   text from Qwen3-ASR or Whisper (whisper.cpp's jfk.wav: 5.7 s, word for word).
 - Self audit of the web tools: Edge inherited every inheritable handle of the server (other clients' sockets): now
   only its output pipe; a page or text is read from its first 4 MB inside the request (100 MB was for any URL), and at

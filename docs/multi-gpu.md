@@ -244,10 +244,16 @@ the same as before.
 
 A GPU that stops answering would otherwise leave the others at a barrier for good, and the server with them:
 - **Barrier timeout:** a shard waiting longer than `ARC_TP_TIMEOUT` seconds (default 120, far beyond one layer of a
-  prompt chunk) stops every shard; the error names the GPUs that did not come.
+  prompt chunk; 5 s to an hour) stops every shard; the error names the GPUs that did not come.
 - **GPU waits** (`zrt::sync` on a split model's GPUs) wait in pieces of 100 ms: they give up after the same timeout,
   or as soon as another shard failed. One GPU waits as before, with no limit.
 - **A thread stuck in the driver** 10 s after a failure is given up on (left running, its shard's memory left).
+- **No progress at all:** a pass, slot change or mirrored server call during which no barrier completes for
+  `ARC_TP_TIMEOUT` + 30 s is given up on the same way, with no shard having failed: a shard stuck *inside* a driver
+  call (not in a wait) throws nothing, and the request waited forever (self audit 2026-11-03, MG1). Loads and frees
+  are not watched so (they meet at no barrier).
+- **After a fault that left a split model unfreed**, no other split model loads in that server process (its threads
+  may still run and would set the new model's flags): the server loads on one GPU and says to restart.
 - The request gets the error (HTTP 500), the server stays up, `/health` answers 503 ("restart the server") and later
   requests fail at once. The way back is a restart: a GPU that hung keeps its memory and usually its fault until the
   driver resets it, so the server does not load the model again by itself.
@@ -264,6 +270,8 @@ Other failsafes:
   logits then equal `ARC_TP_SUM=f32` bit for bit.
 - **The same layout on every GPU:** shards whose GPUs chose another weight layout, chunk or context than GPU 0 would
   run different passes and miss each other's barriers; the load fails with the values to give instead.
+- **Host memory of the sums:** `2 x N x chunk x n_embd x 4` bytes of pinned host memory, outside `--budget` (the 27B
+  over 4 GPUs: 671 MB at chunk 4096, 1.3 GB at 8192): a larger `--chunk` doubles it.
 - **`serverz`:** a model that cannot be split (Gemma 4, e.g. for transcripts; Flash Next) or a split that fails to
   load is loaded on one GPU instead, with a line in the log. A shard that runs out of GPU or host memory while it
   is made counts as such a failure (`zrt::oom_throws`: its allocation throws instead of ending the process).
