@@ -13,7 +13,7 @@
 // kernels write them (aq_ / asc_, per-32 or per-256 scales) and are rotated into h8_aq_ / h8_asc_ before each GEMM
 // (h8_act: ~1 % of a GEMM's time).
 //
-// Off unless ARC_H8=1 until it is measured; never with a two-pass model (q2mm_: Gemma 4 26B / 12B, Qwen3 ASR's text
+// Off unless ARC_H8=1 until it is measured; never with ARC_NPU (shared weight buffers); never with a two-pass model (q2mm_: Gemma 4 26B / 12B, Qwen3 ASR's text
 // model), never for a mixture of experts' expert GEMMs (their own kernels) or the vision / audio encoders (only the
 // text model's named matrix roles). On a split model each shard rotates in blocks dividing its own K: the rotation is
 // per matrix input, so the shards' parts still sum to the product. ARC_H8_HB=256 / 512: smaller blocks (tests).
@@ -31,9 +31,13 @@
   }
   // (q2_init has run: q2mm_ known)
   void h8_init() {
-    h8_ = h8_env() && !q2mm_;
+    // (never with the NPU: its shares copy a weight (N.gate = L.gate) over the same buffers, so the in-place conversion
+    //  ran twice on the shared rows, and the NPU read its own rows as W8 after they had become H8; kernel audit 2026-11-03)
+    h8_ = h8_env() && !q2mm_ && !npu_wanted();
     if (h8_env() && q2mm_ && !opt.dry)
       fprintf(stderr, "arcinferzero: ARC_H8 is not for a two-pass model: its prompt GEMMs stay as they are\n");
+    if (h8_env() && !q2mm_ && npu_wanted() && !opt.dry)
+      fprintf(stderr, "arcinferzero: ARC_H8 is off with ARC_NPU (both convert the same weights)\n");
     // (once per process: a split model's shards each init; bench/gemm_sweep.ps1 reads this line)
     static std::once_flag said;
     if (h8_ && !opt.dry) std::call_once(said, [] { fprintf(stderr, "arcinferzero: H8 on for the prompt GEMMs (Hadamard-rotated int8)\n"); });

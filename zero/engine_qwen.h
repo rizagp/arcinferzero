@@ -118,7 +118,9 @@
       // (ARC_QSA_RT: query rows per qsa_score_rt work-group, each block's keys read once for them; 1 = qsa_score,
       //  one row per work-group. Flash Next 32K prompt: qsa_score 13.8 -> 2.4 s, 131-146 -> 153-154 tok/s, the same
       //  logits)
-      static const int qrt = getenv("ARC_QSA_RT") ? std::max(1, atoi(getenv("ARC_QSA_RT"))) : 8;
+      static const int qrt_env = getenv("ARC_QSA_RT") ? std::max(1, atoi(getenv("ARC_QSA_RT"))) : 8;
+      // (its local q block, qrt x heads x 128 floats, within 32 KB: Xe-LPG has 64 KB of local memory in all)
+      const int qrt = std::min(qrt_env, std::max(1, 32768 / (H * hp.qsa_dim * 4)));
       if (qrt > 1) {
         cl_kernel k = kernel("ops", defs + " -DQRT=" + std::to_string(qrt), "qsa_score_rt");
         int RR = R;
@@ -221,7 +223,7 @@
     auto fa = [&](int r0, int n, int p0) {
       int cp = ctx, nn = nh, nk = nkv, pp = p0, MM = n, w = 0, nlo = -1, nhi = -1;
       if (n <= 8) {  // (flash-decoding: the keys in splits, then combined)
-        const int gq = std::min(hpg, 4);
+        const int gq = gq_div(hpg, 4);
         const std::string fd = "-cl-intel-256-GRF-per-thread -DFA_G -DFA_SPLIT -DHD=" + std::to_string(hd) + " -DGQ=" + std::to_string(gq) + kdef;
         cl_kernel k = kernel("ops", fd, "attn_fa_g");
         const int nb = (p0 + n - 1) / 16 + 1;

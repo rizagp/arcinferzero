@@ -74,7 +74,7 @@
         return;
       }
       if (fa_split && n <= 8) {
-        const int gq = std::min(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
+        const int gq = gq_div(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
         const std::string fd = "-cl-intel-256-GRF-per-thread -DFA_G -DFA_SPLIT -DHD=" + std::to_string(hd) + " -DGQ=" +
                                std::to_string(gq);
         cl_kernel k = kernel("ops", fd, "attn_fa_g");
@@ -115,7 +115,7 @@
         run(L.swa ? "attn_swa" : "attn_global", k, 3, gws, lws);
         return;
       }
-      const int gq = std::min(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
+      const int gq = gq_div(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
       const int R = n <= 8 ? 1 : fa_rows ? fa_rows : hd >= 512 ? 1 : 32;  // (sliding: 32 rows 4.43 -> 4.16 s; 64: too large)
       cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_G -DHD=" + std::to_string(hd) + " -DGQ=" +
                                       std::to_string(gq) + (R > 1 ? " -DFA_ROWS=" + std::to_string(R) : std::string()),

@@ -1,0 +1,468 @@
+// A part of class Engine (zero/engine.h), included inside the class body at the place it was cut from (the
+// class is the same text), not a header of its own: the kernels the forward passes use (build_kernels) and the Qwen weights (load_weights).
+
+  void build_kernels() {
+    const std::string dir = opt.kernel_dir;
+    gemm_src_ = read_file(dir + "/gemm.cl");
+    ops_.load(dir, KernelParts::kOps);
+    dec_.load(dir, KernelParts::kDecode);
+    if (hp.moe) moe_src_ = read_file(dir + "/moe.cl");
+    auto p = [&](const char* n) { return kernel("ops", "", n); };
+    k_rmsnorm_ = p("rmsnorm_quant");
+    k_swiglu_ = p("swiglu_quant");
+    if (getenv("ARC_CT")) conv_ct_ = std::max(1, atoi(getenv("ARC_CT")));
+    {
+      const char* g = getenv("ARC_CONV_GRF");
+      const bool big = g != nullptr && std::string(g) == "256";
+      k_gdn_conv_ = kernel("ops", (big ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DCT=" +
+                                      std::to_string(conv_ct_), "gdn_conv");
+    }
+    k_conv_upd_ = p("conv_state_update");
+    k_gnorm_ = hp.hc ? kernel("ops", "-DGATE_SIGMOID", "gated_norm_quant") : p("gated_norm_quant");
+    k_attn_prep_ = kernel("ops", sb_opt(256), "attn_prep");
+    k_attn_gate_ = p("attn_gate_quant");
+    k_gdn_gates_ = p("gdn_gates");
+    const std::string big = "-cl-intel-256-GRF-per-thread -DGQ=" + std::to_string(gq());
+    k_attn_ = kernel("ops", big, "attn_fa");
+    k_gdn_recur_ = kernel("ops", big, "gdn_recur");
+    const std::string att = "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hp.n_head / hp.n_head_kv) +
+                            " -DHS=" + std::to_string(attn_hs()) + " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256) +
+                            (hp.qwen3 ? " -DHD=" + std::to_string(hp.head_dim) : std::string());
+    k_attn_q8_ = kernel("ops", att, "attn_q8");
+    k_attn_comb_ = kernel("ops", "", "attn_combine");
+    k_mtp_concat_ = kernel("ops", "", "mtp_concat");
+    auto tabs = build_iq_tables();
+    tabs_ = buf(tabs.size() * 4, tabs.data());
+  }
+
+  cl_mem buf(size_t bytes, const void* host = nullptr) {
+    gpu_bytes += bytes;
+    if (opt.dry) return nullptr;
+    mems_.push_back(cl_.buffer(CL_MEM_READ_WRITE, bytes, host));
+    return mems_.back();
+  }
+  // releases a buffer of buf() before the engine ends (an encoder growing its buffers; no sub-buffers of it)
+  void free_buf(cl_mem& m) {
+    if (!m) return;
+    // (its views made by from() go with it: a later buffer at the same address must not find them)
+    for (auto v = views_.begin(); v != views_.end();) {
+      if (v->first.first != m) { ++v; continue; }
+      auto vi = std::find(mems_.begin(), mems_.end(), v->second);
+      if (vi != mems_.end()) mems_.erase(vi);
+      clReleaseMemObject(v->second);
+      v = views_.erase(v);
+    }
+    auto it = std::find(mems_.begin(), mems_.end(), m);
+    if (it != mems_.end()) mems_.erase(it);
+    gpu_bytes -= std::min<size_t>(gpu_bytes, m->size);
+    clReleaseMemObject(m);
+    m = nullptr;
+  }
+  // Raw GGUF rows uploaded with each superblock zero-padded to a multiple of 8 bytes (zero/kernels/decode.cl BBP),
+  // written in parallel straight into a host-visible buffer (zero-copy on an integrated GPU).
+  // Zero bytes after the last superblock: gemv reads two superblocks per step (rounded up to 64-byte block reads),
+  // so with an odd superblock count its last row reads up to one superblock + 63 bytes past the data (lanes whose
+  // block is past the row contribute 0 x those bytes, which must be finite: zeros). 1024 covers every type.
+  static constexpr size_t kRawSlack = 1024;
+  cl_mem upload_padded(uint32_t type, const uint8_t* data, size_t nbytes) {
+    const size_t bb = gguf_sb_bytes(type), bp = raw_padded_sb_bytes(type), nsb = nbytes / bb;
+    const size_t total = nsb * bp + kRawSlack;
+    // (in host memory while plan_tight's share of the weights lasts: the first matrices loaded; the same bytes and
+    //  kernels, so the logits are bit-identical)
+    const bool host = host_left_ >= total;
+    if (host) {
+      host_left_ -= total;
+      host_bytes_ += total;
+    }
+    if (opt.dry) {
+      if (!host) gpu_bytes += total;
+      return nullptr;
+    }
+    loadp::add((double)nbytes);
+    cl_int err;
+    cl_mem m;
+    uint8_t* dst;
+    if (host) {
+      void* p = zrt::host_alloc(total);
+      host_ptrs_.push_back(p);
+      m = zrt::wrap(p, total);
+      mems_.push_back(m);
+      dst = (uint8_t*)p;
+    } else {
+      m = clCreateBuffer(cl_.ctx, CL_MEM_READ_ONLY | CL_MEM_ALLOC_HOST_PTR, total, nullptr, &err);
+      CL_CHECK(err);
+      mems_.push_back(m);
+      gpu_bytes += total;
+      dst = (uint8_t*)clEnqueueMapBuffer(cl_.queue, m, CL_TRUE, CL_MAP_WRITE, 0, total, 0, nullptr, nullptr, &err);
+      CL_CHECK(err);
+    }
+    const int64_t chunks = (int64_t)((nsb + 4095) / 4096);
+#pragma omp parallel for schedule(static)
+    for (int64_t ch = 0; ch < chunks; ++ch) {
+      const size_t s0 = (size_t)ch * 4096, s1 = std::min(nsb, s0 + 4096);
+      if (bb == bp && !gpu_regrouped(type)) {
+        memcpy(dst + s0 * bp, data + s0 * bb, (s1 - s0) * bb);
+      } else {
+        for (size_t i = s0; i < s1; ++i) gpu_raw_sb(type, data + i * bb, dst + i * bp);
+      }
+    }
+    memset(dst + nsb * bp, 0, kRawSlack);
+    if (!host) CL_CHECK(clEnqueueUnmapMemObject(cl_.queue, m, dst, 0, nullptr, nullptr));
+    return m;
+  }
+
+  void fill(cl_mem b, size_t bytes) {
+    if (!b) return;  // (a dry load)
+    const uint32_t zero = 0;
+    CL_CHECK(clEnqueueFillBuffer(cl_.queue, b, &zero, 4, 0, bytes, 0, nullptr, nullptr));
+  }
+
+  // Uploads a matrix: raw rows always, plus its prompt-processing form when resident.
+  // (view: the raw rows already on the GPU, a sub-buffer of a stacked upload)
+  GpuWeight make_weight(uint32_t type, const uint8_t* data, size_t nbytes, int N, int K, int role = kRoles - 1,
+                        const cl_mem* view = nullptr) {
+    GpuWeight w;
+    w.role = role;
+    w.type = type;
+    w.N = N;
+    w.K = K;
+    w.raw = view ? *view : upload_padded(type, data, nbytes);
+    // Q8_0 (per-32 float scales) is fastest in its own repacked kernel; everything else goes through W8. The
+    // repacked copy is kept only with resident weights of a dense model; otherwise (MoE: ~1.5 GB of Q8_0 matrices
+    // stored twice, or just-in-time models) prompt chunks decode the raw rows into the same form (decode_w8, PER32).
+    if (type == GGML_Q8_0 && (!w8_resident || hp.moe)) {
+      w.gemm_qtype = (int)type;
+      stage_need_q_[w.role] = std::max(stage_need_q_[w.role], w8_bytes_q(N, K));
+      stage_need_h_[w.role] = std::max(stage_need_h_[w.role], w8_bytes_h(N, K));
+      return w;
+    }
+    if (type == GGML_Q8_0) {
+      RepackedWeight r;
+      repack_rows(type, data, K, 0, N, r);
+      w.wq = buf(r.wq.size() * 4, r.wq.data());
+      w.wh = buf(r.wh.size() * 4, r.wh.data());
+      w.gemm_qtype = (int)type;
+      return w;
+    }
+    if (!is_w8_type(type)) throw std::runtime_error(std::string("unsupported weight type ") + ggml_type_name(type));
+    // per-32-scale types (Q4_0, IQ4_NL, Q2_0) decode into the native Q8_0 GEMM form (per-32 f32 scales; there is no
+    // such W8 variant)
+    w.gemm_qtype = w8_variant(type) == 4 ? (int)GGML_Q8_0 : 100 + w8_variant(type);
+    const size_t qb = w8_bytes_q(N, K), hb = w8_bytes_h(N, K);
+    if (w8_resident) {
+      w.wq = buf(qb);
+      w.wh = buf(hb);
+      if (!opt.dry) decode_w8(w, w.wq, w.wh);
+    } else {
+      stage_need_q_[w.role] = std::max(stage_need_q_[w.role], qb);
+      stage_need_h_[w.role] = std::max(stage_need_h_[w.role], hb);
+    }
+    return w;
+  }
+  static int weight_role(const std::string& name) {
+    static const char* roles[] = {"attn_qkv.", "attn_gate.", "ssm_out.", "attn_q.", "attn_k.", "attn_v.",
+                                  "attn_output.", "ffn_gate.", "ffn_up.", "ffn_down.", "nextn.eh_proj."};
+    for (int r = 0; r < (int)(sizeof(roles) / sizeof(roles[0])); ++r)
+      if (name.find(roles[r]) != std::string::npos) return r;
+    return kRoles - 1;
+  }
+  GpuWeight load_w(const std::string& name) {
+    const GgufTensor& t = T(name);
+    const int K = (int)t.dims[0], N = (int)t.dims[1];
+    if (t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16) {
+      std::vector<float> v((size_t)N * K);
+      dequant_row(t.type, t.data, N * K, v.data());
+      auto q8 = quantize_rows_q8_0(v.data(), N, K);
+      return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K, weight_role(name));
+    }
+    return make_weight(t.type, t.data, t.nbytes, N, K, weight_role(name));
+  }
+  // DeltaNet input projections (qkv, z = attn_gate, ab = alpha + beta). When qkv and z have the same quantized type
+  // they are uploaded as one stack of rows (with ab, already Q8_0, when they are Q8_0 too): a single token runs one GEMV
+  // over all of them (Layer::qz); the matrices are views of it, stored once.
+  static bool float_type(uint32_t t) { return t == GGML_F32 || t == GGML_F16 || t == GGML_BF16; }
+  // a float matrix as the Q8_0 rows load_w would make of it (kept in `keep`), so that it can be stacked with others
+  const GgufTensor& as_q8(const GgufTensor& t, GgufTensor& out, std::vector<uint8_t>& keep) {
+    std::vector<float> v((size_t)t.dims[0] * t.dims[1]);
+    dequant_row(t.type, t.data, (int)v.size(), v.data());
+    keep = quantize_rows_q8_0(v.data(), (int)t.dims[1], (int)t.dims[0]);
+    out = t;
+    out.type = GGML_Q8_0;
+    out.data = keep.data();
+    out.nbytes = keep.size();
+    return out;
+  }
+  void load_gdn_in(Layer& L, const std::string& p) {
+    GgufTensor q8q, q8z;
+    std::vector<uint8_t> kq, kz;
+    const GgufTensor *pq = &T(p + "attn_qkv.weight"), *pz = &T(p + "attn_gate.weight");
+    // (float qkv / z (a BF16 GGUF: Xiaomi-OCR-0): the same Q8_0 rows load_w makes, stacked as quantized ones are)
+    if (float_type(pq->type) && float_type(pz->type) && !getenv("ARC_NO_QZ_FLT")) {
+      pq = &as_q8(*pq, q8q, kq);
+      pz = &as_q8(*pz, q8z, kz);
+    }
+    const GgufTensor &tq = *pq, &tz = *pz;
+    const int E = hp.n_embd, C = (int)tq.dims[1], Di = (int)tz.dims[1], nab = 2 * hp.ssm_nv;
+    const bool quant = tq.type != GGML_F32 && tq.type != GGML_F16 && tq.type != GGML_BF16;
+    if (!quant || tq.type != tz.type || tq.dims[0] != E || tz.dims[0] != E || E % 256 || C % 64 || Di % 64 ||
+        C != hp.conv_dim() || Di != hp.ssm_d_inner) {
+      L.qkv = load_w(p + "attn_qkv.weight");
+      L.z = load_w(p + "attn_gate.weight");
+      L.ab = load_q8_concat(p + "ssm_alpha.weight", p + "ssm_beta.weight");
+      return;
+    }
+    const uint32_t type = tq.type;
+    std::vector<uint8_t> ab;
+    {
+      const GgufTensor &ta = T(p + "ssm_alpha.weight"), &tb = T(p + "ssm_beta.weight");
+      std::vector<float> v((size_t)tp_rows(nab) * E, 0.0f);  // (a split model: padded rows of zeros, see gdn_ab)
+      dequant_row(ta.type, ta.data, (int64_t)nab / 2 * E, v.data());
+      dequant_row(tb.type, tb.data, (int64_t)nab / 2 * E, v.data() + (size_t)nab / 2 * E);
+      ab = quantize_rows_q8_0(v.data(), tp_rows(nab), E);
+    }
+    L.qz_ab = type == GGML_Q8_0 && nab % 16 == 0 && !getenv("ARC_NO_QZAB16");  // (the GEMV / GEMM take rows in 16s)
+    std::vector<uint8_t> cat(tq.nbytes + tz.nbytes + (L.qz_ab ? ab.size() : 0));
+    memcpy(cat.data(), tq.data, tq.nbytes);
+    memcpy(cat.data() + tq.nbytes, tz.data, tz.nbytes);
+    if (L.qz_ab) memcpy(cat.data() + tq.nbytes + tz.nbytes, ab.data(), ab.size());
+    L.qz.type = type;
+    L.qz.N = C + Di + (L.qz_ab ? nab : 0);
+    L.qz.K = E;
+    L.qz.role = kRoles - 1;
+    L.qz.raw = upload_padded(type, cat.data(), cat.size());
+    has_qz_ = true;
+    const size_t sbr = (size_t)E / 256 * raw_padded_sb_bytes(type);
+    auto view = [&](int row0, int N) -> cl_mem {
+      if (!L.qz.raw) return nullptr;  // (dry load)
+      cl_buffer_region reg{(size_t)row0 * sbr, (size_t)N * sbr + 256};  // (+256: the slack upload_padded leaves)
+      cl_int err;
+      cl_mem m = clCreateSubBuffer(L.qz.raw, CL_MEM_READ_ONLY, CL_BUFFER_CREATE_TYPE_REGION, &reg, &err);
+      CL_CHECK(err);
+      mems_.push_back(m);
+      return m;
+    };
+    const cl_mem vq = view(0, C), vz = view(C, Di);
+    L.qkv = make_weight(type, tq.data, tq.nbytes, C, E, weight_role(p + "attn_qkv.weight"), &vq);
+    L.z = make_weight(type, tz.data, tz.nbytes, Di, E, weight_role(p + "attn_gate.weight"), &vz);
+    if (L.qz_ab) {
+      const cl_mem va = view(C + Di, nab);
+      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), nab, E, kRoles - 1, &va);  // (nab % 64 == 0: not padded)
+    } else {
+      L.ab = make_weight(GGML_Q8_0, ab.data(), ab.size(), tp_rows(nab), E);
+    }
+  }
+  // Two matrices with the same K stacked by rows, requantized to Q8_0 (the tiny DeltaNet gate projections).
+  // Matrices of one quantized type and row length as one stack of rows, their GGUF blocks copied as they are (the
+  // values unchanged; a row's result does not depend on the others): one GEMV / GEMM instead of one per matrix.
+  // BF16 / F16 / F32 matrices (Qwen3-ASR's BF16 file) are requantized to Q8_0 row by row, as a single one is.
+  GpuWeight load_w_stack(std::initializer_list<std::string> names) {
+    const GgufTensor& t0 = T(*names.begin());
+    const bool flt = t0.type == GGML_F32 || t0.type == GGML_F16 || t0.type == GGML_BF16;
+    const int K = (int)t0.dims[0];
+    std::vector<uint8_t> cat;
+    std::vector<float> v;
+    int N = 0;
+    for (const std::string& n : names) {
+      const GgufTensor& t = T(n);
+      if (t.type != t0.type || t.dims[0] != t0.dims[0])
+        throw std::runtime_error("load_w_stack: matrices of different shapes or types: " + n);
+      if (flt) {
+        v.resize((size_t)(N + t.dims[1]) * K);
+        dequant_row(t.type, t.data, (int)(t.dims[1] * K), v.data() + (size_t)N * K);
+      } else {
+        cat.insert(cat.end(), t.data, t.data + t.nbytes);
+      }
+      N += (int)t.dims[1];
+    }
+    if (flt) {
+      auto q8 = quantize_rows_q8_0(v.data(), N, K);
+      return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K, weight_role(*names.begin()));
+    }
+    return make_weight(t0.type, cat.data(), cat.size(), N, K, weight_role(*names.begin()));
+  }
+  GpuWeight load_q8_concat(const std::string& a, const std::string& b) {
+    const GgufTensor &ta = T(a), &tb = T(b);
+    const int K = (int)ta.dims[0], Na = (int)ta.dims[1], Nb = (int)tb.dims[1], Np = tp_rows(Na + Nb);
+    std::vector<float> v((size_t)Np * K, 0.0f);  // (a split model: rows of zeros up to the GEMM's 16, see gdn_ab)
+    dequant_row(ta.type, ta.data, Na * K, v.data());
+    dequant_row(tb.type, tb.data, Nb * K, v.data() + (size_t)Na * K);
+    auto q8 = quantize_rows_q8_0(v.data(), Np, K);
+    return make_weight(GGML_Q8_0, q8.data(), q8.size(), Np, K);
+  }
+  cl_mem load_f32(const std::string& name) {
+    const GgufTensor& t = T(name);
+    std::vector<float> v(t.nelements());
+    dequant_row(t.type, t.data, (int)v.size(), v.data());
+    return buf(v.size() * 4, v.data());
+  }
+  // A matrix with its rows padded to Np rows of zeros and, for a type of small blocks (32 / 64: Q8_0, IQ4_NL, Q2_0)
+  // whose K is not whole superblocks, its columns to padded_k(K) (zero blocks): Flash Next's 640-wide shared expert as 768 (the extra outputs are 0).
+  GpuWeight load_w_pad(const std::string& name, int Np) {
+    const GgufTensor& t = f_.get(name);
+    const int K = (int)t.dims[0], N = (int)t.dims[1];
+    if (K % 256 == 0 && N == Np) return load_w(name);
+    int blk = 0, bytes = 0;
+    ggml_block_info(t.type, blk, bytes);
+    if (K % 256 && (blk >= 256 || K % blk)) throw std::runtime_error("unsupported row length: " + name);
+    const int Kp = padded_k(K);
+    const size_t prb = (size_t)Kp / blk * bytes;
+    std::vector<uint8_t> v((size_t)Np * prb, 0);
+    if (K % 256) pad_small_block_rows(t.type, t.data, N, K, v.data());
+    else memcpy(v.data(), t.data, (size_t)N * prb);
+    return make_weight(t.type, v.data(), v.size(), Np, Kp, weight_role(name));
+  }
+  // Flash Next mixer: the low-rank down rows [hc_lr][HCE] and the inject rows [hc_n][HCE] stacked (padded to 16 rows)
+  // as one Q8_0 matrix: the GEMM gives both from the same normed input.
+  GpuWeight load_hc_down(const std::string& down, const std::string& inject) {
+    const int K = hp.hce(), LR = hp.hc_lr, NI = inject.empty() ? 0 : hp.hc_n, N = (LR + NI + 15) / 16 * 16;
+    std::vector<float> v((size_t)N * K, 0.0f);
+    const GgufTensor& td = f_.get(down);
+    if ((int)td.dims[0] != K || (int)td.dims[1] != LR) throw std::runtime_error("unexpected tensor shape: " + down);
+    dequant_row(td.type, td.data, (int64_t)LR * K, v.data());
+    if (NI) {
+      const GgufTensor& ti = f_.get(inject);
+      if ((int)ti.dims[0] != K || (int)ti.dims[1] != NI) throw std::runtime_error("unexpected tensor shape: " + inject);
+      dequant_row(ti.type, ti.data, (int64_t)NI * K, v.data() + (size_t)LR * K);
+    }
+    if (hc_bf16()) return bf16_weight(v, N, K);
+    auto q8 = quantize_rows_q8_0(v.data(), N, K);
+    return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K);
+  }
+  // Flash Next's precise mode, ARC_FN_PRECISE=1 (QUEUE 2, 2026-10-24; 363 tokens of README text against the f32
+  // reference, KL prompt / decode): the mixer rows as the file's BF16 values, exact (hc_down1 / hc_up1 / hc_gemm_f32
+  // -DHC_BF16, f32 inputs in prompts too: with Q8_0 rows every block's residual was ~0.5 % off), the router and shared
+  // gate rows BF16 too (gemv_bf16), every matmul input on two int8 passes, the experts included: 0.0143 / 0.0147 ->
+  // 0.0117 / 0.0096, 4K prompt 180 -> 87 tok/s, generation 6.1 -> 5.4. The BF16 rows alone, on one pass: 0.0137 / 0.0154
+  // at 139 tok/s (the int8 inputs dominate). What is left is mostly the int8 attention (q / K / V per row: simulated
+  // in the f32 reference, +0.11 % at layer 3 as in the engine; per-32 scales +0.06 %): float attention with the QSA
+  // masks is the next step.
+  static bool fn_precise() {
+    static const bool on = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
+    return on;
+  }
+  static bool hc_bf16() { return fn_precise(); }
+  // rows of f32 values that came from BF16 (exact) stored back as BF16, for the -DHC_BF16 kernels
+  GpuWeight bf16_weight(const std::vector<float>& v, int N, int K) {
+    std::vector<uint16_t> bf(v.size());
+    for (size_t i = 0; i < v.size(); ++i) {
+      uint32_t u;
+      memcpy(&u, &v[i], 4);
+      bf[i] = (uint16_t)(u >> 16);
+    }
+    GpuWeight w;
+    w.type = GGML_BF16;
+    w.N = N;
+    w.K = K;
+    w.raw = buf(bf.size() * 2 + kRawSlack, nullptr);
+    if (w.raw) CL_CHECK(clEnqueueWriteBuffer(cl_.queue, w.raw, CL_TRUE, 0, bf.size() * 2, bf.data(), 0, nullptr, nullptr));
+    return w;
+  }
+  int hc_lr_pad() const { return padded_k(hp.hc_lr); }
+  // Flash Next mixer up projection [HCE][hc_lr], its K padded with zeros to a multiple of 256
+  GpuWeight load_hc_up(const std::string& name) {
+    const GgufTensor& t = f_.get(name);
+    const int K = hp.hc_lr, N = hp.hce(), KP = hc_lr_pad();
+    if ((int)t.dims[0] != K || (int)t.dims[1] != N) throw std::runtime_error("unexpected tensor shape: " + name);
+    std::vector<float> a((size_t)N * K), v((size_t)N * KP, 0.0f);
+    dequant_row(t.type, t.data, (int64_t)N * K, a.data());
+    for (int n = 0; n < N; ++n) memcpy(&v[(size_t)n * KP], &a[(size_t)n * K], (size_t)K * 4);
+    if (hc_bf16()) return bf16_weight(v, N, KP);
+    auto q8 = quantize_rows_q8_0(v.data(), N, KP);
+    return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, KP);
+  }
+
+  void load_weights() {
+    // The output head first: the GPU reads a large buffer allocated late in the load (after gigabytes of other
+    // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
+    load_head();
+    if (hp.gemma) return load_weights_gemma4();
+    layers_.resize(hp.n_layer);
+    for (int il = 0; il < hp.n_layer; ++il) {
+      Layer& L = layers_[il];
+      L.il = il;
+      const std::string p = "blk." + std::to_string(il) + ".";
+      if (hp.hc) {
+        for (int b = 0; b < 2; ++b) {
+          const std::string hp_ = p + (b ? "hc_ffn" : "hc_attn");
+          L.hc_norm[b] = load_f32(hp_ + "_norm.weight");
+          L.hc_down[b] = load_hc_down(hp_ + "_down.weight", hp_ + "_inject.weight");
+          L.hc_up[b] = load_hc_up(hp_ + "_up.weight");
+        }
+        if (il == hp.ple_layer) {
+          L.ple_key = load_w(p + "ple_key.weight");
+          L.ple_value = load_w(p + "ple_value.weight");
+          L.ple_nk = load_f32(p + "ple_norm_key.weight");
+          L.ple_nq = load_f32(p + "ple_norm_query.weight");
+          L.ple_nc = load_f32(p + "ple_norm_conv.weight");
+          L.ple_cw = load_f32(p + "ple_conv1d.weight");
+          if (L.ple_key.N != hp.hce() || L.ple_key.K != hp.n_embd || L.ple_value.N != hp.n_embd)
+            throw std::runtime_error("unexpected PLE block shape");
+        }
+      } else {
+        L.attn_norm = load_f32(p + "attn_norm.weight");
+        L.post_norm = load_f32(p + (hp.qwen3 ? "ffn_norm.weight" : "post_attention_norm.weight"));
+      }
+      if (hp.recurrent(il)) {
+        load_gdn_in(L, p);
+        L.ssm_out = load_w(p + "ssm_out.weight");
+        L.dt_bias = load_f32(p + "ssm_dt.bias");
+        L.ssm_a = load_f32(p + "ssm_a");
+        L.conv_w = load_f32(p + "ssm_conv1d.weight");
+        L.ssm_norm = load_f32(p + "ssm_norm.weight");
+        L.conv_state = buf(conv_bytes());
+        L.S = buf((size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4);
+        if (opt.mtp && !hp.gemma) {
+          const size_t g0 = gpu_bytes, rows = 1 + kMaxDrafts;
+          L.S_next = buf((size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4);
+          L.conv_pre = buf(conv_bytes());
+          L.xin = buf(rows * hp.conv_dim() * 4);
+          L.qkvin = buf(rows * hp.conv_dim() * 4);
+          L.abin = buf(rows * 2 * hp.ssm_nv * 4);
+          mem_mtp_ += gpu_bytes - g0;  // (the state of a verification pass, for rejected drafts)
+        }
+      } else {
+        load_attn(L, p);
+      }
+      if (hp.moe) {
+        load_moe(L, p);
+      } else if ((hp.qwen3 || (float_type(f_.get(p + "ffn_gate.weight").type) && !getenv("ARC_NO_GU_FLT"))) &&
+                 f_.get(p + "ffn_gate.weight").type == f_.get(p + "ffn_up.weight").type) {
+        L.gate = load_w_stack({p + "ffn_gate.weight", p + "ffn_up.weight"});  // (rows [gate | up], L.up empty: layer_ffn)
+        L.down = load_w(p + "ffn_down.weight");
+      } else {
+        L.gate = load_w(p + "ffn_gate.weight");
+        L.up = load_w(p + "ffn_up.weight");
+        L.down = load_w(p + "ffn_down.weight");
+      }
+      clFinish(cl_.queue);
+    }
+    // MTP (nextn) block: eh_proj + one gated-attention layer + FFN, sharing the output head
+    const std::string mp = "blk." + std::to_string(hp.n_layer) + ".";
+    const size_t g_mtp = gpu_bytes;
+    struct MtpBytes { Engine& e; size_t g0; ~MtpBytes() { e.mem_mtp_ += e.gpu_bytes - g0; } } mtp_bytes{*this, g_mtp};
+    if (opt.mtp && opt.mtp_block && f_.find(mp + "nextn.eh_proj.weight")) {
+      has_mtp = mtp_block_ = true;
+      mtp_.il = hp.n_layer;
+      mtp_.attn_norm = load_f32(mp + "attn_norm.weight");
+      mtp_.post_norm = load_f32(mp + "post_attention_norm.weight");
+      load_attn(mtp_, mp);
+      if (hp.moe) {
+        load_moe(mtp_, mp);
+      } else {
+        mtp_.gate = load_w(mp + "ffn_gate.weight");
+        mtp_.up = load_w(mp + "ffn_up.weight");
+        mtp_.down = load_w(mp + "ffn_down.weight");
+      }
+      eh_proj_ = load_w(mp + "nextn.eh_proj.weight");
+      enorm_ = load_f32(mp + "nextn.enorm.weight");
+      hnorm_ = load_f32(mp + "nextn.hnorm.weight");
+      shnorm_ = load_f32(mp + "nextn.shared_head_norm.weight");
+      clFinish(cl_.queue);
+    }
+    // DFlash2 (with or without the MTP block: with both, mtp_draft picks one per step; Flash Next: the features are the
+    // means of the residual streams, the PLE / QSA state rolled back in verify_done)
+    if (!opt.dflash.empty()) load_dflash(opt.dflash);
+  }
+
+  // MoE FFN: the router and the shared-expert gate requantized together to Q8_0 (one GEMM gives both), the shared
+  // expert's Q8_0 matrices, and the routed experts' 2-bit codes and bf16 scales as they are in the file.

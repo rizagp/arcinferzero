@@ -43,10 +43,10 @@ class WhisperEngine : public whisper::Backend {
     if (!cl_.init(true)) throw std::runtime_error("whisper: no Level Zero GPU");
     const auto t0 = std::chrono::steady_clock::now();
     gemm_src_ = read_file(kernel_dir + "/gemm.cl");
-    ops_src_ = read_file(kernel_dir + "/ops.cl");
+    ops_.load(kernel_dir, KernelParts::kOps);
     wh_src_ = read_file(kernel_dir + "/whisper.cl");
-    dec_src_ = read_file(kernel_dir + "/decode.cl");
-    if (gemm_src_.empty() || ops_src_.empty() || wh_src_.empty() || dec_src_.empty())
+    dec_k_.load(kernel_dir, KernelParts::kDecode);
+    if (gemm_src_.empty() || ops_.all().empty() || wh_src_.empty() || dec_k_.all().empty())
       throw std::runtime_error("whisper: kernels not found in " + kernel_dir);
     {
       const std::vector<uint32_t> tabs = build_iq_tables();
@@ -151,6 +151,8 @@ class WhisperEngine : public whisper::Backend {
     k16_ = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 4096);
     v16_ = buf((size_t)hp_.n_head * Ap_ * 64 * 2 + 4096);
     // the decoder: a KV cache per sequence, row inputs, logits
+    if (hp_.n_text_ctx < 1 || hp_.n_text_ctx > 448)  // (wh_self_attn's scores: __local float sc[448])
+      throw std::runtime_error("whisper: more than 448 text positions is not supported");
     kc_ = buf((size_t)max_seq_ * hp_.dec_layers * hp_.n_text_ctx * D * 4);
     vc_ = buf((size_t)max_seq_ * hp_.dec_layers * hp_.n_text_ctx * D * 4);
     const int maxR = (hp_.n_text_ctx + 15) / 16 * 16;
@@ -387,7 +389,8 @@ class WhisperEngine : public whisper::Backend {
   bool part_ = false;  // (the decoder on encode_part's output, of part_a_ positions)
   int part_a_ = 0;
   ClRt cl_;
-  std::string gemm_src_, ops_src_, wh_src_, dec_src_;
+  std::string gemm_src_, wh_src_;
+  KernelParts ops_, dec_k_;  // (zero/kernels/ops*.cl, decode*.cl: see KernelParts)
   cl_mem tabs_ = nullptr;  // (decode.cl's tables: its GEMV takes them, Q8_0 reads none)
   cl_mem ckv_buf_ = nullptr;  // (cross_kv: a layer's keys / values in f32, before they are packed)
   std::map<std::string, cl_kernel> kc_map_;
@@ -466,7 +469,7 @@ class WhisperEngine : public whisper::Backend {
     const std::string key = which + defs + "|" + name;
     auto it = kc_map_.find(key);
     if (it != kc_map_.end()) return it->second;
-    const std::string& src = which == "gemm" ? gemm_src_ : which == "ops" ? ops_src_ : which == "decode" ? dec_src_ : wh_src_;
+    const std::string& src = which == "gemm" ? gemm_src_ : which == "ops" ? ops_.for_kernel(name) : which == "decode" ? dec_k_.for_kernel(name) : wh_src_;
     cl_program p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);
     return kc_map_[key] = cl_.kernel(p, name);

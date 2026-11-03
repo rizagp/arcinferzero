@@ -1432,110 +1432,95 @@ function compactedNote(n, summary) {
 // conversation goes on with their results until the model answers without a call (at most MAX_ROUNDS turns)
 const WEB_TOOLS = [
   { type: "function", function: { name: "web_search",
-    description: "Search the web: top results with title, URL, snippet. For current events, recent versions or prices, " +
-      "facts you are unsure of.",
+    description: "Web search: title, URL, snippet of the top results. For current or uncertain facts.",
     parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
   { type: "function", function: { name: "web_fetch",
-    description: "Read a web page as text, or a file at a URL: PDF, Word, Excel, PowerPoint (their text; saved in this chat's " +
-      "files), an image (saved; shown to you when you can see images). A GitHub issue or pull request comes with all its " +
-      "comments. Links to files and to other issues come with their URLs: open the ones that matter with web_fetch (a " +
-      "file attached to an issue, a related issue), following them as far as the question needs. A long text comes in " +
-      "parts; each result gives the offset of the next.",
-    parameters: { type: "object", properties: { url: { type: "string", description: "http(s)" },
-      offset: { type: "integer" }, links: { type: "boolean", description: "true: every link's URL, to explore a site's other pages" } }, required: ["url"] } } },
+    description: "Read a URL: a page as text; PDF / Word / Excel / PowerPoint as text, audio as its transcript, images " +
+      "shown to you if you see images (all saved in the chat's files); a GitHub issue / PR with every comment. Links " +
+      "to files and issues keep their URLs: open those the question needs. Long text comes in parts (next offset given).",
+    parameters: { type: "object", properties: { url: { type: "string" }, offset: { type: "integer" },
+      links: { type: "boolean", description: "every link's URL, to explore a site" } }, required: ["url"] } } },
   { type: "function", function: { name: "web_view",
-    description: "See a web page as a browser shows it: a screenshot of one screen (shown to you when you can see images) " +
-      "and the page's text after its scripts ran. For a page's look or layout, a chart or picture on it, or a page whose " +
-      "text web_fetch could not get (built by scripts). Slower than web_fetch (5-15 s).",
-    parameters: { type: "object", properties: { url: { type: "string", description: "http(s)" },
-      screen: { type: "integer", description: "0 = the top (default), 1 = the next screen down... up to 5" },
+    description: "A page as a browser shows it: one screen's screenshot (if you see images) and its text after scripts " +
+      "ran. For a page's look, a chart on it, or text web_fetch could not get. 5-15 s.",
+    parameters: { type: "object", properties: { url: { type: "string" },
+      screen: { type: "integer", description: "0 top (default) .. 5, one screen down each" },
       offset: { type: "integer" }, links: { type: "boolean" } }, required: ["url"] } } }];
 // (the tools' and these texts' words are the prompt of every chat with tools: kept short, 2026-10-28; each rule and
 //  parameter kept, what the system text and a tool's description both said is said once)
-const WEB_SYSTEM = () => "Today is " + new Date().toDateString() + ". For current or specific information, web_search, " +
-  "read the most relevant pages with web_fetch, answer from them and cite the URLs used.";
+const WEB_SYSTEM = () => "Today is " + new Date().toDateString() + ". For current or specific information: web_search, " +
+  "read the best pages with web_fetch (web_view for how a page looks), answer from them and cite the URLs.";
 // ---- file tools (Files on): the saved files (uploads) for the model, run on the server (/v1/tools/list_files,
 // read_file, create_file; tools/server.cpp); a document it writes shows as a file card in its answer
 const FILE_TOOLS = [
   { type: "function", function: { name: "list_files",
-    description: "List the user's saved files (uploads, documents you wrote): id, name, kind, size, upload time. To find " +
-      "files the user means ('the files I uploaded today').",
+    description: "The user's saved files (uploads, documents you wrote): id, name, kind, size, time.",
     parameters: { type: "object", properties: {
-      scope: { type: "string", enum: ["all", "chat", "project"], description: "chat: this conversation's only; project: the project folder's files" },
+      scope: { type: "string", enum: ["all", "chat", "project"], description: "chat: this chat's; project: its folder's" },
       kind: { type: "string", enum: ["image", "audio", "video", "document"] },
       name_contains: { type: "string" },
-      within_hours: { type: "number", description: "uploaded in the last N hours" },
+      within_hours: { type: "number" },
       limit: { type: "integer" } } } } },
   { type: "function", function: { name: "read_file",
-    description: "Read a saved file: DOCX, PDF, XLSX, PPTX (pages = slides), text, code, Markdown, CSV... A text your " +
-      "context takes in one read comes whole (from an offset: the rest at once); a longer one returns its outline first " +
-      "(numbered sections, pages, sizes): then read many pages in one call (pages \"1-20\"), not a section at a time; " +
-      "parts continue with next_offset. A file you wrote returns its create_file arguments. Images, audio: metadata only. Scanned PDF pages, read by pages, are transcribed by the vision model (up to 4 a call, 10-60 s " +
-      "each). Also other chats (\"chat:<id>\": a section per exchange) and recordings / meetings (\"transcript:<id>\", " +
-      "attached with @: a summary, then 5-minute sections with times and speakers).",
+    description: "Read a saved file (DOCX, PDF, XLSX, PPTX: pages = slides; text, code, CSV...). Whole if it fits your " +
+      "context; else its outline (sections, pages, sizes) first, then read many pages per call (pages \"1-20\"), not a " +
+      "section at a time; parts continue at next_offset. A file you wrote: its create_file arguments. Images / audio: " +
+      "metadata only. Scanned PDF pages are transcribed when read by pages (4 a call, 10-60 s each). Also \"chat:<id>\" " +
+      "(another chat, one section per exchange) and \"transcript:<id>\" (a recording: summary, 5-minute sections).",
     parameters: { type: "object", properties: {
-      file_id: { type: "string", description: "id or name from list_files; chat:<id>; transcript:<id>" },
-      section: { type: "integer", description: "from the outline" },
+      file_id: { type: "string", description: "id or name; chat:<id>; transcript:<id>" },
+      section: { type: "integer" },
       pages: { type: "string", description: "\"12\" or \"12-15\"" },
       offset: { type: "integer" } }, required: ["file_id"] } } },
   { type: "function", function: { name: "digest_file",
-    description: "For a document (or source file) too long to read whole in your context, when the user wants all of it " +
-      "(summary, review, its weak points, every requirement): the server has you read it part by part (each section or " +
-      "function kept whole) and returns notes of every part, with their pages; minutes for a long one. The notes are " +
-      "saved in the chat's files as \"<name> (notes).md\": the same call again reads them at once.",
+    description: "A document or source file too long for your context, when the user wants all of it (summary, review, " +
+      "weak points, every requirement): read part by part (sections kept whole), notes of every part with pages; " +
+      "minutes for a long one. Notes saved as \"<name> (notes).md\": calling again reads them at once.",
     parameters: { type: "object", properties: {
-      file_id: { type: "string", description: "id or name from list_files" },
-      focus: { type: "string", description: "what the user wants from it, in their words (e.g. \"kekurangan dokumen ini\")" } },
+      file_id: { type: "string" },
+      focus: { type: "string", description: "what the user wants, in their words" } },
       required: ["file_id"] } } },
   { type: "function", function: { name: "search_file",
-    description: "Passages of a long document that answer a question (BM25 word search), with section and pages; without " +
-      "file_id, every document of this chat (and of its project). Use the document's own words (names, terms, numbers); retry with others.",
+    description: "Passages that answer a question (BM25 word search), with section and pages; without file_id, every " +
+      "document of this chat and its project. Use the document's own words; retry with others.",
     parameters: { type: "object", properties: {
-      query: { type: "string", description: "keywords, e.g. \"anggaran pemasaran 2026\"" },
-      file_id: { type: "string" }, top_k: { type: "integer", description: "1-10, default 5" } }, required: ["query"] } } },
+      query: { type: "string" }, file_id: { type: "string" }, top_k: { type: "integer", description: "1-10 (5)" } }, required: ["query"] } } },
   // (one tool for the other chats, list_chats and search_chats before: the same job, a shorter prompt)
   { type: "function", function: { name: "search_chats",
-    description: "The user's other chats, for an earlier conversation (\"what did we decide yesterday\"). No query: the " +
-      "chats newest first (file_id chat:<id>, title, last change, exchanges). query: the exchanges that fit it (BM25: " +
-      "chat, exchange number, time, question, text); use the chats' own words.",
+    description: "The user's other chats (\"what did we decide yesterday\"). No query: newest first (file_id chat:<id>, " +
+      "title, time, exchanges). query: the exchanges that fit (BM25), in the chats' own words.",
     parameters: { type: "object", properties: {
       query: { type: "string" }, limit: { type: "integer", description: "chats 1-100 (20); exchanges 1-10 (5)" } } } } },
   { type: "function", function: { name: "create_file",
-    description: "Write a file, shown as a card in your answer (the only way to save one: a code block in your answer is " +
-      "not a file). Any text format is saved exactly as written: html, svg, css, js, py, json, csv, txt, md, xml... " +
-      "(html / svg open as a page). docx, pdf, doc (Word 97-2003), rtf, xlsx are made from Markdown content: # headings, **bold**, *italic*, <u>underline</u>, ~~strike~~, ==highlight==, <span style=\"color:#C00000; " +
-      "background:#FFF2CC; font-size:14pt\">..</span>, lists, tables (alignment row :--- / :---: / ---:), ``` code, --- " +
-      "rule, '::: center' (right, justify) ... ':::' blocks, \\pagebreak. xlsx: each table is a sheet named by the ## " +
-      "heading before it; numbers (1.234,5), Rp amounts, percentages, dates (2026-10-27) become values; other text goes " +
-      "to a first Notes sheet.",
+    description: "Write a file, shown as a card in your answer (a code block in your answer is not a file). Text formats " +
+      "(html, svg, css, js, py, json, csv, txt, md, xml...) are saved as written. docx, pdf, doc, rtf, xlsx come from " +
+      "Markdown: # headings, **bold**, *italic*, <u>u</u>, ~~strike~~, ==highlight==, <span style=\"color:#C00000; " +
+      "background:#FFF2CC; font-size:14pt\">..</span>, lists, tables (:--- / :---: / ---:), ``` code, --- rule, " +
+      "'::: center' (right, justify) .. ':::', \\pagebreak. xlsx: one sheet per table, named by the ## heading above it; " +
+      "numbers, Rp, %, dates (2026-10-27) become values; other text goes to a Notes sheet.",
     parameters: { type: "object", properties: {
-      filename: { type: "string" }, format: { type: "string", description: "the extension: docx, pdf, xlsx, html, py..." },
+      filename: { type: "string" }, format: { type: "string", description: "extension: docx, pdf, xlsx, html, py..." },
       content: { type: "string" },
       title: { type: "string" }, subtitle: { type: "string" }, author: { type: "string" }, date: { type: "string" },
       page: { type: "string", enum: ["A4", "Letter", "Legal", "A5"] }, orientation: { type: "string", enum: ["portrait", "landscape"] },
-      margins_mm: { type: "number" }, font: { type: "string", description: "e.g. Calibri, Arial, Times New Roman, Georgia" },
-      font_size: { type: "number" }, line_spacing: { type: "number", description: "1.0-2.0" },
+      margins_mm: { type: "number" }, font: { type: "string" }, font_size: { type: "number" }, line_spacing: { type: "number" },
       heading_color: { type: "string", description: "#RRGGBB" }, accent_color: { type: "string", description: "table header fill" },
       text_color: { type: "string" }, header: { type: "string" }, footer: { type: "string" }, page_numbers: { type: "boolean" },
-      number_format: { type: "string", enum: ["auto", "id", "us"], description: "xlsx numbers: id 1.234,5, us 1,234.5, " +
-        "auto (default) detects; one style per table" } },
+      number_format: { type: "string", enum: ["auto", "id", "us"], description: "xlsx: id 1.234,5; us 1,234.5" } },
       required: ["format", "content"] } } }];
-const FILE_SYSTEM = "Files: for a fact in a long document, search_file; to summarize or explain a chapter or section, " +
-  "read_file its section number from the outline (subsections included); all of a long one: digest_file. Say which " +
-  "section or page an answer comes from. For several or all files the user means: list_files, then read_file each. To " +
-  "change a document you wrote: read_file it (its source), then create_file again with the corrections (a new " +
-  "version). Never say a file was written or changed without calling the tool; never make up what a document says.";
+const FILE_SYSTEM = "Files: a fact in a long document: search_file; a chapter or section: read_file its section number " +
+  "(subsections included); all of a long one: digest_file. Say which section or page an answer comes from. Several " +
+  "files: list_files, then read_file each. To change a document you wrote: read_file it (its source), then create_file " +
+  "again (a new version). Never claim a file was written without calling the tool; never make up a document's content.";
 // ---- terminal: the chat's terminal (the right panel), on this computer only (/v1/tools/run_command,
 // tools/server_terminal.h); while the user has it open the model may run commands in it too (Settings > Terminal:
 // "ask": the command waits in its card for Run / Don't run; "off": the model never does)
 const TERM_TOOLS = [
   { type: "function", function: { name: "run_command",
-    description: "Run PowerShell in this chat's terminal on the user's computer, starting in the chat's folder (its " +
-      "uploads and your documents, by name). Environment variables carry over, PowerShell variables and functions do " +
-      "not. Programs a command starts end with it, except those Windows starts (COM such as Excel.Application, WMI: " +
-      "close them yourself, e.g. $xl.Quit()). For inspecting or converting files, computing, running programs. Output " +
-      "up to 64 KB, less for a small context (start and end kept); timeout 120 s, timeout_s up to 600. The result gives " +
-      "the cwd and the active venv.",
+    description: "Run PowerShell in this chat's terminal on the user's computer, from the chat's folder (its files by " +
+      "name). Environment variables carry over between calls; PowerShell variables and functions do not. Programs a " +
+      "command starts end with it, except COM / WMI ones (close them: $xl.Quit()). Output up to 64 KB (start and end " +
+      "kept); timeout 120 s, timeout_s up to 600. The result gives the cwd and the active venv.",
     parameters: { type: "object", properties: {
       command: { type: "string", description: "several lines are fine" },
       timeout_s: { type: "integer" } }, required: ["command"] } } },
@@ -1543,20 +1528,19 @@ const TERM_TOOLS = [
   //  --version, waiting for Run; this opens it with nothing run)
   // (the panel's own buttons: × hides it, the session goes on; the power button exits it)
   { type: "function", function: { name: "terminal_panel", description: "This chat's terminal panel; nothing runs. " +
-    "open; hide (the panel's ×: the session, cd and venv, goes on; for \"close\" or \"hide\"); exit (the panel's " +
-    "power button: the session ends, a running command stops; only when asked to exit or end it).",
+    "open; hide (for \"close\" / \"hide\": the session, cd and venv go on); exit (only when asked to exit or end it: the " +
+    "session ends, a running command stops).",
     parameters: { type: "object", properties: { action: { type: "string", enum: ["open", "hide", "exit"] } }, required: ["action"] } } }];
 // (one text whatever the terminal's state: the system text comes before the tools in the prompt, so a text that
 //  changed when the terminal opened or closed, or got its shell note then, made the server compute the tools and the
 //  whole conversation again (2,400 tokens and more: 20 s and more on the 27B instead of 3); the shell's version goes
 //  in the session's first result instead, see termShellNote)
-const TERM_SYSTEM = "run_command works in this chat's terminal as one session (cd and an activated .venv stay; the " +
-  "user may type in it too; the user may have to allow a command) and opens it when closed. Write PowerShell; the " +
-  "session's first result says which. File tools for documents; run_command only when the task needs a command " +
-  "(install, run, convert, compute), not to look around; asked only to open, hide or exit the terminal: " +
-  "terminal_panel. Before a command that changes or deletes anything, say what " +
-  "it does. Stay in the chat's folder unless the user asked otherwise. If the user does not allow a command, do not " +
-  "retry it in another form: ask what they want.";
+const TERM_SYSTEM = "run_command: one terminal session for this chat (cd and an activated .venv stay; the user may type " +
+  "in it and may have to allow a command); it opens the terminal when closed. Write PowerShell (the first result says " +
+  "which). File tools for documents; run_command only when a task needs a command (install, run, convert, compute), " +
+  "not to look around; to open, hide or exit the terminal: terminal_panel. Before a command that changes or deletes " +
+  "anything, say what it does. Stay in the chat's folder unless asked. If a command is not allowed, do not retry it " +
+  "in another form: ask.";
 // what the terminal is (asked once when it opens: PowerShell's version and edition, Windows' name and build), with the
 // syntax that trips models up in it: commands written for bash or for PowerShell 7 fail in Windows PowerShell 5.1
 function termShellNote(shell) {
@@ -1573,13 +1557,13 @@ function termShellNote(shell) {
 // ---- memory tools (see loadMemory): the model writes notes only when the user asks it to remember or forget
 const MEM_TOOLS = [
   { type: "function", function: { name: "remember",
-    description: "Save a note the user asked you to remember (\"remember that...\", \"ingat ya...\") for every later chat. " +
-      "One short sentence in the user's language, as a fact (e.g. \"Prefers answers in Indonesian\"). Only when asked.",
+    description: "Save a note the user asked you to remember (\"remember that...\", \"ingat ya...\") for later chats: one " +
+      "short fact in the user's language. Only when asked.",
     parameters: { type: "object", properties: { fact: { type: "string" },
-      for_every_chat: { type: "boolean", description: "leave it out (a project's chat: the note stays with the project); " +
-        "true only if the user explicitly says it is for all chats, not just this project" } }, required: ["fact"] } } },
+      for_every_chat: { type: "boolean", description: "true only if the user says it is for all chats, not just this project" } },
+      required: ["fact"] } } },
   { type: "function", function: { name: "forget",
-    description: "Delete saved notes the user asked you to forget: every note that contains the given text.",
+    description: "Delete the saved notes containing this text (only when the user asks).",
     parameters: { type: "object", properties: { match: { type: "string", description: "a part of the note's text" } }, required: ["match"] } } }];
 const MEM_SYSTEM = (notes) => "Memory: notes the user asked you to keep across chats. Use them where they matter; do not " +
   "list them unasked. When the user asks you to remember or forget something, call remember / forget (never on your " +

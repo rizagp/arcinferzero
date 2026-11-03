@@ -75,13 +75,16 @@ src/        shared code: quants.h (GGUF decoding/repacking), tokenizer.h, chat.h
             chat_jinja.h (Gemma 4, minja templates), image.h + vision_gemma4.h (image input), audio.h +
             audio_gemma4.h (audio input), json.h, http.h, gguf.h, clrt.h / cl_min.h (OpenCL loader for clinfo, the
             benchmarks and tests)
-zero/       the engine: engine.h (setup, memory, slots, sessions, dispatch) with its parts engine_gemma.h,
-            engine_qwen.h, engine_flashnext.h, engine_moe.h, engine_drafters.h (forward passes by model family,
-            included inside class Engine), clrt.h (OpenCL-style calls on Level Zero), xcache.h +
+zero/       the engine: engine.h (the forward passes, dispatch) with its parts, included inside class Engine:
+            engine_setup.h, engine_load.h, engine_load_gemma.h, engine_alloc.h, engine_stream.h (setup, weights,
+            memory, expert streaming), engine_slots.h, engine_sessions.h (slots, batched decoding, saved
+            conversations), engine_gemma.h, engine_qwen.h, engine_flashnext.h, engine_moe.h, engine_drafters.h,
+            engine_h8.h (forward passes by model family), clrt.h (OpenCL-style calls on Level Zero), xcache.h +
             expert_store.h (MoE experts on the SSD, GPU cache), serverz.cpp / runz.cpp, vision_gemma4v.h /
             vision_qwen3vl.h / audio_gemma4a.h (encoders), kernels/ (gemm.cl DP4a / int8 XMX GEMM, gemm_x16.cl
-            f16 XMX GEMM (discrete GPUs, ARC_X16), decode.cl JIT decode + GEMV, ops.cl norms / DeltaNet / attention /
-            quantization, moe.cl expert routing and GEMMs, tp.cl the multi-GPU sums), npu/ (the NPU next to the
+            f16 XMX GEMM (discrete GPUs, ARC_X16), decode.cl JIT decode + GEMV (decode_moe.cl: MoE experts), ops*.cl norms / DeltaNet / attention /
+            quantization / encoders / Flash Next / DFlash2 in parts (a kernel builds from its part and the ones
+            before it: KernelParts in clrt.h), moe.cl expert routing and GEMMs, tp.cl the multi-GPU sums), npu/ (the NPU next to the
             GPU: engine_npu.h, npu_rt.h graph runtime, npu_ir.h OpenVINO IR writer, probes), xe2/ (engine_xe2.h:
             switches and the f16 XMX GEMM for discrete Arc cards only), mgpu/ (one model over several GPUs:
             engine_tp.h TpEngine and the sums, engine_tp_shard.h what a shard holds, tp_mirror.h the server's

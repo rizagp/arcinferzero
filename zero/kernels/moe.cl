@@ -56,7 +56,7 @@ __kernel void moe_route(__global const float* logits, int ldl, int T, __global i
 #pragma unroll
     for (int i = 0; i < NE / SG; ++i)
       if (i * SG + l == gi) v[i] = -INFINITY;
-    sel[k] = gi;
+    sel[k] = min(gi, NE - 1);  // (a row of NaN logits picks no lane: NE would index past counts and the experts)
     p[k] = ROUTE_P(gv, mx);
     sum += p[k];
   }
@@ -98,7 +98,7 @@ __kernel void moe_route1(__global const float* logits, __global float* sgate, __
 #pragma unroll
     for (int i = 0; i < NE / SG; ++i)
       if (i * SG + l == gi) v[i] = -INFINITY;
-    sel[k] = gi;
+    sel[k] = min(gi, NE - 1);  // (as moe_route)
     p[k] = ROUTE_P(gv, mx);
     sum += p[k];
   }

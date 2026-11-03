@@ -332,9 +332,9 @@ class VisionGemma4V : public GemmaImageEncoder {
     g_ = e_.buf(R * F * 4);
     t_ = e_.buf(R * E * 4);
     o_ = e_.buf(R * std::max<size_t>(E, n_out) * 4);
-    q_ = e_.buf(R * E * 2);
-    k_ = e_.buf(R * E * 2);
-    v_ = e_.buf(R * E * 2);
+    q_ = e_.buf(R * E * 2 + 64);  // (+64: the 16-lane vit_attn_rows reads a block past the last row, head 72)
+    k_ = e_.buf(R * E * 2 + 64);
+    v_ = e_.buf(R * E * 2 + 64);
     cap_ = std::max(cap_, Mp);
     cap_tok_ = std::max(cap_tok_, Mq);
   }

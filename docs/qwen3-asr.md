@@ -20,7 +20,7 @@ The GGUF conversion of [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-A
 ## How it runs
 
 - **Audio encoder** ([zero/audio_qwen3a.h](../zero/audio_qwen3a.h), its kernels `q3a_*` in
-  [zero/kernels/asr.cl](../zero/kernels/asr.cl), the vision encoders' `vit_*` in [zero/kernels/ops.cl](../zero/kernels/ops.cl)): Whisper's 128-bin log-mel without padding (src/whisper.h
+  [zero/kernels/asr.cl](../zero/kernels/asr.cl), the vision encoders' `vit_*` in [zero/kernels/ops_vit.cl](../zero/kernels/ops_vit.cl)): Whisper's 128-bin log-mel without padding (src/whisper.h
   `log_mel`, `pad` 0), cut into chunks of 100 frames (1 s); the first 3x3 stride-2 convolution on the CPU, the second
   and third as im2col + f16 GEMM on the GPU; 13 tokens per chunk; 24 pre-LayerNorm transformer blocks whose attention
   stays inside windows of 8 chunks (104 tokens), so the encoder runs on groups of 16 windows one after the other;

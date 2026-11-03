@@ -190,7 +190,8 @@ inline void Engine::tp_reduce_rs(int rows) {
   }
   c.flags[r] = 0;
   const cl_ulong fo = (cl_ulong)r * sizeof(int);
-  float lim_n = lim / N;
+  // (less 1/1024: each part's f16 may round up half an ulp, and N parts at the limit summed to inf; kernel audit)
+  float lim_n = lim * (1.0f - 1.0f / 1024) / N;
   set_args(k_tp_half_, 0, tp_part_, tp_h_, nn, from(tp_flag_, fo), lim_n, a, b);
   size_t g1 = (n + 255) / 256 * 256, l1 = 256;
   run("tp_sum", k_tp_half_, 1, &g1, &l1);

@@ -49,7 +49,8 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
 
 | | |
 |---|---|
-| `zero/engine.h` | setup, memory plan, slots, dispatch; parts `engine_qwen.h`, `engine_gemma.h`, `engine_moe.h`, `engine_drafters.h`, `engine_flashnext.h` |
+| `zero/engine.h` | the Engine class: forward passes, dispatch; parts included in its body: setup `engine_setup.h`, `engine_load.h`, `engine_load_gemma.h`, `engine_alloc.h`, `engine_stream.h`; slots `engine_slots.h`, `engine_sessions.h`; layers `engine_qwen.h`, `engine_gemma.h`, `engine_moe.h`, `engine_drafters.h`, `engine_flashnext.h`, `engine_h8.h` |
+| `zero/kernels/ops*.cl` | non-GEMM kernels in parts (`KernelParts`, `zero/clrt.h`): `ops.cl` norms / DeltaNet, `ops_attn.cl`, `ops_attn_g.cl`, `ops_vit.cl`, `ops_flashnext.cl`, `ops_dflash.cl`; `decode.cl` + `decode_moe.cl` likewise; a kernel builds from its part and the ones before |
 | `zero/clrt.h` | the OpenCL-style calls on Level Zero (kernels compiled through OpenCL, cached in `%USERPROFILE%\.arcinferzero\kernels`) |
 | `zero/runz.cpp` | CLI: `--bench-pp`, `--dump-logits`, `--perplexity`, `--kl-ref`, `--gpus`; `runz --help` |
 | `tools/ref_forward.cpp` | the f32 CPU reference used for KL |

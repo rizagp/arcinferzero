@@ -16,6 +16,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -42,6 +43,10 @@ struct ZKernel {
   ze_kernel_handle_t k;
   std::string name;
   uint32_t gx = 0, gy = 0, gz = 0;  // group size last set
+  // the value each argument was last given (as passed to Level Zero: a buffer as its device pointer then, which the
+  // engine's slots repoint): the same value again is not set again (a launch keeps the arguments it was appended with)
+  struct Arg { uint8_t sz = 0; bool set = false; unsigned char v[16]; };
+  std::vector<Arg> args;
 };
 struct ZProg { ze_module_handle_t m; bool indirect = false; std::string opts; };  // indirect: built with -DXCACHE (see kernel())
 typedef ZMem* cl_mem;
@@ -479,14 +484,32 @@ struct LaunchTimer {
 }  // namespace zrt
 inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
   zrt::LaunchTimer lt{zrt::setarg_ns};
+  void* p = nullptr;
   if (sz == sizeof(void*) && v) {
     ZMem* m = *(ZMem* const*)v;
     if (m && zrt::D().mems.count(m)) {
-      void* p = m->ptr;
-      return zeKernelSetArgumentValue(k->k, i, sizeof(p), &p) == ZE_RESULT_SUCCESS ? CL_SUCCESS : -51;
+      p = m->ptr;
+      v = &p;
     }
   }
-  return zeKernelSetArgumentValue(k->k, i, sz, v) == ZE_RESULT_SUCCESS ? CL_SUCCESS : -51;
+  // (ARC_ARG_CACHE=0: every argument set at every launch, as before)
+  static const bool cache = !(getenv("ARC_ARG_CACHE") && atoi(getenv("ARC_ARG_CACHE")) == 0);
+  ZKernel::Arg* a = nullptr;
+  if (cache && v && sz <= sizeof(ZKernel::Arg::v) && i < 64) {  // (local memory, v null: its size only, set each time)
+    if (k->args.size() <= i) k->args.resize(i + 1);
+    a = &k->args[i];
+    if (a->set && a->sz == sz && memcmp(a->v, v, sz) == 0) return CL_SUCCESS;
+  }
+  if (zeKernelSetArgumentValue(k->k, i, sz, v) != ZE_RESULT_SUCCESS) {
+    if (a) a->set = false;
+    return -51;
+  }
+  if (a) {
+    a->sz = (uint8_t)sz;
+    memcpy(a->v, v, sz);
+    a->set = true;
+  }
+  return CL_SUCCESS;
 }
 inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim, const size_t*, const size_t* g,
                                      const size_t* l, cl_uint, const cl_event*, cl_event* ev) {
@@ -832,6 +855,36 @@ inline std::string read_file(const std::string& path) {
   ss << f.rdbuf();
   return ss.str();
 }
+
+// A kernel program kept in parts, files in a fixed order, that were one file once (ops.cl 3,516 lines, decode.cl
+// 2,047). A kernel of part k builds from parts 0..k: the text before it is what it was in the one file, so its code is
+// too, and a norm's or a GEMV's build no longer compiles the attention, encoder, Flash Next or MoE kernels after it.
+struct KernelParts {
+  static constexpr std::initializer_list<const char*> kOps = {"ops.cl", "ops_attn.cl", "ops_attn_g.cl", "ops_vit.cl",
+                                                              "ops_flashnext.cl", "ops_dflash.cl"};
+  static constexpr std::initializer_list<const char*> kDecode = {"decode.cl", "decode_moe.cl"};
+  std::vector<std::string> prefix;              // prefix[k]: parts 0..k
+  std::unordered_map<std::string, int> part_of;  // kernel name -> its part
+  void load(const std::string& dir, std::initializer_list<const char*> parts) {
+    std::string s;
+    prefix.clear();
+    part_of.clear();
+    for (const char* f : parts) {
+      const std::string t = read_file(dir + "/" + f);
+      for (size_t i = t.find("__kernel void "); i != std::string::npos; i = t.find("__kernel void ", i + 1)) {
+        size_t a = i + 14, b = a;
+        while (b < t.size() && (isalnum((unsigned char)t[b]) || t[b] == '_')) ++b;
+        part_of.emplace(t.substr(a, b - a), (int)prefix.size());
+      }
+      prefix.push_back(s += t);
+    }
+  }
+  const std::string& all() const { return prefix.back(); }
+  const std::string& for_kernel(const char* name) const {
+    const auto it = part_of.find(name);
+    return it == part_of.end() ? all() : prefix[it->second];  // (an unknown name: the whole set, its build error)
+  }
+};
 
 template <typename T> inline void set_args(cl_kernel k, cl_uint i, const T& v) { CL_CHECK(clSetKernelArg(k, i, sizeof(T), &v)); }
 template <typename T, typename... R> inline void set_args(cl_kernel k, cl_uint i, const T& v, const R&... rest) {

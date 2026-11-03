@@ -1,5 +1,40 @@
 # Changelog
 
+## 2026-11-03: kernel audit, files split, lighter launches
+
+- **Kernel self audit (every `.cl` file, read against the code that launches it; each finding checked):**
+  - Qwen3 dense with 5 q heads per kv head (Qwen3-14B): the split decode attention (`attn_fa_g -DFA_SPLIT`) took 4 q
+    heads per sub-group and read the first one's kv head for all four, so heads 5-7 of each group attended with the
+    wrong K / V at every generated token. Now the largest divisor of the ratio (`Engine::gq_div`); Gemma 4 (2, 4, 8)
+    and the Qwen3 models with 2 or 4 are unchanged.
+  - MoE routing: a router row of NaN logits picked no expert, and the id NE then wrote past the counts and read past
+    the experts (device lost). The id is clamped to the last expert (`moe_route`, `moe_route1`); finite logits are
+    unchanged.
+  - `ARC_H8=1` with `ARC_NPU`: the NPU shares copy a weight over the same buffers, so the in-place H8 conversion ran
+    twice on shared rows and the NPU read H8 rows as W8. H8 is now off with the NPU, with a line saying so.
+  - Guards for shapes no shipped model has (each one silently wrong before): Qwen3.5 attention with a q / kv ratio
+    that leaves key tile words unloaded (5, 7, 10 ...) and a RoPE width other than 64; Flash Next with hc_n not
+    dividing 8 or inject logits past the padded low rank; QSA's local block kept within 32 KB; Whisper text contexts
+    over 448; a DFlash2 window below 1. Gemma 4 vision K / V buffers got the 64-byte slack the other encoders had
+    (head 72 read 16 bytes past). Multi-GPU f16 sums keep 1/1024 below the f16 limit (parts that each rounded up could
+    add to inf).
+- **Files split** (code moved, not changed: logits bit-identical on every model):
+  - `zero/kernels/ops.cl` (3,516 lines) into `ops.cl`, `ops_attn.cl`, `ops_attn_g.cl`, `ops_vit.cl`,
+    `ops_flashnext.cl`, `ops_dflash.cl`; `decode.cl` (2,047) into `decode.cl` and `decode_moe.cl`. A kernel builds from
+    its part and the ones before it (`KernelParts`, zero/clrt.h), the same text it had in the one file, so a norm's
+    or a GEMV's build no longer compiles every attention, encoder, Flash Next and MoE kernel: shorter first-run
+    kernel builds. The cache of compiled kernels is rebuilt once.
+  - `zero/engine.h` (4,262 lines -> 1,378) into `engine_setup.h`, `engine_load.h`, `engine_load_gemma.h`,
+    `engine_alloc.h`, `engine_stream.h`, `engine_slots.h`, `engine_sessions.h`; `tools/server.cpp` (3,308 -> 2,185)
+    gives its file tools to `server_file_tools.h`. Each part is included where it was cut, so the compiled class is
+    the same text.
+- **Lighter kernel launches:** an argument given the same value as at the kernel's last launch (as passed to Level
+  Zero: a buffer as its device pointer) is not set again; most arguments of a decode step repeat. `ARC_ARG_CACHE=0`
+  sets every argument as before.
+- **Web UI tool and system prompts tightened**: 3,013 -> 2,520 prompt tokens with every tool on (-16 %); on Gemma 4
+  E4B the same tool chosen with the same arguments in 8 of 8 test requests (web, page view, memory, Word / Excel
+  file, terminal, file list, no tool).
+
 ## 2026-11-03: launcher without serverz.exe
 
 - **2D block loads for the XMX prompt GEMM (QUEUE 31.8; built, not yet run, off by default: `ARC_GEMM_2D=1`).** On

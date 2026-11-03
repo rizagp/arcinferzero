@@ -1,4 +1,4 @@
-// Times the single-token MoE expert kernels (zero/kernels/decode.cl moe_gateup_q / moe_down_q, -DMOE_Q) on the real experts
+// Times the single-token MoE expert kernels (zero/kernels/decode_moe.cl moe_gateup_q / moe_down_q, -DMOE_Q) on the real experts
 // of a standard-type MoE GGUF: each step one token with NU random experts of a layer, layers in turn, so the weights
 // come from memory as in token generation. Reports the effective weight bandwidth.
 // usage: moe_bench model.gguf [first_layer=0] [layers=8] [steps=200] [gateup_defs] [down_defs] [kernel_file]
@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
   GgufFile g(argv[1]);
   const int l0 = argc > 2 ? atoi(argv[2]) : 0, nl = argc > 3 ? atoi(argv[3]) : 8, steps = argc > 4 ? atoi(argv[4]) : 200;
   const std::string gu_defs = argc > 5 ? argv[5] : "-DGROWS=1", dn_defs = argc > 6 ? argv[6] : "-DGROWS=4";
-  const std::string file = argc > 7 ? argv[7] : "zero/kernels/decode.cl";
+  const std::string file = argc > 7 ? argv[7] : "";  // (default: zero/kernels/decode.cl + decode_moe.cl)
   const std::string arch = g.get_str("general.architecture");
   const int NE = (int)g.get_int(arch + ".expert_count"), NU = (int)g.get_int(arch + ".expert_used_count");
   struct L { uint32_t tg, td; cl_mem g, u, d; int F, K, Fp; };
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
     for (int k = 0; k < NU; ++k) { t[1 + 3 * k] = ids[k]; t[2 + 3 * k] = k; t[3 + 3 * k] = 1; }
     d_tiles[s] = cl.buffer(CL_MEM_READ_ONLY, t.size() * 4, t.data());
   }
-  const std::string src = read_file(file);
+  const std::string src = !file.empty() ? read_file(file) : read_file("zero/kernels/decode.cl") + read_file("zero/kernels/decode_moe.cl");
   auto build = [&](uint32_t type, const std::string& defs, const char* kn, bool gu) {
     std::string o = "-cl-std=CL3.0 -cl-mad-enable -DMOE_Q -DQT=" + std::to_string(type) + " -DTM=1 " + defs;
     if (gu && Fp != F) o += " -DHLD=" + std::to_string(Fp);
