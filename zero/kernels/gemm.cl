@@ -315,6 +315,18 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
       int c0[TP], c1[TP], c2[TP], c3[TP];
 #endif
       {
+#if defined(X2D) && !defined(MOE_TILES)
+        // (QUEUE 31.8: the 8 rows x 64 bytes in one 2D block load, two 32-byte blocks: d[0..7] the rows' bytes 0..31,
+        //  d[8..15] bytes 32..63, each lane the 2 bytes at 2 * lane, as the DPAS A operand takes them. The surface is
+        //  aq itself: K bytes wide and its pitch, M rows; X2D_PF also asks for the next 64 bytes of those rows)
+        ushort d[16];
+        intel_sub_group_2d_block_read_8b_8r32x2c(aq, K, M, K, (int2)(s * 256 + j * 64, m0 + mg), d);
+#ifdef X2D_PF
+        intel_sub_group_2d_block_prefetch_8b_8r32x2c(aq, K, M, K, (int2)(s * 256 + j * 64 + 64, m0 + mg));
+#endif
+        const short8 al = as_short8((ushort8)(d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]));
+        const short8 ah = as_short8((ushort8)(d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]));
+#else
         short ta[8], tb[8];  // this chunk's values 0..31 and 32..63 of the 8 tokens' rows
 #pragma unroll
         for (int p = 0; p < 8; ++p) {
@@ -328,6 +340,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
         }
         const short8 al = (short8)(ta[0], ta[1], ta[2], ta[3], ta[4], ta[5], ta[6], ta[7]);
         const short8 ah = (short8)(tb[0], tb[1], tb[2], tb[3], tb[4], tb[5], tb[6], tb[7]);
+#endif
 #if SC32
         const int8 r0 = XMAD(al, ((uint8)(lo[0], lo[1], lo[2], lo[3], lo[4], lo[5], lo[6], lo[7])));
         const int8 r1 = XMAD(ah, ((uint8)(hi[0], hi[1], hi[2], hi[3], hi[4], hi[5], hi[6], hi[7])));

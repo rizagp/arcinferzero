@@ -573,6 +573,7 @@ struct ClRt {
   bool sg8 = true;  // (sub-groups of 8 lanes: Xe-LPG yes; Xe2 / Xe3 (Lunar Lake, Battlemage, Panther Lake) only 16 / 32)
   bool soft_fail = false;  // (a failed compile, module or kernel creation throws instead of ending the process: XMX check)
   bool xmx = false;  // (XMX matrix engines with 16-lane DPAS: Xe2 / Xe3; the engine still checks them, Engine::xmx_check)
+  bool block2d = false;  // (cl_intel_subgroup_2d_block_io: 2D block loads, Xe2 / Xe3; zero/xe2/engine_xe2.h ARC_GEMM_2D)
   static uint64_t fnv1a(const std::string& s) {
     uint64_t h = 1469598103934665603ull;
     for (unsigned char c : s) { h ^= c; h *= 1099511628211ull; }
@@ -602,8 +603,10 @@ struct ClRt {
     {  // CL_DEVICE_EXTENSIONS: DPAS from OpenCL C (16 lanes: the GPUs without 8-lane sub-groups); ARC_NO_XMX=1: off
       std::string ext(16384, '\0');
       size_t ret = 0;
-      if (zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x1030, ext.size() - 1, ext.data(), &ret) == 0)
+      if (zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x1030, ext.size() - 1, ext.data(), &ret) == 0) {
         xmx = !sg8 && ext.find("cl_intel_subgroup_matrix_multiply_accumulate") != std::string::npos;
+        block2d = ext.find("cl_intel_subgroup_2d_block_io") != std::string::npos;
+      }
       if (getenv("ARC_NO_XMX") && atoi(getenv("ARC_NO_XMX")) != 0) xmx = false;
     }
     if (!getenv("ARC_NO_KCACHE")) cache_dir = app_dir() + "\\kernels";

@@ -2,6 +2,12 @@
 
 ## 2026-11-03: launcher without serverz.exe
 
+- **2D block loads for the XMX prompt GEMM (QUEUE 31.8; built, not yet run, off by default: `ARC_GEMM_2D=1`).** On
+  Arc B-series cards a step's activations, 8 token rows x 64 bytes, come in one 2D block load
+  (`cl_intel_subgroup_2d_block_io`) shaped as the DPAS A operand, instead of 16 one-row reads; `ARC_GEMM_2D_PF=1`
+  prefetches the next 64 bytes. Checked against DP4a at start with the other XMX layouts; when it fails, XMX stays
+  on without it. GPUs without the extension (the Core Ultra 125H's Xe-LPG) are unchanged: logits bit-identical.
+  `bench/gemm_sweep.ps1` row X2D.
 - **H8 prompt GEMMs (QUEUE 31.12; built, not yet run, off by default: `ARC_H8=1`).** Weights and activations rotated
   by a Walsh-Hadamard transform in blocks of up to 1024 values along K, both int8 with one scale per 256 values, so
   the GEMM is pure int8 dot products with one multiply-add per 256 values instead of a rescale every 16 or 32

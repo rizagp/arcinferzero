@@ -58,6 +58,20 @@
     return xe2_ && !g256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
 
+  // ARC_GEMM_2D=1 (QUEUE 31.8): the XMX prompt GEMM's activations with 2D block loads (cl_intel_subgroup_2d_block_io,
+  // gemm.cl -DX2D): a step's 8 token rows x 64 bytes in one 8b_8r32x2c load, the DPAS A operands as the hardware lays
+  // them out, instead of 16 one-row block reads; ARC_GEMM_2D_PF=1 also prefetches the next 64 bytes of those rows.
+  // Dense GEMMs only (the MoE tile kernel reads rows through a row map). Off until a B60 measures it; when on, the
+  // start-time XMX check runs with it, and if it does not build or differs, XMX goes on without it
+  bool x2d_ = false;
+  std::string xe2_x2d() const {
+    static const bool pf = getenv("ARC_GEMM_2D_PF") && atoi(getenv("ARC_GEMM_2D_PF")) != 0;
+    return x2d_ ? std::string(pf ? " -DX2D -DX2D_PF" : " -DX2D") : std::string();
+  }
+  bool x2d_wanted() const {
+    return xe2_ && cl_.block2d && getenv("ARC_GEMM_2D") && atoi(getenv("ARC_GEMM_2D")) != 0;
+  }
+
   // ---- the f16 XMX prompt GEMM (kernels/gemm_x16.cl) for the W8 layouts (the 27B's IQ3_S, decoded just in time).
   // Off until measured on a B60: ARC_X16=1 on a discrete GPU with XMX. ARC_X16_TRY=1 anywhere, DPAS emulated where
   // the GPU has none (tests of the kernel's layouts on this laptop). Taken only once its results match the DP4a

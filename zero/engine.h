@@ -254,15 +254,26 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       // (once per process: a split model's GPUs are all the same device (ClRt::open_devices), the check's settings
       //  come from the environment; 4 B60s loaded in 8.7-14.9 s, each shard checking again)
       static std::mutex xmx_mu;
-      static int xmx_known = -1;
+      static int xmx_known = -1, x2d_known = 0;
       {
         std::lock_guard<std::mutex> g(xmx_mu);
         if (xmx_known < 0) {
+          // (ARC_GEMM_2D=1, zero/xe2/engine_xe2.h: the check with the 2D block loads first; a build that fails or
+          //  differs leaves them out and checks again, so XMX itself is not lost to them)
+          x2d_ = x2d_wanted();
           xmx_known = xmx_check() ? 1 : 0;
-          if (xmx_known) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)\n");
+          if (x2d_ && !xmx_known) {
+            fprintf(stderr, "arcinferzero: 2D block loads (ARC_GEMM_2D) do not build or differ: not used\n");
+            x2d_ = false;
+            xmx_known = xmx_check() ? 1 : 0;
+          }
+          x2d_known = x2d_ && xmx_known ? 1 : 0;
+          if (xmx_known) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)%s\n",
+                                 x2d_known ? ", with 2D block loads" : "");
         }
       }
       xmx_ = xmx_known == 1;
+      x2d_ = x2d_known == 1;
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
     {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
@@ -2175,7 +2186,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     return kernel("gemm", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
                               (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) +
                               xe2_cg_defs(cg) + gemm_extra() +
-                              ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() : ""),
+                              ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() + xe2_x2d() : std::string()),
                   "gemm");
   }
   // the mixture-of-experts prompt GEMM over slot tiles (gemm.cl MOE_TILES; W8 layouts 100..103, per-32 scales)
