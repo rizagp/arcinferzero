@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-03: launcher without serverz.exe
+
+- When `bin\serverz.exe` is missing (a git clone has no exes), the launcher says so in the model panel: download the
+  ready package from the releases page, or run `setup.cmd` to build it. It also offers to run `setup.cmd` once per
+  window. Before, only the line under the empty list said it, which was easy to miss (issue #5).
+- `ARC_GEMV_MT_GRF=128` tried on the 125H iGPU: 27B with MTP 11.78 -> 9.57 tok/s, so the iGPUs keep 256 registers
+  (docs/xe2-tuning.md). Nothing changed in the engine.
+
 ## 2026-11-02 (night): Gemma 4 31B, memory and projects in the web UI, B60 switches
 
 **Gemma 4 31B QAT** (`g31` in setup and the catalog; Google's Q4_0, Unsloth's drafter)

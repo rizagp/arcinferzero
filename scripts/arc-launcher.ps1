@@ -438,10 +438,36 @@ function Update-Status {
 }
 
 # ---- model list
+# no bin\serverz.exe (a git clone, which has no exes): the list stays empty, so say why in the panels people look at,
+# and offer setup.cmd once per window (issue #5: the line under the list alone was missed)
+$script:askedSetup = $false
+function Show-NoExe {
+  $setup = Join-Path $root "setup.cmd"
+  $msg.Text = "bin\serverz.exe not found: no model can be listed or started until it is there (setup.cmd builds it)."
+  $detail.Text = (@(
+      "bin\serverz.exe is missing, so the model list is empty.",
+      "",
+      "A copy from git has no exes. Two ways:",
+      "  1. Download the ready package (exes built) from",
+      "     https://github.com/rizagp/arcinferzero/releases",
+      "     unpack it and run arc-launcher.cmd from there.",
+      "  2. Build them here: run setup.cmd in",
+      "     $root",
+      "     (it needs Visual Studio's C++ tools), then press Refresh list.") -join "`r`n")
+  if (-not $script:askedSetup -and (Test-Path $setup)) {
+    $script:askedSetup = $true
+    $q = "bin\serverz.exe is missing, so no model can be listed or started.`n`n" +
+      "Run setup.cmd now to build it? (It needs Visual Studio's C++ tools; the ready package from the GitHub releases page has the exes built.)"
+    if ([System.Windows.Forms.MessageBox]::Show($q, "arcinferzero", "YesNo") -eq "Yes") {
+      Start-Process -FilePath $setup -WorkingDirectory $root
+      $msg.Text = "setup.cmd is running in its own window: press Refresh list when it has finished."
+    }
+  }
+}
 function Start-List {
   if ($script:listProc -and -not $script:listProc.HasExited) { return }
   $script:exe = Exe
-  if (-not (Test-Path $script:exe)) { $msg.Text = "$(Split-Path $script:exe -Leaf) not found: build it first (setup, or .\build.ps1 zero\serverz.cpp)"; return }
+  if (-not (Test-Path $script:exe)) { Show-NoExe; return }
   $msg.Text = "Reading the model list (up to a minute per model the first time: the auto context is computed)..."
   Remove-Item $script:listOut -ErrorAction SilentlyContinue
   $script:listProc = Start-Process -FilePath $script:exe -ArgumentList "--list-models" -WindowStyle Hidden -PassThru `
