@@ -14,8 +14,10 @@
     {
       const char* g = getenv("ARC_CONV_GRF");
       const bool big = g != nullptr && std::string(g) == "256";
-      k_gdn_conv_ = kernel("ops", (big ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DCT=" +
-                                      std::to_string(conv_ct_), "gdn_conv");
+      const std::string co = (big ? std::string("-cl-intel-256-GRF-per-thread ") : std::string()) + "-DCT=" +
+                             std::to_string(conv_ct_);
+      k_gdn_conv_ = kernel("ops", co, "gdn_conv");
+      k_gdn_conv1_ = kernel("ops", co + " -DCONV_UPD", "gdn_conv");
     }
     k_conv_upd_ = p("conv_state_update");
     k_gnorm_ = hp.hc ? kernel("ops", "-DGATE_SIGMOID", "gated_norm_quant") : p("gated_norm_quant");
@@ -25,6 +27,7 @@
     const std::string big = "-cl-intel-256-GRF-per-thread -DGQ=" + std::to_string(gq());
     k_attn_ = kernel("ops", big, "attn_fa");
     k_gdn_recur_ = kernel("ops", big, "gdn_recur");
+    k_gdn_recur_g_ = kernel("ops", big + " -DFUSE_GATES", "gdn_recur");
     const std::string att = "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hp.n_head / hp.n_head_kv) +
                             " -DHS=" + std::to_string(attn_hs()) + " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256) +
                             (hp.qwen3 ? " -DHD=" + std::to_string(hp.head_dim) : std::string());

@@ -835,6 +835,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // (a per-type rule tuned on single matrices repeated in bench/gemv_bench, e.g. IQ4_XS one row, IQ3_XXS four,
     // was no faster in the model, where each matrix streams once: 4.68 / 4.67 / 4.79 vs 4.68 / 4.51 / 4.65 tok/s)
     if (force) return force;
+    // codebook types (IQ1 / IQ2 / IQ3_XXS) 4 rows where the others take 2: 27B (mostly these types in the FFN) 181.8 ->
+    // 179.2 ms a token, every one of 4 alternated runs (2026-11-04; bench/gemv_bench IQ2_XS gate 62.9 -> 69.1 GB/s);
+    // bit-identical (a row's sums are the same, only which sub-group computes it changes). ARC_GV4=0: 2 as before
+    static const bool gv4 = !getenv("ARC_GV4") || atoi(getenv("ARC_GV4")) != 0;
+    if (gv4 && (w.N > 4096 || w.K >= 8192) && w.type != GGML_IQ4_XS && w.type != GGML_Q6_K && w.type != GGML_Q4_0) return 4;
     return (w.N > 4096 || w.K >= 8192) ? 2 : 1;
   }
   // (A/B: an env var set to 256 builds that kernel with the large register file; same results, other speed)

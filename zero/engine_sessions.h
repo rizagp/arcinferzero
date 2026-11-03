@@ -433,6 +433,10 @@
             k_gdn_recur_ = nullptr, k_gnorm_ = nullptr, k_attn_prep_ = nullptr, k_attn_ = nullptr,
             k_attn_gate_ = nullptr, k_gdn_gates_ = nullptr, k_attn_q8_ = nullptr,
             k_attn_comb_ = nullptr;
+  // (DeltaNet with fewer launches, bit-identical, ARC_GDN_FUSE=0 off: gdn_conv storing the conv history for one
+  //  token, gdn_recur computing the gates; not in verification passes, whose replay needs the separate results)
+  cl_kernel k_gdn_conv1_ = nullptr, k_gdn_recur_g_ = nullptr;
+  const bool gdn_fuse_ = !getenv("ARC_GDN_FUSE") || atoi(getenv("ARC_GDN_FUSE")) != 0;
   std::vector<Layer> layers_;
   cl_kernel k_add_norm_ = nullptr, k_ple_gate_ = nullptr, k_ple_comb_ = nullptr, k_add_nq_ = nullptr;
   cl_kernel k_rope_tab_ = nullptr;

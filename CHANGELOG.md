@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-04: codebook GEMVs, DeltaNet with fewer launches
+
+- One generated token of a DeltaNet layer launches two kernels fewer: `gdn_conv` stores the conv history itself (`conv_state_update` was a launch of its own) and `gdn_recur` turns the raw alpha / beta into decay and beta (`gdn_gates` was one). The same expressions, so the logits are bit-identical on every Qwen3.5 / 3.6 / 3.8 model, with MTP and on split models. Verification passes keep the separate kernels (their replay needs the gated values and the history before the pass). `ARC_GDN_FUSE=0` turns it off. On the laptop's iGPU the speed is unchanged (4B 48.8 -> 48.7 ms a token, 27B within noise): there the GPU's work, not the gaps between launches, sets the time; it is for GPUs where the host's launches show, as between a split model's sums.
+- Generation through the codebook types (IQ1_M / IQ1_S / IQ2_* / IQ3_XXS) reads 4 rows per sub-group where it read 2 (`ARC_GV4=0` for 2): Qwen3.8 27B, whose FFN is mostly these types, 181.8 -> 179.2 ms a token (1.4 %), bit-identical; the other models have no such matrices.
+- Measured, not changed (QUEUE 31.13): the GEMVs on their own (`bench/gemv_bench`, weights streaming) read 68-76 GB/s on the 4B's Q5_K, Q4_K and Q6_K matrices; the lower numbers of `--prof-gen` come from its events. Q6_K FFN down projections through `gemv` instead of `gemv_v` were 4 % faster alone but no faster in the models (4B 49.0 -> 48.8, 27B slower), so the choice stays.
+
 ## 2026-11-03: kernel audit, files split, lighter launches
 
 - **Kernel self audit (every `.cl` file, read against the code that launches it; each finding checked):**

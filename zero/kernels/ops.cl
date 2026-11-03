@@ -247,8 +247,15 @@ __kernel void wh_gelu_quant(__global const float* ff, int F, __global const half
 #ifndef CT
 #define CT 1
 #endif
+// -DCONV_UPD (one token, not a verification pass): conv_state_update fused in. With M_valid = 1 each lane already
+// holds its channels' new history (h after the step), so it stores it: the same values, one launch fewer.
+#ifdef CONV_UPD
+#define CSTATE_T __global float*
+#else
+#define CSTATE_T __global const float*
+#endif
 __attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void gdn_conv(__global const float* qkv, __global const float* cstate, __global const float* cw, int C,
+__kernel void gdn_conv(__global const float* qkv, CSTATE_T cstate, __global const float* cw, int C,
                        int nqk, int M_valid, float eps, __global float* out) {
   const int m0 = get_global_id(1) * CT, hg = get_global_id(0) / SG, lane = get_sub_group_local_id();
   const int c0 = hg * 128 + lane * 8;
@@ -286,7 +293,15 @@ __kernel void gdn_conv(__global const float* qkv, __global const float* cstate, 
     h[1] = h[2];
     h[2] = x;
   }
+#ifdef CONV_UPD
+  if (M_valid == 1) {
+    vstore8(h[0], 0, cstate + c0);
+    vstore8(h[1], 0, cstate + (size_t)C + c0);
+    vstore8(h[2], 0, cstate + (size_t)2 * C + c0);
+  }
+#endif
 }
+#undef CSTATE_T
 
 // Keeps the last 3 raw qkv rows as conv history. grid (C).
 __kernel void conv_state_update(__global const float* qkv, __global float* cstate, int C, int M_valid) {
@@ -332,9 +347,27 @@ __kernel void gdn_gates(__global float* ab, __global const float* dt_bias, __glo
 #define GW 8
 #endif
 #define BCW(x, i) intel_sub_group_shuffle((x), (i))
+// -DFUSE_GATES (not a verification pass): gdn_gates fused in; ab holds the raw [alpha | beta] projections, loaded
+// as before (one token ahead), and each work-item turns its head's two into [decay | beta] where a token uses them,
+// with gdn_gates' expressions: the same values, one launch fewer.
+#ifdef FUSE_GATES
+#define GDN_DECAY(x) gdn_decay((x), dtb, ssa)
+#define GDN_BETA(x) (1.0f / (1.0f + exp(-(x))))
+inline float gdn_decay(float x, float b, float sa) {
+  const float a = x + b;
+  return exp((a > 20.0f ? a : log(1.0f + exp(a))) * sa);
+}
+#else
+#define GDN_DECAY(x) (x)
+#define GDN_BETA(x) (x)
+#endif
 __attribute__((intel_reqd_sub_group_size(GW)))
 __kernel void gdn_recur(__global const float* x, int C, __global const float* ab, int nk, int nv,
-                        __global const float* S, int M_valid, __global float* o, __global float* Sout) {
+                        __global const float* S, int M_valid, __global float* o, __global float* Sout
+#ifdef FUSE_GATES
+                        , __global const float* dt_bias, __global const float* ssm_a
+#endif
+                        ) {
   const int col = get_global_id(0), lane = get_sub_group_local_id();
   const int h = col / 128, j = col % 128, kh = h % nk, jb = j - lane;
   // the first token's operands are requested before the state, so their latency hides under the state loads
@@ -353,6 +386,9 @@ __kernel void gdn_recur(__global const float* x, int C, __global const float* ab
     dn = ab[h];
     bn = ab[nv + h];
   }
+#ifdef FUSE_GATES
+  const float dtb = dt_bias[h], ssa = ssm_a[h];
+#endif
   float s[128];
 #ifdef GDN_LINE_SWAP
   // lanes 2c and 2c+1 move the two 32-byte halves of one 64-byte line (message 0: the even lane's row, message 1:
@@ -392,7 +428,7 @@ __kernel void gdn_recur(__global const float* x, int C, __global const float* ab
                           as_float(qn0.s4), as_float(qn0.s5), as_float(qn0.s6), as_float(qn0.s7),
                           as_float(qn1.s0), as_float(qn1.s1), as_float(qn1.s2), as_float(qn1.s3),
                           as_float(qn1.s4), as_float(qn1.s5), as_float(qn1.s6), as_float(qn1.s7)};
-    const float v = as_float(vn), decay = dn, beta = bn;
+    const float v = as_float(vn), decay = GDN_DECAY(dn), beta = GDN_BETA(bn);
     if (t + 1 < M_valid) {
       __global const float* nrow = x + (size_t)(t + 1) * C;
       kn0 = intel_sub_group_block_read8((__global const uint*)(nrow + ko));
@@ -451,6 +487,8 @@ __kernel void gdn_recur(__global const float* x, int C, __global const float* ab
 #endif
 }
 #undef GW
+#undef GDN_DECAY
+#undef GDN_BETA
 
 // y = rmsnorm_head(o) * w * silu(z) per 128-dim head, quantized (K = nv*128). grid (256, M).
 __attribute__((intel_reqd_sub_group_size(SG)))

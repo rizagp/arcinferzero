@@ -22,7 +22,8 @@
       gdn_ab(L, Mp, a_in);
       if (npu) npu_qkv_finish(L, Mp);
     }
-    {
+    const bool fuse = gdn_fuse_ && !spec_;  // (gates in gdn_recur, the conv history in gdn_conv for one token)
+    if (!fuse) {
       int n = T * 2 * nv;
       set_args(k_gdn_gates_, 0, gbc, L.dt_bias, L.ssm_a, nv, n);
       size_t g1 = ((size_t)n + 255) / 256 * 256, l1 = 256;
@@ -33,10 +34,12 @@
       cl_mem bq = from(bigc, (size_t)r0 * C * 4), cq = from(conv_out_, (size_t)r0 * C * 4),
              gq = from(gbc, (size_t)r0 * 2 * nv * 4), oq = from(o_, (size_t)r0 * Di * 4);
       {
-        set_args(k_gdn_conv_, 0, bq, L.conv_state, L.conv_w, C, nk, Tq, eps, cq);
+        const bool upd1 = fuse && Tq == 1;
+        const cl_kernel kc = upd1 ? k_gdn_conv1_ : k_gdn_conv_;
+        set_args(kc, 0, bq, L.conv_state, L.conv_w, C, nk, Tq, eps, cq);
         size_t gws[2] = {(size_t)C / 128 * 16, (size_t)(Tq + conv_ct_ - 1) / conv_ct_}, lws[2] = {64, 1};
         tp_conv_lws(C, lws[0]);  // (multi-GPU: a shard's channel groups, zero/mgpu/engine_tp_shard.h)
-        run("gdn_conv", k_gdn_conv_, 2, gws, lws);
+        run("gdn_conv", kc, 2, gws, lws);
         size_t g1 = ((size_t)C + 255) / 256 * 256, l1 = 256;  // (conv_state_update checks c < C)
         if (spec_) {  // (verification pass: what verify_done() needs to replay the accepted tokens)
           CL_CHECK(clEnqueueCopyBuffer(cl_.queue, L.conv_state, L.conv_pre, 0, 0, (size_t)3 * C * 4, 0, nullptr, nullptr));
@@ -44,14 +47,17 @@
           CL_CHECK(clEnqueueCopyBuffer(cl_.queue, cq, L.xin, 0, 0, (size_t)Tq * C * 4, 0, nullptr, nullptr));
           CL_CHECK(clEnqueueCopyBuffer(cl_.queue, gq, L.abin, 0, 0, (size_t)Tq * 2 * nv * 4, 0, nullptr, nullptr));
         }
-        set_args(k_conv_upd_, 0, bq, L.conv_state, C, Tq);
-        run("conv_state_update", k_conv_upd_, 1, &g1, &l1);
+        if (!upd1) {
+          set_args(k_conv_upd_, 0, bq, L.conv_state, C, Tq);
+          run("conv_state_update", k_conv_upd_, 1, &g1, &l1);
+        }
       }
       {
         // (a T = 1 kernel with 4 lanes per state column and 128 GRF, bit-identical, was slower: 35B 248-341 vs 226-254
         //  ms per 96 tokens; removed 2026-10-22)
-        cl_kernel k = k_gdn_recur_;
+        cl_kernel k = fuse ? k_gdn_recur_g_ : k_gdn_recur_;
         set_args(k, 0, cq, C, gq, nk, nv, L.S, Tq, oq, spec_ ? L.S_next : L.S);
+        if (fuse) set_args(k, 9, L.dt_bias, L.ssm_a);
         size_t g1 = (size_t)nv * 128, l1 = 64;
         run("gdn_recur", k, 1, &g1, &l1);
       }
