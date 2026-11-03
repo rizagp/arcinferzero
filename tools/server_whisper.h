@@ -1114,6 +1114,11 @@ class Service {
     }
     return fail(404, "unknown live request " + rq.path);
   }
+  // one clip's speech as text for another part of the server (web_fetch's audio files): the chat clips' way, and their
+  // cache (status 429: too many waiting)
+  std::string transcribe_clip(const std::string& data, double& secs, int& status, const std::function<bool()>& gone) {
+    return clip_text(data, secs, status, gone);
+  }
 
  private:
   struct LiveTrack {

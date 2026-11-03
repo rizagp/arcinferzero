@@ -133,8 +133,10 @@ inline std::string resolve_url(const std::string& base, const std::string& loc) 
 
 // GET a public http(s) URL: redirects followed by hand (each host checked), at most max_bytes of body, the whole
 // request within timeout_ms
+// (max_text: a body whose content type is text, HTML, JSON or XML stops there instead: a page is never read to the
+//  limit of a file to save, so 100 MB a request is for audio and documents only)
 inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 15000, const std::string& accept_lang = "en-US,en;q=0.9",
-                const std::string& accept = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8") {
+                const std::string& accept = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", size_t max_text = 0) {
   Page p;
   const auto t0 = std::chrono::steady_clock::now();
   HINTERNET ses = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
@@ -226,6 +228,12 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
           WinHttpCloseHandle(rq), WinHttpCloseHandle(con);
           continue;
         }
+      }
+      if (max_text) {
+        const std::string c = lower(p.content_type);
+        if (c.rfind("text/", 0) == 0 || c.find("html") != std::string::npos || c.find("json") != std::string::npos ||
+            c.find("xml") != std::string::npos)
+          max_bytes = std::min(max_bytes, max_text);
       }
       for (;;) {
         if (left() <= 0) break;

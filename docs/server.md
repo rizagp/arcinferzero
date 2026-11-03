@@ -39,7 +39,23 @@
     folder) and its text returned, as `read_file` reads it; `file_id`, `filename`, `kind` in the reply;
   - an image (PNG, JPEG, GIF, WebP, BMP, up to 20 MB): saved the same way; the web UI shows it to a model that sees
     images after that round of tools;
-  - anything else (archives, programs, audio, video): refused (415). A file's first bytes must be of its kind.
+  - an audio file (MP3, M4A, AAC, WAV, FLAC, Ogg Opus, WebM, up to 100 MB): saved, and its speech as text by the
+    speech service (Qwen3-ASR, else Whisper; the chat clips' cache); without the service, saved only. Ogg Vorbis is
+    not decoded;
+  - anything else (archives, programs, video): refused (415). A file's first bytes must be of its kind.
+
+  At most 4 fetches or views run at once (each may hold a 100 MB file); the others wait up to 2 minutes, then 429.
+  A page, text or JSON is read from its first 4 MB only.
+- `POST /v1/tools/web_view` `{"url": ..., "screen": 0, "links": false, "chat_id": ...}`: the page as a browser shows it
+  (tools/web_view.h). Microsoft Edge runs headless (on every Windows 11; not found: 502): a screenshot of one screen
+  (1280 x 900; `screen` 1-5: further down), saved in the chat's files like an image from web_fetch, and the page's text
+  after its scripts ran (pages built by scripts read too), in the same windows and with the same links as web_fetch.
+  5-15 s a page, one at a time. Edge's own requests go through a proxy inside the server (127.0.0.1, a free port) that
+  connects to public addresses on ports 80 and 443 only, checked on the address it connects to: a page cannot make Edge
+  load anything on this machine or the local network, also through a redirect or a frame. Each run has a new empty
+  profile in %TEMP% (no cookies, logins or history; removed after, and left ones older than an hour at the next
+  start), no extensions or sync, WebRTC's direct UDP off; Edge's processes are in a job ended after 45 s at most, and
+  inherit no handle of the server's but their output pipe.
 - The web UI's memory and projects (`tools/server_memory.h`, `tools/server_projects.h`). They are served while a
   model loads, and only on this computer (not over the network), to the server's own page or a client that sends no
   Origin:

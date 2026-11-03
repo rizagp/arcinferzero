@@ -1264,11 +1264,11 @@ const wire = (msgs) => msgs.map(({ at, voice, ...m }) => {
 // cut that moved each round (e.g. "the last 2 results"), each new result would shorten an older one and the prompt
 // from there on would be processed again. list_files and create_file results stay (small; the file card's data).
 const KEEP_TOOLS = 2, TRIM_MIN = 1500;
-const TRIM_TOOLS = new Set(["read_file", "web_fetch", "search_file", "search_chats", "run_command", "digest_file"]);  // (search_chats: as long as search_file's)
+const TRIM_TOOLS = new Set(["read_file", "web_fetch", "web_view", "search_file", "search_chats", "run_command", "digest_file"]);  // (search_chats: as long as search_file's)
 const n1 = (n) => Number(n).toLocaleString("en-US");
 function toolStub(name, args, text) {
   let j = null;
-  try { j = name !== "web_fetch" ? JSON.parse(text) : null; } catch (e) {}
+  try { j = name !== "web_fetch" && name !== "web_view" ? JSON.parse(text) : null; } catch (e) {}
   if (name === "read_file" && j) {
     const what = j.outline ? "its outline (" + j.outline.length + " sections)"
       : j.source ? "the source of a file written with create_file"
@@ -1285,12 +1285,12 @@ function toolStub(name, args, text) {
       (j.results || []).length + " passages" + (where.length ? ": " + where.join(", ") : "") +
       "; shortened here: search again or read_file those sections if needed]";
   }
-  if (name === "web_fetch") {
+  if (name === "web_fetch" || name === "web_view") {
     const title = /^Title: (.*)$/m.exec(text)?.[1], url = /^URL: (.*)$/m.exec(text)?.[1] || args.url || "";
-    const next = /call web_fetch with offset (\d+)/.exec(text)?.[1];
-    return "[read earlier: web_fetch " + url + (title ? " “" + title + "”" : "") + (args.offset ? " from offset " + args.offset : "") +
-      ", " + n1(text.length) + " characters" + (next ? ", the page goes on at offset " + next : "") +
-      "; shortened here: fetch it again with web_fetch if needed]";
+    const next = /call web_(?:fetch|view) with offset (\d+)/.exec(text)?.[1];
+    return "[read earlier: " + name + " " + url + (title ? " “" + title + "”" : "") + (args.offset ? " from offset " + args.offset : "") +
+      (args.screen ? " screen " + args.screen : "") + ", " + n1(text.length) + " characters" + (next ? ", the page goes on at offset " + next : "") +
+      "; shortened here: call " + name + " again if needed]";
   }
   if (name === "digest_file" && j)  // (the notes stay in their file: a call again reads them from there, no part read again)
     return "[digested earlier: digest_file " + (j.filename || args.file_id || "") + (j.parts ? ", " + j.parts + " parts" : "") +
@@ -1442,7 +1442,14 @@ const WEB_TOOLS = [
       "file attached to an issue, a related issue), following them as far as the question needs. A long text comes in " +
       "parts; each result gives the offset of the next.",
     parameters: { type: "object", properties: { url: { type: "string", description: "http(s)" },
-      offset: { type: "integer" }, links: { type: "boolean", description: "true: every link's URL, to explore a site's other pages" } }, required: ["url"] } } }];
+      offset: { type: "integer" }, links: { type: "boolean", description: "true: every link's URL, to explore a site's other pages" } }, required: ["url"] } } },
+  { type: "function", function: { name: "web_view",
+    description: "See a web page as a browser shows it: a screenshot of one screen (shown to you when you can see images) " +
+      "and the page's text after its scripts ran. For a page's look or layout, a chart or picture on it, or a page whose " +
+      "text web_fetch could not get (built by scripts). Slower than web_fetch (5-15 s).",
+    parameters: { type: "object", properties: { url: { type: "string", description: "http(s)" },
+      screen: { type: "integer", description: "0 = the top (default), 1 = the next screen down... up to 5" },
+      offset: { type: "integer" }, links: { type: "boolean" } }, required: ["url"] } } }];
 // (the tools' and these texts' words are the prompt of every chat with tools: kept short, 2026-10-28; each rule and
 //  parameter kept, what the system text and a tool's description both said is said once)
 const WEB_SYSTEM = () => "Today is " + new Date().toDateString() + ". For current or specific information, web_search, " +
@@ -1680,12 +1687,13 @@ async function runTool(call, card, signal, job) {
   if (name === "run_command") return runTermTool(args, card, signal, job);
   if (name === "remember" || name === "forget") return runMemTool(name, args, card, signal, job?.id || convId);
   if (name === "terminal_panel") return panelTermTool(String(args.action || ""), card, signal, job);
-  if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
-  card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
+  if (name !== "web_search" && name !== "web_fetch" && name !== "web_view") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
+  card.status.textContent = name === "web_search" ? "· searching…" : name === "web_view" ? "· opening it in a browser…" : "· reading…";
   const chat = job?.id || convId;  // (a file it fetches goes into this chat's files)
   const body = name === "web_search" ? { query: String(args.query ?? ""), max_results: 6 }
     : { url: String(args.url ?? ""), offset: Math.max(0, parseInt(args.offset, 10) || 0), max_chars: 12000,
-        links: args.links === true, ...(chat ? { chat_id: chat } : {}) };
+        links: args.links === true, ...(name === "web_view" ? { screen: Math.min(5, Math.max(0, parseInt(args.screen, 10) || 0)) } : {}),
+        ...(chat ? { chat_id: chat } : {}) };
   const res = await fetch("/v1/tools/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -1698,8 +1706,8 @@ async function runTool(call, card, signal, job) {
     card.links(j.results.map((r) => [r.title, r.url]));
     return j.results.map((r, i) => (i + 1) + ". " + r.title + "\n   " + r.url + "\n   " + r.snippet).join("\n");
   }
-  card.status.textContent = "· " + (j.title || j.url) + (j.kind === "image" ? " (" + kb(j.bytes || 0) + ")"
-    : " (" + k1(j.offset + j.content.length) + " of " + k1(j.total_chars) + " characters)");
+  card.status.textContent = "· " + (j.title || j.url) + (name === "web_view" ? " (screen " + ((j.screen || 0) + 1) + ", " + k1(j.total_chars) + " characters of text)"
+    : j.kind === "image" ? " (" + kb(j.bytes || 0) + ")" : " (" + k1(j.offset + j.content.length) + " of " + k1(j.total_chars) + " characters)");
   card.links([[j.title, j.url]]);
   let extra = "";
   if (j.file_id) {  // (a document or an image saved into this chat: a file card, as create_file's)
@@ -1716,7 +1724,7 @@ async function runTool(call, card, signal, job) {
   }
   return "Title: " + j.title + "\nURL: " + j.url + (j.source ? "\nRead from: " + j.source : "") + (j.note ? "\nNote: " + j.note : "") +
     "\n\n" + j.content + extra +
-    (j.next_offset ? "\n\n[it goes on: call web_fetch with offset " + j.next_offset + " to read more]" : "");
+    (j.next_offset ? "\n\n[it goes on: call " + name + " with offset " + j.next_offset + " to read more]" : "");
 }
 
 // Run / Don't run under the command in its card (Stop: the answer stops, the command does not count as refused)

@@ -2,6 +2,20 @@
 
 ## 2026-11-03: launcher without serverz.exe
 
+- **web_view** (new tool, tools/web_view.h): a page as a browser shows it. Microsoft Edge, headless, takes a
+  screenshot of one screen (shown to a model that sees images) and gives the page's text after its scripts ran, so
+  pages built by scripts are read too (a GitHub issue page: its comments). Edge's requests go through a proxy in the
+  server that reaches public addresses on ports 80 / 443 only; a new empty profile each run, removed after.
+- **Audio from a URL**: web_fetch saves MP3, M4A, WAV, FLAC, Ogg Opus... (up to 100 MB) and returns its speech as
+  text from Qwen3-ASR or Whisper (whisper.cpp's jfk.wav: 5.7 s, word for word).
+- Self audit of the web tools: Edge inherited every inheritable handle of the server (other clients' sockets): now
+  only its output pipe; a page or text is read from its first 4 MB inside the request (100 MB was for any URL), and at
+  most 4 fetches or views run at once (64 at once could hold 6 GB); the proxy's listener cannot spin a core on errors;
+  COM set up and taken down in pairs; Edge's profile folders removed with retries and old ones swept; the Latin-1 to
+  UTF-8 conversion only for text (it could change a PDF's bytes).
+- Every exe is built with Control Flow Guard (`/guard:cf`; build.ps1), as the server now parses files from the
+  internet. Logits bit-identical; Gemma 4 E4B generation 14.06 / 15.00 without against 13.46 / 13.56 / 15.28 tok/s
+  with, run-to-run noise (docs/before-after.md).
 - **web_fetch reads what a person reads** (tools/web_tools.h, tools/web_github.h; docs/server.md):
   - links to files and to other issues / pull requests keep their URLs (`[text](url)`), so the model can open them;
     the other links show their text, and `"links": true` gives every URL to explore a site (the URLs of every link made

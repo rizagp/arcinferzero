@@ -29,6 +29,7 @@
 #include "sampler.h"
 #include "web_tools.h"
 #include "web_github.h"
+#include "web_view.h"
 #include "server_files.h"
 #include "server_memory.h"
 #include "server_projects.h"
@@ -124,8 +125,9 @@ static uint64_t gguf_bytes(const std::string& path) {
 }
 
 // ---- web_fetch: what a fetched URL is (a page, a text, or a file to save: a document or an image)
-static constexpr size_t kWebFileMax = 20u << 20;  // (a document or an image larger than this is refused)
-static constexpr size_t kWebTextMax = 4u << 20;   // (a page or a text: its first 4 MB, as before files were fetched)
+static constexpr size_t kWebFileMax = 20u << 20;    // (a document or an image larger than this is refused)
+static constexpr size_t kWebAudioMax = 100u << 20;  // (an audio file: ~1.5 hours of MP3 at 128 kbit/s)
+static constexpr size_t kWebTextMax = 4u << 20;     // (a page or a text: its first 4 MB, as before files were fetched)
 static std::string url_decode(const std::string& s) {
   std::string o;
   for (size_t i = 0; i < s.size(); ++i) {
@@ -174,8 +176,12 @@ static std::string web_file_type(const std::string& ct_in, const std::string& na
       {"application/vnd.ms-excel.sheet.macroenabled.12", "xlsm"},
       {"application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"},
       {"image/png", "png"}, {"image/jpeg", "jpg"}, {"image/jpg", "jpg"}, {"image/gif", "gif"}, {"image/webp", "webp"},
-      {"image/bmp", "bmp"}};
-  static const std::set<std::string> files_ext = {"pdf", "docx", "xlsx", "xlsm", "pptx", "png", "jpg", "jpeg", "gif", "webp", "bmp"},
+      {"image/bmp", "bmp"}, {"audio/mpeg", "mp3"}, {"audio/mp3", "mp3"}, {"audio/mp4", "m4a"}, {"audio/x-m4a", "m4a"},
+      {"audio/m4a", "m4a"}, {"audio/aac", "aac"}, {"audio/x-aac", "aac"}, {"audio/wav", "wav"}, {"audio/x-wav", "wav"},
+      {"audio/wave", "wav"}, {"audio/vnd.wave", "wav"}, {"audio/flac", "flac"}, {"audio/x-flac", "flac"},
+      {"audio/ogg", "ogg"}, {"application/ogg", "ogg"}, {"audio/opus", "opus"}, {"audio/webm", "webm"}};
+  static const std::set<std::string> files_ext = {"pdf", "docx", "xlsx", "xlsm", "pptx", "png", "jpg", "jpeg", "gif", "webp", "bmp",
+                                                  "mp3", "m4a", "aac", "wav", "flac", "ogg", "opus"},
                                      text_ext = {"txt", "md", "log", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml",
                                                  "toml", "ini", "cfg", "srt", "vtt", "py", "c", "cpp", "h", "hpp", "js",
                                                  "ts", "ps1", "sh", "bat", "cmd", "rs", "go", "java", "cs", "sql", "diff", "patch"};
@@ -197,6 +203,13 @@ static std::string web_file_type(const std::string& ct_in, const std::string& na
   int w = 0, h = 0;
   if (t == "pdf") return pdf ? t : "";
   if (t == "docx" || t == "xlsx" || t == "xlsm" || t == "pptx") return zip ? t : "";
+  if (files::kind_of("x." + t) == "audio" || t == "webm") {  // (an MP3 / AAC frame or ID3 tag, MP4 ftyp, RIFF WAVE, fLaC, Ogg, WebM)
+    const auto b = [&](size_t k) { return k < body.size() ? (unsigned char)body[k] : 0u; };
+    const bool ok = body.compare(0, 3, "ID3") == 0 || (b(0) == 0xFF && (b(1) & 0xE0) == 0xE0) ||
+                    body.compare(4, 4, "ftyp") == 0 || (body.compare(0, 4, "RIFF") == 0 && body.compare(8, 4, "WAVE") == 0) ||
+                    body.compare(0, 4, "fLaC") == 0 || body.compare(0, 4, "OggS") == 0 || body.compare(0, 4, "\x1A\x45\xDF\xA3", 4) == 0;
+    return ok ? (t == "webm" ? "webm" : t) : "";
+  }
   return files::image_size(body, w, h) ? t : "";
 }
 
@@ -2584,7 +2597,7 @@ int main(int argc, char** argv) {
       return file_tools(rq, rs, terminal, ctx, vis);
     }
     // the web UI's tools (tools/web_tools.h): no model involved, so they answer while a model loads or generates
-    if (rq.method == "POST" && (rq.path == "/v1/tools/web_search" || rq.path == "/v1/tools/web_fetch")) {
+    if (rq.method == "POST" && (rq.path == "/v1/tools/web_search" || rq.path == "/v1/tools/web_fetch" || rq.path == "/v1/tools/web_view")) {
       auto fail = [&](int st, const std::string& m) {
         Json er = Json::object(), r = Json::object();
         er.set("message", m);
@@ -2618,15 +2631,83 @@ int main(int argc, char** argv) {
       }
       const std::string url = in["url"].str();
       if (url.empty()) return fail(400, "url required");
+      // at most 4 fetches or views at once (each may hold a 100 MB file, or two Edge processes): the others wait up to
+      // 2 minutes, then 429; 64 connections at once could otherwise hold 6 GB of bodies
+      struct Gate {
+        static std::mutex& mu() { static std::mutex m; return m; }
+        static std::condition_variable& cv() { static std::condition_variable c; return c; }
+        static int& n() { static int k = 0; return k; }
+        bool in = false;
+        bool enter() {
+          std::unique_lock<std::mutex> lk(mu());
+          in = cv().wait_for(lk, std::chrono::minutes(2), [] { return n() < 4; });
+          if (in) ++n();
+          return in;
+        }
+        ~Gate() {
+          if (!in) return;
+          { std::lock_guard<std::mutex> lk(mu()); --n(); }
+          cv().notify_one();
+        }
+      } gate;
+      if (!gate.enter()) return fail(429, "too many pages being fetched at once; try again later");
       std::string title, text, final_url = url, gh_err;
       // (an issue or pull request on GitHub: the thread and its comments from GitHub's API, tools/web_github.h; when
       //  the API fails, the page itself)
-      if (webt::github_thread(url, title, text, gh_err)) {
+      if (rq.path == "/v1/tools/web_view") {
+        // the page as Edge shows it (tools/web_view.h): a screenshot of one screen (saved in the chat's files, shown to
+        // a model that sees images by the web UI) and the text of the page after its scripts ran
+        const std::string lu = webt::lower(url.substr(0, 8));
+        if (lu.rfind("http://", 0) != 0 && lu.rfind("https://", 0) != 0) return fail(400, "an http(s) URL");
+        {  // (the first URL's host public, as web_fetch's; what the page loads goes through the proxy's own check)
+          const size_t hs = url.find("://") + 3, he = url.find_first_of("/?#", hs);
+          std::string host = url.substr(hs, he == std::string::npos ? std::string::npos : he - hs);
+          if (host.find('@') != std::string::npos) host = host.substr(host.rfind('@') + 1);
+          if (!host.empty() && host[0] == '[') host = host.substr(1, host.find(']') - 1);
+          else if (host.find(':') != std::string::npos) host = host.substr(0, host.find(':'));
+          const std::string why = webt::check_host(host);
+          if (!why.empty()) return fail(400, why);
+        }
+        const int screen = (int)std::clamp<int64_t>(in["screen"].as_int(0), 0, 5);
+        const webv::View v = webv::render(url, screen);
+        if (v.png.empty() && v.html.empty()) return fail(502, v.error.empty() ? "the page could not be shown" : v.error);
+        int hidden = 0;
+        const bool all_links = in["links"].is_bool() && in["links"].as_bool();
+        text = v.html.empty() ? std::string() : webt::html_to_text(v.html, &title, url, all_links, &hidden);
+        if (hidden > 0)
+          text = "[" + std::to_string(hidden) + (hidden == 1 ? " link to another page is" : " links to other pages are") +
+                 " shown as text only: to explore, web_view or web_fetch this URL again with \"links\": true for the URLs, "
+                 "then open the ones you need]\n" + text;
+        if (!v.png.empty()) {
+          const std::string chat = files::valid_id(in["chat_id"].str()) ? in["chat_id"].str() : "";
+          std::string host = url.substr(url.find("://") + 3);
+          host = host.substr(0, host.find_first_of("/?#:"));
+          files::Info fi;
+          try {
+            fi = files::store().put(files::safe_name("screen " + std::to_string(screen + 1) + " of " + host + ".png"), v.png, chat);
+          } catch (const std::exception& e) {
+            return fail(500, std::string("cannot save the screenshot: ") + e.what());
+          }
+          r.set("file_id", fi.id);
+          r.set("filename", fi.name);
+          r.set("kind", "image");
+          r.set("bytes", (double)fi.bytes);
+          text = "[screen " + std::to_string(screen + 1) + " of the page (1280 x 900, from the top" +
+                 (screen ? ", " + std::to_string(screen * 900) + " pixels down" : std::string()) + "): saved in this chat's files as file_id \"" +
+                 fi.id + "\"; web_view with \"screen\": " + std::to_string(screen + 1) + " shows the next one]\n" + text;
+        } else {
+          text = "[no screenshot: " + v.error + "]\n" + text;
+        }
+        r.set("screen", (double)screen);
+        r.set("source", "Microsoft Edge (the page as a browser shows it)");
+      } else if (webt::github_thread(url, title, text, gh_err)) {
         r.set("source", "GitHub API (the issue and every comment)");
       } else {
         if (!gh_err.empty()) r.set("note", gh_err + "; the page itself was read instead (it may lack the comments)");
-        // (20 MB: a document or an image to save; a page or a text is read from its first 4 MB, as before)
-        const webt::Page pg = webt::get(url, kWebFileMax);
+        // (up to 100 MB for an audio file, 20 MB for a document or an image; a page or a text is read from its first
+        //  4 MB, as before; the whole request within 2 minutes: a large file)
+        const webt::Page pg = webt::get(url, kWebAudioMax, 120000, "en-US,en;q=0.9",
+                                        "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8", kWebTextMax);
         if (!pg.error.empty()) return fail(502, pg.error);
         if (pg.status != 200) return fail(502, "HTTP " + std::to_string(pg.status) + " from " + pg.url);
         final_url = pg.url;
@@ -2638,8 +2719,9 @@ int main(int argc, char** argv) {
           int hidden = 0;
           text = webt::html_to_text(pg.body.substr(0, kWebTextMax), &title, pg.url, all_links, &hidden);
           if (hidden > 0)
-            text = "[" + std::to_string(hidden) + " links to other pages are shown as their text only: to explore them, "
-                   "web_fetch this URL again with \"links\": true for their URLs, then open the ones you need]\n" + text;
+            text = "[" + std::to_string(hidden) + (hidden == 1 ? " link to another page is" : " links to other pages are") +
+                   " shown as text only: to explore, web_fetch this URL again with \"links\": true for the URLs, then open "
+                   "the ones you need]\n" + text;
         }
         else if (ty == "text") {
           text = pg.body.substr(0, kWebTextMax);
@@ -2649,7 +2731,9 @@ int main(int argc, char** argv) {
           // a document or an image: saved into this chat's files (a file card for the user), its text read from there
           // with the reader read_file uses (PDF, Word, Excel, PowerPoint); an image is shown to a model that sees
           // images by the web UI, after this result
-          if (pg.cut) return fail(413, "the file is larger than " + std::to_string(kWebFileMax >> 20) + " MB: not fetched");
+          const bool is_audio = files::kind_of("x." + ty) == "audio" || ty == "webm";
+          const size_t cap = is_audio ? kWebAudioMax : kWebFileMax;
+          if (pg.cut || pg.body.size() > cap) return fail(413, "the file is larger than " + std::to_string(cap >> 20) + " MB: not fetched");
           const std::string chat = files::valid_id(in["chat_id"].str()) ? in["chat_id"].str() : "";
           std::string fname = name.empty() ? "download" : name;  // (its extension the one of its kind)
           const std::string fe = files::ext_of(fname);
@@ -2665,7 +2749,28 @@ int main(int argc, char** argv) {
           r.set("kind", fi.kind);
           r.set("bytes", (double)fi.bytes);
           title = fi.name;
-          if (fi.kind == "image") {
+          if (is_audio) {
+            // (an audio file: written out by the speech service, Qwen3-ASR or Whisper, as a chat's voice clip is; the
+            //  same clip again comes from its cache)
+            const std::string head = "[an audio file: " + fi.name + ", " + std::to_string((fi.bytes + 1023) / 1024) +
+                                     " KB; saved in this chat's files as file_id \"" + fi.id + "\"";
+            if (!wh) {
+              text = head + "; not transcribed: the server runs no speech to text (--whisper / --asr)]";
+            } else {
+              double secs = 0;
+              int st = 0;
+              try {
+                const std::string t = wh->transcribe_clip(pg.body, secs, st, [&] { return rs.client_gone(); });
+                char len[48];
+                snprintf(len, sizeof len, "%d:%02d", (int)secs / 60, (int)secs % 60);
+                text = head + "; " + len + " long; its speech as text, by " + wh->clip_model() + "]\n" +
+                       (t.empty() ? std::string("(no speech heard)") : t);
+              } catch (const std::exception& e) {
+                if (st == 429) return fail(429, e.what());
+                text = head + "; it could not be transcribed: " + e.what() + "]";
+              }
+            }
+          } else if (fi.kind == "image") {
             int w = 0, h = 0;
             files::image_size(pg.body, w, h);
             text = "[an image: " + fi.name + (w > 0 ? ", " + std::to_string(w) + "x" + std::to_string(h) : std::string()) +

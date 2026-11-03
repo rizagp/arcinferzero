@@ -80,6 +80,11 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-03, every exe built with Control Flow Guard** (`/guard:cf`, compiler and linker; build.ps1). Gemma 4
+  E4B, `runz --bench-pp 1024 --n 64`, best of 2 per build, builds alternated: without 14.06 tok/s generation / 691.6
+  prompt, then 15.00 / 737.1; with 13.46 / 701.9, 13.56 / 704.5, then 15.28 / 743.9: no difference beyond the laptop's
+  run-to-run noise. Logits (`--dump-logits`, 16 tokens) bit-identical.
+
 - **2026-11-03, the 2-8 token GEMV (MTP / DFlash2 verification) with 128 registers per thread on discrete GPUs**
   (`ARC_GEMV_MT_GRF=256` goes back). Measured by the owner of 4x Arc Pro B60 (issue #4, `decode_try.ps1`, one B60,
   Qwen3.8 27B IQ3_S, 256 tokens greedy, best of 2): MTP 43.3 -> 47.1 tok/s (+8.8 %), 61.1 % of drafts accepted in
