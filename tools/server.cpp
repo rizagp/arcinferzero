@@ -169,7 +169,7 @@ static std::string web_file_name(const webt::Page& pg) {
 // (refused): by the content type, else (a generic one: application/octet-stream...) by the name's extension; a file's
 // first bytes must be of its kind (%PDF, a ZIP for Office, an image header), so no other file is saved under a name
 // (the kind from the headers alone: "html", "text", a file's extension or "" refused; web_file_type checks the body,
-//  web_limit takes the size each may have from it before the body is read. One list of kinds for both, the same as
+//  web_fetch's get() takes the size each may have from it before the body is read. One list of kinds for both, the same as
 //  kind_of's audio and web_tools.h file_link's: self audit G4)
 static std::string web_kind(const std::string& ct_in, const std::string& name) {
   const std::string ct = webt::lower(ct_in.substr(0, ct_in.find(';')));
@@ -203,11 +203,6 @@ static std::string web_kind(const std::string& ct_in, const std::string& name) {
   return "";
 }
 static bool web_audio(const std::string& t) { return files::kind_of("x." + t) == "audio" || t == "webm"; }
-// the bytes a fetched body may have, from its headers (0: refused, nothing read)
-static size_t web_limit(const std::string& ct, const std::string& name) {
-  const std::string k = web_kind(ct, name);
-  return k.empty() ? 0 : k == "html" || k == "text" ? kWebTextMax : web_audio(k) ? kWebAudioMax : kWebFileMax;
-}
 static std::string web_file_type(const std::string& ct, const std::string& name, const std::string& body) {
   const std::string t = web_kind(ct, name);
   if (t.empty() || t == "html") return t;
@@ -2727,10 +2722,10 @@ int main(int argc, char** argv) {
         //  read up to its 4 MB as before, self audit R1)
         const webt::Page pg = webt::get(url, kWebAudioMax, 120000, "en-US,en;q=0.9",
                                         "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
-                                        [](const webt::Page& h, bool& whole) {
+                                        [](const webt::Page& h, bool& whole) {  // (each looked up once, R20)
                                           const std::string k = web_kind(h.content_type, web_file_name(h));
                                           whole = !k.empty() && k != "html" && k != "text";
-                                          return web_limit(h.content_type, web_file_name(h));
+                                          return k.empty() ? (size_t)0 : !whole ? kWebTextMax : web_audio(k) ? kWebAudioMax : kWebFileMax;
                                         });
         if (!pg.error.empty()) return fail(502, pg.error);
         if (pg.status != 200) return fail(502, "HTTP " + std::to_string(pg.status) + " from " + pg.url);
@@ -2748,7 +2743,7 @@ int main(int argc, char** argv) {
           const size_t cap = web_audio(kind) ? kWebAudioMax : kWebFileMax;
           if (pg.too_big || pg.cut || pg.body.size() > cap)
             return fail(413, "the file is larger than " + std::to_string(cap >> 20) + " MB: not fetched");
-          if (pg.timed_out) return fail(504, "the file did not arrive whole within 2 minutes: not fetched");
+          if (pg.timed_out) return fail(504, "the file did not arrive whole (stopped, or not within 2 minutes): not fetched");
         }
         const std::string ty = web_file_type(pg.content_type, name, pg.body);
         if (ty.empty())
@@ -2828,7 +2823,7 @@ int main(int argc, char** argv) {
         // (a page or text cut at its 4 MB or at the 2-minute deadline says so: the model is not told it read all, G5)
         if (!file && (pg.cut || pg.timed_out))
           text = "[only the first " + std::to_string(pg.body.size() >> 10) + " KB of it could be read (" +
-                 (pg.timed_out ? "the rest did not arrive within 2 minutes" : "4 MB at most") + ")]\n" + text;
+                 (pg.timed_out ? "the rest did not arrive: stopped, or not within 2 minutes" : "4 MB at most") + ")]\n" + text;
       }
       // a window of the text: offset, max_chars, never more than the model's context takes in one read (as read_file;
       // before, 12,000 characters a fetch whatever the context) (cut on a UTF-8 character boundary)

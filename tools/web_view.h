@@ -3,7 +3,7 @@
 // so pages built by scripts read as text too. Edge loads what the page asks for (frames, scripts, images), and the
 // checks of web_tools.h hold only for the first URL, so all of Edge's traffic goes through a small proxy in this
 // process that connects to public addresses only (as web_fetch: no loopback, private, link-local... address, checked
-// on the address it connects to), on ports 80 and 443. Edge gets a new empty profile each run (no cookies, logins or
+// on the address it connects to), on web ports (webt::web_port_ok). Edge gets a new empty profile each run (no cookies, logins or
 // history of the user's), no extensions, no sync, WebRTC UDP off (it would bypass the proxy).
 // Only Edge's processes of a render running now may use the proxy: a connection is served when the process at its
 // other end is in one of those runs' jobs (its PID from the TCP table, then IsProcessInJob), so no other program of
@@ -135,8 +135,10 @@ class Proxy {
           if (ok) serve(c);
           else {
             static std::atomic<int> logged{0};
-            if (logged++ < 20)
-              fprintf(stderr, "web_view: proxy refused a connection from process %lu (not the web_view browser)\n", (unsigned long)pid);
+            const int n = ++logged;  // (the first 20, then every 100th with the count: never silent, never flooding, R19)
+            if (n <= 20 || n % 100 == 0)
+              fprintf(stderr, "web_view: proxy refused a connection from process %lu (not the web_view browser; %d so far)\n",
+                      (unsigned long)pid, n);
             refuse(c, "this proxy serves the web_view browser only");
           }
           closesocket(c);
@@ -370,8 +372,8 @@ inline bool edge_run(const std::wstring& args, int ms, std::string* out, std::st
   {  // (Edge stopped by the job's memory limit fails inside itself, silently: said here, R7)
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION q{};
     if (QueryInformationJobObject(job, JobObjectExtendedLimitInformation, &q, sizeof q, nullptr) &&
-        q.PeakJobMemoryUsed + (64u << 20) >= li.JobMemoryLimit) {
-      err = "the page needed more than 3 GB of memory in the browser: it was stopped (the screenshot may be blank)";
+        q.PeakJobMemoryUsed + (16u << 20) >= li.JobMemoryLimit) {  // (within 16 MB of it: an allocation was refused, R18)
+      err = "the page reached the browser's 3 GB memory limit: it was stopped (the screenshot may be blank)";
       fprintf(stderr, "web_view: %s\n", err.c_str());
     }
   }
@@ -386,12 +388,13 @@ inline bool edge_run(const std::wstring& args, int ms, std::string* out, std::st
   }
   if (rd) CloseHandle(rd);
   CloseHandle(pi.hThread), CloseHandle(pi.hProcess), CloseHandle(job);
-  if (!done) err = "the page did not finish within " + std::to_string(ms / 1000) + " s";
+  if (!done)  // (after the memory note, not over it, R18)
+    err = (err.empty() ? std::string() : err + "; ") + "the page did not finish within " + std::to_string(ms / 1000) + " s";
   return done;
 }
 
 // rows [y0, y0 + h) of a PNG, as a PNG (WIC); false: not decodable or the rows are past its end
-inline bool png_rows(const std::string& png, int y0, int h, std::string& out, int& full_h) {
+inline bool png_rows(const std::string& png, int y0, int h, std::string& out) {
   // (COM for this call, undone at its end when this call started it: a connection's thread asks many times)
   const HRESULT ci = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   struct Un { bool on; ~Un() { if (on) CoUninitialize(); } } un{SUCCEEDED(ci)};
@@ -411,7 +414,6 @@ inline bool png_rows(const std::string& png, int y0, int h, std::string& out, in
   if (SUCCEEDED(hr)) hr = f->CreateDecoderFromStream(in, nullptr, WICDecodeMetadataCacheOnDemand, &dec);
   if (SUCCEEDED(hr)) hr = dec->GetFrame(0, &fr);
   if (SUCCEEDED(hr)) hr = fr->GetSize(&w, &hh);
-  full_h = (int)hh;
   if (SUCCEEDED(hr) && (y0 < 0 || (UINT)y0 >= hh)) hr = E_INVALIDARG;
   const WICRect rc{0, y0, (INT)w, (INT)std::min<UINT>((UINT)h, hh - (UINT)std::max(0, y0))};
   if (SUCCEEDED(hr)) hr = f->CreateBitmapClipper(&clip);
@@ -533,10 +535,9 @@ inline View render(const std::string& url, int screen, int width = 1280, int hei
   for (const std::string* e : {&e1, &e2})
     if (e->find("3 GB") != std::string::npos) v.note = *e;
   std::string full;
-  int full_h = 0;  // (its height: always the window's, as Edge shoots the window, not the page)
   if (!read_bytes(shot, full) || full.empty()) {
     v.error = e1.empty() ? "Edge wrote no screenshot" : e1;
-  } else if (!png_rows(full, height * std::clamp(screen, 0, 5), height, v.png, full_h)) {
+  } else if (!png_rows(full, height * std::clamp(screen, 0, 5), height, v.png)) {  // (the window's height: Edge shoots the window, R17)
     v.error = "the screenshot could not be cut";
   }
   // (Edge's processes are ended, but Windows may hold their files a moment longer: tried again for a second)

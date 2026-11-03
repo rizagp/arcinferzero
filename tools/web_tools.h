@@ -30,7 +30,7 @@ struct Page {
   std::string disposition;                     // (Content-Disposition: a download's file name)
   bool cut = false;                            // (the body stopped at max_bytes: there was more)
   bool too_big = false;                        // (whole or nothing, and its Content-Length was over the limit: not read)
-  bool timed_out = false;                      // (the deadline came in the middle of the body: it is not whole)
+  bool timed_out = false;                      // (the body stopped early: the deadline, a stall or a dropped connection)
 };
 
 struct Result {
@@ -235,7 +235,9 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
       break;
     }
     if (!(p.error = check_host(h8)).empty()) break;
-    HINTERNET con = WinHttpConnect(ses, host, uc.nPort, 0);
+    // (the name connected to is the one checked: an internationalized host in its punycode form, R15)
+    const std::wstring whost = widen(ascii_host(h8));
+    HINTERNET con = whost.empty() ? nullptr : WinHttpConnect(ses, whost.c_str(), uc.nPort, 0);
     const std::wstring target = std::wstring(path) + extra;
     HINTERNET rq = con ? WinHttpOpenRequest(con, L"GET", target.empty() ? L"/" : target.c_str(), nullptr, WINHTTP_NO_REFERER,
                                             WINHTTP_DEFAULT_ACCEPT_TYPES, uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
@@ -300,12 +302,16 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
         }
         receive_within(rq);
         DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(rq, &avail) || !avail) break;
+        // (a failed query or read in the middle of the body, a stall that reached the deadline or a dropped
+        //  connection, leaves it not whole: timed_out, so a cut file is never saved as a whole one, R14. A successful
+        //  query of 0 bytes is the end)
+        if (!WinHttpQueryDataAvailable(rq, &avail)) { p.timed_out = true; break; }
+        if (!avail) break;
         const size_t old = p.body.size();
         avail = (DWORD)std::min<size_t>(avail, max_bytes - old);  // (old < max_bytes: the loop stops at max_bytes)
         p.body.resize(old + avail);
         DWORD got = 0;
-        if (!WinHttpReadData(rq, p.body.data() + old, avail, &got)) { p.body.resize(old); break; }
+        if (!WinHttpReadData(rq, p.body.data() + old, avail, &got)) { p.body.resize(old); p.timed_out = true; break; }
         p.body.resize(old + got);
         if (got == 0) break;  // (a read of nothing: the end, not a reason to ask again until the deadline, G6)
         if (p.body.size() >= max_bytes) {

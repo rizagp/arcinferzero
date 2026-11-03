@@ -26,6 +26,9 @@
     stopped by Edge's 3 GB limit says so; a 304 is not reported as a redirect; `WSAStartup` once in `check_host` too.
     tests/test_web_tools.cpp checks the kept links, the web ports, the URL parser, IDN hosts and web_view's
     command-line URL.
+  - the third round: a body that stalls or drops mid-way marks itself not whole, so a cut file is refused (504)
+    instead of saved as whole; web_fetch connects to an internationalized host by the punycode name it checked; the
+    proxy's refusal log never goes silent (every 100th after 20); Edge's memory note kept next to a timeout's.
 - **web_view** (new tool, tools/web_view.h): a page as a browser shows it. Microsoft Edge, headless, takes a
   screenshot of one screen (shown to a model that sees images) and gives the page's text after its scripts ran, so
   pages built by scripts are read too (a GitHub issue page: its comments). Edge's requests go through a proxy in the

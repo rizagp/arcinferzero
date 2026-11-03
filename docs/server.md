@@ -46,8 +46,9 @@
     of its kind.
 
   The size each kind may have is decided from the headers before the body is read (a page or text 4 MB, a document or
-  image 20 MB, audio 60 MB; a Content-Length over it reads nothing: 413); a body cut at that size or at the 2-minute
-  deadline says so in the text. Any port of a public host, except those browsers refuse because other services listen
+  image 20 MB, audio 60 MB). A file is whole or nothing: one that announces more than its size (Content-Length) is not
+  read, and one larger or cut is refused (413), one that stopped early (a stall, a dropped connection, the 2-minute
+  deadline) too (504). A page or text is read up to its 4 MB, and the text says when it was cut. Any port of a public host, except those browsers refuse because other services listen
   there (SSH 22, SMTP 25, DNS 53, SMB 139 / 445, LDAP, IRC...: Chrome's restricted ports), on every redirect too. At
   most 4 fetches or views run at once; the others wait up to 2 minutes, then 429.
 - `POST /v1/tools/web_view` `{"url": ..., "screen": 0, "links": false, "chat_id": ...}`: the page as a browser shows it
