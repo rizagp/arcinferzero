@@ -9,7 +9,7 @@
 #   dflash         --dflash DIR --draft auto (with -DFlash)
 #   GEMV_GRF=256   plain, the single-token GEMV with 256 registers per thread (ARC_GEMV_GRF=256)
 #   GVROWS=1/2/4   plain, rows per sub-group of the codebook GEMV (ARC_GVROWS; default: by matrix size)
-#   mtp MT_GRF=128 mtp, the 2-8 token GEMV of the verification with the default register file (ARC_GEMV_MT_GRF=128)
+#   mtp MT_GRF=256 mtp, the 2-8 token GEMV of the verification with 256 registers, as before 2026-11-03 (ARC_GEMV_MT_GRF=256)
 #   GEMV_PF=1      plain, the single-token GEMV issuing all its rows' reads of a step first (ARC_GEMV_PF=1)
 param(
   [Parameter(Mandatory = $true)][string[]]$Models,
@@ -70,7 +70,7 @@ foreach ($model in $Models) {
   if ($DFlash) { Line "dflash" (Invoke-Run $model @("--dflash", $DFlash, "--draft", "auto") @{}) }
   Line "GEMV_GRF=256" (Invoke-Run $model @() @{ ARC_GEMV_GRF = "256" })
   foreach ($g in 1, 2, 4) { Line "GVROWS=$g" (Invoke-Run $model @() @{ ARC_GVROWS = "$g" }) }
-  Line "mtp MT_GRF=128" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "128" })
+  Line "mtp MT_GRF=256" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "256" })
   Line "GEMV_PF=1" (Invoke-Run $model @() @{ ARC_GEMV_PF = "1" })
 }
 Remove-Item $q -ErrorAction SilentlyContinue

@@ -50,11 +50,12 @@
     static const bool pf = getenv("ARC_GEMV_PF") && atoi(getenv("ARC_GEMV_PF")) != 0;
     return xe2_ && pf ? std::string(" -DGEMV_PF") : std::string();
   }
-  // ARC_GEMV_MT_GRF=128: the 2-8 token GEMV (gemv_mt / gemv_mt_v: MTP and DFlash2 verification, batched slots) with
-  // the default register file instead of 256 registers per thread (256 everywhere else, and always on the iGPUs)
+  // the 2-8 token GEMV (gemv_mt / gemv_mt_v: MTP and DFlash2 verification, batched slots) with the default register
+  // file (128) on discrete cards: a Pro B60's 27B MTP went 43.3 -> 47.1 tok/s (issue #4, 2026-11-02); ARC_GEMV_MT_GRF=256
+  // as before. The iGPUs keep 256 (the 125H forced to 128: 27B MTP 11.78 -> 9.57 tok/s, 2026-11-03)
   std::string xe2_gemv_mt_grf() const {
-    static const bool g128 = getenv("ARC_GEMV_MT_GRF") && std::string(getenv("ARC_GEMV_MT_GRF")) == "128";
-    return xe2_ && g128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+    static const bool g256 = getenv("ARC_GEMV_MT_GRF") && std::string(getenv("ARC_GEMV_MT_GRF")) == "256";
+    return xe2_ && !g256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
 
   // ---- the f16 XMX prompt GEMM (kernels/gemm_x16.cl) for the W8 layouts (the 27B's IQ3_S, decoded just in time).

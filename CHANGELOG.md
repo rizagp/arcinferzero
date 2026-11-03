@@ -2,6 +2,9 @@
 
 ## 2026-11-03: launcher without serverz.exe
 
+- Discrete GPUs: the 2-8 token GEMV of MTP / DFlash2 verification now uses 128 registers per thread by default (a
+  Pro B60: 27B MTP 43.3 -> 47.1 tok/s). `ARC_GEMV_MT_GRF=256` goes back; `decode_try.ps1`'s row is now "mtp
+  MT_GRF=256". iGPUs unchanged.
 - When `bin\serverz.exe` is missing (a git clone has no exes), the launcher says so in the model panel: download the
   ready package from the releases page, or run `setup.cmd` to build it. It also offers to run `setup.cmd` once per
   window. Before, only the line under the empty list said it, which was easy to miss (issue #5).

@@ -11,7 +11,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
-| `ARC_GEMV_MT_GRF=128` | 256 | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
+| `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
 | `ARC_GEMV_PF=1` | off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60 to measure) | 7 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
@@ -175,10 +175,11 @@ $env:ARC_X16=1; .\bin\runz.exe C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --bench-
 
 ## 7. Smaller switches (2026-11-02)
 
-- `ARC_GEMV_MT_GRF=128`: the 2-8 token GEMV (MTP / DFlash2 verification, batched slots) with the default register
-  file instead of 256 registers per thread. Discrete GPUs only. `bench\decode_try.ps1` has a row for it
-  ("mtp MT_GRF=128"). B60 (2026-11-02): 27B MTP 43.3 -> 47.1 tok/s. The 125H iGPU, forced on for a test
-  (2026-11-03, 27B `--mtp`, 256 tokens, warm run): 11.78 -> 9.57 tok/s, the same tokens; the iGPUs keep 256.
+- The 2-8 token GEMV (MTP / DFlash2 verification, batched slots) with the default register file (128) instead of 256
+  registers per thread: **the default on discrete GPUs since 2026-11-03** (B60, 2026-11-02: 27B MTP 43.3 -> 47.1
+  tok/s). `ARC_GEMV_MT_GRF=256` goes back; `bench\decode_try.ps1` has a row for it ("mtp MT_GRF=256"). The iGPUs keep
+  256: the 125H, forced to 128 for a test (2026-11-03, 27B `--mtp`, 256 tokens, warm run), went 11.78 -> 9.57 tok/s
+  with the same tokens.
 - The XMX checks run once per process. A split model's GPUs are the same device, and each shard checked again: 4
   B60s took 8.7-14.9 s to load.
 

@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-03, the 2-8 token GEMV (MTP / DFlash2 verification) with 128 registers per thread on discrete GPUs**
+  (`ARC_GEMV_MT_GRF=256` goes back). Measured by the owner of 4x Arc Pro B60 (issue #4, `decode_try.ps1`, one B60,
+  Qwen3.8 27B IQ3_S, 256 tokens greedy, best of 2): MTP 43.3 -> 47.1 tok/s (+8.8 %), 61.1 % of drafts accepted in
+  both. The iGPUs keep 256: on the 125H, forced to 128 (27B `--mtp`, 256 tokens, warm run) 11.78 -> 9.57 tok/s, the
+  same tokens. Laptop default: the same kernel builds as before, greedy tokens identical to the run before the change.
+
 - **2026-11-02, Gemma 4 31B (new) and a tight-memory mode for dense models that nearly fill an iGPU's share**
   (Engine::plan_tight). It applies when weights are over 85 % of the share, so only the 31B among the models here:
   27B, 35B and E4B plan the same contexts as before.
