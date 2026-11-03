@@ -3,7 +3,7 @@
 ## 2026-11-03: launcher without serverz.exe
 
 - `bin\membw_probe.exe` (new, in the package): memory read bandwidth of the CPU (1..all threads), the GPU, and both
-  at once. On the 125H the iGPU reads 73 GB/s, the CPU at most ~71 (all 18 threads), both together ~81.5: decoding on
+  at once. On the 125H the iGPU reads 73-74.5 GB/s, the CPU at most 72.5 (all 18 threads), both together ~84: decoding on
   the CPU (xenolith's choice on Raptor Lake) would not be faster here (docs/speed-progress.md).
 - Discrete GPUs: the 2-8 token GEMV of MTP / DFlash2 verification now uses 128 registers per thread by default (a
   Pro B60: 27B MTP 43.3 -> 47.1 tok/s). `ARC_GEMV_MT_GRF=256` goes back; `decode_try.ps1`'s row is now "mtp
