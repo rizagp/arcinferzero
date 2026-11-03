@@ -835,6 +835,7 @@ async function refreshModel() {
   try {
     const p = await (await fetch("/props")).json();
     hasAudio = !!p.audio;
+    hasVision = !!p.vision;  // (web_fetch: an image it opens is shown to the model)
     if (p.n_ctx) ctxLen = p.n_ctx;
     // (speech_to_text: Whisper on this server, {"model": id}: voice for every model; without it, audio goes to a
     //  model that hears it itself, Gemma 4 E4B / 12B)
@@ -1435,9 +1436,13 @@ const WEB_TOOLS = [
       "facts you are unsure of.",
     parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
   { type: "function", function: { name: "web_fetch",
-    description: "Read a web page as plain text. A long page comes in parts; each result gives the offset of the next.",
+    description: "Read a web page as text, or a file at a URL: PDF, Word, Excel, PowerPoint (their text; saved in this chat's " +
+      "files), an image (saved; shown to you when you can see images). A GitHub issue or pull request comes with all its " +
+      "comments. Links to files and to other issues come with their URLs: open the ones that matter with web_fetch (a " +
+      "file attached to an issue, a related issue), following them as far as the question needs. A long text comes in " +
+      "parts; each result gives the offset of the next.",
     parameters: { type: "object", properties: { url: { type: "string", description: "http(s)" },
-      offset: { type: "integer" } }, required: ["url"] } } }];
+      offset: { type: "integer" }, links: { type: "boolean", description: "true: every link's URL, to explore a site's other pages" } }, required: ["url"] } } }];
 // (the tools' and these texts' words are the prompt of every chat with tools: kept short, 2026-10-28; each rule and
 //  parameter kept, what the system text and a tool's description both said is said once)
 const WEB_SYSTEM = () => "Today is " + new Date().toDateString() + ". For current or specific information, web_search, " +
@@ -1677,8 +1682,10 @@ async function runTool(call, card, signal, job) {
   if (name === "terminal_panel") return panelTermTool(String(args.action || ""), card, signal, job);
   if (name !== "web_search" && name !== "web_fetch") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : "· reading…";
+  const chat = job?.id || convId;  // (a file it fetches goes into this chat's files)
   const body = name === "web_search" ? { query: String(args.query ?? ""), max_results: 6 }
-    : { url: String(args.url ?? ""), offset: Math.max(0, parseInt(args.offset, 10) || 0), max_chars: 12000 };
+    : { url: String(args.url ?? ""), offset: Math.max(0, parseInt(args.offset, 10) || 0), max_chars: 12000,
+        links: args.links === true, ...(chat ? { chat_id: chat } : {}) };
   const res = await fetch("/v1/tools/" + name, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   const j = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -1691,10 +1698,25 @@ async function runTool(call, card, signal, job) {
     card.links(j.results.map((r) => [r.title, r.url]));
     return j.results.map((r, i) => (i + 1) + ". " + r.title + "\n   " + r.url + "\n   " + r.snippet).join("\n");
   }
-  card.status.textContent = "· " + (j.title || j.url) + " (" + k1(j.offset + j.content.length) + " of " + k1(j.total_chars) + " characters)";
+  card.status.textContent = "· " + (j.title || j.url) + (j.kind === "image" ? " (" + kb(j.bytes || 0) + ")"
+    : " (" + k1(j.offset + j.content.length) + " of " + k1(j.total_chars) + " characters)");
   card.links([[j.title, j.url]]);
-  return "Title: " + j.title + "\nURL: " + j.url + "\n\n" + j.content +
-    (j.next_offset ? "\n\n[the page goes on: call web_fetch with offset " + j.next_offset + " to read more]" : "");
+  let extra = "";
+  if (j.file_id) {  // (a document or an image saved into this chat: a file card, as create_file's)
+    card.file(j);
+    if ($("filespanel").classList.contains("open")) loadFiles();
+    // (an image: after this round of tools, as a message the model sees, when the loaded model sees images)
+    if (j.kind === "image") {
+      // (a Talk background call has no history to add it to: its saved file only)
+      const shows = hasVision && !!job?.history;
+      if (shows) (job.seen ||= []).push({ id: j.file_id, name: j.filename, url: j.url });
+      extra = shows ? "\n[the image follows after these tool results]"
+        : "\n[the image is not shown to you" + (hasVision ? " here" : ": the loaded model does not see images") + "; it is in the chat's files]";
+    }
+  }
+  return "Title: " + j.title + "\nURL: " + j.url + (j.source ? "\nRead from: " + j.source : "") + (j.note ? "\nNote: " + j.note : "") +
+    "\n\n" + j.content + extra +
+    (j.next_offset ? "\n\n[it goes on: call web_fetch with offset " + j.next_offset + " to read more]" : "");
 }
 
 // Run / Don't run under the command in its card (Stop: the answer stops, the command does not count as refused)
@@ -2426,6 +2448,12 @@ async function send() {
         });
       }));
       calls.forEach((c, i) => job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: results[i] }));
+      if (job.seen?.length) {  // (images web_fetch saved: shown to the model as a message of their own, the files by id)
+        job.history.push({ role: "user", fetched: true, content: [{ type: "text", text: "[the image" + (job.seen.length > 1 ? "s" : "") +
+          " web_fetch opened: " + job.seen.map((s) => s.name + " (" + s.url + ")").join(", ") + "]" },
+          ...job.seen.map((s) => ({ type: "file", file: { file_id: s.id, filename: s.name } }))] });
+        job.seen = [];
+      }
       saveConv(false, job);  // (each round on disk)
       el = bubble();
       st = { reasoning: "", answer: "", toolCalls: [], timings: null };
@@ -2492,7 +2520,7 @@ function titleOf(h) {
   return t ? (t.length > 60 ? t.slice(0, 57) + "…" : t) : "New chat";
 }
 function snippetOf(h) {
-  const m = [...h].reverse().find((x) => (x.role === "assistant" || x.role === "user") && textOf(x.content).trim());
+  const m = [...h].reverse().find((x) => (x.role === "assistant" || x.role === "user") && !x.fetched && textOf(x.content).trim());
   return m ? (m.role === "user" ? "You: " : "") + textOf(m.content).replace(/```[\w+#.-]*|[*_#`>]+/g, "").replace(/\s+/g, " ").trim().slice(0, 120) : "";
 }
 // this chat's id, made at its first file or save (its folder on the server: chats\<date> <title> (<id>))
@@ -2662,6 +2690,7 @@ async function openConv(id) {
   const k = job ? history.indexOf(job.user) : -1;
   let el = null, files = [];  // (files: the documents written since the last user message)
   for (const m of job ? (k < 0 ? history : history.slice(0, k)) : history) {
+    if (m.role === "user" && m.fetched) continue;  // (images web_fetch showed the model: in their tool cards already)
     if (m.role === "user") {
       const t = typeof m.content === "string" ? m.content : m.content.filter((p) => p.type === "text").map((p) => p.text).join("\n");
       if (t.startsWith(SUMMARY_HEAD)) { thread.appendChild(compactedNote(0, t.slice(SUMMARY_HEAD.length))); continue; }
@@ -2983,7 +3012,7 @@ const VOICE_SYSTEM = "This is a spoken conversation: the user talks to you throu
   "not catch what the user said, ask again.";
 const VOICE_END_MS = 1000, VOICE_MIN_MS = 300, VOICE_MAX_MS = 30000, VOICE_PRE_MS = 300;
 const hasTts = () => !!(window.speechSynthesis && window.SpeechSynthesisUtterance);  // (the browser can speak)
-let hasAudio = false;
+let hasAudio = false, hasVision = false;
 const voice = {
   on: false, starting: false, stream: null, ctx: null, node: null, src: null,
   floor: 0.003, speaking: false, heard: 0, quiet: 0, chunks: [], pre: [], rate: 48000,

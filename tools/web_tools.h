@@ -25,6 +25,8 @@ namespace webt {
 struct Page {
   int status = 0;
   std::string url, content_type, body, error;  // url: after redirects
+  std::string disposition;                     // (Content-Disposition: a download's file name)
+  bool cut = false;                            // (the body stopped at max_bytes: there was more)
 };
 
 struct Result {
@@ -131,7 +133,8 @@ inline std::string resolve_url(const std::string& base, const std::string& loc) 
 
 // GET a public http(s) URL: redirects followed by hand (each host checked), at most max_bytes of body, the whole
 // request within timeout_ms
-inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 15000, const std::string& accept_lang = "en-US,en;q=0.9") {
+inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 15000, const std::string& accept_lang = "en-US,en;q=0.9",
+                const std::string& accept = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8") {
   Page p;
   const auto t0 = std::chrono::steady_clock::now();
   HINTERNET ses = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
@@ -188,7 +191,7 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
     }
     DWORD noredir = WINHTTP_DISABLE_REDIRECTS;
     WinHttpSetOption(rq, WINHTTP_OPTION_DISABLE_FEATURE, &noredir, sizeof noredir);
-    const std::wstring hdr = widen("Accept: text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8\r\nAccept-Language: " + accept_lang + "\r\n");
+    const std::wstring hdr = widen("Accept: " + accept + "\r\nAccept-Language: " + accept_lang + "\r\n");
     const int third = std::max(1, ms / 3);  // (resolve, connect and send: a third of what is left each)
     WinHttpSetTimeouts(rq, third, third, third, std::max(1, ms));
     bool ok = WinHttpSendRequest(rq, hdr.c_str(), (DWORD)hdr.size(), WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
@@ -213,6 +216,9 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
       sz = sizeof buf;
       if (WinHttpQueryHeaders(rq, WINHTTP_QUERY_CONTENT_TYPE, WINHTTP_HEADER_NAME_BY_INDEX, buf, &sz, WINHTTP_NO_HEADER_INDEX))
         p.content_type = narrow(buf, sz / sizeof(wchar_t));
+      sz = sizeof buf;
+      if (WinHttpQueryHeaders(rq, WINHTTP_QUERY_CONTENT_DISPOSITION, WINHTTP_HEADER_NAME_BY_INDEX, buf, &sz, WINHTTP_NO_HEADER_INDEX))
+        p.disposition = narrow(buf, sz / sizeof(wchar_t));
       if (st >= 300 && st < 400) {
         sz = sizeof buf;
         if (WinHttpQueryHeaders(rq, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, buf, &sz, WINHTTP_NO_HEADER_INDEX)) {
@@ -232,7 +238,12 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
         DWORD got = 0;
         if (!WinHttpReadData(rq, p.body.data() + old, avail, &got)) { p.body.resize(old); break; }
         p.body.resize(old + got);
-        if (p.body.size() >= max_bytes) { p.body.resize(max_bytes); break; }
+        if (p.body.size() >= max_bytes) {
+          p.body.resize(max_bytes);
+          DWORD more = 0;  // (exactly max_bytes long is not cut)
+          p.cut = WinHttpQueryDataAvailable(rq, &more) && more > 0;
+          break;
+        }
       }
     } else {
       const DWORD e = GetLastError();
@@ -244,10 +255,15 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
   }
   if (p.error.empty() && p.status >= 300 && p.status < 400) p.error = "too many redirects";
   WinHttpCloseHandle(ses);
-  // a body in Latin-1 / Windows-1252 (the content type or a meta tag says so) becomes UTF-8
+  // a body in Latin-1 / Windows-1252 (the content type or a meta tag says so) becomes UTF-8; a text only (a page, a
+  // text file): a PDF or an image fetched to be saved keeps its bytes, whatever its first 2 KB hold
   const std::string ct = lower(p.content_type), head = lower(p.body.substr(0, 2048));
-  if (ct.find("iso-8859-1") != std::string::npos || ct.find("windows-1252") != std::string::npos ||
-      (ct.find("charset") == std::string::npos && (head.find("charset=iso-8859-1") != std::string::npos || head.find("charset=windows-1252") != std::string::npos))) {
+  const bool textual = (ct.empty() || ct.rfind("text/", 0) == 0 || ct.find("html") != std::string::npos ||
+                        ct.find("xml") != std::string::npos || ct.find("json") != std::string::npos) &&
+                       p.body.compare(0, 5, "%PDF-") != 0 && p.body.compare(0, 2, "PK") != 0 &&
+                       p.body.find('\0') == std::string::npos;  // (no type given: a binary file is no text)
+  if (textual && (ct.find("iso-8859-1") != std::string::npos || ct.find("windows-1252") != std::string::npos ||
+      (ct.find("charset") == std::string::npos && (head.find("charset=iso-8859-1") != std::string::npos || head.find("charset=windows-1252") != std::string::npos)))) {
     const int n = MultiByteToWideChar(1252, 0, p.body.data(), (int)p.body.size(), nullptr, 0);
     std::wstring w(n, L'\0');
     MultiByteToWideChar(1252, 0, p.body.data(), (int)p.body.size(), w.data(), n);
@@ -340,9 +356,84 @@ inline std::string strip_tags(const std::string& s) {
   return tidy(decode_entities(o));
 }
 
+// The value of attribute `name` in the tag lo[ts..te] (lo: the page lowercased; the value from html, its case kept,
+// entities still in it); "" when the tag has none
+inline std::string attr_of(const std::string& html, const std::string& lo, size_t ts, size_t te, const char* name) {
+  const std::string key = std::string(name) + "=";
+  for (size_t k = lo.find(key, ts); k != std::string::npos && k < te; k = lo.find(key, k + 1)) {
+    if (!isspace((unsigned char)lo[k - 1])) continue;  // ("data-href=" is not "href=")
+    size_t v = k + key.size();
+    if (v >= te) return {};
+    if (lo[v] == '"' || lo[v] == '\'') {
+      const size_t q = lo.find(lo[v], v + 1);
+      return q == std::string::npos || q > te ? std::string() : html.substr(v + 1, q - v - 1);
+    }
+    size_t e = v;
+    while (e < te && !isspace((unsigned char)lo[e]) && lo[e] != '>') ++e;
+    return html.substr(v, e - v);
+  }
+  return {};
+}
+
+// A link's target as an absolute http(s) URL against the page's (base), "" for one that leads nowhere to read: a
+// fragment on the same page, javascript:, mailto:, tel:, data:
+inline std::string link_target(const std::string& base, std::string h) {
+  while (!h.empty() && isspace((unsigned char)h.front())) h.erase(0, 1);
+  while (!h.empty() && isspace((unsigned char)h.back())) h.pop_back();
+  if (h.empty() || h[0] == '#') return {};
+  const std::string l = lower(h.substr(0, 11));
+  if (l.rfind("javascript:", 0) == 0 || l.rfind("mailto:", 0) == 0 || l.rfind("tel:", 0) == 0 || l.rfind("data:", 0) == 0) return {};
+  if (!base.empty()) h = resolve_url(base, h);
+  return h.rfind("http://", 0) == 0 || h.rfind("https://", 0) == 0 ? h : std::string();
+}
+
+// A link to a file rather than a page: a document, text, image or archive by its extension, or a download / attachment
+// path (GitHub's user-attachments, /releases/download/, raw files)
+inline bool file_link(const std::string& url) {
+  const std::string u = lower(url.substr(0, url.find_first_of("?#")));
+  for (const char* p : {"/user-attachments/", "/attachments/", "/files/", "/download/", "/releases/download/", "/raw/",
+                        "raw.githubusercontent.com/", "/uploads/"})
+    if (u.find(p) != std::string::npos) return true;
+  const size_t sl = u.rfind('/'), d = u.rfind('.');
+  if (d == std::string::npos || (sl != std::string::npos && d < sl)) return false;
+  static const char* exts[] = {"pdf", "doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "odt", "ods", "rtf", "csv",
+                               "tsv", "txt", "md", "log", "json", "jsonl", "xml", "yaml", "yml", "png", "jpg", "jpeg",
+                               "gif", "webp", "bmp", "svg", "zip", "7z", "gz", "tgz", "rar", "mp3", "wav", "m4a", "mp4"};
+  const std::string e = u.substr(d + 1);
+  for (const char* x : exts) if (e == x) return true;
+  return false;
+}
+
+// A link worth its URL on any page: to a GitHub issue, pull request, discussion, commit or release (threads link to
+// one another: the way to follow a problem across them), or one whose text is itself a URL or a reference ("#123",
+// "owner/repo#45")
+inline bool ref_link(const std::string& url, const std::string& text) {
+  const std::string u = lower(url);
+  for (const char* h : {"https://github.com/", "https://www.github.com/"})
+    if (u.rfind(h, 0) == 0) {
+      for (const char* p : {"/issues/", "/pull/", "/discussions/", "/commit/", "/releases/", "/compare/"})
+        if (u.find(p) != std::string::npos) return true;
+    }
+  std::string t = text;
+  while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
+  while (!t.empty() && isspace((unsigned char)t.front())) t.erase(0, 1);
+  if (t.rfind("http://", 0) == 0 || t.rfind("https://", 0) == 0) return true;
+  const size_t h = t.find('#');
+  if (h == std::string::npos || h + 1 >= t.size() || t.size() > 60) return false;
+  for (size_t k = h + 1; k < t.size(); ++k) if (!isdigit((unsigned char)t[k])) return false;
+  return true;
+}
+
 // HTML to readable text: scripts, styles, navigation, forms and the like dropped; headings as Markdown '#', list
-// items as '- ', block elements on their own lines. The page's <main> (or first <article>) when it has enough text.
-inline std::string html_to_text(const std::string& html, std::string* title = nullptr) {
+// items as '- ', block elements on their own lines. Links resolved against base (the page's URL): links to files (a
+// document a page offers, a file attached to an issue) and references (ref_link: another issue, a URL written out)
+// as Markdown [text](url) and images with a description as [image: alt](url), so the reader can open them; the other
+// links as their text only, counted in *hidden (their URLs made pages 30-75 % longer: Wikipedia, BBC,
+// docs.python.org, GitHub, 2026-11-03), or all of them with all_links (to explore a site).
+// The page's <main> (or first <article>) when it has enough text.
+inline std::string html_to_text(const std::string& html, std::string* title = nullptr, const std::string& base = "",
+                                bool all_links = false, int* hidden = nullptr) {
+  if (hidden) *hidden = 0;
   const std::string lo = lower(html);
   if (title) {
     const size_t a = lo.find("<title");
@@ -356,7 +447,26 @@ inline std::string html_to_text(const std::string& html, std::string* title = nu
                                 "dl", "dt", "dd", "pre", "blockquote", "figure", "figcaption", "hr", "li", "h1", "h2",
                                 "h3", "h4", "h5", "h6"};
   auto convert = [&](size_t from, size_t to) {
+    if (hidden) *hidden = 0;  // (the <main> part tried first, then maybe the whole page: counted once)
     std::string o;
+    std::string link;     // (the open <a>'s target; "" when none is open)
+    size_t link_at = 0;   // (where its text starts in o, after the '[')
+    auto close_link = [&] {
+      if (link.empty()) return;
+      std::string t = o.substr(link_at);
+      while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
+      size_t a = 0;
+      while (a < t.size() && isspace((unsigned char)t[a])) ++a;
+      t = t.substr(a);
+      o.erase(link_at - 1);  // (the '[' and the text, written again below)
+      if (!all_links && !file_link(link) && !ref_link(link, t)) {  // (a link to another page: its text only)
+        o += t;
+        if (hidden && !t.empty()) ++*hidden;
+      } else if (t.empty()) o += link;                                  // (an image-only or empty link: its URL alone)
+      else if (t == link || t.find("](") != std::string::npos) o += t;  // (its text is the URL, or holds an image link)
+      else o += "[" + t + "](" + link + ")";
+      link.clear();
+    };
     size_t i = from;
     while (i < to) {
       if (lo[i] != '<') {
@@ -376,7 +486,27 @@ inline std::string html_to_text(const std::string& html, std::string* title = nu
       size_t ns = i + (close ? 2 : 1), ne = ns;
       while (ne < e && (isalnum((unsigned char)lo[ne]))) ++ne;
       const std::string name = lo.substr(ns, ne - ns);
+      const size_t ts = i;
       i = e + 1;
+      if (name == "a") {
+        close_link();  // (an <a> left open, or this one's end)
+        if (!close) {
+          link = link_target(base, attr_of(html, lo, ts, e, "href"));  // (kept or not at its end, by its text too)
+          if (!link.empty()) {
+            o += '[';
+            link_at = o.size();
+          }
+        }
+        continue;
+      }
+      if (name == "img" && !close) {  // (an image with a description: a figure, a screenshot in an issue)
+        std::string alt = attr_of(html, lo, ts, e, "alt");
+        for (char& c : alt) if (c == '\n' || c == '\r' || c == '[' || c == ']') c = ' ';
+        const std::string src = link_target(base, attr_of(html, lo, ts, e, "src"));
+        if (!src.empty() && alt.find_first_not_of(' ') != std::string::npos && (all_links || file_link(src)))
+          o += "[image: " + alt + "](" + src + ")";
+        continue;
+      }
       if (!close && lo[e - 1] != '/') {
         bool sk = false;
         for (const char* t : skip) sk = sk || name == t;
@@ -409,6 +539,7 @@ inline std::string html_to_text(const std::string& html, std::string* title = nu
         o += close ? "" : " ";
       }
     }
+    close_link();
     return tidy(decode_entities(o));
   };
   for (const char* tag : {"<main", "<article"}) {

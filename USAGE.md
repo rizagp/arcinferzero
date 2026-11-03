@@ -399,7 +399,10 @@ While the server is running:
   read pages (`web_fetch`): each search or page shows as a card in its answer (with the links), and the answer goes
   on with what it found. The server does the requests itself (Brave Search, Bing when Brave gives nothing) and
   turns pages into plain text; it only reaches public http(s) addresses (nothing on this machine or the local
-  network). Other clients can use the same endpoints ([docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand));
+  network). The model can also follow links and open files: a GitHub issue comes with all its comments and a list of
+  the files attached to it; a PDF, Word, Excel or PowerPoint file (up to 20 MB) is read and saved in the chat's files;
+  an image is saved and shown to a model that sees images (Gemma 4, Qwen with its mmproj). Other clients can use the
+  same endpoints ([docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand));
   `--no-web-tools` turns them off.
 - **Web UI: files and documents.** With **Files** on (the default) the model can list the saved files
   (`list_files`: by kind, name, upload time, this chat only), read them (`read_file`: DOCX, PDF, Excel XLSX / XLSM, PowerPoint

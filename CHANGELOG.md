@@ -2,6 +2,16 @@
 
 ## 2026-11-03: launcher without serverz.exe
 
+- **web_fetch reads what a person reads** (tools/web_tools.h, tools/web_github.h; docs/server.md):
+  - links to files and to other issues / pull requests keep their URLs (`[text](url)`), so the model can open them;
+    the other links show their text, and `"links": true` gives every URL to explore a site (the URLs of every link made
+    pages 30-75 % longer; this way 0-22 %);
+  - a GitHub issue or pull request comes from GitHub's API with every comment, the files attached in the thread listed
+    at the top (its page, built by scripts, often had no comments);
+  - PDF, Word, Excel and PowerPoint files (up to 20 MB) are read and saved in the chat's files; images are saved and
+    shown to a model that sees images; text attachments (`.txt`, `.log`) read as before; archives and programs refused.
+  - Checked: Gemma 4 E4B asked about the event_probe log attached to issue #4 opened the issue, picked that attachment
+    from the list and answered from it; it read a screenshot fetched from issue #5.
 - `bin\membw_probe.exe` (new, in the package): memory read bandwidth of the CPU (1..all threads), the GPU, and both
   at once. On the 125H the iGPU reads 73-74.5 GB/s, the CPU at most 72.5 (all 18 threads), both together ~84: decoding on
   the CPU (xenolith's choice on Raptor Lake) would not be faster here (docs/speed-progress.md).

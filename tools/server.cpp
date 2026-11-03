@@ -28,6 +28,7 @@
 #include "tool_constraint.h"
 #include "sampler.h"
 #include "web_tools.h"
+#include "web_github.h"
 #include "server_files.h"
 #include "server_memory.h"
 #include "server_projects.h"
@@ -120,6 +121,83 @@ static uint64_t gguf_bytes(const std::string& path) {
     if (!ec) n += b;
   }
   return n;
+}
+
+// ---- web_fetch: what a fetched URL is (a page, a text, or a file to save: a document or an image)
+static constexpr size_t kWebFileMax = 20u << 20;  // (a document or an image larger than this is refused)
+static constexpr size_t kWebTextMax = 4u << 20;   // (a page or a text: its first 4 MB, as before files were fetched)
+static std::string url_decode(const std::string& s) {
+  std::string o;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 2 < s.size() && isxdigit((unsigned char)s[i + 1]) && isxdigit((unsigned char)s[i + 2])) {
+      o += (char)strtol(s.substr(i + 1, 2).c_str(), nullptr, 16);
+      i += 2;
+    } else o += s[i] == '+' ? ' ' : s[i];
+  }
+  return o;
+}
+// the file's name: Content-Disposition's (filename*=UTF-8''..., else filename=), else the URL path's last part
+static std::string web_file_name(const webt::Page& pg) {
+  const std::string d = pg.disposition, dl = webt::lower(d);
+  auto value = [&](size_t at) {
+    std::string v = d.substr(at);
+    if (!v.empty() && v[0] == '"') v = v.substr(1, v.find('"', 1) - 1);
+    else v = v.substr(0, v.find(';'));
+    return v;
+  };
+  size_t k = dl.find("filename*=");
+  if (k != std::string::npos) {
+    std::string v = value(k + 10);
+    const size_t q = v.find("''");
+    if (q != std::string::npos) v = v.substr(q + 2);
+    if (!url_decode(v).empty()) return url_decode(v);
+  }
+  k = dl.find("filename=");
+  if (k != std::string::npos && !value(k + 9).empty()) return value(k + 9);
+  std::string p = pg.url.substr(0, pg.url.find_first_of("?#"));
+  const size_t se = p.find("://");
+  p = se == std::string::npos ? p : p.substr(se + 3);
+  const size_t sl = p.find('/');
+  p = sl == std::string::npos ? "" : p.substr(sl);
+  while (!p.empty() && p.back() == '/') p.pop_back();
+  return url_decode(p.substr(p.rfind('/') + 1));
+}
+// "html", "text", a file's extension to save it under (pdf, docx, xlsx, xlsm, pptx, png, jpg, gif, webp, bmp), or ""
+// (refused): by the content type, else (a generic one: application/octet-stream...) by the name's extension; a file's
+// first bytes must be of its kind (%PDF, a ZIP for Office, an image header), so no other file is saved under a name
+static std::string web_file_type(const std::string& ct_in, const std::string& name, const std::string& body) {
+  const std::string ct = webt::lower(ct_in.substr(0, ct_in.find(';')));
+  static const std::map<std::string, std::string> by_ct = {
+      {"application/pdf", "pdf"}, {"application/x-pdf", "pdf"},
+      {"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"},
+      {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"},
+      {"application/vnd.ms-excel.sheet.macroenabled.12", "xlsm"},
+      {"application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"},
+      {"image/png", "png"}, {"image/jpeg", "jpg"}, {"image/jpg", "jpg"}, {"image/gif", "gif"}, {"image/webp", "webp"},
+      {"image/bmp", "bmp"}};
+  static const std::set<std::string> files_ext = {"pdf", "docx", "xlsx", "xlsm", "pptx", "png", "jpg", "jpeg", "gif", "webp", "bmp"},
+                                     text_ext = {"txt", "md", "log", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml",
+                                                 "toml", "ini", "cfg", "srt", "vtt", "py", "c", "cpp", "h", "hpp", "js",
+                                                 "ts", "ps1", "sh", "bat", "cmd", "rs", "go", "java", "cs", "sql", "diff", "patch"};
+  const std::string ext = files::ext_of(name);
+  std::string t;
+  if (auto it = by_ct.find(ct); it != by_ct.end()) t = it->second;
+  else if (ct.find("html") != std::string::npos) return "html";
+  else if (ct.rfind("text/", 0) == 0 || ct.find("json") != std::string::npos || ct.find("xml") != std::string::npos) return "text";
+  else if (ct.empty() || ct == "application/octet-stream" || ct == "binary/octet-stream" || ct == "application/force-download" ||
+           ct == "application/download" || ct == "application/x-download") {
+    if (files_ext.count(ext)) t = ext == "jpeg" ? "jpg" : ext;
+    else if (text_ext.count(ext) && body.find('\0') == std::string::npos) return "text";
+    else if (ct.empty()) return "html";  // (no type, no known extension: read as a page, as before)
+    else return "";
+  } else return "";
+  // its first bytes
+  const bool pdf = body.compare(0, 5, "%PDF-") == 0 || body.substr(0, 1024).find("%PDF-") != std::string::npos,
+             zip = body.compare(0, 4, "PK\x03\x04", 4) == 0;
+  int w = 0, h = 0;
+  if (t == "pdf") return pdf ? t : "";
+  if (t == "docx" || t == "xlsx" || t == "xlsm" || t == "pptx") return zip ? t : "";
+  return files::image_size(body, w, h) ? t : "";
 }
 
 // audio: a Gemma 4 audio encoder (mmproj audio projector gemma4ua or gemma4a)
@@ -2540,14 +2618,73 @@ int main(int argc, char** argv) {
       }
       const std::string url = in["url"].str();
       if (url.empty()) return fail(400, "url required");
-      const webt::Page pg = webt::get(url);
-      if (!pg.error.empty()) return fail(502, pg.error);
-      if (pg.status != 200) return fail(502, "HTTP " + std::to_string(pg.status) + " from " + pg.url);
-      const std::string ct = webt::lower(pg.content_type);
-      std::string title, text;
-      if (ct.find("html") != std::string::npos || ct.empty()) text = webt::html_to_text(pg.body, &title);
-      else if (ct.rfind("text/", 0) == 0 || ct.find("json") != std::string::npos || ct.find("xml") != std::string::npos) text = pg.body;
-      else return fail(415, "unsupported content type " + pg.content_type + " (text and HTML pages only)");
+      std::string title, text, final_url = url, gh_err;
+      // (an issue or pull request on GitHub: the thread and its comments from GitHub's API, tools/web_github.h; when
+      //  the API fails, the page itself)
+      if (webt::github_thread(url, title, text, gh_err)) {
+        r.set("source", "GitHub API (the issue and every comment)");
+      } else {
+        if (!gh_err.empty()) r.set("note", gh_err + "; the page itself was read instead (it may lack the comments)");
+        // (20 MB: a document or an image to save; a page or a text is read from its first 4 MB, as before)
+        const webt::Page pg = webt::get(url, kWebFileMax);
+        if (!pg.error.empty()) return fail(502, pg.error);
+        if (pg.status != 200) return fail(502, "HTTP " + std::to_string(pg.status) + " from " + pg.url);
+        final_url = pg.url;
+        const std::string name = web_file_name(pg);
+        const std::string ty = web_file_type(pg.content_type, name, pg.body);
+        if (ty == "html") {
+          // (links to files with their URLs; the other links' URLs only when asked: "links": true)
+          const bool all_links = in["links"].is_bool() && in["links"].as_bool();
+          int hidden = 0;
+          text = webt::html_to_text(pg.body.substr(0, kWebTextMax), &title, pg.url, all_links, &hidden);
+          if (hidden > 0)
+            text = "[" + std::to_string(hidden) + " links to other pages are shown as their text only: to explore them, "
+                   "web_fetch this URL again with \"links\": true for their URLs, then open the ones you need]\n" + text;
+        }
+        else if (ty == "text") {
+          text = pg.body.substr(0, kWebTextMax);
+          title = name;  // (a text file has no title of its own: its name, an attachment's "log.txt")
+        }
+        else if (!ty.empty()) {
+          // a document or an image: saved into this chat's files (a file card for the user), its text read from there
+          // with the reader read_file uses (PDF, Word, Excel, PowerPoint); an image is shown to a model that sees
+          // images by the web UI, after this result
+          if (pg.cut) return fail(413, "the file is larger than " + std::to_string(kWebFileMax >> 20) + " MB: not fetched");
+          const std::string chat = files::valid_id(in["chat_id"].str()) ? in["chat_id"].str() : "";
+          std::string fname = name.empty() ? "download" : name;  // (its extension the one of its kind)
+          const std::string fe = files::ext_of(fname);
+          if (fe != ty && !(ty == "jpg" && fe == "jpeg")) fname += "." + ty;
+          files::Info fi;
+          try {
+            fi = files::store().put(fname, pg.body, chat);
+          } catch (const std::exception& e) {
+            return fail(500, std::string("cannot save the file: ") + e.what());
+          }
+          r.set("file_id", fi.id);
+          r.set("filename", fi.name);
+          r.set("kind", fi.kind);
+          r.set("bytes", (double)fi.bytes);
+          title = fi.name;
+          if (fi.kind == "image") {
+            int w = 0, h = 0;
+            files::image_size(pg.body, w, h);
+            text = "[an image: " + fi.name + (w > 0 ? ", " + std::to_string(w) + "x" + std::to_string(h) : std::string()) +
+                   ", " + std::to_string((fi.bytes + 1023) / 1024) + " KB; saved in this chat's files as file_id \"" + fi.id + "\"]";
+          } else {
+            const auto ix = files::doc_index(fi);
+            const std::string head = "[a " + ty + " file: " + fi.name + ", " + std::to_string((fi.bytes + 1023) / 1024) +
+                                     " KB; saved in this chat's files as file_id \"" + fi.id + "\" (read_file and search_file read it too)" +
+                                     (ix && ix->doc.pages > 0 ? "; " + std::to_string(ix->doc.pages) + " pages" : std::string()) + "]\n";
+            if (!ix || ix->doc.paras.empty())
+              text = head + "[" + (ix && !ix->doc.note.empty() ? ix->doc.note : std::string("no text could be read from it")) + "]";
+            else text = head + (ix->doc.note.empty() ? "" : "[" + ix->doc.note + "]\n") + ix->text(0, ix->doc.paras.size());
+          }
+        } else {
+          return fail(415, "unsupported content type " + (pg.content_type.empty() ? std::string("(none)") : pg.content_type) +
+                               (name.empty() ? "" : " (" + name + ")") +
+                               ": web pages, text, PDF, Word, Excel, PowerPoint and images only");
+        }
+      }
       // a window of the text: offset, max_chars, never more than the model's context takes in one read (as read_file;
       // before, 12,000 characters a fetch whatever the context) (cut on a UTF-8 character boundary)
       int ctx = 0;
@@ -2560,7 +2697,7 @@ int main(int argc, char** argv) {
       size_t off = (size_t)std::clamp<int64_t>(in["offset"].as_int(0), 0, (int64_t)total), end = std::min(total, off + max_chars);
       while (off < total && ((unsigned char)text[off] & 0xc0) == 0x80) ++off;
       while (end < total && ((unsigned char)text[end] & 0xc0) == 0x80) --end;
-      r.set("url", pg.url);
+      r.set("url", final_url);
       r.set("title", title);
       r.set("content", text.substr(off, end - off));
       r.set("offset", (double)off);

@@ -23,9 +23,23 @@
   llama-server's `meta.n_ctx` and `max_model_len`), plus `GET /health`, `GET /props`, `POST /tokenize`, `GET` /
   `DELETE /sessions` (session cache size / clear).
 - Web tools (the web UI's, usable by any client): `POST /v1/tools/web_search` `{"query": ...}` (Brave Search, Bing
-  when Brave gives nothing) and `POST /v1/tools/web_fetch` `{"url": ..., "offset": 0}` (a page as plain text, in
-  windows of 12K characters); public http(s) addresses only (every host and redirect is resolved first: nothing on
-  this machine or the local network). `--no-web-tools` turns them off.
+  when Brave gives nothing) and `POST /v1/tools/web_fetch` `{"url": ..., "offset": 0, "links": false, "chat_id": ...}`
+  (in windows of 12K characters, at most what the model's context takes in one read); public http(s) addresses only
+  (every host and redirect is resolved first: nothing on this machine or the local network). `--no-web-tools` turns
+  them off. What a URL gives:
+  - a page: plain text with headings and lists; links to files and to GitHub issues / pull requests / commits (or
+    written as a URL or `#123`) keep their URLs as `[text](url)`, the other links their text only, with a note of how
+    many; `"links": true` gives every link's URL, to explore a site;
+  - a text file (`.txt`, `.log`, `.csv`, JSON...): as it is, its name as the title;
+  - a GitHub issue or pull request (`github.com/<owner>/<repo>/issues/<n>` or `/pull/<n>`): read from GitHub's API
+    (no token: 60 requests an hour, 2-4 a thread) as Markdown, the description and every comment with its author and
+    time, the files attached in the thread listed at the top, a pull request's review comments; the page when the API
+    fails;
+  - a PDF, Word, Excel or PowerPoint file (up to 20 MB): saved into the chat's files (`chat_id`; none: the uploads
+    folder) and its text returned, as `read_file` reads it; `file_id`, `filename`, `kind` in the reply;
+  - an image (PNG, JPEG, GIF, WebP, BMP, up to 20 MB): saved the same way; the web UI shows it to a model that sees
+    images after that round of tools;
+  - anything else (archives, programs, audio, video): refused (415). A file's first bytes must be of its kind.
 - The web UI's memory and projects (`tools/server_memory.h`, `tools/server_projects.h`). They are served while a
   model loads, and only on this computer (not over the network), to the server's own page or a client that sends no
   Origin:
