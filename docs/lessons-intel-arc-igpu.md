@@ -158,6 +158,7 @@ MoE expert kernels read small scattered blocks: the 35B's gate/up IQ3_XXS runs 5
 | 32 tokens per sub-group in the GEMM, also with 256 registers (no spill), or two column groups per work-group | 2.6 TOPS at first; 2.4 vs 8.1 TOPS with 256 registers (27B ffn_gate, 16 Oct); CG=2 within 1 %: the slowdown was never the spill, larger tiles leave too few threads in flight |
 | Software-pipelined GEMM loop; 24-bit multiplies in the scale step | 7.0 TOPS (it loses the unrolled superblock); no change |
 | GEMM work-groups spanning several 16-column groups (activation sharing in L1); removing lane broadcasts or the scale epilogue | no gain once the row grouping was tuned; < 3 % |
+| H8 (2026-11-03, QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per 256 values, so the GEMM has no per-16 / per-32 rescaling | correct (27B KL 0.0010 against the default, perplexity +0.24 %) but the GEMMs took the same time (25.5 vs 25.7 s of a 4K prompt): the row above, again; the rotations then cost 6.7 s (136 -> 111 tok/s). The ablation's 9.7 -> 11.0 TOPS without the epilogue was measured without loads, which is not the GEMM that runs. Kept off (`ARC_H8=1`) for the B60, whose DPAS may gain |
 | SLM staging of q/k for the DeltaNet recurrence | 4x slower (local memory bandwidth) |
 | Several tokens per sub-group in the DeltaNet conv | 3x slower (too few sub-groups in flight) |
 | A T = 1 DeltaNet recurrence with 4 lanes per state column and 128 registers | bit-identical but slower (35B 248–341 vs 226–254 ms per 96 tokens) |
