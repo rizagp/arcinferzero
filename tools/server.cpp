@@ -205,9 +205,10 @@ static std::string web_file_type(const std::string& ct_in, const std::string& na
   if (t == "docx" || t == "xlsx" || t == "xlsm" || t == "pptx") return zip ? t : "";
   if (files::kind_of("x." + t) == "audio" || t == "webm") {  // (an MP3 / AAC frame or ID3 tag, MP4 ftyp, RIFF WAVE, fLaC, Ogg, WebM)
     const auto b = [&](size_t k) { return k < body.size() ? (unsigned char)body[k] : 0u; };
-    const bool ok = body.compare(0, 3, "ID3") == 0 || (b(0) == 0xFF && (b(1) & 0xE0) == 0xE0) ||
-                    body.compare(4, 4, "ftyp") == 0 || (body.compare(0, 4, "RIFF") == 0 && body.compare(8, 4, "WAVE") == 0) ||
-                    body.compare(0, 4, "fLaC") == 0 || body.compare(0, 4, "OggS") == 0 || body.compare(0, 4, "\x1A\x45\xDF\xA3", 4) == 0;
+    // (bytes at k, false past the end: std::string::compare at a position past a 3-byte body throws out_of_range)
+    const auto at = [&](size_t k, std::string_view m) { return body.size() >= k + m.size() && body.compare(k, m.size(), m) == 0; };
+    const bool ok = at(0, "ID3") || (b(0) == 0xFF && (b(1) & 0xE0) == 0xE0) || at(4, "ftyp") || (at(0, "RIFF") && at(8, "WAVE")) ||
+                    at(0, "fLaC") || at(0, "OggS") || at(0, std::string_view("\x1A\x45\xDF\xA3", 4));
     return ok ? (t == "webm" ? "webm" : t) : "";
   }
   return files::image_size(body, w, h) ? t : "";

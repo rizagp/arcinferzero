@@ -154,15 +154,21 @@ class Proxy {
     // host and port from "host:port", "[v6]:port"
     auto split = [](const std::string& hp, int def, std::string& host, int& port) {
       port = def;
+      // (a port's digits, out of range or none: -1, refused; atoi's overflow is undefined)
+      auto num = [](const char* p) {
+        char* e = nullptr;
+        const long v = strtol(p, &e, 10);
+        return e == p || *e != '\0' || v < 1 || v > 65535 ? -1 : (int)v;
+      };
       if (!hp.empty() && hp[0] == '[') {
         const size_t e = hp.find(']');
         host = hp.substr(1, e == std::string::npos ? std::string::npos : e - 1);
-        if (e != std::string::npos && e + 1 < hp.size() && hp[e + 1] == ':') port = atoi(hp.c_str() + e + 2);
+        if (e != std::string::npos && e + 1 < hp.size() && hp[e + 1] == ':') port = num(hp.c_str() + e + 2);
         return;
       }
       const size_t k = hp.rfind(':');
       host = k == std::string::npos ? hp : hp.substr(0, k);
-      if (k != std::string::npos) port = atoi(hp.c_str() + k + 1);
+      if (k != std::string::npos) port = num(hp.c_str() + k + 1);
     };
     std::string host, why;
     int port = 0;
