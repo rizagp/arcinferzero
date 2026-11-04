@@ -129,6 +129,11 @@
 // Per-byte (q - 32) for 6-bit unsigned values packed in a uint, without cross-byte borrows.
 inline uint sub32_bytes(uint q) { return ((q | 0x80808080u) - 0x20202020u) ^ 0x80808080u; }
 
+// (MOE_TILES: one tile slot per lane, the tokens broadcast from it, and no m0 for the min terms)
+#if defined(MOE_TILES) && (TM != 16 || HAS_MIN || !defined(ACT32))
+#error "MOE_TILES needs TM 16, -DACT32 and a weight layout without mins"
+#endif
+
 __attribute__((intel_reqd_sub_group_size(SG)))
 #ifdef MOE_TILES
 __kernel void gemm(__global const uint* restrict wq, __global const uint* restrict wh,

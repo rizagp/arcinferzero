@@ -788,6 +788,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 
   void decode_w8(const GpuWeight& w, cl_mem dq, cl_mem dh) { decode_w8(w.raw, w.type, w.N, w.K, dq, dh); }
   void decode_w8(cl_mem raw, uint32_t type, int N, int K, cl_mem dq, cl_mem dh) {
+    // (the W8 layout is in groups of 16 rows: a partial last group would write past w8_bytes_q / w8_bytes_h)
+    if (N % 16) throw std::runtime_error("decode_w8: N = " + std::to_string(N) + " is not a multiple of 16");
     // big-codebook types decode faster per superblock with the codebook in local memory; the rest per 32-block
     // one work-item per (row, superblock): the superblock is vector-loaded into registers and the codebook staged in
     // local memory (27B, 11K prompt: IQ3_S / IQ4_XS / IQ3_XXS 5.8 -> 2.2 s than a per-32-block kernel)
@@ -848,11 +850,6 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   static std::string grf_env(const char* var) {
     const char* e = getenv(var);
     return e && std::string(e) == "256" ? std::string("-cl-intel-256-GRF-per-thread ") : std::string();
-  }
-  // (A/B: ARC_MT_LAZY_MIN=N, the token count from which gemv_mt / gemv_mt_v load activations per token; default 4)
-  static std::string mt_lazy_opt() {
-    static const std::string o = getenv("ARC_MT_LAZY_MIN") ? std::string(" -DMT_LAZY_MIN=") + getenv("ARC_MT_LAZY_MIN") : std::string();
-    return o;
   }
   // C[:, c_off : c_off+N] (+)= act * W^T for the current chunk. A single token uses the raw-row GEMV.
   // acc: 0 = store, 1 = accumulate into C, 2 = C = silu(C) * result (fused SwiGLU, GEMM path only)
@@ -987,7 +984,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       const bool fuse = q2_fuse_ && vk && a <= 1;
       cl_kernel k = kernel("decode", xe2_gemv_mt_grf() + "-DQT=" +
                                          std::to_string(w.type) + " -DGROWS=" + std::to_string(gr) + " -DTB=" +
-                                         std::to_string(fuse ? 2 * tb : tb) + head_defs(w) + mt_lazy_opt() +
+                                         std::to_string(fuse ? 2 * tb : tb) + head_defs(w) +
                                          (fuse ? " -DQ2F" + q2_defs_ : std::string()),
                            vk ? "gemv_mt_v" : "gemv_mt");
       q2_fused_ = fuse;
@@ -1258,7 +1255,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }();
     const std::string dec_grf = dec_small ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
     static const int dec_sg = getenv("ARC_ATTN_DEC_SG") ? atoi(getenv("ARC_ATTN_DEC_SG")) : 512;
-    static const int dec_smax = getenv("ARC_ATTN_DEC_SMAX") ? std::max(1, atoi(getenv("ARC_ATTN_DEC_SMAX"))) : 256;  // (keys per split, most)
+    static const int dec_smax = getenv("ARC_ATTN_DEC_SMAX") ? (std::max(1, atoi(getenv("ARC_ATTN_DEC_SMAX"))) + 15) / 16 * 16 : 256;  // (keys per split, most)
     auto opts = [&](int tpw) {
       return dec_grf + "-DHD=" + std::to_string(hd) + " -DHPG=" + std::to_string(hpg) +
              " -DHS=" + std::to_string(hs) + " -DTPW=" + std::to_string(tpw) + sb_opt(hd);
@@ -1287,7 +1284,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         const int hg = hpg % 4 == 0 && qwen_ds != 1 ? 4 : 2, n = hg == 4 ? 1 : std::min(left, 2), tr = n, nsub = 4;
         const int sgs = hpg / hg * nsub, lsz = 16 * sgs;
         const int lo = win ? std::max(0, pos0 + r0 - win + 1) : 0, plast = pos0 + r0 + n - 1;
-        static const int qs_len = getenv("ARC_QWEN_DS_S") ? std::max(1, atoi(getenv("ARC_QWEN_DS_S"))) : 256;  // (experiment)
+        static const int qs_len = getenv("ARC_QWEN_DS_S") ? (std::max(1, atoi(getenv("ARC_QWEN_DS_S"))) + 15) / 16 * 16 : 256;  // (experiment)
         const int S = qs_len, kstart = lo / S * S, ns = (plast - kstart) / S + 1;
         int p0 = pos0 + r0, nv = n, q0 = r0, SS = S, ks = kstart, nss = ns;
         cl_kernel k = kernel("ops", opts(1) + " -DHG=" + std::to_string(hg) + " -DNSUB=" + std::to_string(nsub) +

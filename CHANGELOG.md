@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
+
+- **MCP servers** (docs/mcp.md): the web UI's model can use the tools of other programs on this computer, Blender
+  through blender-mcp for example. The server is the MCP client:
+  - stdio servers come from `%USERPROFILE%\.arcinferzero\mcp.json` in the usual `mcpServers` form;
+  - each server is switched on per project, or for the chats outside projects;
+  - a server starts at its first use and runs in a job object;
+  - its tools reach the model as `<server>__<tool>`;
+  - a call that may change something asks Run / Always for this tool / Don't run;
+  - returned images go into the chat's files.
+
+  Settings has a section for the servers, their switches and the file. The endpoints are `/v1/mcp*`, from this
+  computer only. Checked against a test server: 22 API checks, covering tools over two pages, a missing program,
+  the instructions, text, image and error results, an unknown tool, a timeout, parallel calls, a crash and its
+  restart, stop, and a config change. In the browser with Qwen3.5 4B: a read-only tool ran without asking, a tool
+  that changes something asked for Run, and its image was saved and described by the model.
+- **Self audit** (docs/self-audit-2026-11-04.md). Six static reviews covered the 15 kernel files against their
+  launches, the web UI against the server routes, and the audio and speech code. Each finding was checked before
+  it was fixed.
+  - The kernel findings were all latent. They are now errors or harmless, with logits bit-identical to the commit
+    before (4B, 9B, 27B, E4B, 12B, 26B).
+  - Speech:
+    - a job that ends the process (a lost GPU) is no longer restarted at every start: after two attempts it is
+      marked failed;
+    - live audio keeps its timeline when a piece is lost;
+    - utterances can no longer be queued after the recording's finish;
+    - a deleted merge stops;
+    - merged audio follows an MP4's start delay and gaps, as the pieces' transcripts did;
+    - the engine is rebound to slot 0 after a failed part;
+    - a lost wakeup after loading a speech model is fixed.
+  - Web UI:
+    - unloading the chat model no longer leaves the page thinking it is loaded, and the page keeps that model
+      instead of the catalog's first (`/v1/models` lists the unloaded model first);
+    - a U+0000 HTML injection is closed;
+    - transcript preferences are no longer reset;
+    - Summarize and Minutes cannot run twice;
+    - an upload whose last answer was lost is no longer reported as failed;
+    - Talk is refused during a recording;
+    - plus smaller fixes.
+- QUEUE 31.11 (1), measured and not taken: the driver's wait for the GPU does not spin a CPU core.
+  - Default: Qwen3.8 27B, prompt 2048 + 32 tokens, used 16-25 s of user CPU time in ~70 s, most of it loading.
+  - Polling with 200-µs sleeps: no faster (prompt 132-137 tok/s either way, generation step 204-206 against 208-212
+    ms).
+
 ## 2026-11-04 (afternoon): unload models, a model that does not fit refused
 
 - **A chat model that does not fit is refused instead of loaded**: `--ctx auto` raised "no context fits" to 4,096

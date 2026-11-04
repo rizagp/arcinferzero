@@ -236,6 +236,8 @@ class AudioQwen3A : public GemmaAudioEncoder {
         //  fewer rows per piece where the encoder's rows are longer than the engine's widest (conv_out: 7,680). With
         //  this encoder's own offsets the residual overwrote part of the first pass: a few tokens 50-90 % off, varying)
         q2_rows_ = std::min<int>(q2_rows_, (int)(e_.q2_aq_ / q2_kp_) / 128 * 128);
+        if (q2_rows_ < 128)  // (a small --chunk: no 128-row piece fits the engine's buffers; gemm() would divide by 0)
+          throw std::runtime_error("the audio encoder needs a larger prompt chunk (--chunk 512 or more)");
         q2_off_[0] = e_.q2_aq_;
         q2_off_[1] = e_.q2_sc_;
         q2_off_[2] = e_.q2_ab_;

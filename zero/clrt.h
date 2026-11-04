@@ -131,6 +131,8 @@ inline thread_local bool tp_guarded = false;
 inline thread_local bool oom_throws = false;
 inline thread_local bool oom_test = false;
 inline Dev& D() { return cur ? *cur : dev0; }
+// (the driver's UINT64_MAX wait does not spin a core: measured 2026-11-04, QUEUE 31.11 (1); polling with sleeps
+//  instead gained nothing)
 inline void sync() {
   Dev& d = D();
   if (!tp_guarded || (d.sync_timeout_ns.load() == UINT64_MAX && !d.abort.load())) {

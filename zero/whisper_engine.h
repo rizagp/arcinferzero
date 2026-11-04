@@ -276,7 +276,8 @@ class WhisperEngine : public whisper::Backend {
         int n = A, mp = Ap, nh = hp_.n_head;
         set_args(k, 0, q16_, k16_, v16_, n, mp, nh, att_);
         static const int arsg = getenv("ARC_WH_ARSG") ? std::max(1, atoi(getenv("ARC_WH_ARSG"))) : 4;
-        const size_t rows = (size_t)8 * arsg;
+        // (16-lane sub-groups only, NO_SG8: a work-group of whole sub-groups, the block reads need all 16 lanes)
+        const size_t rows = cl_.sg8 ? (size_t)8 * arsg : ((size_t)8 * arsg + 15) / 16 * 16;
         size_t g[2] = {((size_t)A + rows - 1) / rows * rows, (size_t)hp_.n_head}, lw[2] = {rows, 1};
         run("enc_attn", k, 2, g, lw);
       }

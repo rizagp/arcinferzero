@@ -460,6 +460,8 @@
         int R = dfl_R_, st = start, rows = B, win = dfl_win_, nh = dfl_nh_, nkv = dfl_nkv_;
         if (win - 1 + rows > 4096 + 64)  // (dfl_attn keeps up to win - 1 context + rows scores in local memory)
           throw std::runtime_error("dfl_attn: window " + std::to_string(win) + " + " + std::to_string(rows) + " rows exceed its 4160 scores");
+        if (win - 1 > R)  // (the context ring holds R positions: an older one would already be overwritten)
+          throw std::runtime_error("dfl_attn: window " + std::to_string(win) + " is longer than the context ring (" + std::to_string(R) + ")");
         set_args(k, 0, dfl_q_, dfl_k_, dfl_v_, D.rk, D.rv, R, st, rows, win, nh, nkv, dfl_o_);
         size_t gws[2] = {128, (size_t)B * dfl_nh_}, lws[2] = {128, 1};
         run("dfl", k, 2, gws, lws);

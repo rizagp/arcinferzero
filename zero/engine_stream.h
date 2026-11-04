@@ -183,6 +183,7 @@
   void decode_w8_x(const Layer& L, int i, int e0, int G, int N, int K) {
     const uint32_t type = L.ex_type[i];
     const int nsb = K / 256;
+    if (N % 16) throw std::runtime_error("decode_w8_x: N = " + std::to_string(N) + " is not a multiple of 16");
     const bool sl = !w8_requant(type) && nsb <= 16 && N % 16 == 0 &&
                     16 * nsb * raw_padded_sb_bytes(type) <= 32768 && type != GGML_IQ1_M && type != GGML_IQ1_S;
     cl_mem tab = xc_->xtab[L.il];
@@ -250,8 +251,9 @@
         w.role = kRoles - 1;
         stage_need_q_[w.role] = std::max(stage_need_q_[w.role], w8_bytes_q(N, E));
         stage_need_h_[w.role] = std::max(stage_need_h_[w.role], w8_bytes_h(N, E));
-        if (L.rgu.raw) {  // (+256 bytes: the GEMV's block reads run a little past a row's end, as upload_padded allows)
-          cl_buffer_region reg{(size_t)row0 * sbr, (size_t)N * sbr + 256};
+        if (L.rgu.raw) {  // (+kRawSlack: the GEMV's block reads run past a row's end, up to BBP + 63 bytes for an odd
+                          //  superblock count, as upload_padded allows)
+          cl_buffer_region reg{(size_t)row0 * sbr, (size_t)N * sbr + kRawSlack};
           cl_int err;
           w.raw = clCreateSubBuffer(L.rgu.raw, CL_MEM_READ_ONLY, CL_BUFFER_CREATE_TYPE_REGION, &reg, &err);
           CL_CHECK(err);

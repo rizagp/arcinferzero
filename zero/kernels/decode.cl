@@ -752,46 +752,6 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
   }
 }
 
-// Activations of the TB tokens of gemv_mt / gemv_mt_v. TB < MT_LAZY_MIN: loaded once per superblock pair
-// into registers (MT_ACTS), each (row, token) dot reads them there (MT_ACT). TB >= MT_LAZY_MIN (default 4, the
-// verification of 3..7 MTP drafts): held all together they spilled (TB 8: 8 x uint8 per lane, 128 GRF here; TB 4:
-// 1-4 KB per thread with 4 rows per sub-group); instead each token's bytes are loaded
-// where they are used (L1 hits: the same bytes for every row of the sub-group) and tokens beyond T are skipped.
-// Same arithmetic for every (row, token): bit-identical results.
-#ifndef MT_LAZY_MIN
-#define MT_LAZY_MIN 4  // (TB 4 spilled 1-4 KB per thread too: 3-draft verification)
-#endif
-#if TB >= MT_LAZY_MIN
-#define MT_ACTS
-#define MT_ACTS_K
-#define MT_ACT(t)                                                                       \
-  if ((t) >= T) break;                                                                  \
-  const uint8 at = has ? vload8(0, (__global const uint*)(aq + (size_t)(t) * K + 32 * b)) : (uint8)0; \
-  const float st = has ? asc[(size_t)b * M + (t)] : 0.0f;
-#define MT_ACT_K(t)                                                                     \
-  MT_ACT(t)                                                                             \
-  const int b0 = has ? (short)absum[(size_t)(2 * b) * M + (t)] : 0;                     \
-  const int b1 = has ? (short)absum[(size_t)(2 * b + 1) * M + (t)] : 0;
-#else
-#define MT_ACTS                                                                         \
-  uint8 a8[TB];                                                                         \
-  float sa[TB];                                                                         \
-  _Pragma("unroll") for (int t = 0; t < TB; ++t) {                                      \
-    const bool ok = has && t < T;                                                       \
-    a8[t] = ok ? vload8(0, (__global const uint*)(aq + (size_t)t * K + 32 * b)) : (uint8)0; \
-    sa[t] = ok ? asc[(size_t)b * M + t] : 0.0f;                                         \
-  }
-#define MT_ACTS_K                                                                       \
-  MT_ACTS                                                                               \
-  int bs0[TB], bs1[TB];                                                                 \
-  _Pragma("unroll") for (int t = 0; t < TB; ++t) {                                      \
-    const bool ok = has && t < T;                                                       \
-    bs0[t] = ok ? (short)absum[(size_t)(2 * b) * M + t] : 0;                            \
-    bs1[t] = ok ? (short)absum[(size_t)(2 * b + 1) * M + t] : 0;                        \
-  }
-#define MT_ACT(t) const uint8 at = a8[t]; const float st = sa[t];
-#define MT_ACT_K(t) MT_ACT(t) const int b0 = bs0[t], b1 = bs1[t];
-#endif
 #if QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || defined(GRID_OFF)
 // GEMVs that read the weights straight into registers (gemv_v: one token, gemv_mt_v: TB tokens): IQ4_XS, and Q6_K
 // for output heads. As gemv / gemv_mt, lane l handles 32-element block (l % 8) of superblock (sp + l / 8), the 16

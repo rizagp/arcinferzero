@@ -177,6 +177,7 @@ inline Json structure(const std::string& docx, std::string& bad) {
   Span body;
   if (!next_elem(x, "body", 0, x.size(), body)) { bad = "no document body"; return Json(); }
   Json out = Json::object(), tables = Json::array();
+  out.set("fields", Json::array());  // (a template without a first table: still an empty list, not missing)
   std::string last_para;
   size_t k = 0;
   for (size_t q = body.a + 1; q < body.b;) {

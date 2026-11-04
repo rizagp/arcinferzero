@@ -229,6 +229,8 @@ class Service {
         snap();
       });
     });
+    ex.unlock();  // (engines_mu_ never held while lib_mu_ is taken here: no lock-order question)
+    { std::lock_guard<std::mutex> lk(lib_mu_); }  // (the worker checked next_queued before snap: no lost wakeup)
     lib_cv_.notify_all();  // (the library's jobs that waited for an engine)
     return ok;
   }
@@ -457,7 +459,8 @@ class Service {
   // text file in the chat's folder, given as that file: the chat reads it as a document (with the file tools, its
   // outline and the parts it needs). False and the reason when a clip cannot be read.
   static constexpr size_t kInlineChars = 12000;
-  std::string clip_model() const { return asr_id.empty() ? "Whisper" : "Qwen3-ASR"; }  // (what writes chat audio)
+  // (what writes chat audio; the atomic snapshot: asr_id changes under engines_mu_ while a chat thread asks)
+  std::string clip_model() const { return asr_loaded() ? "Qwen3-ASR" : "Whisper"; }
   static bool has_audio_parts(const Json& body) {
     for (const Json& m : body["messages"].items())
       for (const Json& p : m["content"].items()) {
@@ -599,6 +602,10 @@ class Service {
         m.set("status", "failed");
         m.set("error", "the upload did not finish before the server stopped");
         fs::remove(e.path() / ("source." + m["ext"].str()), ec);
+      } else if (st == "running" && m["attempts"].as_int() >= 2) {  // (the server ended twice while on it)
+        m.set("status", "failed");
+        m.set("error", "the server stopped twice while transcribing this (a GPU error?): start it again to retry");
+        m.set("attempts", 0.0);
       } else if (st == "running") {
         m.set("status", "queued");
         m.set("progress", 0.0);
@@ -1118,24 +1125,35 @@ class Service {
         // (offset: the frames the page had sent before this piece. A piece sent again, whose answer was lost after it
         //  was written, starts before the end of the recording: what it has already is left out)
         size_t skip = 0;
+        std::string padded;  // (a gap before this piece filled with silence, then the piece)
+        const char* data = rq.body.data();
         const std::string offs = query_param(rq.query, "offset");
         if (!offs.empty()) {
           // (strtoll: out of range saturates instead of an undefined cast; the page sends whole frames)
           const uint64_t o = (uint64_t)std::max(0LL, strtoll(offs.c_str(), nullptr, 10));
           if (o < s->frames) skip = (size_t)std::min<uint64_t>(s->frames - o, rq.body.size() / frame) * frame;
+          // (a piece lost on the way, the page gone on: its time kept as silence, at most 2 minutes, so what follows
+          //  stays at its own time on the timeline instead of moving earlier by the gap)
+          if (o > s->frames) {
+            const size_t gap = (size_t)std::min<uint64_t>(o - s->frames, (uint64_t)120 * s->rate);
+            padded.assign(gap * frame, '\0');
+            padded.append(rq.body);
+            data = padded.data();
+          }
         }
-        s->wav.write(rq.body.data() + skip, (std::streamsize)(rq.body.size() - skip));
+        const size_t bytes = (padded.empty() ? rq.body.size() : padded.size()) - skip;
+        s->wav.write(data + skip, (std::streamsize)bytes);
         if (!s->wav) return fail(500, "cannot write the recording (disk full?)");
-        const size_t n = (rq.body.size() - skip) / frame;
+        const size_t n = bytes / frame;
         s->frames += n;
         write_wav_header(*s);  // (sizes kept right as it grows: a crash loses nothing written)
         std::vector<float> x(n);
         for (int k = 0; k < s->tracks; ++k) {
           for (size_t i = 0; i < n; ++i) {
             int16_t v, r;
-            memcpy(&v, rq.body.data() + skip + i * frame + 2 * k, 2);
+            memcpy(&v, data + skip + i * frame + 2 * k, 2);
             if (s->ch > s->tracks) {  // (one stereo track: its mono mix)
-              memcpy(&r, rq.body.data() + skip + i * frame + 2, 2);
+              memcpy(&r, data + skip + i * frame + 2, 2);
               x[i] = (v + r) / 65536.0f;
             } else {
               x[i] = v / 32768.0f;
@@ -1188,13 +1206,14 @@ class Service {
         out.set("heard_s", (double)s->frames / s->rate);
         out.set("pending", (double)s->pending);
         if (s->skipped) out.set("behind", true);
-      }
-      if (!todo.empty()) {
-        std::lock_guard<std::mutex> lk(live_mu_);
+        // (queued in this same hold of live_mu_: a stop between two holds would queue the finish first, and these
+        //  utterances would then write the transcript after the accurate pass, or into a deleted folder)
         for (LiveTask& t : todo) {
           t.s = s;
           live_q_.push_back(std::move(t));
         }
+      }
+      if (!todo.empty()) {
         turn_.demand((int)todo.size());
         live_cv_.notify_all();
       }
@@ -1807,6 +1826,9 @@ class Service {
           {
             std::lock_guard<std::mutex> lk(lib_mu_);
             if (stop_) throw std::runtime_error("the server stopped while merging");
+            // (deleted during a long piece: stopped now, not after hours more of decoding and writing)
+            auto it = metas_.find(nid);
+            if (it == metas_.end() || it->second["status"].str() == "deleting") throw std::runtime_error("deleted while merging");
           }
           f.write((const char*)s, (std::streamsize)(c * 2));
           samples += c;
@@ -1836,7 +1858,12 @@ class Service {
         total += secs;
         std::lock_guard<std::mutex> lk(lib_mu_);
         auto it = metas_.find(nid);
-        if (it == metas_.end() || it->second["status"].str() == "deleting") return;
+        if (it == metas_.end() || it->second["status"].str() == "deleting") {
+          f.close();
+          std::error_code ec;
+          fs::remove(wav, ec);  // (a held file: the next start's sweep of "deleting" folders takes it)
+          return;
+        }
         it->second.set("progress", 0.8 * (k + 1) / ps.size());
       }
       const uint64_t data = samples * 2;
@@ -1977,6 +2004,9 @@ class Service {
         metas_[tid].set("status", "running");
         metas_[tid].set("started", (double)std::time(nullptr));
         metas_[tid].set("error", nullptr);  // (a re-run's)
+        // (counted on disk before it runs: a job that ends the whole process, a lost GPU, is not started again at
+        //  every start, see start_library)
+        metas_[tid].set("attempts", (double)(metas_[tid]["attempts"].as_int() + 1));
         save_meta(tid);
         meta = metas_[tid];
       }
@@ -1986,6 +2016,9 @@ class Service {
       if (delete_running_) {
         metas_.erase(tid);
         remove_folder(tid);
+      } else if (auto it = metas_.find(tid); it != metas_.end() && it->second.has("attempts")) {
+        it->second.set("attempts", 0.0);  // (it ended in this process: done, failed or cancelled)
+        save_meta(tid);
       }
     }
   }

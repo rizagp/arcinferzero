@@ -29,6 +29,9 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 #endif
 #define ROUTE_P(g, mx) exp((g) - (mx))
 #define SGATE(lg) (1.0f / (1.0f + exp(-(lg)[NE])))
+#if NU > 16
+#error "moe_route writes choice k from lane k of a 16-lane sub-group: at most 16 experts per token"
+#endif
 __kernel void moe_route(__global const float* logits, int ldl, int T, __global int* ids, __global float* wts,
                         __global float* sgate, __global int* counts ESCALE_ARG) {
   const int t = get_group_id(1), l = get_sub_group_local_id();

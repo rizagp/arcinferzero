@@ -819,12 +819,36 @@ inline uint64_t decode_mono_pcm16(const std::filesystem::path& path, int rate,
     if (sr < 1000 || sr > 384000 || ch < 1 || ch > 64) throw std::runtime_error("audio: unsupported format");
   };
   format();
+  // (on the same timeline as decode_16k_file, which made the piece's transcript: an MP4's late audio start and gaps
+  //  in the timestamps over 0.1 s as silence, so the transcript's times still match this audio)
+  double delay = 0;
+  {
+    std::ifstream fi(path, std::ios::binary);
+    std::error_code ec;
+    const uint64_t size = std::filesystem::file_size(path, ec);
+    auto at = [&](uint64_t o, void* d, size_t n) -> size_t {
+      fi.clear();
+      fi.seekg((std::streamoff)o);
+      fi.read((char*)d, (std::streamsize)n);
+      return (size_t)fi.gcount();
+    };
+    if (fi && !ec) delay = mp4_audio_delay(at, size);
+  }
   uint64_t written = 0;
   double phase = 0;   // (the next output sample's position in input samples, from the previous block's last one)
   float prev = 0;     // (that last input sample)
   std::vector<float> mono;
   std::vector<int16_t> pcm;
   auto to16 = [](float v) { return (int16_t)std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f); };
+  auto silence = [&](uint64_t n) {
+    std::vector<int16_t> z((size_t)std::min<uint64_t>(n, 1 << 16), 0);
+    for (uint64_t left = n; left;) {
+      const size_t c = (size_t)std::min<uint64_t>(left, z.size());
+      out(z.data(), c);
+      written += c;
+      left -= c;
+    }
+  };
   for (;;) {
     DWORD flags = 0;
     LONGLONG ts = 0;
@@ -846,6 +870,8 @@ inline uint64_t decode_mono_pcm16(const std::filesystem::path& path, int rate,
             mono[i] = acc / ch;
           }
           mb->Unlock();
+          const double gap = delay + ts / 1e7 - (double)written / rate;
+          if (gap > 0.1 && gap < 600) silence((uint64_t)std::llround(gap * rate));
           pcm.clear();
           if ((int)sr == rate) {
             for (size_t i = 0; i < n; ++i) pcm.push_back(to16(mono[i]));

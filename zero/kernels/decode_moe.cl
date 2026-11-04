@@ -201,8 +201,8 @@ __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, i
 #pragma unroll
         for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = intel_sub_group_block_read(src + c * 16);
         sub_group_barrier(CLK_LOCAL_MEM_FENCE);
-        if (gu) decode32((const uchar*)win + (lane / 8) * BBP, lane % 8, MOE_GRID, MOE_AUX, wu, &us0, &us1, &um0, &um1, &du, &udmin);
-        else decode32((const uchar*)win + (lane / 8) * BBP, lane % 8, MOE_GRID, MOE_AUX, wg, &gs0, &gs1, &gm0, &gm1, &dg, &gdmin);
+        if (gu) decode32((const uchar*)win + (has ? lane / 8 : 0) * BBP, lane % 8, MOE_GRID, MOE_AUX, wu, &us0, &us1, &um0, &um1, &du, &udmin);
+        else decode32((const uchar*)win + (has ? lane / 8 : 0) * BBP, lane % 8, MOE_GRID, MOE_AUX, wg, &gs0, &gs1, &gm0, &gm1, &dg, &gdmin);
         sub_group_barrier(CLK_LOCAL_MEM_FENCE);
       }
 #endif
@@ -392,8 +392,8 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
     for (int r = 0; r < GROWS; ++r) {
       const int n = min(n0 + r, N - 1);
       uint w[8];
-      int sc0, sc1, mn0, mn1;
-      float d, dmin;
+      int sc0, sc1, mn0 = 0, mn1 = 0;
+      float d, dmin = 0.0f;
 #ifdef MOE_VB
       vblock(XR(ed, n, (has ? sp + lane / 8 : sp)), lane % 8, kt, w, &d, &dmin, &sc0, &sc1,
              &mn0, &mn1);
@@ -402,7 +402,7 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
 #pragma unroll
       for (int c = 0; c < WIN_CALLS; ++c) win[c * 16 + lane] = intel_sub_group_block_read(src + c * 16);
       sub_group_barrier(CLK_LOCAL_MEM_FENCE);
-      decode32((const uchar*)win + (lane / 8) * BBP, lane % 8, MOE_GRID, MOE_AUX, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+      decode32((const uchar*)win + (has ? lane / 8 : 0) * BBP, lane % 8, MOE_GRID, MOE_AUX, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
       sub_group_barrier(CLK_LOCAL_MEM_FENCE);
 #endif
 #pragma unroll

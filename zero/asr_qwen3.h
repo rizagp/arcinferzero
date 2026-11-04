@@ -313,6 +313,14 @@ inline Result transcribe_ranges(Engine& eng, AudioQwen3A& enc, const Tokenizer& 
     r.parts.push_back(std::move(p));
   };
   for (size_t g0 = 0; g0 < ranges.size() && !r.cancelled; g0 += B) {
+    // (the engine back on slot 0 however this group ends: a part that throws must not leave it bound to slot k)
+    struct Rebind {
+      decltype(gpu)& g;
+      Engine& e;
+      ~Rebind() {
+        try { g([&] { e.bind(0); }); } catch (...) {}
+      }
+    } rebind{gpu, eng};
     std::vector<Run> runs(std::min(ranges.size(), g0 + B) - g0);
     for (size_t k = 0; k < runs.size(); ++k) {  // (each part: encoded, then prefilled in slot k)
       Run& u = runs[k];
@@ -352,7 +360,7 @@ inline Result transcribe_ranges(Engine& eng, AudioQwen3A& enc, const Tokenizer& 
     for (;;) {
       if (o.cancelled && o.cancelled()) {
         for (Run& u : runs)
-          if (!u.done) u.done = u.ended = r.cancelled = true;
+          if (!u.done) u.done = r.cancelled = true;  // (not ended: its text is cut, and says so)
         break;
       }
       std::vector<int> sl, tk;
@@ -395,7 +403,6 @@ inline Result transcribe_ranges(Engine& eng, AudioQwen3A& enc, const Tokenizer& 
     }
     r.decode_ms += ms(t0);
     emit();
-    gpu([&] { eng.bind(0); });
   }
   return r;
 }

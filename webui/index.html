@@ -98,6 +98,7 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 .opt select, .opt input[type=number] { font: inherit; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; max-width: 200px; }
 .opt input[type=number] { width: 80px; }
 .opt.col { flex-direction: column; align-items: stretch; }
+#mcptext { width: 100%; min-height: 120px; resize: vertical; font: 12px ui-monospace, Consolas, monospace; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 #sys { width: 100%; min-height: 80px; resize: vertical; font: inherit; color: var(--text); background: var(--input); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
 .switch { position: relative; width: 38px; height: 22px; flex: none; }
 .switch input { opacity: 0; width: 0; height: 0; }
@@ -503,6 +504,14 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
             <textarea id="memtext" placeholder="Nothing remembered yet"></textarea>
             <div><button class="fbtn" id="memsave" title="Save these notes (a chat already started keeps the notes it started with)">Save notes</button></div></div>
         </div>
+        <div class="sec" id="mcpsec" hidden>
+          <h3>MCP servers</h3>
+          <div class="opt"><div class="lab">Tools of other programs<small id="mcphelp">…</small></div></div>
+          <div id="mcplist"></div>
+          <div class="opt col"><div class="lab">mcp.json<small id="mcppath">…</small></div>
+            <textarea id="mcptext" spellcheck="false" placeholder='{ "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"] } } }'></textarea>
+            <div><button class="fbtn" id="mcpsave" title="Save mcp.json (servers changed or removed are stopped)">Save</button></div></div>
+        </div>
         <div class="sec">
           <h3>Data</h3>
           <div class="opt"><div class="lab">Saved in the arcinferzero folder<small id="datasum">…</small></div></div>
@@ -858,6 +867,7 @@ async function memShow(j) {
     const c = j.chat;
     $("memchat").textContent = c ? c.model + " · " + gib(c.gpu_bytes) + " · context " + c.n_ctx.toLocaleString() + " tokens" : "none loaded (a chat loads its model)";
     $("memchatbtn").hidden = !c || c.can_unload === false;  // (--no-swap, or a model a request cannot load again)
+    if (!$("memchatbtn").disabled) $("memchatbtn").textContent = "Unload";  // (not "Unloading…" from the last time)
     const s = j.speech || {};
     const row = (id, on, can, name) => {
       $(id).textContent = on ? "loaded" : can ? "unloaded" : "not on this server";
@@ -886,9 +896,9 @@ for (const [btn, which] of [["memchatbtn", "model"], ["memwhbtn", "whisper"], ["
     } catch (e) { note(String(e.message || e), 9000); b.textContent = was; }
     b.disabled = false;
   });
-$("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); memShow(); });
+$("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); memShow(); mcpShow(); });
 // (a small screen shows the chat or the list: the chat's own gear goes to the list with the settings open)
-$("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); memShow(); });
+$("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); memShow(); mcpShow(); });
 $("panelback").addEventListener("click", () => openPanel(false));
 
 // the thinking choices this model has: Qwen3.8 off / low / medium / high, others on / off, none without the switch
@@ -936,16 +946,19 @@ async function refreshModel() {
   try {
     const j = await (await fetch("/v1/models")).json();
     models = j.data || [];
-    const cur = models.find((m) => m.loaded) || models[0];
+    // (none loaded: the chat model unloaded in Settings. The last one is shown and asked for, but not counted as
+    //  loaded: the next answer loads it, and the caps are read again after it, as after a switch)
+    const loaded = models.find((m) => m.loaded), cur = loaded || models[0];
     if (cur) {
       // (the server's model changed under the page: another model started outside it, the pick is dropped too; or
       //  Gemma 4 E4B loaded by the speech service for a transcript, not the user's choice: the page keeps its model)
       const speech = loadedId && cur.id !== loadedId && caps.chatAsr && cur.id === caps.chatAsr;
       if (speech) pickedId = pickedId || modelId;
       else if (loadedId && cur.id !== loadedId && pickedId === loadedId) pickedId = "";
-      loadedId = cur.id;
+      loadedId = loaded ? cur.id : "";
       if (pickedId && !models.some((m) => m.id === pickedId)) pickedId = "";
-      if (!jobs.size) modelId = pickedId || cur.id;
+      // (none loaded: the page's own model stays, not the catalog's first)
+      if (!jobs.size) modelId = pickedId || (!loaded && models.some((m) => m.id === modelId) ? modelId : cur.id);
       ctxLen = cur.context_length || ctxLen;
     }
   } catch (e) { $("model").textContent = "server not reachable"; return; }
@@ -1017,6 +1030,7 @@ function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(
 function inline(s) {
   const keep = [];
   const put = (html) => "\u0000" + (keep.push(html) - 1) + "\u0000";
+  s = s.replace(/\u0000/g, "");  // (the placeholders' marker: one in the text itself could put a kept piece inside a URL)
   s = s.replace(/`([^`]+)`/g, (m, c) => put("<code>" + c + "</code>"));
   // (<br> as the models write it, in a table cell above all: a line break, not the tag's text; the only HTML kept,
   //  and not inside a code span, which stays as written)
@@ -1359,7 +1373,7 @@ function compactable() {
 function sysMessages(id = convId, spoken = voice.on) {  // (spoken: the job's own Talk state, not the one on screen now)
   // (the notes last: the part that differs most between chats; fixed within one, see memFor)
   const s = [$("sys").value.trim(), TIME_SYSTEM, $("ftools").checked ? FILE_SYSTEM : "", termOffered(id) ? TERM_SYSTEM : "", $("web").checked ? WEB_SYSTEM() : "", spoken ? VOICE_SYSTEM : "", spoken && toolsOn(id) ? WEB_VOICE_SYSTEM : "",
-    projSystem(id), memIn(id) ? MEM_SYSTEM(memFor(id)) : ""].filter(Boolean).join("\n\n");
+    MCP_SYSTEM(mcpCached(id)), projSystem(id), memIn(id) ? MEM_SYSTEM(memFor(id)) : ""].filter(Boolean).join("\n\n");
   return s ? [{ role: "system", content: s }] : [];
 }
 // the messages as the server gets them: without this page's own fields, each user message led by the time it was
@@ -1478,7 +1492,11 @@ async function chatOnce(messages, signal, model = modelId) {
     body: JSON.stringify({ model, messages: wire(messages), stream: false, temperature: 0, max_tokens: 1500,
       chat_template_kwargs: { enable_thinking: false }, reasoning_effort: "none" }) });
   const t = await res.text();
-  if (!res.ok) { const e = new Error(t); e.overflow = overflow(t); throw e; }
+  if (!res.ok) {  // (the server's message, not its JSON, as streamTurn shows it; fit: errBox offers the unloads)
+    let msg = t;
+    try { msg = JSON.parse(t).error?.message || t; } catch (e) {}
+    throw Object.assign(new Error(msg), { overflow: overflow(t), fit: /does not fit in the GPU memory/.test(msg) });
+  }
   return JSON.parse(t).choices[0].message.content.trim();
 }
 // the messages as they are (the server reuses its cache of that prefix) and the request; when even that does not fit,
@@ -1691,7 +1709,165 @@ const MEM_TOOLS = [
 const MEM_SYSTEM = (notes) => "Memory: notes the user asked you to keep across chats. Use them where they matter; do not " +
   "list them unasked. When the user asks you to remember or forget something, call remember / forget (never on your " +
   "own); a note saved now reaches the next chats.\nNotes:\n" + (notes.trim() || "(none yet)");
-const toolsOn = (id) => $("web").checked || $("ftools").checked || termOffered(id) || memIn(id);
+const toolsOn = (id) => $("web").checked || $("ftools").checked || termOffered(id) || memIn(id) || mcpCached(id).tools.length > 0;
+
+// ---- MCP servers (tools/server_mcp.h): tools of other programs on this computer (Blender, ...), switched on in
+// Settings per project or for the chats outside projects, started by the server at their first use. A call that may
+// change something asks first (Run / Always for this tool / Don't run; "always" lasts until the page reloads), unless
+// the server marks the tool read-only. The list is read once per scope (the prompt cache keeps the same tools)
+const mcpCache = new Map();   // (project id, "" outside projects -> {tools, map: name -> {server, tool, read_only}, instr})
+const mcpAlways = new Set();  // ("server/tool")
+const mcpNone = { tools: [], map: new Map(), instr: "" };
+const mcpCached = (id) => mcpCache.get(projectOf(id)) || mcpNone;
+async function mcpTools(id) {
+  const pid = projectOf(id);
+  if (mcpCache.has(pid)) return mcpCache.get(pid);
+  const v = { tools: [], map: new Map(), instr: "" };
+  try {
+    const r = await fetch("/v1/mcp/tools", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(pid ? { project: pid } : {}) });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      for (const t of j.tools || []) {
+        v.tools.push({ type: "function", function: t.function });
+        v.map.set(t.function.name, { server: t.server, tool: t.tool, read_only: !!t.read_only });
+      }
+      v.instr = j.instructions || "";
+      for (const e of j.errors || []) note("MCP server " + e.server + " did not start: " + e.message, 15000);
+    }
+  } catch (e) {}
+  mcpCache.set(pid, v);
+  return v;
+}
+const MCP_SYSTEM = (v) => !v.tools.length ? "" : "Tools named <server>__<tool> come from MCP servers, programs on this computer that the user " +
+  "connected (" + [...new Set([...v.map.values()].map((t) => t.server))].join(", ") + "): use them for work in those programs; " +
+  "a call that changes something waits for the user's Run." + v.instr;
+// Run / Always for this tool / Don't run under the call's card
+function askMcp(d, signal) {
+  return new Promise((done, fail) => {
+    const box = document.createElement("div");
+    box.className = "ask";
+    box.innerHTML = '<button class="run">Run</button><button class="run">Always for this tool</button><button class="no">Don\'t run</button>';
+    const end = (v) => { box.remove(); signal?.removeEventListener("abort", stop); done(v); };
+    const stop = () => { box.remove(); fail(new DOMException("stopped", "AbortError")); };
+    if (signal?.aborted) return stop();
+    const [run, always, no] = box.querySelectorAll("button");
+    run.onclick = () => end(true);
+    always.onclick = () => end("always");
+    no.onclick = () => end(false);
+    signal?.addEventListener("abort", stop);
+    d.appendChild(box);
+    scroll();
+  });
+}
+async function runMcpTool(t, args, card, signal, job) {
+  const chat = job?.id || convId, key = t.server + "/" + t.tool;
+  const a = JSON.stringify(args);
+  card.head.textContent = t.server + " · " + t.tool + (a !== "{}" ? " " + (a.length > 140 ? a.slice(0, 140) + "…" : a) : "");
+  if (!t.read_only && !mcpAlways.has(key)) {
+    card.status.textContent = "· waiting for you";
+    if (job) { job.asking = true; renderConvs(); }
+    let ok;
+    try { ok = await askMcp(card.el, signal); } finally { if (job) { job.asking = false; renderConvs(); } }
+    if (ok === "always") mcpAlways.add(key);
+    if (!ok) { card.status.textContent = "· not run"; return "error: the user did not allow this call"; }
+  }
+  card.status.textContent = "· running…";
+  const res = await fetch("/v1/mcp/call", { method: "POST", headers: { "Content-Type": "application/json" }, signal,
+    body: JSON.stringify({ server: t.server, tool: t.tool, arguments: args, chat_id: chat, ...(projectOf(chat) ? { project: projectOf(chat) } : {}) }) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const m = j.error?.message || "HTTP " + res.status;
+    card.status.textContent = "· failed: " + m;
+    return "error: " + m;
+  }
+  card.status.textContent = j.is_error ? "· the tool reported an error" : "· done";
+  const det = document.createElement("details"), out = document.createElement("pre");
+  det.innerHTML = "<summary>output</summary>";
+  out.className = "out";
+  out.textContent = j.text || "";
+  det.appendChild(out);
+  card.el.appendChild(det);
+  let extra = "";
+  for (const f of j.files || []) {  // (images it returned: saved in this chat's files, shown to a model that sees)
+    card.file({ file_id: f.id, filename: f.filename, kind: f.kind, bytes: f.bytes });
+    if (f.kind !== "image") continue;
+    const shows = hasVision && !!job?.history;
+    if (shows) (job.seen ||= []).push({ id: f.id, name: f.filename, url: f.url });
+    extra += shows ? "\n[the image follows after these tool results]"
+      : "\n[the image is not shown to you" + (hasVision ? " here" : ": the loaded model does not see images") + "; it is in the chat's files]";
+  }
+  if ((j.files || []).length && $("filespanel").classList.contains("open")) loadFiles();
+  return (j.is_error ? "error: " : "") + (j.text || "") + extra;
+}
+// Settings > MCP servers: mcp.json's servers with their switch for the scope of the chat on screen, Start / Stop, the file
+async function mcpPost(what, body, method = "POST") {
+  try {
+    const r = await fetch("/v1/mcp/" + what, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { note(j.error?.message || "HTTP " + r.status, 12000); return null; }
+    return j;
+  } catch (e) { note(String(e.message || e), 9000); return null; }
+}
+async function mcpShow() {
+  const pid = projectOf(convId);
+  let j;
+  try {
+    const r = await fetch("/v1/mcp" + (pid ? "?project=" + pid : ""));
+    if (!r.ok) { $("mcpsec").hidden = true; return; }
+    j = await r.json();
+  } catch (e) { $("mcpsec").hidden = true; return; }
+  $("mcpsec").hidden = false;
+  const scope = pid ? "the project " + (projInfo.get(pid)?.name || "") : "chats outside projects";
+  $("mcphelp").textContent = "Programs whose tools the model may use (Blender, …), from mcp.json. The switch: on for " + scope + ". A call that may change something asks first";
+  $("mcppath").textContent = j.config_path + (j.error ? " · " + j.error : "");
+  const list = $("mcplist");
+  list.replaceChildren();
+  for (const s of j.servers || []) {
+    const row = document.createElement("div"), lab = document.createElement("div"), sm = document.createElement("small");
+    row.className = "opt";
+    lab.className = "lab";
+    lab.textContent = s.name;
+    sm.textContent = [s.command, ...(s.args || [])].join(" ") + " · " + (s.running ? s.tools.length + " tools" : s.error ? "failed: " + s.error : "not running");
+    lab.appendChild(sm);
+    const btn = document.createElement("button");
+    btn.className = "fbtn";
+    btn.textContent = s.running ? "Stop" : "Start";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = s.running ? "Stopping…" : "Starting…";
+      await mcpPost(s.running ? "stop" : "start", { server: s.name });
+      mcpCache.clear();
+      mcpShow();
+    };
+    const sw = document.createElement("label");
+    sw.className = "switch";
+    sw.innerHTML = "<input type=\"checkbox\"><span></span>";
+    const cb = sw.querySelector("input");
+    cb.checked = !!s.enabled;
+    cb.setAttribute("aria-label", "Use " + s.name);
+    cb.onchange = async () => {
+      await mcpPost("enabled", { server: s.name, on: cb.checked, ...(pid ? { project: pid } : {}) }, "PUT");
+      mcpCache.clear();  // (the next answer reads the tools again; a chat in the middle of one keeps its tools)
+      mcpShow();
+    };
+    row.append(lab, btn, sw);
+    list.appendChild(row);
+  }
+  if (!(j.servers || []).length) {
+    const row = document.createElement("div");
+    row.className = "opt";
+    row.innerHTML = "<div class=\"lab\"><small>None yet: add one to mcp.json below, e.g. Blender's (its add-on running in Blender, uv installed)</small></div>";
+    list.appendChild(row);
+  }
+  try {
+    const c = await (await fetch("/v1/mcp/config")).json();
+    if (document.activeElement !== $("mcptext")) $("mcptext").value = c.text || "";
+  } catch (e) {}
+}
+$("mcpsave").addEventListener("click", async () => {
+  const text = $("mcptext").value.trim() || "{ \"mcpServers\": {} }";
+  if (await mcpPost("config", { text }, "PUT")) { note("mcp.json saved", 3000); mcpCache.clear(); $("mcptext").blur(); mcpShow(); }
+});
 const MAX_ROUNDS = 8;
 // While talking (F24.5), the tools run in the background: a call gets an immediate answer ("search #n started"), the
 // AI says it is looking, and the conversation goes on; when results arrive they come as a message of their own and
@@ -1794,6 +1970,8 @@ async function runTool(call, card, signal, job) {
   if (name === "run_command") return runTermTool(args, card, signal, job);
   if (name === "remember" || name === "forget") return runMemTool(name, args, card, signal, job?.id || convId);
   if (name === "terminal_panel") return panelTermTool(String(args.action || ""), card, signal, job);
+  const mc = mcpCached(job?.id || convId).map.get(name);  // (an MCP server's tool: server__tool)
+  if (mc) return runMcpTool(mc, args, card, signal, job);
   if (name !== "web_search" && name !== "web_fetch" && name !== "web_view") { card.status.textContent = "unknown tool"; return "error: there is no tool " + name; }
   card.status.textContent = name === "web_search" ? "· searching…" : name === "web_view" ? "· opening it in a browser…" : "· reading…";
   const chat = job?.id || convId;  // (a file it fetches goes into this chat's files)
@@ -2207,7 +2385,7 @@ async function streamTurn(el, st, onOverflow, job) {
       if (sv) { body.ocr_save = { name: sv.name, folder: sv.folder, append: !job.ocrFresh }; body.chat_id = job.id; }
     }
     if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termOffered(job.id) ? TERM_TOOLS : []),
-      ...(memIn(job.id) ? MEM_TOOLS : [])];
+      ...(memIn(job.id) ? MEM_TOOLS : []), ...mcpCached(job.id).tools];
     // (the last turn after the tool rounds: the same tools, so the prompt cache holds, but no call can be written; the
     //  tools left out made the server process the whole chat again, and a call written anyway left an empty answer)
     if (toolsOn(job.id) && job.noTools) body.tool_choice = "none";
@@ -2467,12 +2645,14 @@ async function send() {
                 used: used || estTokens(history), slot: false, waiting: false, model: modelId, voice: voice.on };  // (voice: asked in Talk)
   if (!convs.some((c) => c.id === job.id))  // (in the list at once, also while it waits for a slot)
     convs.unshift({ id: job.id, title: titleOf([userMsg]), at, model: modelId, snippet: "" });
+  // (the job counted before any wait: a Talk result or a spoken utterance arriving while the OCR question is open
+  //  sees this chat busy instead of sending a second job with the same id)
+  jobs.set(job.id, job);
+  controller = job.controller;
   if (caps.ocr && sent.some((m) => /\.pdf$/i.test(m.name || ""))) {  // (each PDF sent: asked again, a new file)
     ocrSaveFor.set(job.id, await ocrSaveAsk(sent.find((m) => /\.pdf$/i.test(m.name || "")).name));
     job.ocrFresh = true;
   }
-  jobs.set(job.id, job);
-  controller = job.controller;
   const signal = job.controller.signal;
   // (its bubbles: on screen while its chat is, kept with the job otherwise)
   const bubble = () => { const e = addAssistant(); job.nodes.push(e); if (!onScreen(job)) e.remove(); return e; };
@@ -2483,6 +2663,8 @@ async function send() {
   let st = { reasoning: "", answer: "", toolCalls: [], timings: null }, inHistory = false;
   try {
     await takeSlot(job, el.querySelector(".stats"));
+    // (the MCP servers switched on for this chat's scope: their tools read once, servers started on the way)
+    if (!mcpCache.has(projectOf(job.id))) { el.querySelector(".stats").textContent = "starting MCP servers…"; await mcpTools(job.id); }
     // nearly full (the chat so far + this message + room for the answer), in the context of the model it goes to:
     // compact first (a chat opened again, another model, or more slots: each chat's context gets smaller)
     const ctxOf = switching ? (models.find((m) => m.id === modelId)?.context_length || 0) : ctxLen;
@@ -3144,6 +3326,8 @@ const voice = {
   async start() {
     if (this.on || this.starting) return;  // (a second click while the first one asks for the microphone)
     if (!canHear()) { note(NEED_STT); return; }
+    // (a recording uses the microphone: the spoken answers would go into its track and its transcript)
+    if (live.on || live.starting) { note("Talk is off while a recording runs (Transcripts): stop the recording first", 6000); return; }
     if (rec.on || rec.starting) rec.stop(false);
     const gen = this.gen;
     let stream;
@@ -3261,7 +3445,9 @@ const voice = {
     // (another chat opened, or a deleted message, and nothing is removed)
     const m = this.merge;
     this.merge = null;
-    if (m && m.el?.isConnected && history.includes(m.msg)) {
+    // (not while the stopped answer is still winding up: its end would put the removed message back, and send()
+    //  would not post this one)
+    if (m && !controller && m.el?.isConnected && history.includes(m.msg)) {
       history.splice(history.indexOf(m.msg));
       for (let e = m.el; e;) { const nx = e.nextElementSibling; e.remove(); e = nx; }
     }
@@ -3631,7 +3817,7 @@ $("trmodel").addEventListener("change", trBeamShown);
   $("trword").checked = !!p.word;
 })();
 function trSavePrefs() {
-  prefs.tr = { lang: $("trlang").value, model: $("trmodel").value, beam: $("trbeam").value, keep: $("trkeep").value, ch: $("trch").value, terms: $("trterms").value,
+  prefs.tr = { ...(prefs.tr || {}), lang: $("trlang").value,  // (kept: the recording's source, the minutes form) model: $("trmodel").value, beam: $("trbeam").value, keep: $("trkeep").value, ch: $("trch").value, terms: $("trterms").value,
     fmts: [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value),
     chars: $("trchars").value, lines: $("trlines").value, maxs: $("trmaxs").value, word: $("trword").checked };
   store.set("arcinferzero-prefs", prefs);
@@ -3901,6 +4087,8 @@ function trUpload(files) {
             await new Promise((ok) => setTimeout(ok, 1000 << (tries - 1)));
             let m = null;
             try { m = await (await fetch("/v1/transcripts/" + rec.id)).json(); } catch (e2) { continue; }  // (still down)
+            // (the last piece written but its answer lost: the server has the whole file and queued it)
+            if (m && ((m.received || 0) >= f.size || (m.status !== "uploading" && m.status !== "failed" && m.status !== undefined))) { up.sent = off = f.size; break; }
             if (!m || m.status !== "uploading") throw e;
             off = m.received || 0;
           }
@@ -4220,8 +4408,9 @@ $("trname").addEventListener("click", async () => {
   if (!tr.meta) return;
   const n = prompt("Name", tr.meta.name);
   if (!n || n === tr.meta.name) return;
-  const r = await fetch("/v1/transcripts/" + tr.sel, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: n }) });
-  if (r.ok) { tr.meta.name = n; trHeader(tr.meta); trPoll(); } else trNote("not renamed");
+  const r = await fetch("/v1/transcripts/" + tr.sel, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: n }) })
+    .catch(() => null);  // (the server not reachable: said, not an unhandled rejection)
+  if (r && r.ok) { tr.meta.name = n; trHeader(tr.meta); trPoll(); } else trNote("not renamed");
 });
 $("trcancel").addEventListener("click", async () => {
   await fetch("/v1/transcripts/" + tr.sel + "/cancel", { method: "POST" }).catch(() => {});
@@ -4492,7 +4681,7 @@ function trLines(d) {
 }
 async function trAsk(system, user, max, extra) {  // (extra: more request fields, e.g. response_format)
   const r = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: loadedId, stream: false, enable_thinking: false, temperature: 0.3, max_tokens: max || 1500,
+    body: JSON.stringify({ model: loadedId || modelId, stream: false, enable_thinking: false, temperature: 0.3, max_tokens: max || 1500,
       messages: [{ role: "system", content: system }, { role: "user", content: user }], ...(extra || {}) }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
@@ -4511,13 +4700,13 @@ $("trsum").addEventListener("click", async () => {
     "Sections in Markdown: ## Summary (a few sentences), ## Decisions, ## Action items (who, what, by when when it was said), " +
     "## Open questions. After each point, the time it comes from as [m:ss]. Only what the transcript says; leave a section out when it has nothing.";
   // (the model's context: about a third of it for the transcript, at ~3 characters a token; known once it is loaded)
+  $("trsum").disabled = true;  // (before the wait for the model: a second click there started a second summary)
+  try {
   await trCtxReady();
   const budget = Math.max(6000, Math.floor((ctxLen || 8192) * 3 / 3)), parts = [];
   let cur = "";
   for (const l of lines) { if (cur.length + l.length + 1 > budget && cur) { parts.push(cur); cur = ""; } cur += l + "\n"; }
   if (cur) parts.push(cur);
-  $("trsum").disabled = true;
-  try {
     let text;
     if (parts.length === 1) {
       trNote("summarizing…", 600000);
@@ -4571,7 +4760,11 @@ $("trsum").addEventListener("click", async () => {
   $("trsum").disabled = false;
 });
 async function trMinutes(format) {
-  if (!tr.data) return;
+  if (!tr.data || $("trpdf").disabled) return;
+  $("trdocx").disabled = $("trpdf").disabled = true;  // (one at a time: a second click made a second file)
+  try { await trMinutesPlain(format); } finally { $("trdocx").disabled = $("trpdf").disabled = false; }
+}
+async function trMinutesPlain(format) {
   const m = tr.meta, ext = "." + String(m.ext || "").toLowerCase(), plain = m.name.toLowerCase().endsWith(ext) && ext.length > 1 && !m.recording;
   const title = "Minutes: " + (plain ? m.name.slice(0, -ext.length) : m.name);  // (a recording's "Meeting 28 Okt 14.30" has no extension)
   const content = (m.summary ? m.summary + "\n\n" : "") + "## Transcript\n\n" + trLines(tr.data).join("\n\n");
@@ -4617,6 +4810,9 @@ function trLangName() {
   try { return new Intl.DisplayNames(["en"], { type: "language" }).of(top) || top; } catch (e) { return top; }
 }
 async function trMinutesForm(form) {
+  if (!tr.data || !tr.data.segments) { trNote("no transcript to write minutes from"); return; }  // (a cancelled one)
+  form.fields ||= [];  // (a template without a first table: no fields, only its other tables)
+  form.tables ||= [];
   const m = tr.meta, lines = trLines(tr.data), lang = trLangName() || "the transcript's language";
   // (when it was: a merged recording from its first part's start to its last part's end; dates in the form's words)
   const pcs = Array.isArray(m.pieces) && m.pieces.length ? m.pieces : null;
@@ -4668,7 +4864,7 @@ async function trMinutesForm(form) {
     const fieldProps = {};
     for (const f of form.fields) fieldProps[f] = textOrLines;
     const schema = { type: "object", required: ["fields", "tables"], properties: {
-      fields: { type: "object", required: form.fields, properties: fieldProps },
+      fields: { type: "object", required: [...new Set(form.fields)], properties: fieldProps },  // (a label twice: once)
       tables: { type: "array", maxItems: form.tables.length, items: { anyOf: [{ type: "null" }, { type: "array", items: { type: "array", items: textOrLines } }] } } } };
     const answer = await trAsk(SYS, facts, 6000, { response_format: { type: "json_schema", json_schema: { name: "minutes", schema } } });
     const js = answer.replace(/^[\s\S]*?(\{[\s\S]*\})[\s\S]*$/, "$1");

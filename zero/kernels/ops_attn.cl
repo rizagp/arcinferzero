@@ -439,6 +439,9 @@ __kernel void attn_q8(__global const char* qi, __global const float* qsc, __glob
   const int last_hi = (nc_hi >= 0 && first <= nc_hi && last >= nc_lo) ? max(last, nc_hi) : last;
   const int b_first = win > 0 ? max(0, first - win + 1) / 16 : 0, b_last = last_hi / 16;
 #define NL (2 * BLK_U / (16 * NSP * TPW))
+#if (2 * BLK_U) % (16 * NSP * TPW)
+#error "the work-group must divide the K / V tile (2 * BLK_U words): part of it would stay unloaded"
+#endif
   __global const uint* vqu = (__global const uint*)vq;
   uint rk[NL];
   {
@@ -525,6 +528,9 @@ __kernel void attn_q8(__global const char* qi, __global const float* qsc, __glob
 #define PNRG (PNHG * (TPW / PTT))    // row groups of a work-group
 #define PLSZ (16 * PNRG * PNS)       // work-items
 #define PNL (2 * BLK_U / PLSZ)       // tile words fetched per work-item
+#if (2 * BLK_U) % PLSZ
+#error "attn_ps: the work-group must divide the K / V tile (2 * BLK_U words)"
+#endif
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void attn_ps(__global const char* qi, __global const float* qsc, __global const uint* kq,
                       __global const float* ksc, __global const uint4* vq, __global const float* vsc, int cap,

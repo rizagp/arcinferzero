@@ -926,6 +926,7 @@ class Server {
 #include "server_speech.h"  // (starting it, Gemma 4 E4B for transcripts, /v1/audio/*)
 
 #include "server_file_tools.h"  // (the model's file tools, /v1/tools/*, and the files API)
+#include "server_mcp.h"         // (MCP servers' tools for the model, /v1/mcp)
 
 int main(int argc, char** argv) {
   full_speed_process();
@@ -1300,6 +1301,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   std::unique_ptr<Loaded> cur;
+  std::string unloaded_path;  // (the chat model unloaded in Settings: first in /v1/models while none is loaded)
   if (no_chat)
     fprintf(stderr, "no chat model (-m none): speech to text only; a chat request naming a model loads it\n");
   else
@@ -1376,6 +1378,26 @@ int main(int argc, char** argv) {
     }
     // the web UI's projects (tools/server_projects.h)
     if (rq.path == "/v1/projects" || rq.path.rfind("/v1/projects/", 0) == 0) return proj::api(rq, rs);
+    // MCP servers for the model (tools/server_mcp.h): programs on this computer, so for this computer only
+    if (rq.path == "/v1/mcp" || rq.path.rfind("/v1/mcp/", 0) == 0) {
+      auto fail = [&](int code, const std::string& m) {
+        Json e = Json::object(), r = Json::object();
+        e.set("message", m);
+        r.set("error", e);
+        return rs.send(code, "application/json", r.dump());
+      };
+      if (!rq.local_peer) return fail(403, "MCP servers are only for this computer (the web UI on 127.0.0.1)");
+      std::string pid;
+      const std::string q = "&" + rq.query + "&";
+      if (const size_t p = q.find("&project="); p != std::string::npos) pid = q.substr(p + 9, q.find('&', p + 9) - p - 9);
+      if (pid.empty() && !rq.body.empty()) try { pid = Json::parse(rq.body)["project"].str(); } catch (...) {}
+      if (!pid.empty()) {
+        proj::Project known;
+        if (!memo::valid_project(pid)) return fail(400, "project: 16 hex digits");
+        if (!proj::find(pid, known)) return fail(404, "no project " + pid);
+      }
+      return mcp::api(rq, rs, pid, [&] { return rs.client_gone(); });
+    }
     if (rq.method == "POST" && (rq.path == "/v1/tools/remember" || rq.path == "/v1/tools/forget")) {
       auto fail = [&](int code, const std::string& m) {
         Json e = Json::object(), r = Json::object();
@@ -1845,6 +1867,7 @@ int main(int argc, char** argv) {
         if (cur) {
           fprintf(stderr, "unloading %s (asked)\n", cur->alias.c_str());
           if (cur->srv) cur->srv->save_held();
+          unloaded_path = cur->path;
           cur.reset();
         }
         return rs.send(200, "application/json", state().dump());
@@ -2124,6 +2147,8 @@ int main(int argc, char** argv) {
       Json d = Json::array();
       std::map<std::string, uint64_t> sizes;  // (llama_models "size")
       bool listed = !cur;
+      // (unloaded in Settings: that model's file first, not last-model.txt's)
+      if (!cur && !unloaded_path.empty()) last = std::filesystem::path(unloaded_path).lexically_normal().string();
       for (const ModelInfo& m : catalog) {
         if (!m.supported) continue;
         const bool loaded = !listed && m.alias == cur->alias;

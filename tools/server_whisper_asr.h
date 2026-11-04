@@ -248,7 +248,7 @@
       std::string err;  // (the second attempt's error; empty: done)
     };
     // one part: its WAV, then chat_asr (tried twice)
-    auto one = [&](size_t a, size_t b, Job& j) {
+    auto one_part = [&](size_t a, size_t b, Job& j) {
       std::string wav = "RIFF0000WAVEfmt ";  // (16 kHz 16-bit mono PCM)
       auto u32 = [&](uint32_t v) { wav.append((const char*)&v, 4); };
       auto u16 = [&](uint16_t v) { wav.append((const char*)&v, 2); };
@@ -273,6 +273,17 @@
           if (j.err.empty()) j.err = "failed";
           return;
         }
+      }
+    };
+    // (on its own thread: anything it throws, out of memory building the WAV too, is the part's error, never an
+    //  exception leaving a std::thread, which would end the server)
+    auto one = [&](size_t a, size_t b, Job& j) {
+      try {
+        one_part(a, b, j);
+      } catch (const std::exception& e) {
+        j.err = *e.what() ? e.what() : "failed";
+      } catch (...) {
+        j.err = "failed";
       }
     };
     // (with pause_parts at most kChatPauseMax seconds too: speech without a pause (a voice message: 163 s in parts of

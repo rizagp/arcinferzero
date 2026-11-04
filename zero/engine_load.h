@@ -237,7 +237,8 @@
     const size_t sbr = (size_t)E / 256 * raw_padded_sb_bytes(type);
     auto view = [&](int row0, int N) -> cl_mem {
       if (!L.qz.raw) return nullptr;  // (dry load)
-      cl_buffer_region reg{(size_t)row0 * sbr, (size_t)N * sbr + 256};  // (+256: the slack upload_padded leaves)
+      cl_buffer_region reg{(size_t)row0 * sbr, (size_t)N * sbr + kRawSlack};  // (the slack upload_padded leaves: the
+                                                                               //  GEMV reads up to BBP + 63 past a row)
       cl_int err;
       cl_mem m = clCreateSubBuffer(L.qz.raw, CL_MEM_READ_ONLY, CL_BUFFER_CREATE_TYPE_REGION, &reg, &err);
       CL_CHECK(err);
