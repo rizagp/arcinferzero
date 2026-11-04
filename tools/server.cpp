@@ -35,6 +35,7 @@
 #include "server_projects.h"
 #include "pdf_render.h"  // (PDF pages as images, for OCR models: server_ocr.h)
 #include "doc_writer.h"
+#include "doc_template.h"
 #include "xlsx.h"
 #include "server_terminal.h"
 #include <atomic>
@@ -1405,6 +1406,7 @@ int main(int argc, char** argv) {
       }
     }
     if (rq.method == "POST" && (rq.path == "/v1/tools/create_file" || rq.path == "/v1/tools/list_files" ||
+                                rq.path == "/v1/tools/minutes_templates" || rq.path == "/v1/tools/minutes_docx" ||
                                 rq.path == "/v1/tools/read_file" || rq.path == "/v1/tools/search_file" ||
                                 rq.path == "/v1/tools/search_chats" || rq.path == "/v1/tools/digest_file" ||
                                 rq.path == "/v1/tools/run_command")) {

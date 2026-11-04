@@ -129,6 +129,54 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
                               "read its source with read_file and call create_file again.");
       return reply(200, r);
     }
+    // Word templates of the user (%USERPROFILE%\.arcinferzero\templates\*.docx: a company's minutes forms, with their
+    // letterhead and signature block), tools/doc_template.h. minutes_templates {}: each one's name and what it asks
+    // for (its first table's labels, its other tables' headings and columns). minutes_docx {template, data,
+    // filename, chat_id}: that template filled with data ({"fields": {...}, "tables": [[[cells]...]...]}), saved
+    // as a file as create_file saves one.
+    if (rq.path == "/v1/tools/minutes_templates" || rq.path == "/v1/tools/minutes_docx") {
+      namespace fs = std::filesystem;
+      const fs::path dir = fs::path(app_dir()) / "templates";
+      auto read = [](const fs::path& p) {
+        std::ifstream f(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(f), {});
+      };
+      std::error_code ec;
+      if (rq.path == "/v1/tools/minutes_templates") {
+        Json list = Json::array();
+        for (const auto& e : fs::directory_iterator(dir, ec)) {
+          if (!e.is_regular_file() || files::lower(e.path().extension().string()) != ".docx") continue;
+          const std::string n = e.path().filename().string();
+          if (n.rfind("~$", 0) == 0) continue;  // (Word's lock file of an open document)
+          std::string bad;
+          const Json s = doct::structure(read(e.path()), bad);
+          if (!bad.empty()) continue;
+          Json t = s;
+          t.set("name", e.path().stem().string());
+          list.push(t);
+        }
+        Json r = Json::object();
+        r.set("templates", list);
+        r.set("folder", dir.string());
+        return reply(200, r);
+      }
+      const std::string tn = a["template"].str();
+      if (tn.empty() || tn.find_first_of("/\\:") != std::string::npos || tn.find("..") != std::string::npos)
+        return fail(400, "template: a template's name (minutes_templates lists them)");
+      const fs::path tp = dir / (tn + ".docx");
+      if (!fs::is_regular_file(tp, ec)) return fail(404, "no template " + tn + " in " + dir.string());
+      std::string bad;
+      const std::string data = doct::fill(read(tp), a["data"], bad);
+      if (data.empty()) return fail(400, "the template " + tn + ": " + bad);
+      std::string name = files::safe_name(doc::trim(a["filename"].str()).empty() ? tn : doc::trim(a["filename"].str()));
+      if (files::ext_of(name) != "docx") name += ".docx";
+      const std::string chat = files::valid_id(a["chat_id"].str()) ? a["chat_id"].str() : "";
+      const files::Info i = st.put(name, data, chat);
+      Json r = files::info_json(i);
+      r.set("file_id", i.id);
+      r.set("note", "created from the template " + tn);
+      return reply(200, r);
+    }
     if (rq.path == "/v1/tools/list_files" && a["scope"].str() == "project") {  // (the chat's project folder)
       proj::Project p;
       if (!rq.local_peer) return fail(403, "a project's files are only for this computer");

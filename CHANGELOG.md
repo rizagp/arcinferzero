@@ -11,6 +11,16 @@
   again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
   transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
   Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+- **Minutes in your own Word forms**: any `.docx` in `%USERPROFILE%\.arcinferzero\templates` (a company's minutes form
+  with its letterhead and signature block) is offered next to "Minutes DOCX" in a transcript. The loaded chat model
+  reads the transcript (a long one through notes of its parts) and answers the form's content as JSON held to the
+  form's shape (`response_format` json_schema); the server fills the form's tables (tools/doc_template.h: the first
+  table's "Label : value" rows by label, every other numbered table rebuilt row by row from its first data row; the
+  signature block, header, footer and styles kept) and saves it as a file. Today's 2-hour meeting in the user's
+  event form with Qwen3.6 35B: agenda, date and time, 11 participants, 6 agenda items, the Q&A with units, in ~2 min
+  of generation; Word opens it. New endpoints: `POST /v1/tools/minutes_templates`, `POST /v1/tools/minutes_docx`.
+- Summarize and the forms load the chat model first when none is loaded, so the transcript is cut to its context
+  (it was cut to 8K characters: a 2-hour meeting in 12 parts on a 100K model).
 - create_file: a model asked for a 2-hour meeting's minutes wrote six files (one per part, and versions). The tool's
   description now says one call per file, a long document whole in one call, never one file per part; its reply says
   the file is done instead of inviting "a new version".
