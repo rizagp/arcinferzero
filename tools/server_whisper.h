@@ -148,9 +148,26 @@ class Service {
     if (name.rfind("faster-", 0) == 0) name = name.substr(7);
     if (name.size() > 4 && name.compare(name.size() - 4, 4, "-ct2") == 0) name.resize(name.size() - 4);
     id = name;
+    snap();
   }
-  bool has_whisper() const { return eng_ != nullptr; }
-  size_t gpu_bytes() const { return (eng_ ? eng_->gpu_bytes : 0) + asr_bytes_; }
+  // (read by any thread: copies kept by snap() wherever the engines change, so no reader touches an engine that
+  //  set_loaded is freeing)
+  bool has_whisper() const { return wh_loaded_.load(); }
+  size_t gpu_bytes() const { return speech_bytes_.load(); }
+  bool asr_loaded() const { return asr_loaded_.load(); }
+  void snap() {  // (engines_mu_ alone, or at load before any request)
+    wh_loaded_ = eng_ != nullptr;
+    asr_loaded_ = asr_eng_ != nullptr;
+    speech_bytes_ = (eng_ ? eng_->gpu_bytes : 0) + asr_bytes_;
+    if (eng_) last_wh_bytes_ = eng_->gpu_bytes;
+    if (asr_eng_) last_asr_bytes_ = asr_bytes_;
+  }
+  // (the job's engine as loaded now, engines_mu_ held: one that was unloaded since the options were read gives way to
+  //  the other speech model instead of failing the job; a translation needs Whisper and keeps it)
+  void engine_now(whisper::Options& o) const {
+    if (o.engine == "qwen3-asr" && !asr_eng_ && eng_) o.engine.clear();
+    else if (o.engine.empty() && !eng_ && asr_eng_ && o.task != "translate") o.engine = "qwen3-asr";
+  }
 
   // ---------------------------------------------------------------- unload / load at run time (the web UI's Memory)
   // "whisper" or "asr" freed (its GPU memory goes to the chat model's next load) or loaded again as it was at start.
@@ -165,6 +182,19 @@ class Service {
     }
     std::unique_lock<std::shared_timed_mutex> ex(engines_mu_, std::chrono::seconds(3));
     if (!ex.owns_lock()) { bad = "a transcription is running: try again when it is done"; return false; }
+    if (load && (which == "whisper" ? !eng_ : !asr_eng_)) {
+      // (room for it first: the chat model loaded since may have taken its memory; its size as when it was loaded)
+      const size_t need = (which == "whisper" ? last_wh_bytes_ : last_asr_bytes_) + ((size_t)128 << 20);
+      uint64_t b = 0, u = 0;
+      if (need > ((size_t)128 << 20) && zrt::video_budget(b, u) && (double)u + need + Engine::kDriverSlack > (double)b) {
+        char m[200];
+        snprintf(m, sizeof m, "not enough free GPU memory: it needs %.1f GiB, %.1f GiB are free. Unload the chat model "
+                              "first (it loads again with less context)", need / 1073741824.0,
+                 std::max(0.0, ((double)b - (double)u - Engine::kDriverSlack) / 1073741824.0));
+        bad = m;
+        return false;
+      }
+    }
     bool ok = true;
     turn_.run(true, [&] {
       gpu([&] {
@@ -196,13 +226,17 @@ class Service {
           bad = e.what();
           ok = false;
         }
+        snap();
       });
     });
+    lib_cv_.notify_all();  // (the library's jobs that waited for an engine)
     return ok;
   }
-  bool asr_loaded() const { return asr_eng_ != nullptr; }
   bool can_load(const std::string& which) const { return which == "whisper" ? !whisper_dir_.empty() : !asr_gguf_.empty(); }
+  // /props "whisper"; null when neither speech model is loaded (the web UI then offers no speech to text)
   Json props() const {
+    std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);
+    if (!eng_ && !asr_eng_) return Json();
     Json p = Json::object();
     p.set("model", eng_ ? id : asr_id);
     if (!eng_) p.set("whisper", false);  // (Qwen3-ASR alone: no translations, no live text, no word times)
@@ -217,6 +251,11 @@ class Service {
   // is wrong
   bool read_options(const std::function<std::string(const char*)>& field, bool translate, whisper::Options& opt,
                     std::string& bad) const {
+    std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);  // (eng_, m_, asr_id: not while set_loaded frees them)
+    if (!eng_ && !asr_eng_ && !names_chat_asr(apic::strip_tag(field("model")))) {  // (Gemma 4 E4B needs neither)
+      bad = "speech to text is unloaded: load Whisper or Qwen3-ASR again in the web UI's Settings (GPU memory)";
+      return false;
+    }
     opt.task = translate ? "translate" : "transcribe";
     // the speech model: Qwen3-ASR unless the request names another one (Gemma 4 E4B, or Whisper itself); Whisper
     // when Qwen3-ASR is not loaded and for translations
@@ -348,6 +387,7 @@ class Service {
     auto event = [&](const Json& e) { return rs.sse_event(e.dump()); };
     try {
       std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);  // (no unload while it runs: set_loaded)
+      engine_now(opt);
       Whisper w(*this);
       auto run = [&](const std::vector<float>& a, const whisper::Options& o, const whisper::Progress& cb) {
         return o.engine.empty() ? w.tr().run(a, o, cb) : o.engine == "e4b" ? chat_run(a, o, cb) : asr_run(a, o, cb);
@@ -1900,8 +1940,12 @@ class Service {
   std::string next_queued() const {  // (lib_mu_ held) the oldest
     std::string best;
     double bc = 0;
+    // (a job waits while speech to text is unloaded, unless Gemma 4 E4B writes it: they all failed one after another;
+    //  set_loaded wakes the worker when one is loaded again)
+    const bool speech = has_whisper() || asr_loaded();
     for (const auto& [k, m] : metas_)
-      if (m["status"].str() == "queued" && (best.empty() || m["created"].as_number() < bc)) {
+      if (m["status"].str() == "queued" && (speech || names_chat_asr(m["options"]["model"].str())) &&
+          (best.empty() || m["created"].as_number() < bc)) {
         best = k;
         bc = m["created"].as_number();
       }
@@ -1985,6 +2029,8 @@ class Service {
     std::string part_err;  // (a part of Qwen3-ASR / E4B failed twice: the text so far is saved, the job failed)
     try {
       std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);  // (no unload while it runs: set_loaded)
+      engine_now(opt);
+      if (opt.engine != "e4b" && !eng_ && !asr_eng_) throw std::runtime_error("speech to text is unloaded");
       Whisper w(*this);
       double before = 0;  // (the tracks done)
       for (size_t k = 0; k < audio.size() && !stopped && part_err.empty(); ++k) {
@@ -2189,9 +2235,12 @@ class Service {
   bool stop_live_ = false;
   int merges_ = 0;  // (merge threads running; lib_mu_)
   // (every transcription holds it shared while it uses an engine; set_loaded takes it alone to free or load one)
-  std::shared_timed_mutex engines_mu_;
+  mutable std::shared_timed_mutex engines_mu_;
   std::string whisper_dir_, kernel_dir_, asr_gguf_;
   int asr_slots_ = 0;
+  std::atomic<bool> wh_loaded_{false}, asr_loaded_{false};  // (snap)
+  std::atomic<size_t> speech_bytes_{0};
+  size_t last_wh_bytes_ = 0, last_asr_bytes_ = 0;  // (their GPU bytes when last loaded: set_loaded's room check)
   std::thread live_worker_;
 };
 

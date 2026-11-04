@@ -771,6 +771,9 @@ class Server {
     if (!f) return rs.send(404, "text/plain", "web UI not found: " + webui_ + "/index.html");
     std::stringstream ss;
     ss << f.rdbuf();
+    // (asked again each time: an updated page shows at once; a cached one kept the old code, a new error box was not
+    //  there until the user reloaded, 2026-11-04)
+    rs.extra = "Cache-Control: no-cache\r\n";
     rs.send(200, "text/html; charset=utf-8", ss.str());
   }
 
@@ -1303,7 +1306,12 @@ int main(int argc, char** argv) {
       cur = load_model(model, alias, so);
     } catch (const std::exception& e) {
       fprintf(stderr, "arcinferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
-      return 1;
+      // (one that does not fit next to speech to text, models switchable: the server starts without it, as -m none,
+      //  so the web UI can free memory and load it; else the reason and the end, as before)
+      const bool fit = std::string(e.what()).find("does not fit in the GPU memory") != std::string::npos;
+      if (!(fit && swap && wh)) return 1;
+      fprintf(stderr, "starting without a chat model (unload speech to text in the web UI's Settings, GPU memory, then a "
+                      "request naming the model loads it)\n");
     }
   ServeOpts cur_so = so;  // (the loaded model's options: a change of --slots loads it again with them)
   std::vector<ModelInfo> catalog = swap ? scan_models() : std::vector<ModelInfo>();
@@ -1785,9 +1793,17 @@ int main(int argc, char** argv) {
         r.set("error", er);
         return rs.send(st, "application/json", r.dump());
       };
+      // (an unloaded model comes back when a request names it: only with model switching and a model of the catalog)
+      auto can_unload = [&] {
+        if (!swap || !cur) return false;
+        for (const ModelInfo& m : catalog)
+          if (m.alias == cur->alias || same_file(m.path, cur->path)) return true;
+        return false;
+      };
       auto state = [&] {  // (swap_mu held, shared or alone)
         Json r = Json::object(), c = Json::object();
         if (cur) {
+          c.set("can_unload", can_unload());
           c.set("model", cur->alias);
           c.set("n_ctx", cur->eng->ctx);
           c.set("gpu_bytes", (double)cur->eng->gpu_bytes);
@@ -1822,6 +1838,8 @@ int main(int argc, char** argv) {
       if (which == "model") {
         if (load) return fail(400, "a chat model loads when a request names it");
         std::unique_lock<std::shared_mutex> lk(swap_mu);
+        if (cur && !can_unload()) return fail(409, "this model could not be loaded again by a request (--no-swap, or a file "
+                                                    "outside the model folders): restart the server instead");
         if (cur) {
           fprintf(stderr, "unloading %s (asked)\n", cur->alias.c_str());
           if (cur->srv) cur->srv->save_held();

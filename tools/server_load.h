@@ -109,6 +109,9 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       eo.dflash.clear();
       a = auto_ctx(model, eo, so.budget_given, enc);
     }
+    // (a split model, --gpus: the probe sizes it as on one GPU (docs/multi-gpu.md), where a model bigger than one GPU
+    //  never fits: the floor as before; its own load checks each GPU's memory)
+    if (a.ctx <= 0 && so.gpus > 1) a.ctx = 4096;
     if (a.ctx <= 0) {  // (refused here, before any GPU memory is taken: a switch goes back to the model before it)
       char b[400];
       snprintf(b, sizeof b, "it does not fit in the GPU memory%s: it needs %.1f GiB without any context, %.1f GiB are kept "

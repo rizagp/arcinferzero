@@ -62,6 +62,7 @@
     asr_tok_ = std::move(tok);
     asr_gguf_ = gguf;  // (set_loaded loads it again from these)
     asr_slots_ = slots;
+    snap();
     std::string n = std::filesystem::path(gguf).stem().string();
     for (char& c : n) c = (char)tolower((unsigned char)c);
     const size_t q = n.find("-q");  // (the quantization suffix: -q8_0, -q4_k_m ...)

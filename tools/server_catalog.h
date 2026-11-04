@@ -352,7 +352,8 @@ static std::vector<ModelInfo> scan_models() {
     bool vision_default = true;
     if (m.supported && m.vision) {
       const int cv = auto_ctx_tokens(m.path, m.mtp, true), ct = auto_ctx_tokens(m.path, m.mtp, false);
-      vision_default = !(cv > 0 && cv < 16384 && ct >= 2 * cv);
+      // (cv 0: with the projector nothing fits now, while without it a context does: not the default either)
+      vision_default = !(cv < 16384 && ct >= std::max(2 * cv, 4096));
     }
     std::vector<V> vs;
     if (vision_default) {

@@ -11,6 +11,15 @@
   again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
   transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
   Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+- After a bug hunt of the above: loading Whisper / Qwen3-ASR back checks the free GPU memory first (next to Gemma 4 12B
+  it is refused: "unload the chat model first"; it would run out of memory); a split model (`--gpus`) keeps the old
+  4,096 floor; the speech engines are read under their lock (a request during an unload could read a freed one) and a
+  job whose engine was unloaded takes the other one; with both unloaded `/props` has no speech to text, queued
+  transcripts wait instead of failing one by one, recordings and transcriptions are refused with the reason; the chat
+  model cannot be unloaded where a request could not load it again (`--no-swap`); a model that does not fit at start
+  leaves the server running without it (models switchable); the image variant is not the default when it fits no
+  context. Web UI: the page is always asked again (no-cache), a stray 22-px SVG that let the page scroll and cut the
+  header off is gone, and "GPU memory settings" scrolls the Settings list only.
 - A failed answer in a chat is a box with a title and the server's message as text (it was the raw JSON); a model
   that does not fit offers "Unload speech to text" and "GPU memory settings".
 

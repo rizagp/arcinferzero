@@ -593,7 +593,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
     <div class="termin"><span>PS&gt;</span><textarea id="termin" rows="1" placeholder="PowerShell command" title="Enter runs; Shift+Enter: a new line; Up: the last command; Esc: stop the one running" aria-label="Command"></textarea></div>
   </aside>
 </div>
-<svg width="0" height="0" style="position:absolute"><defs><g id="g-gear"><path d="M19.4 13c.1-.3.1-.7.1-1s0-.7-.1-1l2.1-1.6c.2-.2.2-.4.1-.6l-2-3.5c-.1-.2-.4-.3-.6-.2l-2.5 1c-.5-.4-1.1-.7-1.7-1L14.5 2.4c0-.2-.2-.4-.5-.4h-4c-.3 0-.5.2-.5.4l-.4 2.7c-.6.3-1.2.6-1.7 1l-2.5-1c-.2-.1-.5 0-.6.2l-2 3.5c-.1.2-.1.5.1.6L4.6 11c0 .3-.1.7-.1 1s0 .7.1 1l-2.1 1.6c-.2.2-.2.4-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.7c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5c.1-.2.1-.5-.1-.6L19.4 13zM12 15.5c-1.9 0-3.5-1.6-3.5-3.5s1.6-3.5 3.5-3.5 3.5 1.6 3.5 3.5-1.6 3.5-3.5 3.5z"/></g></defs></svg>
+<svg width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true"><defs><g id="g-gear"><path d="M19.4 13c.1-.3.1-.7.1-1s0-.7-.1-1l2.1-1.6c.2-.2.2-.4.1-.6l-2-3.5c-.1-.2-.4-.3-.6-.2l-2.5 1c-.5-.4-1.1-.7-1.7-1L14.5 2.4c0-.2-.2-.4-.5-.4h-4c-.3 0-.5.2-.5.4l-.4 2.7c-.6.3-1.2.6-1.7 1l-2.5-1c-.2-.1-.5 0-.6.2l-2 3.5c-.1.2-.1.5.1.6L4.6 11c0 .3-.1.7-.1 1s0 .7.1 1l-2.1 1.6c-.2.2-.2.4-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.7c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5c.1-.2.1-.5-.1-.6L19.4 13zM12 15.5c-1.9 0-3.5-1.6-3.5-3.5s1.6-3.5 3.5-3.5 3.5 1.6 3.5 3.5-1.6 3.5-3.5 3.5z"/></g></defs></svg>
 <script>
 const $ = (id) => document.getElementById(id);
 const thread = $("thread"), input = $("input"), app = $("app");
@@ -800,7 +800,7 @@ function errBox(e) {
   const body = document.createElement("div");
   body.textContent = m ? m[2].replace(/^it does not fit in the GPU memory[^:]*: /, "") : msg;
   box.append(title, body);
-  if (e.fit) {
+  if (e.fit && caps.stt) {  // (only with speech to text loaded: what is kept may be image / audio encoders alone)
     const row = document.createElement("div");
     row.className = "errbtns";
     const un = document.createElement("button");
@@ -818,12 +818,19 @@ function errBox(e) {
         }
         un.textContent = "Unloaded: send your message again";
         memShow();
+        refreshModel();  // (caps: no speech to text now)
       } catch (x) { un.textContent = "Unload speech to text"; un.disabled = false; note(String(x.message || x), 9000); }
     });
     const st = document.createElement("button");
     st.className = "fbtn";
     st.textContent = "GPU memory settings";
-    st.addEventListener("click", () => { openPanel(true); dataSummary(); memShow(); $("memsec").scrollIntoView({ block: "start" }); });
+    // (the Settings list scrolled to it, nothing else: scrollIntoView also scrolled the page's own containers, which
+    //  never scroll (overflow hidden), and the chat's header was left cut off at the top)
+    st.addEventListener("click", () => {
+      openPanel(true); dataSummary(); memShow();
+      const list = $("panel").querySelector(".body");
+      list.scrollTop = $("memsec").offsetTop - list.offsetTop;
+    });
     row.append(un, st);
     box.appendChild(row);
   }
@@ -842,7 +849,7 @@ async function memShow(j) {
     $("memuse").textContent = j.budget_bytes ? gib(j.used_bytes) + " of " + gib(j.budget_bytes) + " Windows gives this server's GPU now" : "";
     const c = j.chat;
     $("memchat").textContent = c ? c.model + " · " + gib(c.gpu_bytes) + " · context " + c.n_ctx.toLocaleString() + " tokens" : "none loaded (a chat loads its model)";
-    $("memchatbtn").hidden = !c;
+    $("memchatbtn").hidden = !c || c.can_unload === false;  // (--no-swap, or a model a request cannot load again)
     const s = j.speech || {};
     const row = (id, on, can, name) => {
       $(id).textContent = on ? "loaded" : can ? "unloaded" : "not on this server";
@@ -867,16 +874,13 @@ for (const [btn, which] of [["memchatbtn", "model"], ["memwhbtn", "whisper"], ["
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
       await memShow(j);
-      await refreshModel();  // (the speech choices and the model shown, as the server has them now)
-      try { const p = await (await fetch("/props")).json(); const stt = p.speech_to_text || p.whisper;
-        caps.asr = stt && typeof stt === "object" && stt.asr ? String(stt.asr) : "";
-        caps.whisper = !!stt && !(typeof stt === "object" && stt.whisper === false); } catch (e) {}
+      await refreshModel();  // (the model shown and caps from /props: speech to text as the server has it now)
     } catch (e) { note(String(e.message || e), 9000); b.textContent = was; }
     b.disabled = false;
   });
-$("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); });
+$("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); memShow(); });
 // (a small screen shows the chat or the list: the chat's own gear goes to the list with the settings open)
-$("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); });
+$("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); memShow(); });
 $("panelback").addEventListener("click", () => openPanel(false));
 
 // the thinking choices this model has: Qwen3.8 off / low / medium / high, others on / off, none without the switch
@@ -4045,7 +4049,9 @@ function trTick() {
   w[k].el.classList.add("cur");
   if ($("trfollow").checked && !v.paused) {
     const r = w[k].el.getBoundingClientRect(), b = $("trbody").getBoundingClientRect();
-    if (r.top < b.top + 30 || r.bottom > b.bottom - 30) w[k].el.scrollIntoView({ block: "center", behavior: "smooth" });
+    // (its own list scrolled, not the page: scrollIntoView moved the page's fixed layout too, see GPU memory settings)
+    if (r.top < b.top + 30 || r.bottom > b.bottom - 30)
+      $("trbody").scrollBy({ top: (r.top + r.bottom) / 2 - (b.top + b.bottom) / 2, behavior: "smooth" });
   }
 }
 $("trvideo").addEventListener("timeupdate", trTick);
