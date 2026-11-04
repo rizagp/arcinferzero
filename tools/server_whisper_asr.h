@@ -84,6 +84,9 @@
   // another one is loaded). The clip goes in parts of up to kChatPartSeconds, cut at the quietest point near each; one
   // segment per part.
   static constexpr double kChatPartSeconds = 120;
+  // (a transcript or meeting through E4B: parts cut at the first pause after about this long, a segment each, so its
+  //  timeline keeps times as the live draft's utterances had them; one per 2 minutes before, 2026-11-04)
+  static constexpr double kChatPauseParts = 10, kChatPauseMax = 30;
   std::string chat_asr_id;  // its model id ("gemma-4-e4b..."); empty: none
   std::function<std::string(const std::string& wav, double secs, const std::string& language, const std::string& context)>
       chat_asr;
@@ -227,9 +230,10 @@
   // (language: the request's when it names one); the progress callback after each part (false stops before the next
   // group). With the server's --slots N, up to N parts at a time (a thread each: the server batches them in its
   // slots), joined in part order. A part that fails is tried once more; then, with error, the segments before it are
-  // returned and error says what failed (else it throws).
+  // returned and error says what failed (else it throws). pause_parts > 0: parts cut at pauses once about that long
+  // (a transcript or meeting: kChatPauseParts, a segment every ~10 s on its timeline instead of one per 2 minutes).
   whisper::Result chat_run(const std::vector<float>& audio, const whisper::Options& opt, const whisper::Progress& cb,
-                           std::string* error = nullptr) {
+                           std::string* error = nullptr, double pause_parts = 0) {
     whisper::Result r;
     r.duration = (double)audio.size() / 16000;
     const std::string lang = opt.language == "auto" || opt.language.find(',') != std::string::npos ? "" : opt.language;
@@ -267,7 +271,9 @@
         }
       }
     };
-    const auto cuts = q3asr::split(audio, kChatPartSeconds);
+    // (with pause_parts at most kChatPauseMax seconds too: speech without a pause (a voice message: 163 s in parts of
+    //  117 and 46 s) cut at its quietest 100 ms near each)
+    const auto cuts = q3asr::parts_at_pauses(audio, pause_parts, pause_parts > 0 ? kChatPauseMax : kChatPartSeconds);
     const size_t n = (size_t)std::clamp(chat_asr_slots ? chat_asr_slots() : 1, 1, 8);
     for (size_t g0 = 0; g0 < cuts.size(); g0 += n) {
       std::vector<Job> jobs(std::min(cuts.size(), g0 + n) - g0);

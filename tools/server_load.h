@@ -138,10 +138,11 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
           eng.hp.n_layer, eng.ctx, eng.slot_count() > 1 ? (" in each of " + std::to_string(eng.slot_count()) + " slots").c_str() : "",
           eng.max_chunk, eng.gpu_bytes / 1073741824.0, so.gpus > 1 ? (" on each of " + std::to_string(so.gpus) + " GPUs").c_str() : "",
           eng.w8_resident ? "W8 resident" : "W8 just-in-time");
+  bool warmed = false;  // (the kernels compiled now, first start after an update: the audio encoder's too, below)
   if (so.gpus == 1) {  // compile kernels before serving (all of the generation's after an update; --gpus: not yet)
     const auto tw = std::chrono::steady_clock::now();
     loadp::busy("warming up the kernels (first start after an update: up to a minute)");
-    if (eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt))
+    if ((warmed = eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt)))
       fprintf(stderr, "kernels warmed up for this model in %.1f s (once after an update)\n",
               std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
   }
@@ -212,6 +213,21 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
           auto a = std::make_unique<AudioGemma4A>(mmproj, eng);
           width_ok(*a);
           fprintf(stderr, "audio: %d-layer conformer on the GPU (25 tokens per second of audio)\n", a->n_layer);
+          if (warmed) {
+            // (first start after an update: one second of silence through the encoder, so that its kernels compile now
+            //  and not in a first meeting or voice message (E4B: 89 s of audio encoded in 21.6 s, then 0.5 s for 29 s);
+            //  its weights load then too, into the GPU memory kept for it)
+            const auto tw = std::chrono::steady_clock::now();
+            loadp::busy("warming up the audio encoder (first start after an update)");
+            try {  // (a warm-up that fails leaves audio on: the first clip compiles the kernels then, as before)
+              int n = 0;
+              a->encode(std::vector<float>(16000, 0.0f), n);
+              fprintf(stderr, "audio encoder warmed up in %.1f s\n",
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
+            } catch (const std::exception& e) {
+              fprintf(stderr, "audio encoder warm-up skipped: %s\n", e.what());
+            }
+          }
           srv.set_audio(std::move(a));
         } else {
           auto a = std::make_unique<AudioGemma4>(mmproj);

@@ -792,4 +792,90 @@ inline bool encode_m4a(const std::filesystem::path& wav, const std::filesystem::
   return encode_compressed(wav, m4a, kbps, true, err);
 }
 
+// Any audio file Media Foundation reads (WAV, M4A, MP3 ...) as 16-bit mono at `rate`, its channels mixed (a meeting's
+// Me / Others tracks become one), resampled linearly when its own rate differs; the samples go to `out` in blocks
+// as they are decoded (hours never sit in memory). Returns the samples written. Throws when it cannot be read, also
+// part of the way (an exception from `out` ends it too).
+inline uint64_t decode_mono_pcm16(const std::filesystem::path& path, int rate,
+                                  const std::function<void(const int16_t*, size_t)>& out) {
+  MfSession ses;
+  ComPtr<IMFSourceReader> rd;
+  mf_check(MFCreateSourceReaderFromURL(std::filesystem::absolute(path).wstring().c_str(), nullptr, &rd),
+           "unrecognized audio format");
+  rd->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
+  mf_check(rd->SetStreamSelection((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, TRUE), "no audio stream");
+  ComPtr<IMFMediaType> mt;
+  mf_check(MFCreateMediaType(&mt), "media type");
+  mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+  mt->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
+  mf_check(rd->SetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, mt.p), "float output");
+  UINT32 sr = 0, ch = 0;
+  auto format = [&]() {
+    ComPtr<IMFMediaType> cur;
+    mf_check(rd->GetCurrentMediaType((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, &cur), "output type");
+    sr = ch = 0;
+    cur->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &sr);
+    cur->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &ch);
+    if (sr < 1000 || sr > 384000 || ch < 1 || ch > 64) throw std::runtime_error("audio: unsupported format");
+  };
+  format();
+  uint64_t written = 0;
+  double phase = 0;   // (the next output sample's position in input samples, from the previous block's last one)
+  float prev = 0;     // (that last input sample)
+  std::vector<float> mono;
+  std::vector<int16_t> pcm;
+  auto to16 = [](float v) { return (int16_t)std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f); };
+  for (;;) {
+    DWORD flags = 0;
+    LONGLONG ts = 0;
+    ComPtr<IMFSample> s;
+    mf_check(rd->ReadSample((DWORD)MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, nullptr, &flags, &ts, &s), "read");
+    if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) format();
+    if (s.p) {
+      ComPtr<IMFMediaBuffer> mb;
+      if (SUCCEEDED(s->ConvertToContiguousBuffer(&mb))) {
+        BYTE* p = nullptr;
+        DWORD len = 0;
+        if (SUCCEEDED(mb->Lock(&p, nullptr, &len))) {
+          const size_t n = len / (4 * ch);
+          const float* f = (const float*)p;
+          mono.resize(n);
+          for (size_t i = 0; i < n; ++i) {
+            float acc = 0;
+            for (UINT32 c = 0; c < ch; ++c) acc += f[i * ch + c];
+            mono[i] = acc / ch;
+          }
+          mb->Unlock();
+          pcm.clear();
+          if ((int)sr == rate) {
+            for (size_t i = 0; i < n; ++i) pcm.push_back(to16(mono[i]));
+          } else {
+            // positions -1 (prev) .. n-1 of this block; output every sr / rate input samples
+            const double step = (double)sr / rate;
+            for (; phase < (double)n - 1; phase += step) {
+              const double x = phase;
+              const long i0 = (long)std::floor(x);
+              const float a = i0 < 0 ? prev : mono[(size_t)i0], b = mono[(size_t)(i0 + 1)];
+              const float t = (float)(x - i0);
+              pcm.push_back(to16(a + (b - a) * t));
+            }
+            phase -= (double)n;
+            if (n) prev = mono[n - 1];
+          }
+          if (!pcm.empty()) out(pcm.data(), pcm.size());
+          written += pcm.size();
+        } else {
+          throw std::runtime_error("audio: a buffer of " + path.filename().string() + " could not be read");
+        }
+      } else {
+        throw std::runtime_error("audio: a buffer of " + path.filename().string() + " could not be read");
+      }
+    }
+    // (a read error ends it with an error, not with a shorter result: a merge would shift every later piece)
+    if (flags & MF_SOURCE_READERF_ERROR) throw std::runtime_error("audio: a read error in " + path.filename().string());
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
+  }
+  return written;
+}
+
 }  // namespace audio

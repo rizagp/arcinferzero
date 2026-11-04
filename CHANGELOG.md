@@ -1,5 +1,46 @@
 # Changelog
 
+## 2026-11-04: transcripts through E4B keep a timeline, warm-up after an update
+
+- A transcript or meeting transcribed by Gemma 4 E4B was one segment per 2 minutes (the model gives no times), so a
+  meeting whose live draft showed its utterances with times finished as one block. Its parts are now cut at the
+  first pause after 10 s, at most 30 s (the quietest 100 ms near it in speech without pauses), a segment each: an
+  89-s meeting 1 -> 5 segments, a 163-s voice message 2 -> 6. Words against Qwen3-ASR's text: 0.129 -> 0.133 on
+  the voice message (one word of 241), 0.436 -> 0.487 on the meeting (four words; casual speech the reference also
+  got wrong). `/v1/audio/transcriptions` keeps its 2-minute parts.
+- **Merge**: recordings picked in the Transcripts or Meetings list (Ctrl+click or a long press, then Merge;
+  `POST /v1/transcripts/merge {"ids": [...]}`) become one transcript: their audio one after another as one mono
+  48-kHz M4A (a two-track meeting's Me / Others mixed; each segment keeps its speaker), their segments on that
+  timeline, each piece's start a mark, `pieces` naming them with their clock times; the pieces stay. Today's meeting,
+  four pieces after two server crashes (8 + 1 + 67 + 45 min), merged in 175 s into 2:01:03, 33 segments, 118 MB.
+- Merge after a self audit: a merge the server stopped in (or a crash) is "failed" at the next start with its partial
+  audio removed (it stayed "merging" for good); a failed merge removes its WAV (gigabytes, a full disk); the server
+  waits for merges at its stop; pieces still being compressed are refused for a minute; the 4-GB WAV limit is checked
+  as it writes; a merging transcript cannot be edited; a read error inside a piece's audio fails the merge instead of
+  cutting the piece short (every later piece's times shifted). Checked: refused requests, a 2-piece merge, a server
+  killed mid-merge.
+- Web UI after the same audit: a failing part of a meeting summary stops the others and its error stays shown; picks
+  for Merge stay in their tab; a voice message keeps the name of what wrote it at recording time; a long press on a
+  row no longer selects text.
+- The Transcripts tab records mono only (the Mono / Stereo choice is gone; the text was made from the mono mix
+  anyway).
+- Debug switches `ARC_ZE_SYNC_EACH`, `ARC_LAUNCH_STATS`, `ARC_ZE_KPROPS`: `=0` now means off (any value turned
+  them on).
+- `ARC_ZE_WATCH=ms` (diagnostics, after docs/device-lost-recording.md §5): every launch signals an event of its own
+  and is waited for on it, timed; a launch over `ms` prints as "slow kernel" with its sizes and arguments (device
+  addresses), one still running after 1.5 s is printed while it runs (Windows resets the GPU at 2 s), and an error
+  prints the last 64 launches before the process ends. For finding the kernels behind the GPU timeouts (TDR,
+  LiveKernelEvent 141) Windows logged dozens of times on 2026-11-01..04; slow (4B generation 1.2 tok/s with it on).
+- A long meeting's summary asks for its parts' summaries (and each merging round's groups) at once, as many as the
+  server has slots (`--slots`, or Slots in the web UI's Settings), so they run together instead of one after
+  another; with one slot nothing changes. Not measured yet.
+- The web UI's Speech setting picks what writes voice messages and Talk as text: Qwen3-ASR, Whisper, or Gemma 4 E4B
+  (while the chat is with E4B). A model no longer hears the clip itself when the server has speech to text (Gemma 4
+  12B's own hearing was less exact).
+- The first start after an update warms Gemma 4's drafter (MTP) with the generation kernels, and the audio encoder
+  with a second of silence: a first meeting after this morning's update took 116 s for 89 s of audio (E4B
+  generating at 3.7 tok/s and its audio encoder 21.6 s while their kernels compiled), the next one 3.4 s.
+
 ## 2026-11-04: codebook GEMVs, DeltaNet with fewer launches
 
 - One generated token of a DeltaNet layer launches two kernels fewer: `gdn_conv` stores the conv history itself (`conv_state_update` was a launch of its own) and `gdn_recur` turns the raw alpha / beta into decay and beta (`gdn_gates` was one). The same expressions, so the logits are bit-identical on every Qwen3.5 / 3.6 / 3.8 model, with MTP and on split models. Verification passes keep the separate kernels (their replay needs the gated values and the history before the pass). `ARC_GDN_FUSE=0` turns it off. On the laptop's iGPU the speed is unchanged (4B 48.8 -> 48.7 ms a token, 27B within noise): there the GPU's work, not the gaps between launches, sets the time; it is for GPUs where the host's launches show, as between a split model's sums.

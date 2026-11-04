@@ -507,6 +507,12 @@ class Service {
       } else if (st == "running") {
         m.set("status", "queued");
         m.set("progress", 0.0);
+      } else if (st == "merging") {  // (the server stopped during a merge: its pieces are untouched, merge again)
+        m.set("status", "failed");
+        m.set("error", "the server stopped while merging (the parts are as they were: merge them again)");
+        fs::remove(e.path() / "source.wav", ec);
+        fs::remove(e.path() / "source.m4a", ec);
+        m.set("size", 0.0);
       } else if (st == "live") {  // (a recording the stop cut: its WAV sizes put right)
         const fs::path w = e.path() / "source.wav";
         fix_wav_sizes(w);
@@ -556,6 +562,10 @@ class Service {
     }
     lib_cv_.notify_all();
     if (worker_.joinable()) worker_.join();
+    // (merges in progress see stop_ at their next block of audio and end as "failed"; waited for, so none touches
+    //  this object after it is gone)
+    std::unique_lock<std::mutex> lk(lib_mu_);
+    lib_cv_.wait(lk, [&] { return merges_ == 0; });
   }
   ~Service() { stop_library(); }
 
@@ -649,6 +659,14 @@ class Service {
         save_meta(nid);
       }
       return rs.send(200, "application/json", m.dump());
+    }
+    if (rq.path == "/v1/transcripts/merge" && rq.method == "POST") {
+      Json in;
+      if (!Json::try_parse(rq.body, in) || !in.is_object() || !in["ids"].is_array()) return fail(400, "{\"ids\": [...]} expected");
+      std::string bad;
+      Json rec;
+      if (merge_start(in, bad, rec).empty()) return fail(400, bad);
+      return rs.send(200, "application/json", rec.dump());  // (its record as made: not metas_[nid], a delete may have come)
     }
     if (rq.path == "/v1/transcripts/import" && rq.method == "POST") {  // (arc-recorder's recordings)
       if (!rq.local_peer) return fail(403, "only from this computer");
@@ -749,14 +767,16 @@ class Service {
       Json in;
       if (!Json::try_parse(rq.body, in) || !in.is_object() || !in["segments"].is_array())
         return fail(400, "a transcript's full JSON ({\"duration\", \"segments\": [...]}) expected");
-      if (m["status"].str() == "running" || m["status"].str() == "queued" || m["status"].str() == "uploading")
+      if (m["status"].str() == "running" || m["status"].str() == "queued" || m["status"].str() == "uploading" ||
+          m["status"].str() == "merging")
         return fail(409, "the transcript is not finished yet");
       const whisper::Result r = result_from_json(in);
       std::lock_guard<std::mutex> lk(lib_mu_);  // (the check and the write together: a delete or a pass in between)
       auto it = metas_.find(tid);
       if (it == metas_.end() || it->second["status"].str() == "deleting") return fail(404, "no transcript " + tid);
       const std::string st = it->second["status"].str();
-      if (st == "running" || st == "queued" || st == "uploading" || st == "live") return fail(409, "the transcript is not finished yet");
+      if (st == "running" || st == "queued" || st == "uploading" || st == "live" || st == "merging")
+        return fail(409, "the transcript is not finished yet");
       if (!write_atomic(dir / "transcript.json", whisper::to_json(r))) return fail(500, "cannot write the transcript");
       it->second.set("edited", (double)std::time(nullptr));
       it->second.set("segments", (double)r.segments.size());
@@ -1565,6 +1585,211 @@ class Service {
     fprintf(stderr, "whisper: cannot write %s\n", p.string().c_str());
     return false;
   }
+  // ---------------------------------------------------------------- merging (a meeting recorded in pieces)
+  // Finished transcripts (2-50, in the order they were made) as one new transcript: their audio one after the other
+  // as one mono 48-kHz track (a two-track meeting's Me / Others mixed; each segment keeps its speaker), kept as M4A
+  // (WAV when the encoder fails); their segments on that timeline, each piece's start a mark; "pieces" names them
+  // with their clock times. The pieces stay as they are. Returns the new id ("merging" until done; "failed" with its
+  // error), or "" with bad.
+  std::string merge_start(const Json& in, std::string& bad, Json& out) {
+    namespace fs = std::filesystem;
+    struct Piece { std::string id, name; double created; fs::path src; Json meta; };
+    std::vector<Piece> ps;
+    {
+      std::lock_guard<std::mutex> lk(lib_mu_);
+      for (const Json& j : in["ids"].items()) {
+        const std::string pid = j.str();
+        auto it = metas_.find(pid);
+        if (!valid_id(pid) || it == metas_.end()) { bad = "no transcript " + pid; return ""; }
+        const Json& m = it->second;
+        if (m["status"].str() != "done") { bad = m["name"].str(pid) + ": not finished (" + m["status"].str() + ")"; return ""; }
+        // (a live recording just transcribed: its WAV becomes MP3 / M4A right after, and the WAV goes later)
+        if (m["recording"].as_bool() && m["ext"].str() == "wav" && m["mp3_kbps"].as_number(192) > 0) {
+          bad = m["name"].str(pid) + ": its recording is still being compressed; try again in a minute";
+          return "";
+        }
+        for (const Piece& p : ps)
+          if (p.id == pid) { bad = pid + " given twice"; return ""; }
+        ps.push_back({pid, m["name"].str(pid), m["created"].as_number(0), lib_ / pid / ("source." + m["ext"].str()), m});
+      }
+    }
+    if (ps.size() < 2 || ps.size() > 50) { bad = "2 to 50 transcripts to merge"; return ""; }
+    std::stable_sort(ps.begin(), ps.end(), [](const Piece& a, const Piece& b) { return a.created < b.created; });
+    for (const Piece& p : ps)
+      if (!fs::exists(p.src) || !fs::exists(lib_ / p.id / "transcript.json")) { bad = p.name + ": its audio or transcript is missing"; return ""; }
+    const std::string nid = new_dir();
+    if (nid.empty()) { bad = "cannot create the transcript's folder"; return ""; }
+    bool meeting = true;
+    for (const Piece& p : ps) meeting = meeting && p.meta["kind"].str() == "meeting";
+    Json m = Json::object();
+    m.set("id", nid);
+    m.set("name", clean_name(in["name"].str(ps.front().name + " (merged, " + std::to_string(ps.size()) + " parts)"), 200, "merged"));
+    m.set("ext", "wav");
+    m.set("size", 0.0);
+    m.set("status", "merging");
+    m.set("progress", 0.0);
+    m.set("options", ps.front().meta["options"]);
+    m.set("tracks", 1.0);
+    Json sp = Json::array();
+    sp.push("");
+    m.set("speakers", sp);
+    m.set("rate", 48000.0);
+    if (meeting) m.set("kind", "meeting");
+    m.set("marks", Json::array());
+    {
+      std::lock_guard<std::mutex> lk(lib_mu_);
+      if (stop_) { bad = "the server is stopping"; return ""; }
+      double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+      for (const auto& [k, x] : metas_) now = std::max(now, x["created"].as_number() + 0.001);
+      m.set("created", (double)std::llround(now * 1000) / 1000);
+      metas_[nid] = m;
+      save_meta(nid);
+      ++merges_;
+    }
+    out = m;
+    try {
+      std::thread([this, nid, ps] {
+        merge_run(nid, ps);
+        std::lock_guard<std::mutex> lk(lib_mu_);
+        --merges_;
+        lib_cv_.notify_all();
+      }).detach();
+    } catch (const std::exception& e) {
+      std::lock_guard<std::mutex> lk(lib_mu_);
+      --merges_;
+      auto it = metas_.find(nid);
+      if (it != metas_.end()) {
+        it->second.set("status", "failed");
+        it->second.set("error", std::string("the merge could not start: ") + e.what());
+        save_meta(nid);
+        out = it->second;
+      }
+    }
+    return nid;
+  }
+  template <class Piece>
+  void merge_run(const std::string& nid, const std::vector<Piece>& ps) {
+    namespace fs = std::filesystem;
+    const fs::path dir = lib_ / nid, wav = dir / "source.wav";
+    auto finish = [&](const std::string& status, const std::string& err, std::function<void(Json&)> more) {
+      std::lock_guard<std::mutex> lk(lib_mu_);
+      auto it = metas_.find(nid);
+      if (it == metas_.end()) return;
+      if (it->second["status"].str() == "deleting") return;  // (deleted meanwhile: its folder goes at the next start)
+      it->second.set("status", status);
+      if (!err.empty()) it->second.set("error", err);
+      if (more) more(it->second);
+      save_meta(nid);
+    };
+    try {
+      const int rate = 48000;
+      std::ofstream f(wav, std::ios::binary);
+      if (!f) throw std::runtime_error("cannot write the audio");
+      auto u32 = [&](uint32_t v) { f.write((const char*)&v, 4); };
+      auto u16 = [&](uint16_t v) { f.write((const char*)&v, 2); };
+      f.write("RIFF", 4); u32(0); f.write("WAVEfmt ", 8); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16);
+      f.write("data", 4); u32(0);
+      whisper::Result all;
+      Json pieces = Json::array(), marks = Json::array();
+      std::set<std::string> langs;
+      double words = 0, total = 0;
+      uint64_t samples = 0;
+      // (a WAV's data size is a 32-bit field, and RIFF's is 36 more)
+      const uint64_t max_data = 0xFFFFFFFFull - 36;
+      for (size_t k = 0; k < ps.size(); ++k) {
+        const double off = total;
+        Json j;  // (its transcript read first: a piece deleted during the long decode fails it sooner)
+        {
+          std::ifstream tj(lib_ / ps[k].id / "transcript.json", std::ios::binary);
+          if (!Json::try_parse(std::string(std::istreambuf_iterator<char>(tj), {}), j))
+            throw std::runtime_error(ps[k].name + ": its transcript cannot be read");
+        }
+        const uint64_t n = audio::decode_mono_pcm16(ps[k].src, rate, [&](const int16_t* s, size_t c) {
+          if ((samples + c) * 2 > max_data) throw std::runtime_error("the merged audio is over 4 GB as WAV (about 12 hours)");
+          {
+            std::lock_guard<std::mutex> lk(lib_mu_);
+            if (stop_) throw std::runtime_error("the server stopped while merging");
+          }
+          f.write((const char*)s, (std::streamsize)(c * 2));
+          samples += c;
+        });
+        if (!f) throw std::runtime_error("writing the audio failed (disk full?)");
+        const double secs = (double)n / rate;
+        whisper::Result r = result_from_json(j);
+        for (whisper::Segment& g : r.segments) {
+          g.start = std::min(g.start, secs) + off;
+          g.end = std::min(g.end, secs) + off;
+          for (whisper::Word& w : g.words) {
+            w.start = std::min(w.start, secs) + off;
+            w.end = std::min(w.end, secs) + off;
+          }
+          all.segments.push_back(std::move(g));
+        }
+        for (const Json& l : ps[k].meta["languages"].items()) langs.insert(l.str());
+        words += ps[k].meta["words"].as_number(0);
+        if (k) marks.push(off);
+        Json p = Json::object();
+        p.set("id", ps[k].id);
+        p.set("name", ps[k].name);
+        p.set("created", ps[k].created);
+        p.set("offset", off);
+        p.set("duration", secs);
+        pieces.push(p);
+        total += secs;
+        std::lock_guard<std::mutex> lk(lib_mu_);
+        auto it = metas_.find(nid);
+        if (it == metas_.end() || it->second["status"].str() == "deleting") return;
+        it->second.set("progress", 0.8 * (k + 1) / ps.size());
+      }
+      const uint64_t data = samples * 2;
+      f.seekp(4); u32((uint32_t)(36 + data));
+      f.seekp(40); u32((uint32_t)data);
+      f.close();
+      if (!f) throw std::runtime_error("writing the audio failed");
+      all.duration = total;
+      for (size_t i = 0; i < all.segments.size(); ++i) all.segments[i].tokens.clear();
+      if (!write_atomic(dir / "transcript.json", whisper::to_json(all))) throw std::runtime_error("cannot write the transcript");
+      // kept as M4A at 128 kbps (WAV: ~350 MB an hour), the WAV dropped once the M4A has its length
+      std::string ext = "wav", err;
+      if (audio::encode_m4a(wav, dir / "source.m4a", 128, err)) {
+        const double s = audio::duration_seconds(dir / "source.m4a");
+        std::error_code ec;
+        if (std::fabs(s - total) <= std::max(2.0, 0.002 * total)) {
+          fs::remove(wav, ec);
+          ext = "m4a";
+        } else {
+          fs::remove(dir / "source.m4a", ec);
+        }
+      }
+      std::error_code ec;
+      const double size = (double)fs::file_size(dir / ("source." + ext), ec);
+      Json lj = Json::array();
+      for (const std::string& l : langs) lj.push(l);
+      const size_t nseg = all.segments.size();
+      finish("done", "", [&](Json& mm) {
+        mm.set("ext", ext);
+        mm.set("size", size);
+        mm.set("progress", 1.0);
+        mm.set("duration", total);
+        mm.set("done_s", total);
+        mm.set("segments", (double)nseg);
+        mm.set("languages", lj);
+        mm.set("words", words);
+        mm.set("marks", marks);
+        mm.set("pieces", pieces);
+        mm.set("keep", ext);
+      });
+      fprintf(stderr, "transcripts: merged %zu pieces into %s (%.0f s, %zu segments)\n", ps.size(), nid.c_str(), total, nseg);
+    } catch (const std::exception& e) {
+      // (the partial audio goes: it can be gigabytes, and a disk that filled up stays full otherwise)
+      std::error_code ec;
+      fs::remove(wav, ec);
+      fs::remove(dir / "source.m4a", ec);
+      fprintf(stderr, "transcripts: merging into %s failed: %s\n", nid.c_str(), e.what());
+      finish("failed", e.what(), [](Json& mm) { mm.set("size", 0.0); });
+    }
+  }
+
   // a new transcript's id with its folder, made here: a folder that is there already is never taken (several ids in
   // one second, the recordings imported at a start, could meet); "" when none can be made
   std::string new_dir() {
@@ -1682,7 +1907,7 @@ class Service {
     opt.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
     // a live recording of several tracks (the microphone, the other side): each track transcribed alone, its segments
     // marked with its speaker, all of them merged by time (Qwen3-ASR: each track cut at pauses into ~25-s parts, a
-    // segment each, so the turns interleave; Gemma 4 E4B still in parts of up to 2 minutes)
+    // segment each, so the turns interleave; Gemma 4 E4B cut at pauses into 10-30-s parts, one or more tracks)
     const int tracks = std::max(1, (int)meta["tracks"].as_number(1));
     const fs::path src = dir / ("source." + meta["ext"].str());
     std::vector<std::vector<float>> audio;
@@ -1721,7 +1946,7 @@ class Service {
           return !stopped;
         };
         whisper::Result rk = opt.engine.empty()   ? w.tr().run(audio[k], opt, cb)
-                             : opt.engine == "e4b" ? chat_run(audio[k], opt, cb, &part_err)
+                             : opt.engine == "e4b" ? chat_run(audio[k], opt, cb, &part_err, kChatPauseParts)
                                                    : asr_run(audio[k], opt, cb, true, &part_err,
                                                              audio.size() > 1 ? kAsrTrackPartSeconds : 0);
         const std::string who = audio.size() > 1 ? meta["speakers"][(int)k].str("Track " + std::to_string(k + 1)) : "";
@@ -1903,6 +2128,7 @@ class Service {
   std::map<std::string, std::shared_ptr<Live>> lives_;
   std::deque<LiveTask> live_q_;
   bool stop_live_ = false;
+  int merges_ = 0;  // (merge threads running; lib_mu_)
   std::thread live_worker_;
 };
 

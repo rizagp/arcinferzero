@@ -285,6 +285,9 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .trrow { display: flex; gap: 10px; align-items: center; padding: 9px 14px; border-bottom: 1px solid var(--line); cursor: pointer; }
 .trrow:hover { background: var(--hover); }
 .trrow.on { background: var(--active); }
+.trrow.picked { box-shadow: inset 3px 0 0 var(--accent); background: var(--active); }
+.trrow { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }  /* (a long press picks; no text selection or menu) */
+#trmerge { margin-left: auto; }
 .trrow .thumb { width: 38px; height: 38px; border-radius: 6px; flex: none; background: var(--head); display: grid; place-items: center; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
 .trrow .ftxt { flex: 1; min-width: 0; }
 .trrow .fname { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -401,7 +404,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
     <div class="panel" id="trpanel" aria-label="Transcripts">
       <div class="side-head">
         <button class="iconbtn" id="trback" title="Chats" aria-label="Back to the chats"><svg viewBox="0 0 24 24"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20z"/></svg></button>
-        <h2 id="trtitle">Transcripts</h2><span id="trtotal" class="ftotal"></span>
+        <h2 id="trtitle">Transcripts</h2><span id="trtotal" class="ftotal" title="Ctrl+click (or long-press) to pick several, then Merge them into one"></span>
+        <button class="fbtn" id="trmerge" title="The picked recordings as one: their audio one after another (mono), their text on one timeline, each part's start marked; the parts stay" hidden>Merge</button>
       </div>
       <div class="trlive">
         <button class="fbtn" id="trlive" title="Record and transcribe as it is spoken: the text comes ~2 s behind; when you stop, the whole recording is transcribed again accurately"><span class="dot"></span><span id="trlivetxt">Live</span></button>
@@ -459,8 +463,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         </div>
         <div class="sec">
           <h3>Voice (Talk)</h3>
-          <div class="opt"><div class="lab">Speech<small id="speechhelp">How voice messages, Talk and audio files reach the model</small></div>
-            <select id="speech" aria-label="Speech"><option value="whisper">Speech to text writes it (every model)</option><option value="model">The model hears it (Gemma 4 E4B / 12B)</option></select></div>
+          <div class="opt"><div class="lab">Speech<small id="speechhelp">What writes voice messages and Talk as text for the model (E4B only while chatting with E4B; otherwise Qwen3-ASR, or Whisper)</small></div>
+            <select id="speech" aria-label="Speech"><option value="qwen3-asr">Qwen3-ASR writes it</option><option value="whisper">Whisper writes it</option><option value="e4b">Gemma 4 E4B writes it</option></select></div>
           <div class="opt"><div class="lab">Voice<small>Reads the answers aloud in Talk mode (Windows: Settings &gt; Time &amp; language &gt; Speech adds voices; Edge has natural online voices)</small></div></div>
           <div class="opt"><select id="tts" aria-label="Voice" style="max-width:100%;flex:1"></select></div>
           <div class="opt"><div class="lab">Speaking rate<small>1 = normal</small></div><input type="number" id="ttsrate" step="0.1" min="0.5" max="2" value="1.1" aria-label="Speaking rate"></div>
@@ -612,7 +616,9 @@ function loadPrefs() {
   $("temp").disabled = $("temp").hidden = !$("tempon").checked;
   if (prefs.sys) $("sys").value = prefs.sys;
   $("theme").value = prefs.theme || "";
-  $("speech").value = prefs.speech === "model" ? "model" : "whisper";
+  // (before 2026-11-04: "whisper" (the server's speech to text) or "model" (the model heard the clip, also 12B, whose
+  //  transcripts were poor): "model" becomes E4B, which writes it while the chat is with E4B)
+  $("speech").value = prefs.speech === "model" ? "e4b" : ["qwen3-asr", "whisper", "e4b"].includes(prefs.speech) ? prefs.speech : "qwen3-asr";
   applyTheme();
 }
 function savePrefs() {
@@ -1210,7 +1216,7 @@ function updateButtons() {
   $("attach").hidden = rec.on;
   document.querySelector(".pill").hidden = rec.on;
   $("talk").classList.toggle("on", voice.on);
-  const how = sttOn() ? "speech to text by Whisper, for every model" : "Gemma 4 E4B / 12B, which hear audio";
+  const how = sttOn() ? "written by " + sttEngine().name + ", for every model" : "Gemma 4 E4B / 12B, which hear audio";
   $("talk").title = voice.on ? "Talking: click to stop" : "Talk with the AI: the microphone stays on, you speak, it answers aloud; speak to interrupt it (" + how + ")";
   $("rec").title = "Voice message: record, then send (" + how + ")";
 }
@@ -2326,7 +2332,7 @@ async function send() {
   if (media.some((m) => m.shown)) {
     const n = document.createElement("span");
     n.className = "voice";
-    n.textContent = "voice message, written by " + (caps.asr ? "Qwen3-ASR" : "Whisper");
+    n.textContent = "voice message, written by " + (media.find((m) => m.shown)?.by || sttEngine().name);
     userEl.insertBefore(n, userEl.querySelector(".time"));
   }
   const part = (m) => m.id ? { type: "file", file: { file_id: m.id, filename: m.name } }
@@ -2334,7 +2340,7 @@ async function send() {
     : { type: "image_url", image_url: { url: m.url } };
   const sent = media.filter((m) => !m.shown), shown = media.find((m) => m.shown && m.id);
   const userMsg = { role: "user", content: sent.length ? [...sent.map(part), ...(text ? [{ type: "text", text }] : [])] : text, at };
-  if (shown) userMsg.voice = { id: shown.id, url: shown.url, name: shown.name };  // (kept with the chat, not sent)
+  if (shown) userMsg.voice = { id: shown.id, url: shown.url, name: shown.name, by: shown.by || sttEngine().name };  // (kept with the chat, not sent)
   userEl._h = userMsg;
   const job = { id: ensureConv(), history, controller: new AbortController(), nodes: [userEl], user: userMsg, made: [],
                 used: used || estTokens(history), slot: false, waiting: false, model: modelId, voice: voice.on };  // (voice: asked in Talk)
@@ -2697,7 +2703,7 @@ async function openConv(id) {
       } else if (m.voice) {
         const n = document.createElement("span");
         n.className = "voice";
-        n.textContent = "voice message, written by " + (caps.asr ? "Qwen3-ASR" : "Whisper");
+        n.textContent = "voice message, written by " + (m.voice.by || (caps.asr ? "Qwen3-ASR" : "Whisper"));
         u.insertBefore(n, u.querySelector(".time"));
       }
       el = null;
@@ -2885,17 +2891,21 @@ const fileRefs = (h) => [...JSON.stringify(h).matchAll(/\/files\/([0-9a-f]{16})|
 // it the recording goes to a model that hears audio itself (Gemma 4 E4B / 12B) as before.
 const NEED_STT = "Voice needs Whisper on the server (coming: docs/whisper-native.md) or a model that hears audio (Gemma 4 E4B / 12B)";
 const canHear = () => !!caps.stt || hasAudio;
-// Whisper writes the speech (every model gets text), unless the setting says the model hears it itself and it can
-// (the model that will answer: the chat's, which the server loads for it; the loaded one's hearing said nothing about it)
-function sttOn(model) {
-  const m = models.find((x) => x.id === (model || modelId));
-  const hears = m && m.modalities && typeof m.modalities.audio === "boolean" ? m.modalities.audio : (!m || m.id === loadedId) && hasAudio;
-  return !!caps.stt && !($("speech").value === "model" && hears);
+// Speech to text on the server writes the speech whenever it has one (every model gets text): a model hearing the clip
+// itself was less exact (Gemma 4 12B, 2026-11-04); only without speech to text does the clip go to a model that hears
+function sttOn(model) { return !!caps.stt; }
+// What writes it (the Speech setting): Gemma 4 E4B only while the chat's model is E4B (another chat model would be
+// switched out for each utterance), Whisper when the server has it, else Qwen3-ASR (the server's default)
+function sttEngine(model) {
+  const v = $("speech").value, chat = model || modelId;
+  if (v === "e4b" && caps.chatAsr && chat === caps.chatAsr) return { model: caps.chatAsr, name: "Gemma 4 E4B" };
+  if (v === "whisper" && caps.whisper) return { model: caps.stt, name: "Whisper" };
+  return caps.asr ? { model: caps.asr, name: "Qwen3-ASR" } : { model: caps.stt, name: "Whisper" };
 }
 async function transcribe(url, signal) {
   const fd = new FormData();
   fd.append("file", await (await fetch(url)).blob(), "speech.wav");
-  fd.append("model", caps.asr || caps.stt);  // (Qwen3-ASR when the server has it)
+  fd.append("model", sttEngine().model);
   fd.append("response_format", "json");
   const res = await fetch("/v1/audio/transcriptions", { method: "POST", body: fd, signal });
   const j = await res.json().catch(() => ({}));
@@ -2972,11 +2982,11 @@ async function sendVoice() {
   if (sttOn()) {
     voice.status("writing the voice message as text…");
     try {
-      const text = await transcribe(url);
+      const by = sttEngine().name, text = await transcribe(url);  // (who wrote it, kept with it: the setting can change before Send)
       voice.status("");
       if (!text) { note("no speech heard in the recording"); return; }
-      let item = { kind: "audio", url, shown: true };
-      try { const blob = await (await fetch(url)).blob(); item = { ...fileItem(await upload(blob, "voice-" + Date.now() + ".wav", chat)), shown: true }; } catch (e) {}
+      let item = { kind: "audio", url, shown: true, by };
+      try { const blob = await (await fetch(url)).blob(); item = { ...fileItem(await upload(blob, "voice-" + Date.now() + ".wav", chat)), shown: true, by }; } catch (e) {}
       if (moved()) return;
       pending.push(item);
       input.value = (input.value.trim() ? input.value.trim() + "\n" : "") + text;
@@ -3451,7 +3461,7 @@ const TR_PIECE = 16 << 20;
 const TR_AUDIO = ["mp3", "m4a", "aac", "wav", "ogg", "oga", "opus", "flac", "wma"];
 // (sel: the transcript shown, whose meta / data the actions use; want: the one being opened. Set apart, an open that
 //  was slow or failed left sel on the new one while the old one was shown: Delete deleted the other one)
-const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0,
+const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0, picked: new Set(),
   saveT: 0, saveFn: null, saving: Promise.resolve(), inflight: 0, noteT: 0, listIds: "" };
 $("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
 function trCaps() {
@@ -3471,6 +3481,13 @@ function trCaps() {
   sel.hidden = !caps.asr && !caps.chatAsr;
   if (sel.selectedOptions[0]?.hidden || !sel.value) sel.value = caps.asr ? "qwen3-asr" : "whisper";
   trBeamShown();
+  // (the Speech setting likewise: only what this server has; nothing when it has no speech to text)
+  const sp = $("speech");
+  sp.querySelector('[value="qwen3-asr"]').hidden = !caps.asr;
+  sp.querySelector('[value="whisper"]').hidden = !caps.whisper;
+  sp.querySelector('[value="e4b"]').hidden = !caps.chatAsr;
+  sp.disabled = !caps.stt;
+  if (sp.selectedOptions[0]?.hidden) sp.value = caps.asr ? "qwen3-asr" : "whisper";
 }
 // (beam 5 / greedy is Whisper's choice: Qwen3-ASR and Gemma 4 E4B always decode greedily)
 function trBeamShown() { $("trbeam").hidden = !$("trmodel").hidden && $("trmodel").value !== "whisper"; }
@@ -3482,7 +3499,7 @@ $("trmodel").addEventListener("change", trBeamShown);
   if (p.beam) $("trbeam").value = p.beam;
   // (the bitrate, or "wav"; an earlier "mp3" was 192 kbps)
   $("trkeep").value = p.keep === "mp3" ? "192" : [...$("trkeep").options].some((o) => o.value === p.keep) ? p.keep : "wav";
-  $("trch").value = p.ch === "stereo" ? "stereo" : "mono";
+  $("trch").value = "mono";  // (stereo dropped 2026-11-04, the user: the text is made from the mono mix anyway)
   if (p.terms) $("trterms").value = p.terms;
   const f = Array.isArray(p.fmts) ? p.fmts : ["srt", "txt"];
   $("trfmts").querySelectorAll("input").forEach((c) => { c.checked = f.includes(c.value); });
@@ -3535,7 +3552,7 @@ function trMode(on, kind) {
   const keep = (prefs.tr || {})[m ? "msrc" : "src"];
   $("trsrc").innerHTML = src.map(([v, t]) => '<option value="' + v + '">' + t + "</option>").join("");
   if (keep && src.some(([v]) => v === keep)) $("trsrc").value = keep;
-  $("trch").hidden = m;  // (a meeting: one mono track per source)
+  $("trch").hidden = true;  // (recordings are mono: a meeting one track per source; the Mono / Stereo choice gone)
   liveButtons();
   if (on) { openPanel(false); openFiles(false); trPoll(); }
   else { clearTimeout(tr.timer); app.classList.remove("trviewing"); $("trvideo").pause(); }
@@ -3575,7 +3592,7 @@ async function trPoll() {
   //  the player set again. Not while another one the user chose is being opened: that one would be dropped)
   if (cur && !opening && (cur.status !== tr.selStatus || (tr.meta && cur.ext !== tr.meta.ext))) trOpen(cur.id);
   else if (cur) trHeader(cur);
-  const busy = tr.uploads.size || tr.list.some((x) => ["uploading", "queued", "running"].includes(x.status));
+  const busy = tr.uploads.size || tr.list.some((x) => ["uploading", "queued", "running", "merging"].includes(x.status));
   tr.timer = setTimeout(trPoll, busy ? 1000 : 5000);
 }
 function trState(x) {
@@ -3590,6 +3607,7 @@ function trState(x) {
       (x.x_realtime ? " · " + Math.round(x.x_realtime) + "x realtime" : ""), p: x.progress || 0 };
     case "done": return { text: trClock(x.duration) + (langs ? " · " + langs : "") + " · " + (x.words || 0) + " words · " +
       new Date(x.created * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) };
+    case "merging": return { text: "Merging " + Math.floor(100 * (x.progress || 0)) + " %", p: x.progress || 0 };
     case "failed": return { text: "Failed: " + (x.error || "unknown error"), err: true };
     case "cancelled": return { text: "Stopped at " + trClock(x.done_s) + " (what was done is kept)" };
     default: return { text: x.status || "" };
@@ -3598,10 +3616,10 @@ function trState(x) {
 function trFillRow(r, x) {
   const s = trState(x);
   // (a row whose shown values did not change is left alone: every poll rewrote every row)
-  const sig = [x.id === tr.sel, x.status, x.ext, x.name, s.text, !!s.err, s.p === undefined ? "" : (100 * s.p).toFixed(1)].join("\u0001");
+  const sig = [x.id === tr.sel, tr.picked.has(x.id), x.status, x.ext, x.name, s.text, !!s.err, s.p === undefined ? "" : (100 * s.p).toFixed(1)].join("\u0001");
   if (r.trSig === sig) return;
   r.trSig = sig;
-  r.className = "trrow" + (x.id === tr.sel ? " on" : "");
+  r.className = "trrow" + (x.id === tr.sel ? " on" : "") + (tr.picked.has(x.id) ? " picked" : "");
   const th = r.querySelector(".thumb");
   if (x.status === "live") { if (!th.querySelector(".dot")) th.innerHTML = '<span class="dot"></span>'; }
   else th.textContent = String(x.ext || "").slice(0, 4);
@@ -3645,10 +3663,53 @@ function trRenderList() {
     const r = document.createElement("div");
     r.innerHTML = '<div class="thumb"></div><div class="ftxt"><span class="fname"></span><div class="fmeta"></div></div>';
     trFillRow(r, x);
-    r.addEventListener("click", () => trOpen(x.id));
+    // (Ctrl / Cmd + click, or a long press: picked for Merge; a plain click opens it and drops the picks)
+    let held = 0, longed = false;
+    r.addEventListener("pointerdown", () => { longed = false; held = setTimeout(() => { longed = true; trPick(x.id); }, 550); });
+    for (const ev of ["pointerup", "pointerleave", "pointercancel"]) r.addEventListener(ev, () => clearTimeout(held));
+    r.addEventListener("click", (e) => {
+      if (longed) return;
+      if (e.ctrlKey || e.metaKey) { trPick(x.id); return; }
+      if (tr.picked.size) { tr.picked.clear(); trPicksShown(); }
+      trOpen(x.id);
+    });
     box.appendChild(r);
   }
+  trPicksShown();
 }
+function trPick(id) {
+  if (tr.picked.has(id)) tr.picked.delete(id);
+  else if (tr.list.some((x) => x.id === id && x.status === "done")) tr.picked.add(id);
+  else trNote("only finished ones can be merged", 4000);
+  trPicksShown();
+}
+function trPicksShown() {
+  // (only finished ones of this tab: Transcripts and Meetings keep picks apart)
+  const meet = tr.kind === "meeting";
+  for (const id of [...tr.picked])
+    if (!tr.list.some((x) => x.id === id && x.status === "done" && (x.kind === "meeting") === meet)) tr.picked.delete(id);
+  const n = tr.picked.size;
+  $("trmerge").hidden = n < 2;
+  $("trmerge").textContent = "Merge " + n;
+  const m = tr.kind === "meeting", list = tr.list.filter((x) => (x.kind === "meeting") === m), box = $("trlist");
+  if (box.children.length === list.length) list.forEach((x, i) => trFillRow(box.children[i], x));
+}
+$("trmerge").addEventListener("click", async () => {
+  const ids = [...tr.picked];
+  if (ids.length < 2) return;
+  $("trmerge").disabled = true;
+  try {
+    const r = await fetch("/v1/transcripts/merge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+    tr.picked.clear();
+    tr.list = [j, ...tr.list];
+    trRenderList();
+    trNote("merging " + ids.length + " recordings… (the parts stay as they are)", 8000);
+    trPoll();
+  } catch (e) { trNote("merge failed: " + (e.message || e), 12000); }
+  $("trmerge").disabled = false;
+});
 // the file chooser and drops: each file added on the server, then sent in pieces, one file after another
 $("trpick").addEventListener("click", () => $("trfile").click());
 $("trfile").addEventListener("change", () => { trUpload([...$("trfile").files]); $("trfile").value = ""; });
@@ -4311,28 +4372,42 @@ $("trsum").addEventListener("click", async () => {
       trNote("summarizing…", 600000);
       text = await trAsk(SYS, "Transcript:\n" + parts[0]);
     } else {
-      const sums = [];
-      for (let k = 0; k < parts.length; ++k) {
-        trNote("summarizing part " + (k + 1) + " of " + parts.length + "…", 600000);
-        sums.push("Part " + (k + 1) + ":\n" + await trAsk("Summarize this part of a meeting transcript in " + (lang || "its language") + ": what was said, " +
-          "decided and asked, each point with its [m:ss] time. Markdown bullets only, at most 15.", parts[k], 700));
-      }
+      // (the parts asked at once, as many as the server has slots: it decodes them together in one batched pass,
+      //  each weight read once for all of them; with one slot they wait for it in turn as before. Results in order)
+      const width = Math.max(1, caps.slots || 1);
+      // (one request failing stops the others taking parts, and its error is not written over by their progress)
+      const pool = async (jobs, label) => {
+        const out = new Array(jobs.length);
+        let next = 0, done = 0, failed = false;
+        trNote(label(0, jobs.length), 600000);
+        await Promise.all(Array.from({ length: Math.min(width, jobs.length) }, async () => {
+          while (!failed && next < jobs.length) {
+            const k = next++;
+            try { out[k] = await jobs[k](); }
+            catch (e) { failed = true; throw e; }
+            if (!failed) trNote(label(++done, jobs.length), 600000);
+          }
+        }));
+        return out;
+      };
+      const sums = await pool(parts.map((p, k) => async () => "Part " + (k + 1) + ":\n" + await trAsk("Summarize this part of a meeting transcript in " +
+          (lang || "its language") + ": what was said, decided and asked, each point with its [m:ss] time. Markdown bullets only, at most 15.", p, 700)),
+        (d, n) => "summarizing the parts: " + d + " of " + n + " done" + (width > 1 ? " (" + Math.min(width, n) + " at a time)" : "") + "…");
       // (the parts' summaries together in rounds while they are more than the budget: a long meeting with a small
-      //  context overflowed the last call)
+      //  context overflowed the last call; a round's groups asked at once too)
       let level = sums, round = 0;
       while (level.join("\n\n").length > budget && level.length > 1) {
-        const next = [];
+        const groups = [];
         for (let k = 0, cur2 = []; k <= level.length; ++k) {
           if (k < level.length && (cur2.join("\n\n") + level[k]).length <= budget) { cur2.push(level[k]); continue; }
-          if (cur2.length) {
-            trNote("putting the parts together (" + (++round) + ")…", 600000);
-            next.push("Parts:\n" + await trAsk("Merge these summaries of consecutive parts of one meeting into one, in " + (lang || "their language") +
-              ": keep every decision, action item and open question with its [m:ss] time. Markdown bullets only, at most 20.", cur2.join("\n\n"), 900));
-          }
+          if (cur2.length) groups.push(cur2.join("\n\n"));
           cur2 = k < level.length ? [level[k]] : [];
         }
-        if (next.length >= level.length) break;  // (no progress: one part alone is over the budget)
-        level = next;
+        if (groups.length >= level.length) break;  // (no progress: one part alone is over the budget)
+        ++round;
+        level = await pool(groups.map((g) => async () => "Parts:\n" + await trAsk("Merge these summaries of consecutive parts of one meeting into one, in " +
+            (lang || "their language") + ": keep every decision, action item and open question with its [m:ss] time. Markdown bullets only, at most 20.", g, 900)),
+          (d, n) => "putting the parts together (round " + round + "): " + d + " of " + n + "…");
       }
       trNote("putting the parts together…", 600000);
       text = await trAsk(SYS + " You get the summaries of the meeting's parts, in order, instead of the transcript.", level.join("\n\n"));

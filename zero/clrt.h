@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -472,7 +473,7 @@ inline cl_int clReleaseMemObject(cl_mem m) {
 // ARC_LAUNCH_STATS=1 (diagnostics, runz prints them per generated token): kernel launches, and the host time spent
 // setting their arguments and appending them (the CPU's share of a step, against the GPU's)
 namespace zrt {
-inline const bool launch_stats = getenv("ARC_LAUNCH_STATS") != nullptr;
+inline const bool launch_stats = (getenv("ARC_LAUNCH_STATS") && atoi(getenv("ARC_LAUNCH_STATS")) != 0);
 inline std::atomic<uint64_t> launch_n{0}, launch_ns{0}, setarg_ns{0};
 struct LaunchTimer {
   std::atomic<uint64_t>& acc;
@@ -481,6 +482,98 @@ struct LaunchTimer {
     if (launch_stats) acc += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
   }
 };
+
+// ARC_ZE_WATCH=ms (diagnostics: which kernel runs long or loses the device; slow, every launch waited for alone).
+// Each launch signals an event of its own and is waited for on that event, not on the shared command list, so the
+// time and an error belong to it and not to another engine's work. A launch over `ms` is printed with its global /
+// local sizes and arguments ("slow kernel"); one still running after 1.5 s is printed while it runs (a TDR is coming:
+// Windows resets the GPU at 2 s); an error prints the last 64 launches (name, sizes, arguments, time) and ends the
+// process as before. The arguments are the values given to Level Zero (a buffer as its device address).
+inline const long watch_ms = getenv("ARC_ZE_WATCH") ? atol(getenv("ARC_ZE_WATCH")) : 0;
+struct WatchEntry {
+  uint64_t seq = 0;
+  std::string name;
+  uint32_t gs[3]{}, ls[3]{};
+  std::vector<ZKernel::Arg> args;
+  double ms = -1;  // (-1: not finished)
+};
+inline std::mutex watch_mu;
+inline WatchEntry watch_ring[64];
+inline uint64_t watch_seq = 0;
+inline std::string watch_args(const std::vector<ZKernel::Arg>& args) {
+  std::string s;
+  char b[48];
+  for (size_t i = 0; i < args.size(); ++i) {
+    const ZKernel::Arg& a = args[i];
+    if (!a.set) snprintf(b, sizeof b, "%s?", i ? " " : "");
+    else if (a.sz == 4) {
+      int32_t v;
+      memcpy(&v, a.v, 4);
+      snprintf(b, sizeof b, "%s%d", i ? " " : "", v);
+    } else if (a.sz == 8) {
+      uint64_t v;
+      memcpy(&v, a.v, 8);
+      snprintf(b, sizeof b, "%s0x%llx", i ? " " : "", (unsigned long long)v);
+    } else {
+      snprintf(b, sizeof b, "%s(%u bytes)", i ? " " : "", (unsigned)a.sz);
+    }
+    s += b;
+  }
+  return s;
+}
+inline void watch_print(const WatchEntry& e, const char* what) {
+  fprintf(stderr, "%s #%llu %s: %s ms, global %u x %u x %u, local %u x %u x %u, args %s\n", what, (unsigned long long)e.seq,
+          e.name.c_str(), e.ms < 0 ? "not finished" : std::to_string((long long)std::llround(e.ms)).c_str(), e.gs[0], e.gs[1],
+          e.gs[2], e.ls[0], e.ls[1], e.ls[2], watch_args(e.args).c_str());
+}
+// (called by clEnqueueNDRangeKernel once the launch is appended; keep: the caller asked for the event, else it goes
+//  back to the pool)
+inline void watch_wait(ZKernel* k, ze_event_handle_t ev, bool keep, const uint32_t gs[3], const uint32_t ls[3]) {
+  // (this launch's own copy for its prints: the ring's slot is shared, another thread's launches can reuse it while
+  //  this one waits; the time goes back into the slot only while it still holds this launch)
+  WatchEntry e;
+  e.name = k->name;
+  for (int d = 0; d < 3; ++d) e.gs[d] = gs[d], e.ls[d] = ls[d];
+  e.args = k->args;
+  {
+    std::lock_guard<std::mutex> g(watch_mu);
+    e.seq = ++watch_seq;
+    watch_ring[e.seq % 64] = e;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  bool warned = false;
+  for (;;) {
+    const ze_result_t r = zeEventHostSynchronize(ev, 50000000ull);  // (50 ms a piece)
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (r == ZE_RESULT_SUCCESS) {
+      e.ms = ms;
+      {
+        std::lock_guard<std::mutex> g(watch_mu);
+        if (watch_ring[e.seq % 64].seq == e.seq) watch_ring[e.seq % 64].ms = ms;
+      }
+      if (ms > (double)watch_ms) watch_print(e, "slow kernel");
+      break;
+    }
+    if (r != ZE_RESULT_NOT_READY) {
+      fprintf(stderr, "Level Zero error 0x%x waiting for kernel #%llu %s after %.0f ms; the last launches, oldest first:\n", r,
+              (unsigned long long)e.seq, k->name.c_str(), ms);
+      std::lock_guard<std::mutex> g(watch_mu);
+      for (uint64_t s = watch_seq > 63 ? watch_seq - 63 : 1; s <= watch_seq; ++s) watch_print(watch_ring[s % 64], "  launch");
+      if (ze_fail_hook) ze_fail_hook();
+      fflush(stderr);
+      _Exit(1);
+    }
+    if (!warned && ms > 1500) {
+      warned = true;
+      watch_print(e, "kernel still running after 1.5 s (a GPU timeout is near)");
+      fflush(stderr);
+    }
+  }
+  if (!keep) {
+    zeEventHostReset(ev);
+    D().ev_free.push_back(ev);
+  }
+}
 }  // namespace zrt
 inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
   zrt::LaunchTimer lt{zrt::setarg_ns};
@@ -492,13 +585,15 @@ inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
       v = &p;
     }
   }
-  // (ARC_ARG_CACHE=0: every argument set at every launch, as before)
+  // (ARC_ARG_CACHE=0: every argument set at every launch, as before. Not the cause of 2026-11-04's lost devices: the
+  //  server lost it with the cache off too, at a GPU timeout (TDR, LiveKernelEvent 141))
   static const bool cache = !(getenv("ARC_ARG_CACHE") && atoi(getenv("ARC_ARG_CACHE")) == 0);
   ZKernel::Arg* a = nullptr;
-  if (cache && v && sz <= sizeof(ZKernel::Arg::v) && i < 64) {  // (local memory, v null: its size only, set each time)
+  // (the values are kept with the cache on, and with ARC_ZE_WATCH for its launch ring, where they are only recorded)
+  if ((cache || zrt::watch_ms > 0) && v && sz <= sizeof(ZKernel::Arg::v) && i < 64) {  // (local memory, v null: set each time)
     if (k->args.size() <= i) k->args.resize(i + 1);
     a = &k->args[i];
-    if (a->set && a->sz == sz && memcmp(a->v, v, sz) == 0) return CL_SUCCESS;
+    if (cache && a->set && a->sz == sz && memcmp(a->v, v, sz) == 0) return CL_SUCCESS;
   }
   if (zeKernelSetArgumentValue(k->k, i, sz, v) != ZE_RESULT_SUCCESS) {
     if (a) a->set = false;
@@ -541,7 +636,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
             k->name.c_str(), gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
     return -54;  // (CL_INVALID_WORK_GROUP_SIZE)
   }
-  ze_event_handle_t sig = ev ? zrt::ev_get() : nullptr;
+  ze_event_handle_t sig = ev || zrt::watch_ms > 0 ? zrt::ev_get() : nullptr;
   if (ev) *ev = (cl_event)sig;
   ze_result_t r = zeCommandListAppendLaunchKernel(zrt::D().cl, k->k, &gc, sig, 0, nullptr);
   static const long fake_oom = getenv("ARC_FAKE_OOM") ? atol(getenv("ARC_FAKE_OOM")) : 0;  // (test: launch N "fails")
@@ -560,7 +655,11 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
     fflush(stderr);
     _Exit(1);
   }
-  static const bool sync_each = getenv("ARC_ZE_SYNC_EACH") != nullptr;  // (debug: which kernel loses the device)
+  if (zrt::watch_ms > 0) {  // (ARC_ZE_WATCH: this launch waited for alone, timed, kept in the ring; see zrt::watch_wait)
+    zrt::watch_wait(k, sig, ev != nullptr, gs, ls);
+    return CL_SUCCESS;
+  }
+  static const bool sync_each = (getenv("ARC_ZE_SYNC_EACH") && atoi(getenv("ARC_ZE_SYNC_EACH")) != 0);  // (debug: which kernel loses the device)
   if (sync_each) {
     const ze_result_t s = zeCommandListHostSynchronize(zrt::D().cl, UINT64_MAX);
     if (s != ZE_RESULT_SUCCESS) {
@@ -822,7 +921,7 @@ struct ClRt {
     // piece of the cache that Windows had paged out was a page fault ("device lost" now and then, in the server).
     // Only for them: on every kernel it made the driver touch every allocation per launch (27B: slower).
     if (prog->indirect) zeKernelSetIndirectAccess(k->k, 7 /* device | host | shared */);
-    static const bool kprops = getenv("ARC_ZE_KPROPS") != nullptr;  // (debug: private / spill memory per kernel)
+    static const bool kprops = (getenv("ARC_ZE_KPROPS") && atoi(getenv("ARC_ZE_KPROPS")) != 0);  // (debug: private / spill memory per kernel)
     if (kprops) {
       ze_kernel_properties_t kp{};
       kp.stype = (ze_structure_type_t)0x1e;
