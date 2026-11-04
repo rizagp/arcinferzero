@@ -112,8 +112,8 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     if (a.ctx <= 0) {  // (refused here, before any GPU memory is taken: a switch goes back to the model before it)
       char b[400];
       snprintf(b, sizeof b, "it does not fit in the GPU memory%s: it needs %.1f GiB without any context, %.1f GiB are kept "
-                            "for the encoders and speech to text, and Windows gives the GPU %.1f GiB now (a smaller model, "
-                            "or the server without --whisper / --asr, leaves it room)",
+                            "for the encoders and speech to text, and Windows gives the GPU %.1f GiB now. Unloading speech "
+                            "to text (Settings, GPU memory) or a smaller model leaves it room",
                enc ? " next to the image / audio encoders and speech to text" : "",
                (a.weights + a.mtp + a.buffers) / 1073741824.0, enc / 1073741824.0, a.dev / 1073741824.0);
       throw std::runtime_error(b);

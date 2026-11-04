@@ -11,6 +11,8 @@
   again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
   transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
   Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+- A failed answer in a chat is a box with a title and the server's message as text (it was the raw JSON); a model
+  that does not fit offers "Unload speech to text" and "GPU memory settings".
 
 ## 2026-11-04: transcripts through E4B keep a timeline, warm-up after an update
 

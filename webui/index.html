@@ -286,6 +286,10 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .trrow:hover { background: var(--hover); }
 .trrow.on { background: var(--active); }
 .trrow.picked { box-shadow: inset 3px 0 0 var(--accent); background: var(--active); }
+.errbox { margin: 8px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent); font-size: 14px; line-height: 1.45; }
+.errbox b { display: block; color: var(--danger); margin-bottom: 3px; }
+.errbox .errbtns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .trrow { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }  /* (a long press picks; no text selection or menu) */
 #trmerge { margin-left: auto; }
 .trrow .thumb { width: 38px; height: 38px; border-radius: 6px; flex: none; background: var(--head); display: grid; place-items: center; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
@@ -783,6 +787,48 @@ $("tempon").addEventListener("change", () => { $("temp").disabled = $("temp").hi
 $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
 $("gear").addEventListener("click", () => { const on = !$("panel").classList.contains("open"); openPanel(on); if (on) { dataSummary(); memShow(); } });
+// An answer that failed, as a box: the server's message in plain text ("could not load model X: ..." split into its
+// title and its reason). A model that does not fit next to speech to text: buttons to unload speech to text (then
+// sending again loads the model with that memory) or to open Settings' GPU memory.
+function errBox(e) {
+  const box = document.createElement("div");
+  box.className = "errbox";
+  const msg = String(e.message || e);
+  const m = /^could not load model ([^:]+): (.*)$/s.exec(msg);
+  const title = document.createElement("b");
+  title.textContent = m ? (e.fit ? m[1] + " does not fit in the GPU memory now" : "Could not load " + m[1]) : "The answer failed";
+  const body = document.createElement("div");
+  body.textContent = m ? m[2].replace(/^it does not fit in the GPU memory[^:]*: /, "") : msg;
+  box.append(title, body);
+  if (e.fit) {
+    const row = document.createElement("div");
+    row.className = "errbtns";
+    const un = document.createElement("button");
+    un.className = "fbtn";
+    un.textContent = "Unload speech to text";
+    un.title = "Whisper and Qwen3-ASR freed: their memory goes to the chat model. Load them again in Settings before transcribing or recording";
+    un.addEventListener("click", async () => {
+      un.disabled = true;
+      un.textContent = "Unloading…";
+      try {
+        for (const which of ["asr", "whisper"]) {
+          const r = await fetch("/v1/server/unload", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ which }) });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+        }
+        un.textContent = "Unloaded: send your message again";
+        memShow();
+      } catch (x) { un.textContent = "Unload speech to text"; un.disabled = false; note(String(x.message || x), 9000); }
+    });
+    const st = document.createElement("button");
+    st.className = "fbtn";
+    st.textContent = "GPU memory settings";
+    st.addEventListener("click", () => { openPanel(true); dataSummary(); memShow(); $("memsec").scrollIntoView({ block: "start" }); });
+    row.append(un, st);
+    box.appendChild(row);
+  }
+  return box;
+}
 // ---- GPU memory (Settings): what is loaded, its memory, unload / load (GET /v1/server/memory, POST .../unload, .../load)
 const gib = (b) => (b / 1073741824).toFixed(1) + " GiB";
 async function memShow(j) {
@@ -2156,7 +2202,11 @@ async function streamTurn(el, st, onOverflow, job) {
     if (overflow(t)) throw new Error("the conversation does not fit this model's context even after compacting" +
       (caps.slots > 1 ? " (each of the " + caps.slots + " conversations at once has a part of it: fewer in Settings give more)" : "") +
       ": delete the long messages or tool results, or start a new chat");
-    throw new Error(t);
+    // (the server's {"error": {"message"}} as its message, not the JSON; a model that does not fit marked for the
+    //  answer's box, which offers to unload speech to text)
+    let msg = t;
+    try { msg = JSON.parse(t).error?.message || t; } catch (e) {}
+    throw Object.assign(new Error(msg), { fit: /does not fit in the GPU memory/.test(msg) });
   }
   const reader = res.body.getReader(), dec = new TextDecoder();
   kick();
@@ -2512,7 +2562,7 @@ async function send() {
       scroll();
     }
   } catch (e) {
-    if (e.name !== "AbortError") el.querySelector(".content").innerHTML += '<div style="color:var(--danger)">' + esc(String(e.message || e)) + "</div>";
+    if (e.name !== "AbortError") el.querySelector(".content").appendChild(errBox(e));
     else if (job.idle) el.querySelector(".content").innerHTML += '<div style="color:var(--danger)">stopped: no output from the server for 10 minutes</div>';
     if (switching) refreshModel();
   }
