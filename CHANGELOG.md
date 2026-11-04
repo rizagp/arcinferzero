@@ -11,6 +11,8 @@
   again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
   transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
   Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+- A `<br>` in an answer (models write it in table cells) is a line break, not the tag's text; any other HTML stays
+  shown as text, and a `<br>` inside a code span as written.
 - **Select** in the Transcripts list: a circle on each row; the picked ones are numbered in the order Merge joins
   them (the order they were made), Merge N then joins them, Cancel drops the picks (Ctrl+click and a long press start
   it too).

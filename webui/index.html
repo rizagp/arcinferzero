@@ -1017,6 +1017,9 @@ function inline(s) {
   const keep = [];
   const put = (html) => "\u0000" + (keep.push(html) - 1) + "\u0000";
   s = s.replace(/`([^`]+)`/g, (m, c) => put("<code>" + c + "</code>"));
+  // (<br> as the models write it, in a table cell above all: a line break, not the tag's text; the only HTML kept,
+  //  and not inside a code span, which stays as written)
+  s = s.replace(/&lt;br\s*\/?&gt;/gi, () => put("<br>"));
   const link = (url, text) => put('<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + text + "</a>");
   s = s.replace(/\[([^\]\n]+)\]\(((?:https?:\/\/|mailto:)[^\s()<>"'&]*(?:&amp;[^\s()<>"'&]*)*)\)/g, (m, t, u) => link(u, t));
   s = s.replace(/(^|[\s(\u0000])(https?:\/\/[^\s<>"'()&\u0000]*(?:&amp;[^\s<>"'()&\u0000]*)*)/g, (m, pre, u) => {
