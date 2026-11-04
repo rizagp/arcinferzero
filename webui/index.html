@@ -4678,8 +4678,15 @@ async function trMinutesForm(form) {
     // (a row that repeats the table's header, "No | Acara", left out: the 35B began each table with it; the form has it)
     const same = (row, cols) => Array.isArray(row) && row.length === cols.length &&
       row.every((c, k) => String(c).trim().toLowerCase().replace(/[.,:]$/, "") === String(cols[k]).trim().toLowerCase().replace(/[.,:]$/, ""));
-    data.tables = form.tables.map((t, i) => (fill[i] && Array.isArray(data.tables[i]) ? data.tables[i].filter((r) => !same(r, t.columns)) : null));
+    // (every part of the form written: a table the model left out or empty gets one row of "-", a field "-", never the
+    //  form's own sample text; only the tables kept as they are (the signature block) stay null)
+    data.tables = form.tables.map((t, i) => {
+      if (!fill[i]) return null;
+      const rows = Array.isArray(data.tables[i]) ? data.tables[i].filter((r) => Array.isArray(r) && !same(r, t.columns)) : [];
+      return rows.length ? rows : [t.columns.map((c, k) => (k === 0 ? "1" : "-"))];
+    });
     data.fields = data.fields || {};
+    for (const f of form.fields) if (data.fields[f] === undefined || data.fields[f] === "" || data.fields[f] === "…") data.fields[f] = "-";
     for (const f of form.fields) {  // (when it was: from the recording, unless the model wrote it)
       const v = data.fields[f], empty = v === undefined || v === "" || v === "-" || v === "…";
       if (empty && /tanggal|date/i.test(f)) data.fields[f] = day;

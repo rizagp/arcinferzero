@@ -19,6 +19,11 @@
   signature block, header, footer and styles kept) and saves it as a file. Today's 2-hour meeting in the user's
   event form with Qwen3.6 35B: agenda, date and time, 11 participants, 6 agenda items, the Q&A with units, in ~2 min
   of generation; Word opens it. New endpoints: `POST /v1/tools/minutes_templates`, `POST /v1/tools/minutes_docx`.
+- A data row that repeats a table's header ("No | Acara", "No. | Acara", "Nomor | Catatan") is left out by the
+  server too: the 35B began each table with it and the minutes showed the header twice.
+- A form is written whole: a numbered table the model left empty gets one row of "-", a field "-", so a form's own
+  sample text (a template made from an earlier meeting's minutes) never stays in new minutes. Keep the templates
+  clean anyway: fields empty, one empty row per numbered table, the signature block as it should appear.
 - Summarize and the forms load the chat model first when none is loaded, so the transcript is cut to its context
   (it was cut to 8K characters: a 2-hour meeting in 12 parts on a 100K model).
 - create_file: a model asked for a 2-hour meeting's minutes wrote six files (one per part, and versions). The tool's

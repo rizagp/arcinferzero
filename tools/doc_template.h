@@ -155,6 +155,20 @@ inline std::vector<std::string> lines_of(const Json& v) {
   return out;
 }
 
+// a cell's text compared with a header's: lower case, spaces and the punctuation around it gone ("No." == "no",
+// "Nomor" stays "nomor")
+inline std::string norm_cell(const std::string& s) {
+  std::string o;
+  for (unsigned char c : s)
+    if (isalnum(c) || c >= 0x80) o += (char)tolower(c);
+  return o;
+}
+inline std::string lines_text(const Json& v) {
+  std::string o;
+  for (const std::string& l : lines_of(v)) o += l;
+  return o;
+}
+
 // What a template asks for (the web UI's prompt to the model is made from it): its first table's labels ("fields"), and
 // for every other table the paragraph just before it (its heading), its header row and its number of data rows.
 inline Json structure(const std::string& docx, std::string& bad) {
@@ -242,7 +256,22 @@ inline std::string fill(const std::string& docx, const Json& data, std::string& 
       const Span proto = rows[1];
       const auto pcells = children(x, proto, "tc");
       nt = x.substr(t.a, rows[1].a - t.a);  // (the table's properties and its header row)
+      // (a data row that repeats the header ("No | Acara", "No. | Acara") is left out: models begin tables with it,
+      //  and the form has the header already)
+      std::vector<std::string> head;
+      for (const Span& c : children(x, rows[0], "tc")) head.push_back(norm_cell(cell_text(x, c)));
+      auto is_head = [&](const Json& rd) {
+        if (!rd.is_array() || rd.items().empty()) return false;
+        size_t same = 0, n = std::min(head.size(), rd.items().size());
+        for (size_t c = 0; c < n; ++c) same += norm_cell(lines_text(rd[(int)c])) == head[c];
+        const bool numbered = !head.empty() && (head[0] == "no" || head[0] == "nomor");
+        const std::string first = norm_cell(lines_text(rd[0]));
+        const bool first_head = first == "no" || first == "nomor" || first == head[0];  // (a row number is a digit)
+        if (numbered && first_head) same += first != head[0];  // ("Nomor" over "No": the same header cell)
+        return n > 0 && (same == n || (numbered && first_head && same * 2 >= n));
+      };
       for (const Json& rd : rowsd.items()) {
+        if (is_head(rd)) continue;
         std::string row = x.substr(proto.a, (pcells.empty() ? proto.b : pcells[0].a) - proto.a);
         for (size_t c = 0; c < pcells.size(); ++c) {
           row += cell_with(x, pcells[c], lines_of(rd[(int)c]));
