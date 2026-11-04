@@ -11,7 +11,7 @@ Everything below this list is history plus the details of these items; a row not
 
 | Priority | Item | Section |
 |---|---|---|
-| 0 | serverz DEVICE_LOST (2026-11-04, 5 times, TDR): always while Qwen3-ASR decoded a ~160-s part; no thread race found (all speech GPU work under Service::turn_). Next: the argument cache default off (stable with ARC_ARG_CACHE=0 since), then the crash sequence again with ARC_ZE_SYNC_EACH=1 to name the kernel (laptop free: it can black the screen); then the Qwen3-ASR timeline cut back on | 31.13 |
+| 1 | serverz DEVICE_LOST (2026-11-04, 5 times, TDR): always while Qwen3-ASR decoded a ~160-s part; no thread race found (all speech GPU work under Service::turn_). Not the argument cache: a crash came with ARC_ARG_CACHE=0 too, so it stays on. The user set TdrDelay=10 (registry, restarted): no crash in ~1.5 hours of watching since. If it comes back: the crash sequence with ARC_ZE_WATCH=1 (slow-kernel log, last 64 launches) to name the kernel (laptop free: it can black the screen); then the Qwen3-ASR timeline cut back on | 31.13 |
 | 0 | Arc Pro B60 (issues #3 / #4): the f16 XMX GEMM's wider tiles, GPU-side sums, GEMV loads in flight, MTP / DFlash2 and q-head attention on a split model (researched 2026-11-02) | F31 |
 | 1 | Web UI Projects (as Claude's Projects): a working folder per project, AGENTS.md, MEMORY.md global and per project, MCP servers per project; plus AGENTS.md / CLAUDE.md in this repo for Pi and Claude Code (designed 2026-11-02) | F32 |
 | 0 | Unattended 2026-11-01: multi-GPU MoE (qwen35moe), a host RAM tier for experts, Flash Next re-test after the re-download | F30 |
