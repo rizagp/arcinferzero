@@ -1611,7 +1611,10 @@ const FILE_TOOLS = [
     parameters: { type: "object", properties: {
       query: { type: "string" }, limit: { type: "integer", description: "chats 1-100 (20); exchanges 1-10 (5)" } } } } },
   { type: "function", function: { name: "create_file",
-    description: "Write a file, shown as a card in your answer (a code block in your answer is not a file). Text formats " +
+    description: "Write a file, shown as a card in your answer (a code block in your answer is not a file). One call per " +
+      "file the user asked for: once it is created it is done (no second version unless the user asks). A long document " +
+      "(the minutes of a long meeting, a report) is ONE file: gather everything first (read the parts you need), then " +
+      "write its whole content in one call; never one file per part. Text formats " +
       "(html, svg, css, js, py, json, csv, txt, md, xml...) are saved as written. docx, pdf, doc, rtf, xlsx come from " +
       "Markdown: # headings, **bold**, *italic*, <u>u</u>, ~~strike~~, ==highlight==, <span style=\"color:#C00000; " +
       "background:#FFF2CC; font-size:14pt\">..</span>, lists, tables (:--- / :---: / ---:), ``` code, --- rule, " +

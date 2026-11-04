@@ -11,6 +11,9 @@
   again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
   transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
   Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+- create_file: a model asked for a 2-hour meeting's minutes wrote six files (one per part, and versions). The tool's
+  description now says one call per file, a long document whole in one call, never one file per part; its reply says
+  the file is done instead of inviting "a new version".
 - A `<br>` in an answer (models write it in table cells) is a line break, not the tag's text; any other HTML stays
   shown as text, and a `<br>` inside a code span as written.
 - **Select** in the Transcripts list: a circle on each row; the picked ones are numbered in the order Merge joins

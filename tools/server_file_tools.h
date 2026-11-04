@@ -121,8 +121,12 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       r.set("file_id", i.id);
       r.set("note", existed ? "these exact bytes were already saved as " + i.name + ": that file is shown to the user (the "
                               "same file card); to make a different file, change its content"
-                            : "created; the user sees it as a file card in your answer (download / open). To change it, "
-                              "read its source with read_file and call create_file again: that makes a new version.");
+                            // (it said "to change it ... call create_file again: that makes a new version", and a model
+                            //  writing a meeting's minutes went on making versions of its own accord: six files for
+                            //  one request, 2026-11-04. Now: done, unless the user asks for a change)
+                            : "created: the file is done and the user sees it as a file card in your answer (download / "
+                              "open). Do not make it again or another version unless the user asks for a change; then "
+                              "read its source with read_file and call create_file again.");
       return reply(200, r);
     }
     if (rq.path == "/v1/tools/list_files" && a["scope"].str() == "project") {  // (the chat's project folder)
