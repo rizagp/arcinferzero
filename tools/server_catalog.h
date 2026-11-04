@@ -470,7 +470,7 @@ static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
          (eo.slots > 1 ? "|slots" + std::to_string(eo.slots) + "/" + std::to_string(Engine::kSlotCtxFloor) : std::string()) +
          "|md" + std::to_string(eo.mtp_drafts) + "|" +  // (DFlash2 drafter: its weights and buffers; 4-bit V)
          (eo.min_chunk ? "/" + std::to_string(eo.min_chunk) : std::string()) + "|" + (eo.mtp ? "mtp" : "-") + "|" + (eo.attn_int8 ? "i8" : "f32") + "|" + std::to_string(device_global_mem()) +
-         "|m23";  // engine memory layout version (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
+         "|m24";  // engine memory layout version (m24: 0 when nothing fits, not raised to 4096) (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
                  // for 27B, m6: MoE prompt GEMM staging, m7: MoE buffers shared, m8: MoE MTP 1 draft, Q3_K experts, m9: memory parts in the cache,
                  // m12: streamed MoE reserves 128K of context before the expert cache, m13: streamed MoE chunk 8192, m14: slot_bytes with every
                  // slot buffer, f16 K / V with --attn-f32, m15: --q2 Gemma MoE chunk 2048, m16: Gemma 4 always two-pass, m17: shared-KV Gemma
@@ -600,11 +600,14 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
     return ctx;
   };
   bool res = false;
-  auto floor_of = [&] { return tight ? 1024 : 4096; };
+  // (0 when not even the smallest context fits: the caller refuses the model. It was raised to the floor and loaded
+  //  anyway: Gemma 4 12B next to Whisper and Qwen3-ASR on a 16.55-GiB share ran out of GPU memory halfway through
+  //  its load and ended the server, 2026-11-04)
+  auto floor_of = [&](int c) { return c > 0 ? std::max(tight ? 1024 : 4096, c) : 0; };
   if (budget_given) {
     const int c = fit(eo.w8_budget_gb, res, m1);
     r = m1;
-    r.ctx = std::max(floor_of(), c);
+    r.ctx = floor_of(c);
     r.resident = res;
   } else {
     const int c_res = fit(1e9, res, m1);  // everything resident
@@ -616,7 +619,7 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
       bool r2 = false;
       const int c = fit(eo.w8_budget_gb, r2, m2);
       r = m2;
-      r.ctx = std::max(floor_of(), c);
+      r.ctx = floor_of(c);
       r.resident = r2;
     }
   }

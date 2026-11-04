@@ -32,6 +32,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <random>
 #include <set>
 #include <sstream>
@@ -134,7 +135,9 @@ class Service {
   // dir empty: no Whisper (--whisper off --asr ...): Qwen3-ASR alone (load_asr next) transcribes; translations, the
   // live text while recording and word times need Whisper
   Service(const std::string& dir, bool on_npu, const std::string& kernel_dir) : npu(on_npu) {
+    kernel_dir_ = kernel_dir;
     if (dir.empty()) return;
+    whisper_dir_ = dir;
     m_ = std::make_unique<whisper::Model>(dir);
     eng_ = std::make_unique<WhisperEngine>(*m_, kernel_dir, 5, on_npu);
     std::string name = std::filesystem::path(dir).filename().string();
@@ -148,6 +151,57 @@ class Service {
   }
   bool has_whisper() const { return eng_ != nullptr; }
   size_t gpu_bytes() const { return (eng_ ? eng_->gpu_bytes : 0) + asr_bytes_; }
+
+  // ---------------------------------------------------------------- unload / load at run time (the web UI's Memory)
+  // "whisper" or "asr" freed (its GPU memory goes to the chat model's next load) or loaded again as it was at start.
+  // Only while nothing of the service runs: transcriptions hold engines_mu_ shared for their whole run, so this waits
+  // up to 3 s for them and then says it is busy; never during a live recording. False and the reason when it cannot.
+  // gpu: the server's GPU turn (the chat engine's lock) around the free / the load.
+  bool set_loaded(const std::string& which, bool load, const LockedBackend::Turn& gpu, std::string& bad) {
+    if (which != "whisper" && which != "asr") { bad = "which: \"whisper\" or \"asr\""; return false; }
+    {
+      std::lock_guard<std::mutex> lk(live_mu_);
+      if (!lives_.empty()) { bad = "a recording is running: stop it first"; return false; }
+    }
+    std::unique_lock<std::shared_timed_mutex> ex(engines_mu_, std::chrono::seconds(3));
+    if (!ex.owns_lock()) { bad = "a transcription is running: try again when it is done"; return false; }
+    bool ok = true;
+    turn_.run(true, [&] {
+      gpu([&] {
+        try {
+          if (which == "whisper") {
+            if (load && !eng_) {
+              if (whisper_dir_.empty()) throw std::runtime_error("this server was started without Whisper (--whisper off)");
+              auto m = std::make_unique<whisper::Model>(whisper_dir_);
+              auto e = std::make_unique<WhisperEngine>(*m, kernel_dir_, 5, npu);
+              m_ = std::move(m);
+              eng_ = std::move(e);
+            } else if (!load && eng_) {
+              eng_.reset();
+              m_.reset();
+            }
+          } else {
+            if (load && !asr_eng_) {
+              if (asr_gguf_.empty()) throw std::runtime_error("this server was started without Qwen3-ASR (--asr off)");
+              load_asr(asr_gguf_, kernel_dir_, asr_slots_);
+            } else if (!load && asr_eng_) {
+              asr_enc_.reset();
+              asr_tok_.reset();
+              asr_eng_.reset();
+              asr_bytes_ = 0;
+              asr_id.clear();
+            }
+          }
+        } catch (const std::exception& e) {
+          bad = e.what();
+          ok = false;
+        }
+      });
+    });
+    return ok;
+  }
+  bool asr_loaded() const { return asr_eng_ != nullptr; }
+  bool can_load(const std::string& which) const { return which == "whisper" ? !whisper_dir_.empty() : !asr_gguf_.empty(); }
   Json props() const {
     Json p = Json::object();
     p.set("model", eng_ ? id : asr_id);
@@ -293,6 +347,7 @@ class Service {
     if (stream) rs.sse_begin();
     auto event = [&](const Json& e) { return rs.sse_event(e.dump()); };
     try {
+      std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);  // (no unload while it runs: set_loaded)
       Whisper w(*this);
       auto run = [&](const std::vector<float>& a, const whisper::Options& o, const whisper::Progress& cb) {
         return o.engine.empty() ? w.tr().run(a, o, cb) : o.engine == "e4b" ? chat_run(a, o, cb) : asr_run(a, o, cb);
@@ -1215,7 +1270,9 @@ class Service {
                                                    cap_seconds > 0 ? std::min(cap_seconds, max_seconds) : max_seconds);
     whisper::Options o;
     o.window_turn = [this](const std::function<void()>& f) { turn_.run(false, f); };
+    std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);  // (no unload while it runs: set_loaded)
     if (!asr_id.empty()) o.engine = "qwen3-asr";  // (the default speech model: Qwen3-ASR when loaded)
+    if (o.engine.empty() && !eng_) throw std::runtime_error("speech to text is unloaded (the web UI's Settings load it again)");
     Whisper w(*this);
     bool left = false;
     const whisper::Progress cb = [&](double, double, const std::vector<whisper::Segment>&) {
@@ -1396,6 +1453,7 @@ class Service {
       std::vector<whisper::Segment> segs;
       try {
         // (Qwen3-ASR alone: no text while recording; the pass after Stop writes it)
+        std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);  // (no unload while it runs: set_loaded)
         if (eng_) {
           Whisper w(*this);
           whisper::Options o = s.opt;
@@ -1926,6 +1984,7 @@ class Service {
     bool stopped = false;
     std::string part_err;  // (a part of Qwen3-ASR / E4B failed twice: the text so far is saved, the job failed)
     try {
+      std::shared_lock<std::shared_timed_mutex> eg(engines_mu_);  // (no unload while it runs: set_loaded)
       Whisper w(*this);
       double before = 0;  // (the tracks done)
       for (size_t k = 0; k < audio.size() && !stopped && part_err.empty(); ++k) {
@@ -2088,7 +2147,7 @@ class Service {
       tr_ = std::make_unique<whisper::Transcriber>(*s.m_, *be_);
     }
     whisper::Transcriber& tr() {
-      if (!tr_) throw std::runtime_error("Whisper is not loaded (Qwen3-ASR alone)");
+      if (!tr_) throw std::runtime_error("Whisper is not loaded (unloaded in the web UI's Settings, GPU memory: load it there; or a server of Qwen3-ASR alone)");
       return *tr_;
     }
 
@@ -2129,6 +2188,10 @@ class Service {
   std::deque<LiveTask> live_q_;
   bool stop_live_ = false;
   int merges_ = 0;  // (merge threads running; lib_mu_)
+  // (every transcription holds it shared while it uses an engine; set_loaded takes it alone to free or load one)
+  std::shared_timed_mutex engines_mu_;
+  std::string whisper_dir_, kernel_dir_, asr_gguf_;
+  int asr_slots_ = 0;
   std::thread live_worker_;
 };
 

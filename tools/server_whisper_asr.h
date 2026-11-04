@@ -60,6 +60,8 @@
     asr_eng_ = std::move(eng);
     asr_enc_ = std::move(enc);
     asr_tok_ = std::move(tok);
+    asr_gguf_ = gguf;  // (set_loaded loads it again from these)
+    asr_slots_ = slots;
     std::string n = std::filesystem::path(gguf).stem().string();
     for (char& c : n) c = (char)tolower((unsigned char)c);
     const size_t q = n.find("-q");  // (the quantization suffix: -q8_0, -q4_k_m ...)
@@ -108,6 +110,7 @@
   whisper::Result asr_run(const std::vector<float>& audio, const whisper::Options& opt, const whisper::Progress& cb,
                           bool queued = false, std::string* error = nullptr, double pause_parts = 0) {
     using clk = std::chrono::steady_clock;
+    if (!asr_eng_) throw std::runtime_error("Qwen3-ASR is unloaded (the web UI's Settings load it again)");
     whisper::Result r;
     r.duration = (double)audio.size() / 16000;
     auto has = [&](const char* code) {

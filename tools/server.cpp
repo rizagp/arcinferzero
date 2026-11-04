@@ -1774,6 +1774,74 @@ int main(int argc, char** argv) {
         return fail(500, std::string("could not load the model with ") + std::to_string(n) + " slots: " + e.what() + also);
       }
     }
+    // GPU memory (the web UI's Settings): what is loaded and its GPU bytes, the context the chat model got, Windows'
+    // budget for this process and what is in use. POST /v1/server/unload {"which": "model" | "whisper" | "asr"} frees
+    // one; POST /v1/server/load {"which": "whisper" | "asr"} loads it again (a chat model loads when a request names
+    // it). This computer only. The next chat model load counts the speech models' memory as it is then (--ctx auto).
+    if (rq.path == "/v1/server/memory" || rq.path == "/v1/server/unload" || rq.path == "/v1/server/load") {
+      auto fail = [&](int st, const std::string& m) {
+        Json er = Json::object(), r = Json::object();
+        er.set("message", m);
+        r.set("error", er);
+        return rs.send(st, "application/json", r.dump());
+      };
+      auto state = [&] {  // (swap_mu held, shared or alone)
+        Json r = Json::object(), c = Json::object();
+        if (cur) {
+          c.set("model", cur->alias);
+          c.set("n_ctx", cur->eng->ctx);
+          c.set("gpu_bytes", (double)cur->eng->gpu_bytes);
+        }
+        r.set("chat", cur ? c : Json());
+        Json s = Json::object();
+        if (wh) {
+          s.set("whisper", wh->has_whisper());
+          s.set("whisper_can_load", wh->can_load("whisper"));
+          s.set("asr", wh->asr_loaded());
+          s.set("asr_can_load", wh->can_load("asr"));
+          s.set("gpu_bytes", (double)wh->gpu_bytes());
+        }
+        r.set("speech", wh ? s : Json());
+        uint64_t b = 0, u = 0;
+        if (zrt::video_budget(b, u)) {
+          r.set("budget_bytes", (double)b);
+          r.set("used_bytes", (double)u);
+        }
+        return r;
+      };
+      if (rq.method == "GET" && rq.path == "/v1/server/memory") {
+        std::shared_lock<std::shared_mutex> lk(swap_mu);
+        return rs.send(200, "application/json", state().dump());
+      }
+      if (rq.method != "POST") return fail(405, "GET /v1/server/memory, POST /v1/server/unload or /load");
+      if (!rq.local_peer) return fail(403, "only for this computer");
+      Json in;
+      Json::try_parse(rq.body, in);
+      const std::string which = in["which"].str();
+      const bool load = rq.path == "/v1/server/load";
+      if (which == "model") {
+        if (load) return fail(400, "a chat model loads when a request names it");
+        std::unique_lock<std::shared_mutex> lk(swap_mu);
+        if (cur) {
+          fprintf(stderr, "unloading %s (asked)\n", cur->alias.c_str());
+          if (cur->srv) cur->srv->save_held();
+          cur.reset();
+        }
+        return rs.send(200, "application/json", state().dump());
+      }
+      if (which != "whisper" && which != "asr") return fail(400, "which: \"model\", \"whisper\" or \"asr\"");
+      if (!wh) return fail(400, "this server runs no speech to text (--whisper off --asr off)");
+      std::string bad;
+      fprintf(stderr, "%s %s (asked)\n", load ? "loading" : "unloading", which == "asr" ? "Qwen3-ASR" : "Whisper");
+      if (!wh->set_loaded(which, load, wh->gpu_turn, bad)) return fail(409, bad);
+      std::unique_lock<std::shared_mutex> lk(swap_mu);  // (the memory --ctx auto keeps for speech, /props: as it is now)
+      so.whisper_bytes = wh->gpu_bytes() ? wh->gpu_bytes() + (128u << 20) : 0;
+      so.whisper_props = wh->props();
+      cur_so.whisper_bytes = so.whisper_bytes;
+      cur_so.whisper_props = so.whisper_props;
+      if (cur && cur->srv) cur->srv->whisper_props_ = so.whisper_props;
+      return rs.send(200, "application/json", state().dump());
+    }
     // other API formats (tools/api_compat.h): translated into a chat request; the answer is translated back
     static const std::map<std::string, std::string> kinds = {
         {"/v1/completions", "completions"}, {"/completions", "completions"}, {"/api/chat", "ollama_chat"},
@@ -2124,7 +2192,8 @@ int main(int argc, char** argv) {
             //  carry "x-arc-speech: 1" (tools/server_speech.h attach_e4b): the user did not choose that model)
             if (rq.header("x-arc-speech").empty()) std::ofstream(app_dir() + "/last-model.txt") << m->path << "\n";
           } catch (const std::exception& e) {
-            fprintf(stderr, "could not load %s: %s; loading %s again\n", m->path.c_str(), e.what(), prev_alias.c_str());
+            fprintf(stderr, "could not load %s: %s; %s\n", m->path.c_str(), e.what(),
+                    prev_path.empty() ? "no model was loaded before it" : ("loading " + prev_alias + " again").c_str());
             ServeOpts s3 = so;
             s3.ctx_auto = true;
             for (const ModelInfo& pm : catalog)  // (the previous variant's settings)

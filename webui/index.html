@@ -469,6 +469,14 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <div class="opt"><select id="tts" aria-label="Voice" style="max-width:100%;flex:1"></select></div>
           <div class="opt"><div class="lab">Speaking rate<small>1 = normal</small></div><input type="number" id="ttsrate" step="0.1" min="0.5" max="2" value="1.1" aria-label="Speaking rate"></div>
         </div>
+        <div class="sec" id="memsec">
+          <h3>GPU memory</h3>
+          <div class="opt"><div class="lab">Use<small id="memuse">…</small></div></div>
+          <div class="opt"><div class="lab">Chat model<small id="memchat">…</small></div><button class="fbtn" id="memchatbtn">Unload</button></div>
+          <div class="opt"><div class="lab">Whisper<small id="memwh">…</small></div><button class="fbtn" id="memwhbtn">Unload</button></div>
+          <div class="opt"><div class="lab">Qwen3-ASR<small id="memasr">…</small></div><button class="fbtn" id="memasrbtn">Unload</button></div>
+          <div class="opt"><div class="lab"><small>Unloading speech to text leaves its memory to the next chat model (a larger one, or more context): load it again here before transcribing or recording</small></div></div>
+        </div>
         <div class="sec">
           <h3>Advanced</h3>
           <div class="opt"><div class="lab">Own temperature<small id="temphelp">Off: the model maker's recommended sampling</small></div>
@@ -774,7 +782,52 @@ function projSystem(id) {
 $("tempon").addEventListener("change", () => { $("temp").disabled = $("temp").hidden = !$("tempon").checked; savePrefs(); });
 $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
-$("gear").addEventListener("click", () => { const on = !$("panel").classList.contains("open"); openPanel(on); if (on) dataSummary(); });
+$("gear").addEventListener("click", () => { const on = !$("panel").classList.contains("open"); openPanel(on); if (on) { dataSummary(); memShow(); } });
+// ---- GPU memory (Settings): what is loaded, its memory, unload / load (GET /v1/server/memory, POST .../unload, .../load)
+const gib = (b) => (b / 1073741824).toFixed(1) + " GiB";
+async function memShow(j) {
+  try {
+    if (!j) {
+      const r = await fetch("/v1/server/memory");
+      if (!r.ok) { $("memsec").hidden = true; return; }
+      j = await r.json();
+    }
+    $("memsec").hidden = false;
+    $("memuse").textContent = j.budget_bytes ? gib(j.used_bytes) + " of " + gib(j.budget_bytes) + " Windows gives this server's GPU now" : "";
+    const c = j.chat;
+    $("memchat").textContent = c ? c.model + " · " + gib(c.gpu_bytes) + " · context " + c.n_ctx.toLocaleString() + " tokens" : "none loaded (a chat loads its model)";
+    $("memchatbtn").hidden = !c;
+    const s = j.speech || {};
+    const row = (id, on, can, name) => {
+      $(id).textContent = on ? "loaded" : can ? "unloaded" : "not on this server";
+      const b = $(id + "btn");
+      b.hidden = !on && !can;
+      b.textContent = on ? "Unload" : "Load";
+      b.dataset.load = on ? "" : "1";
+    };
+    row("memwh", !!s.whisper, !!s.whisper_can_load, "Whisper");
+    row("memasr", !!s.asr, !!s.asr_can_load, "Qwen3-ASR");
+    if (j.speech) $("memwh").textContent += s.whisper || s.asr ? " (speech to text " + gib(s.gpu_bytes) + ")" : "";
+  } catch (e) { $("memsec").hidden = true; }
+}
+for (const [btn, which] of [["memchatbtn", "model"], ["memwhbtn", "whisper"], ["memasrbtn", "asr"]])
+  $(btn).addEventListener("click", async () => {
+    const b = $(btn), load = !!b.dataset.load && which !== "model";
+    b.disabled = true;
+    const was = b.textContent;
+    b.textContent = load ? "Loading…" : "Unloading…";
+    try {
+      const r = await fetch("/v1/server/" + (load ? "load" : "unload"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ which }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+      await memShow(j);
+      await refreshModel();  // (the speech choices and the model shown, as the server has them now)
+      try { const p = await (await fetch("/props")).json(); const stt = p.speech_to_text || p.whisper;
+        caps.asr = stt && typeof stt === "object" && stt.asr ? String(stt.asr) : "";
+        caps.whisper = !!stt && !(typeof stt === "object" && stt.whisper === false); } catch (e) {}
+    } catch (e) { note(String(e.message || e), 9000); b.textContent = was; }
+    b.disabled = false;
+  });
 $("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); });
 // (a small screen shows the chat or the list: the chat's own gear goes to the list with the settings open)
 $("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); });

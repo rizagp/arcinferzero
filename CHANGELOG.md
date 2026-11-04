@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-04 (afternoon): unload models, a model that does not fit refused
+
+- **A chat model that does not fit is refused instead of loaded**: `--ctx auto` raised "no context fits" to 4,096
+  tokens and loaded anyway. After a restart Windows gave the GPU 16.55 GiB (20.42 before), Gemma 4 12B needed 8.1 GiB
+  next to Whisper and Qwen3-ASR's 7.7, ran out of GPU memory at layer 40 and ended the server. Now the switch fails
+  with what it needs and what is free, and the server stays up (`ctx-auto.txt` entries made again: m24).
+- **Unload / load** (Settings, GPU memory; `GET /v1/server/memory`, `POST /v1/server/unload {"which": "model" |
+  "whisper" | "asr"}`, `POST /v1/server/load`): the chat model, Whisper or Qwen3-ASR freed, the speech models loaded
+  again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
+  transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
+  Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+
 ## 2026-11-04: transcripts through E4B keep a timeline, warm-up after an update
 
 - A transcript or meeting transcribed by Gemma 4 E4B was one segment per 2 minutes (the model gives no times), so a
