@@ -369,7 +369,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
   <nav class="rail" aria-label="Sections">
     <button class="on" id="chatsbtn" title="Chats" aria-label="Chats"><svg viewBox="0 0 24 24"><path d="M12 3C6.5 3 2 6.9 2 11.7c0 2.4 1.1 4.6 2.9 6.2L4 22l4.3-2.2c1.2.4 2.4.6 3.7.6 5.5 0 10-3.9 10-8.7S17.5 3 12 3zm0 15.4c-1.1 0-2.2-.2-3.2-.6l-.5-.2-2 1 .4-1.9-.4-.4C4.8 15 4 13.4 4 11.7 4 8 7.6 5 12 5s8 3 8 6.7-3.6 6.7-8 6.7z"/></svg></button>
     <button id="trbtn" disabled title="Transcripts need Whisper on the server (start it with --whisper auto)" aria-label="Transcripts"><svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h8v2H8zm0 4h8v2H8z"/></svg></button>
-    <button id="mtbtn" disabled title="Meetings need Whisper on the server (start it with --whisper auto)" aria-label="Meetings"><svg viewBox="0 0 24 24"><path d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.8 2 1.9 2 3.4V19h6v-2.5c0-2.3-4.7-3.5-7-3.5z"/></svg></button>
+    <button id="mtbtn" disabled style="display:none" title="Meetings: in Transcripts (one menu since 2026-11-04)" aria-label="Meetings"><svg viewBox="0 0 24 24"><path d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.8 2 1.9 2 3.4V19h6v-2.5c0-2.3-4.7-3.5-7-3.5z"/></svg></button>
     <button id="filesbtn" title="Files: everything attached in the chats, kept in the data folder (uploads)" aria-label="Files"><svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg></button>
     <span class="grow"></span>
     <button id="gear" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24"><path d="M19.4 13c.1-.3.1-.7.1-1s0-.7-.1-1l2.1-1.6c.2-.2.2-.4.1-.6l-2-3.5c-.1-.2-.4-.3-.6-.2l-2.5 1c-.5-.4-1.1-.7-1.7-1L14.5 2.4c0-.2-.2-.4-.5-.4h-4c-.3 0-.5.2-.5.4l-.4 2.7c-.6.3-1.2.6-1.7 1l-2.5-1c-.2-.1-.5 0-.6.2l-2 3.5c-.1.2-.1.5.1.6L4.6 11c0 .3-.1.7-.1 1s0 .7.1 1l-2.1 1.6c-.2.2-.2.4-.1.6l2 3.5c.1.2.4.3.6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.7c0 .2.2.4.5.4h4c.3 0 .5-.2.5-.4l.4-2.7c.6-.3 1.2-.6 1.7-1l2.5 1c.2.1.5 0 .6-.2l2-3.5c.1-.2.1-.5-.1-.6L19.4 13zM12 15.5c-1.9 0-3.5-1.6-3.5-3.5s1.6-3.5 3.5-3.5 3.5 1.6 3.5 3.5-1.6 3.5-3.5 3.5z"/></svg></button>
@@ -412,10 +412,10 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <button class="fbtn" id="trmerge" title="The picked recordings as one: their audio one after another (mono), their text on one timeline, each part's start marked; the parts stay" hidden>Merge</button>
       </div>
       <div class="trlive">
-        <button class="fbtn" id="trlive" title="Record and transcribe as it is spoken: the text comes ~2 s behind; when you stop, the whole recording is transcribed again accurately"><span class="dot"></span><span id="trlivetxt">Live</span></button>
+        <button class="fbtn" id="trlive" title="Record and transcribe as it is spoken: the text comes ~2 s behind; when you stop, the whole recording is transcribed again accurately"><span class="dot"></span><span id="trlivetxt">Record</span></button>
         <select id="trsrc" aria-label="Sound to record"></select>
       </div>
-      <div class="tradd" id="tradd"><span id="traddtxt">Drop audio or video files here, or</span> <button id="trpick">choose files</button>
+      <div class="tradd" id="tradd"><span id="traddtxt">Drop audio or video files here, or</span> <button id="trpick">upload files</button>
         <input type="file" id="trfile" multiple hidden accept="audio/*,video/*,.mkv,.webm,.opus,.ogg,.oga,.m4a,.wma,.wmv,.avi,.mov,.flac,.aac"></div>
       <div class="tropts">
         <select id="trlang" aria-label="Language" title="The speech's language. Qwen3-ASR: Indonesian (and Indonesian + English mixed) fixes it, the English words and terms said in it stay as said, the glossary spells them; detect guesses it per part (Indonesian is often taken for Malay). Whisper: detected per 30 s, one, or two mixed (each utterance's own; about 3x slower)">
@@ -3573,7 +3573,8 @@ const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, d
 $("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
 function trCaps() {
   $("trbtn").disabled = $("mtbtn").disabled = $("trside").disabled = !caps.stt;
-  $("trbtn").title = caps.stt ? "Transcripts: audio and video files to text and subtitles (" + (caps.whisper ? "Whisper" : "Qwen3-ASR") + " on this server)"
+  $("trbtn").title = caps.stt ? "Transcripts: upload audio and video files, or record (the microphone, a tab's sound, or both as Me / Others): " +
+      "text, subtitles, summaries and minutes (" + (caps.whisper ? "Whisper" : "Qwen3-ASR") + " on this server)"
     : "Transcripts need speech to text on the server (start it with --asr auto or --whisper auto)";
   $("mtbtn").title = caps.stt ? "Meetings: recorded with your microphone and the meeting's sound, transcribed as Me / Others, summarized" +
       (caps.whisper ? "" : " (Qwen3-ASR alone: the text comes after Stop, none while recording)")
@@ -3637,10 +3638,11 @@ function trNote(t, ms) {
   clearTimeout(tr.noteT);
   tr.noteT = setTimeout(() => { $("trnote").textContent = ""; }, ms || 6000);
 }
-// kind "": the Transcripts tab (files, live recordings of one source); "meeting": the Meetings tab (the microphone
+// (until 2026-11-04 two tabs, now one list; what follows described them) kind "": the Transcripts tab (files, live
+// recordings of one source); "meeting": the Meetings tab (the microphone
 // and the meeting's sound as two tracks, Me / Others; summaries and minutes)
 function trMode(on, kind) {
-  const k = kind || "";
+  const k = "";  // (one menu: the kind of a record is only "meeting" for two-source recordings, not a tab)
   if (on && k !== tr.kind) {  // (the other tab's list: nothing of this one chosen)
     tr.kind = k;
     if (!live.on || tr.sel !== live.id) trClose();
@@ -3651,12 +3653,13 @@ function trMode(on, kind) {
   $("chatsbtn").classList.toggle("on", !on);
   $("trbtn").classList.toggle("on", on && !tr.kind);
   $("mtbtn").classList.toggle("on", on && tr.kind === "meeting");
-  const m = tr.kind === "meeting";
-  $("trtitle").textContent = m ? "Meetings" : "Transcripts";
-  $("traddtxt").textContent = m ? "Or drop a meeting's recording here, or" : "Drop audio or video files here, or";
-  const src = m ? [["both", "Microphone + the meeting's sound (a tab or the screen)"], ["tab", "The meeting's sound only"], ["mic", "Microphone only (people in the room)"]]
-    : [["mic", "Microphone"], ["tab", "A tab's or the screen's sound"], ["both", "Microphone + a tab's or the screen's sound"]];
-  const keep = (prefs.tr || {})[m ? "msrc" : "src"];
+  // (one menu since 2026-11-04, the user: Transcripts and Meetings were the same list and tools; a recording is not
+  //  always a meeting. Record takes the microphone, a tab's or the screen's sound, or both as two tracks, Me / Others)
+  $("trtitle").textContent = "Transcripts";
+  $("traddtxt").textContent = "Drop audio or video files here, or";
+  const src = [["mic", "Microphone"], ["tab", "A tab's or the screen's sound (an online meeting, a video)"],
+    ["both", "Microphone + a tab's or the screen's sound (Me / Others)"]];
+  const keep = (prefs.tr || {}).src;
   $("trsrc").innerHTML = src.map(([v, t]) => '<option value="' + v + '">' + t + "</option>").join("");
   if (keep && src.some(([v]) => v === keep)) $("trsrc").value = keep;
   $("trch").hidden = true;  // (recordings are mono: a meeting one track per source; the Mono / Stereo choice gone)
@@ -3671,13 +3674,13 @@ function trClose() {  // (nothing chosen)
   $("trvideo").removeAttribute("src");
   $("trvideo").dataset.id = "";
   for (const id of ["trmedia", "trtools", "trfoot", "trcancel", "trdel", "trsum", "trdocx", "trpdf", "trmark", "trstoplive"]) $(id).hidden = true;
-  $("trname").textContent = tr.kind === "meeting" ? "Meetings" : "Transcripts";
+  $("trname").textContent = "Transcripts";
   $("trsub").textContent = "";
   $("trbody").replaceChildren();
   app.classList.remove("trviewing");
 }
 $("trsrc").addEventListener("change", () => {
-  prefs.tr = { ...(prefs.tr || {}), [tr.kind === "meeting" ? "msrc" : "src"]: $("trsrc").value };
+  prefs.tr = { ...(prefs.tr || {}), src: $("trsrc").value };
   store.set("arcinferzero-prefs", prefs);
 });
 $("trbtn").addEventListener("click", () => trMode(true, ""));
@@ -3749,10 +3752,9 @@ function trFillRow(r, x) {
   }
 }
 function trRenderList() {
-  const box = $("trlist"), m = tr.kind === "meeting";
-  const list = tr.list.filter((x) => (x.kind === "meeting") === m);
-  const n = list.length, ids = (m ? "m:" : "t:") + list.map((x) => x.id).join(",");
-  $("trtotal").textContent = n ? n + (m ? " meeting" : " transcript") + (n === 1 ? "" : "s") : "";
+  const box = $("trlist"), list = tr.list;  // (one list: files, recordings and meetings together)
+  const n = list.length, ids = list.map((x) => x.id).join(",");
+  $("trtotal").textContent = n ? n + " transcript" + (n === 1 ? "" : "s") : "";
   // (the same transcripts as last time: each row's text and bar updated where it is)
   if (n && ids === tr.listIds && box.children.length === n) {
     list.forEach((x, i) => trFillRow(box.children[i], x));
@@ -3763,7 +3765,7 @@ function trRenderList() {
   if (!n) {
     const d = document.createElement("div");
     d.className = "none";
-    d.textContent = m ? "Meetings you record (or whose recordings you drop here) appear here." : "Transcripts of the files you add or record appear here.";
+    d.textContent = "Transcripts of the files you add and the recordings you make appear here.";
     box.appendChild(d);
   }
   for (const x of list) {
@@ -3791,14 +3793,12 @@ function trPick(id) {
   trPicksShown();
 }
 function trPicksShown() {
-  // (only finished ones of this tab: Transcripts and Meetings keep picks apart)
-  const meet = tr.kind === "meeting";
-  for (const id of [...tr.picked])
-    if (!tr.list.some((x) => x.id === id && x.status === "done" && (x.kind === "meeting") === meet)) tr.picked.delete(id);
+  for (const id of [...tr.picked])  // (only finished ones)
+    if (!tr.list.some((x) => x.id === id && x.status === "done")) tr.picked.delete(id);
   const n = tr.picked.size;
   $("trmerge").hidden = n < 2;
   $("trmerge").textContent = "Merge " + n;
-  const m = tr.kind === "meeting", list = tr.list.filter((x) => (x.kind === "meeting") === m), box = $("trlist");
+  const list = tr.list, box = $("trlist");
   if (box.children.length === list.length) list.forEach((x, i) => trFillRow(box.children[i], x));
 }
 $("trmerge").addEventListener("click", async () => {
@@ -3887,7 +3887,8 @@ function trHeader(m) {
   // (Stop: this page's recording, or one still live of another page; not the one this page is finishing, which
   // stays "live" on the server while its last audio goes: the header's Stop stayed after the Live button's)
   $("trstoplive").hidden = !rec && (m.status !== "live" || m.id === live.finishing);
-  const done = !rec && m.kind === "meeting" && (m.status === "done" || m.status === "cancelled");
+  // (a summary and minutes for every finished transcript, not only meetings: a lecture, an interview, a voice note)
+  const done = !rec && (m.status === "done" || m.status === "cancelled");
   $("trsum").hidden = $("trdocx").hidden = $("trpdf").hidden = !done;
 }
 async function trOpen(id) {
@@ -4271,10 +4272,12 @@ const live = {
       };
       merger.connect(this.node);
       this.node.connect(this.ctx.destination);
-      const meeting = tr.kind === "meeting", when = new Date().toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+      // (two sources, the microphone and a tab's sound: a meeting, its tracks Me / Others; one: a recording)
+      const meeting = this.n === 2 && !this.stereo, when = new Date().toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
       const r = await fetch("/v1/live", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: (meeting ? "Meeting " : "Recording ") + when, language: $("trlang").value, beam_size: +$("trbeam").value,
-          terms: $("trterms").value.trim(), tracks: this.stereo ? 1 : this.n, channels: this.stereo ? 2 : 1, rate: this.ctx.sampleRate, kind: tr.kind,
+          terms: $("trterms").value.trim(), tracks: this.stereo ? 1 : this.n, channels: this.stereo ? 2 : 1, rate: this.ctx.sampleRate,
+          kind: meeting ? "meeting" : "",
           ...(!$("trmodel").hidden ? { model: $("trmodel").value } : {}),
           mp3_kbps: $("trkeep").value === "wav" ? 0 : +$("trkeep").value.replace("m4a", ""),
           keep: $("trkeep").value.startsWith("m4a") ? "m4a" : "mp3",
@@ -4430,7 +4433,7 @@ const live = {
 function liveButtons() {
   $("trlive").classList.toggle("on", live.on);
   $("trlive").disabled = live.starting || live.stopping;
-  $("trlivetxt").textContent = live.on ? "Stop" : live.starting ? "Starting…" : live.stopping ? "Finishing…" : tr.kind === "meeting" ? "Start a meeting" : "Live";
+  $("trlivetxt").textContent = live.on ? "Stop" : live.starting ? "Starting…" : live.stopping ? "Finishing…" : "Record";
   $("trsrc").disabled = $("trch").disabled = live.on || live.starting || live.stopping;
 }
 $("trlive").addEventListener("click", () => live.on ? live.stop() : live.start());

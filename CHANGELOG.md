@@ -11,6 +11,10 @@
   again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
   transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
   Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+- **Transcripts and Meetings are one menu** (they were the same list and tools; a recording is not always a meeting):
+  one list of files, recordings and meetings; **Record** takes the microphone, a tab's or the screen's sound, or both
+  as two tracks (Me / Others, named "Meeting ..."); **upload files**; Summarize and the DOCX / PDF minutes for every
+  finished transcript, not only meetings.
 - After a bug hunt of the above: loading Whisper / Qwen3-ASR back checks the free GPU memory first (next to Gemma 4 12B
   it is refused: "unload the chat model first"; it would run out of memory); a split model (`--gpus`) keeps the old
   4,096 floor; the speech engines are read under their lock (a request during an unload could read a freed one) and a
