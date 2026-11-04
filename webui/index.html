@@ -291,7 +291,13 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .errbox b { display: block; color: var(--danger); margin-bottom: 3px; }
 .errbox .errbtns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .trrow { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }  /* (a long press picks; no text selection or menu) */
-#trmerge { margin-left: auto; }
+/* (picking for Merge: a circle per row, its number once picked = its place in the merged transcript) */
+.trrow .pick { display: none; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--muted); flex: none;
+  place-items: center; font-size: 12px; font-weight: 700; line-height: 1; color: #fff; box-sizing: border-box; }
+.trrow.selecting .pick { display: grid; }
+.trrow.picked .pick { background: var(--accent); border-color: var(--accent); }
+#trselect { margin-left: auto; }
+#trmerge { margin-left: 6px; }
 .trrow .thumb { width: 38px; height: 38px; border-radius: 6px; flex: none; background: var(--head); display: grid; place-items: center; color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; }
 .trrow .ftxt { flex: 1; min-width: 0; }
 .trrow .fname { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -409,6 +415,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <div class="side-head">
         <button class="iconbtn" id="trback" title="Chats" aria-label="Back to the chats"><svg viewBox="0 0 24 24"><path d="M20 11H7.8l5.6-5.6L12 4l-8 8 8 8 1.4-1.4L7.8 13H20z"/></svg></button>
         <h2 id="trtitle">Transcripts</h2><span id="trtotal" class="ftotal" title="Ctrl+click (or long-press) to pick several, then Merge them into one"></span>
+        <button class="fbtn" id="trselect" title="Pick recordings to merge into one (or Ctrl+click them)">Select</button>
         <button class="fbtn" id="trmerge" title="The picked recordings as one: their audio one after another (mono), their text on one timeline, each part's start marked; the parts stay" hidden>Merge</button>
       </div>
       <div class="trlive">
@@ -3568,7 +3575,7 @@ const TR_PIECE = 16 << 20;
 const TR_AUDIO = ["mp3", "m4a", "aac", "wav", "ogg", "oga", "opus", "flac", "wma"];
 // (sel: the transcript shown, whose meta / data the actions use; want: the one being opened. Set apart, an open that
 //  was slow or failed left sel on the new one while the old one was shown: Delete deleted the other one)
-const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0, picked: new Set(),
+const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, data: null, words: [], cur: -1, uploads: new Map(), timer: 0, picked: new Set(), selecting: false,
   saveT: 0, saveFn: null, saving: Promise.resolve(), inflight: 0, noteT: 0, listIds: "" };
 $("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
 function trCaps() {
@@ -3726,10 +3733,14 @@ function trState(x) {
 function trFillRow(r, x) {
   const s = trState(x);
   // (a row whose shown values did not change is left alone: every poll rewrote every row)
-  const sig = [x.id === tr.sel, tr.picked.has(x.id), x.status, x.ext, x.name, s.text, !!s.err, s.p === undefined ? "" : (100 * s.p).toFixed(1)].join("\u0001");
+  const order = trPickOrder(x.id);  // (its place in the merge, 1 = first; 0: not picked)
+  const sig = [x.id === tr.sel, order, tr.selecting, x.status, x.ext, x.name, s.text, !!s.err, s.p === undefined ? "" : (100 * s.p).toFixed(1)].join("\u0001");
   if (r.trSig === sig) return;
   r.trSig = sig;
-  r.className = "trrow" + (x.id === tr.sel ? " on" : "") + (tr.picked.has(x.id) ? " picked" : "");
+  r.className = "trrow" + (x.id === tr.sel ? " on" : "") + (order ? " picked" : "") + (tr.selecting ? " selecting" : "");
+  const pk = r.querySelector(".pick");
+  pk.textContent = order ? String(order) : "";
+  pk.title = order ? "merged as part " + order + " (parts go in the order they were made)" : x.status === "done" ? "pick it" : "not finished: cannot be merged";
   const th = r.querySelector(".thumb");
   if (x.status === "live") { if (!th.querySelector(".dot")) th.innerHTML = '<span class="dot"></span>'; }
   else th.textContent = String(x.ext || "").slice(0, 4);
@@ -3770,15 +3781,15 @@ function trRenderList() {
   }
   for (const x of list) {
     const r = document.createElement("div");
-    r.innerHTML = '<div class="thumb"></div><div class="ftxt"><span class="fname"></span><div class="fmeta"></div></div>';
+    r.innerHTML = '<span class="pick"></span><div class="thumb"></div><div class="ftxt"><span class="fname"></span><div class="fmeta"></div></div>';
     trFillRow(r, x);
-    // (Ctrl / Cmd + click, or a long press: picked for Merge; a plain click opens it and drops the picks)
+    // (Select on, Ctrl / Cmd + click, or a long press: picked for Merge; a plain click opens it and drops the picks)
     let held = 0, longed = false;
     r.addEventListener("pointerdown", () => { longed = false; held = setTimeout(() => { longed = true; trPick(x.id); }, 550); });
     for (const ev of ["pointerup", "pointerleave", "pointercancel"]) r.addEventListener(ev, () => clearTimeout(held));
     r.addEventListener("click", (e) => {
       if (longed) return;
-      if (e.ctrlKey || e.metaKey) { trPick(x.id); return; }
+      if (tr.selecting || e.ctrlKey || e.metaKey) { trPick(x.id); return; }
       if (tr.picked.size) { tr.picked.clear(); trPicksShown(); }
       trOpen(x.id);
     });
@@ -3786,7 +3797,26 @@ function trRenderList() {
   }
   trPicksShown();
 }
+// a picked transcript's place in the merge: the server joins them in the order they were made, so the numbers do too
+function trPickOrder(id) {
+  if (!tr.picked.has(id)) return 0;
+  const picked = tr.list.filter((x) => tr.picked.has(x.id)).sort((a, b) => a.created - b.created);
+  return picked.findIndex((x) => x.id === id) + 1;
+}
+function trSelecting(on) {
+  tr.selecting = on;
+  if (!on) tr.picked.clear();
+  $("trselect").textContent = on ? "Cancel" : "Select";
+  $("trselect").title = on ? "Stop picking (the picks are dropped)" : "Pick recordings to merge into one (or Ctrl+click them)";
+  trPicksShown();
+  if (on) trNote("click the recordings to merge, then Merge (numbered in the order they will be joined)", 8000);
+}
+$("trselect").addEventListener("click", () => trSelecting(!tr.selecting));
 function trPick(id) {
+  if (!tr.selecting) {  // (a Ctrl+click or a long press starts picking too: the circles and numbers show)
+    tr.selecting = true;
+    $("trselect").textContent = "Cancel";
+  }
   if (tr.picked.has(id)) tr.picked.delete(id);
   else if (tr.list.some((x) => x.id === id && x.status === "done")) tr.picked.add(id);
   else trNote("only finished ones can be merged", 4000);
@@ -3809,8 +3839,8 @@ $("trmerge").addEventListener("click", async () => {
     const r = await fetch("/v1/transcripts/merge", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
-    tr.picked.clear();
     tr.list = [j, ...tr.list];
+    trSelecting(false);  // (picking ends: the picks dropped, the rows drawn again)
     trRenderList();
     trNote("merging " + ids.length + " recordings… (the parts stay as they are)", 8000);
     trPoll();

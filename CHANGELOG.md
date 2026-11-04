@@ -11,6 +11,9 @@
   again as at start (Whisper 16 s, Qwen3-ASR 10 s), each only while nothing of it runs (no recording; a running
   transcription makes it say busy). The next chat model's `--ctx auto` counts the speech memory as it is then:
   Gemma 4 12B with both speech models unloaded loaded with 106,496 tokens of context.
+- **Select** in the Transcripts list: a circle on each row; the picked ones are numbered in the order Merge joins
+  them (the order they were made), Merge N then joins them, Cancel drops the picks (Ctrl+click and a long press start
+  it too).
 - **Transcripts and Meetings are one menu** (they were the same list and tools; a recording is not always a meeting):
   one list of files, recordings and meetings; **Record** takes the microphone, a tab's or the screen's sound, or both
   as two tracks (Me / Others, named "Meeting ..."); **upload files**; Summarize and the DOCX / PDF minutes for every
