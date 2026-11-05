@@ -44,6 +44,10 @@
   needs a speech model. The menu is now open while the server has its transcript library, and says that new
   transcriptions need speech to text loaded again. `@` on a transcript in a chat works then too. Checked with the 35B
   loaded and both speech models unloaded: the menu opens, a transcript shows Summarize and the forms.
+- **No limit on tool rounds in the web UI.** An answer stopped after 8 rounds of tool calls (the model said it had
+  run out), whereas Pi has no such limit. Now it goes on until the model answers. Stop ends an answer at any time,
+  and a full context is compacted as before. Only a loop ends it: the very same calls (names and arguments) a third
+  time in a row are not run, and the model is asked to answer from what it has.
 
 ## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
 

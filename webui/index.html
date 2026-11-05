@@ -1613,7 +1613,8 @@ function compactedNote(n, summary) {
 
 // ---- web tools (Web on): the model gets web_search and web_fetch; its calls run on the server
 // (/v1/tools/web_search, /v1/tools/web_fetch), all calls of a turn at once, each shown as a card, and the
-// conversation goes on with their results until the model answers without a call (at most MAX_ROUNDS turns)
+// conversation goes on with their results until the model answers without a call (no limit on the rounds: Stop
+// ends an answer; only the same calls a third time in a row end it, see send)
 const WEB_TOOLS = [
   { type: "function", function: { name: "web_search",
     description: "Web search: title, URL, snippet of the top results. For current or uncertain facts.",
@@ -1914,7 +1915,6 @@ $("mcpsave").addEventListener("click", async () => {
   const text = $("mcptext").value.trim() || "{ \"mcpServers\": {} }";
   if (await mcpPost("config", { text }, "PUT")) { note("mcp.json saved", 3000); mcpCache.clear(); $("mcptext").blur(); mcpShow(); }
 });
-const MAX_ROUNDS = 8;
 // While talking (F24.5), the tools run in the background: a call gets an immediate answer ("search #n started"), the
 // AI says it is looking, and the conversation goes on; when results arrive they come as a message of their own and
 // the AI talks about them (the user's design: as a person who looks something up while still talking)
@@ -2740,15 +2740,20 @@ async function send() {
       inHistory = true;
       // the last round's calls: not run, and the model answers once more without tools from what it has (before,
       // they were dropped without a word, the answer often empty)
-      if (round + 1 >= MAX_ROUNDS) {
+      // (no limit on the rounds (the user, 2026-11-05: Stop ends an answer, a full context is compacted); only a loop
+      //  ends it: the very same calls, names and arguments, a third time in a row)
+      const sig = JSON.stringify(calls.map((c) => [c.function.name, c.function.arguments || ""]));
+      job.repeats = sig === job.lastSig ? (job.repeats || 0) + 1 : 0;
+      job.lastSig = sig;
+      if (job.repeats >= 2) {
         for (const c of calls) {
           let a = {};
           try { a = JSON.parse(c.function.arguments || "{}") || {}; } catch (e) {}
           const card = toolCard(el);
           card.head.textContent = toolLabel(c.function.name, a);
-          card.status.textContent = "· not run: " + MAX_ROUNDS + " tool rounds is the limit of one answer";
-          job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: not run: this answer has " +
-            "used its " + MAX_ROUNDS + " tool rounds. Answer now from what you have, and say what is still missing." });
+          card.status.textContent = "· not run: the same call a third time in a row";
+          job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: "error: not run: you made this " +
+            "same call three times in a row. Answer now from what you have, and say what is still missing." });
         }
         saveConv(false, job);
         el = bubble();
