@@ -1098,6 +1098,14 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
       // (content-addressed: the same id is always the same bytes)
       rs.extra = "Cache-Control: max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
       if (q("download")) rs.extra += "Content-Disposition: attachment; filename=\"" + i.name + "\"\r\n";
+      // (a page or drawing the model wrote, opened at its own address: its scripts must not run as this server's page,
+      //  which can drive the tools and the remote access settings; sandboxed, it gets an origin of its own. The web
+      //  UI shows these in a sandboxed frame anyway, see openPage)
+      {
+        const std::string mt = files::mime_of(i.name);
+        if (mt.find("html") != std::string::npos || mt.find("svg") != std::string::npos || mt.find("xml") != std::string::npos)
+          rs.extra += "Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads\r\n";
+      }
       // (read from disk 1 MB at a time, with Range: before, the whole file in memory, and 404 above 2 GB)
       return rs.send_file(std::filesystem::path(i.path), files::mime_of(i.name), rq.header("range"));
     }

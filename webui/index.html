@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>arcinferzero</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#00a884">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <style>
 /* Layout as WhatsApp Web: a rail of sections (left), the conversation list (or the settings panel), the chat. */
 :root {
@@ -165,6 +170,7 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 /* (hover: the accent; red only for the buttons that delete, .danger: Summarize turned red as Clear chats did) */
 .fbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .fbtn.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.remstat { color: var(--muted); font-size: 12px; align-self: center; flex: 1; }
 .fbtn:disabled { opacity: .6; cursor: default; }
 .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; background: rgba(0,0,0,.06); color: var(--text); text-decoration: none; font-size: 13px; max-width: 260px; }
 .chip b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
@@ -413,6 +419,49 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
   .menu { left: 10px; }
   .termpane { position: fixed; inset: 0; width: auto; max-width: none; min-width: 0; z-index: 20; }
 }
+
+/* ---- motion (docs/webui-plan.md): short, transform and opacity only (the model shares the iGPU with the browser,
+   so nothing animates for long or repaints layout), and off when the system asks for reduced motion */
+:root { --ease-out: cubic-bezier(.2, .8, .2, 1); --ease-spring: cubic-bezier(.34, 1.4, .64, 1); }
+@keyframes msg-in-r { from { opacity: 0; transform: translate(10px, 6px) scale(.97); } }
+@keyframes msg-in-l { from { opacity: 0; transform: translate(-10px, 6px) scale(.97); } }
+@keyframes fade-up { from { opacity: 0; transform: translateY(8px); } }
+@keyframes pop-in { from { opacity: 0; transform: scale(.94); } }
+@keyframes slide-in { from { opacity: .4; transform: translateX(28px); } }
+@keyframes dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+@keyframes sheen { from { background-position: -160px 0; } to { background-position: 160px 0; } }
+.msg.pop.user { animation: msg-in-r .26s var(--ease-out) both; transform-origin: right top; }
+.msg.pop.assistant { animation: msg-in-l .26s var(--ease-out) both; transform-origin: left top; }
+.note, .empty { animation: fade-up .3s var(--ease-out) both; }
+.menu { animation: pop-in .14s var(--ease-out); transform-origin: top left; }
+.menu.mention { transform-origin: bottom left; }
+::picker(select) { animation: pop-in .12s var(--ease-out); }
+#latest:not([hidden]) { animation: pop-in .18s var(--ease-spring); }
+.jobsbar:not([hidden]) { animation: fade-up .22s var(--ease-out); }
+.att { animation: pop-in .2s var(--ease-spring); }
+.conv { transition: background-color .15s; }
+.iconbtn, #send, #stop, .rail button { transition: background-color .15s, color .15s, transform .12s var(--ease-spring); }
+.iconbtn:active:not(:disabled), .rail button:active:not(:disabled), #send:active:not(:disabled) { transform: scale(.9); }
+.panel, .panel.open { transition-timing-function: var(--ease-out); transition-duration: .22s; }
+details.think > summary { transition: color .15s; }
+details[open].think > div { animation: fade-up .2s var(--ease-out); }
+/* waiting for the first token: three dots in the empty answer (the progress bar leaves when the first token comes) */
+.msg.assistant .progress ~ .content:empty::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin: 6px 16px 2px 2px; border-radius: 50%;
+  background: var(--muted); box-shadow: 10px 0 0 var(--muted), 20px 0 0 var(--muted); animation: dot 1.1s infinite ease-in-out;
+}
+.progress > div { transition: width .25s var(--ease-out); }
+.progress > div:not([style*="width"]) {  /* (no progress number yet: a moving sheen instead of an empty bar) */
+  width: 100%; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 160px 100%;
+  animation: sheen 1.2s linear infinite; opacity: .6;
+}
+@media (max-width: 760px) {
+  .app.chatting .chat, .app.trmode.trviewing .trview { animation: slide-in .24s var(--ease-out); }
+  .app:not(.chatting) .side { animation: fade-up .2s var(--ease-out); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
 </style>
 </head>
 <body>
@@ -562,6 +611,25 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
           <div class="opt"><div class="lab">Saved in the arcinferzero folder<small id="datasum">…</small></div></div>
           <div class="opt"><button class="fbtn danger" id="clrchats" title="Delete every chat; the files stay (Files panel)">Clear chats</button>
             <button class="fbtn danger" id="clrall" title="Delete every chat and every uploaded file">Clear chats and files</button></div>
+        </div>
+        <div class="sec" id="remsec">
+          <h3>Remote access</h3>
+          <div id="remlocal">
+            <div class="opt"><div class="lab">Over the internet<small>Through a Cloudflare tunnel to this computer, with a password (docs/remote-access.md). Off: this computer only</small></div>
+              <label class="switch"><input type="checkbox" id="remon"><span></span></label></div>
+            <div class="opt col"><div class="lab">Host names<small>The tunnel's address, one per line, e.g. chat.example.com, or *.trycloudflare.com for a quick tunnel</small></div>
+              <textarea id="remhosts" spellcheck="false" placeholder="chat.example.com"></textarea></div>
+            <div class="opt col"><div class="lab">Password<small id="rempwhelp">At least 10 characters; a new one signs every device out</small></div>
+              <input type="password" id="rempw" autocomplete="new-password" placeholder="New password" aria-label="New remote password"></div>
+            <div class="opt"><div class="lab">Full access remotely<small>Let a remote session do what this computer can: the terminal, projects and their folders, memory, MCP servers, loading models (off is safer)</small></div>
+              <label class="switch"><input type="checkbox" id="remtools"><span></span></label></div>
+            <div class="opt"><button class="fbtn" id="remsave">Save</button><button class="fbtn" id="remout" title="Sign every remote device out">Sign everyone out</button>
+              <small id="remstat" class="remstat"></small></div>
+          </div>
+          <div id="remremote" hidden>
+            <div class="opt"><div class="lab">Signed in remotely<small>Settings for remote access can be changed on the computer itself</small></div>
+              <button class="fbtn" id="remlogout">Sign out</button></div>
+          </div>
         </div>
         <div class="sec">
           <h3>Appearance</h3>
@@ -734,6 +802,52 @@ $("memsave").addEventListener("click", async () => {
   } catch (e) { note("saving the notes failed: " + (e.message || e)); }
   loadMemory();
 });
+// remote access (tools/server_remote.h): its settings on this computer; a remote session sees only Sign out
+let remoteSession = false, remoteTools = true, remToolsWas = false;
+async function remShow() {
+  try {
+    const s = await (await fetch("/v1/remote/status")).json();
+    remoteSession = !!s.remote;
+    remoteTools = s.tools !== false;
+  } catch (e) { return; }
+  $("remlocal").hidden = remoteSession;
+  $("remremote").hidden = !remoteSession;
+  if (remoteSession) return;
+  try {
+    const r = await fetch("/v1/remote/config");
+    if (!r.ok) { $("remsec").hidden = true; return; }  // (an older server)
+    const c = await r.json();
+    $("remon").checked = !!c.enabled;
+    $("remtools").checked = remToolsWas = !!c.allow_tools;
+    $("remhosts").value = (c.hosts || []).join("\n");
+    $("rempwhelp").textContent = (c.password_set ? "A password is set. " : "No password yet: set one to turn this on. ") +
+      "At least 10 characters; a new one signs every device out";
+    $("remstat").textContent = c.enabled ? (c.sessions ? c.sessions + " device" + (c.sessions === 1 ? "" : "s") + " signed in" : "on, nobody signed in") : "off";
+  } catch (e) {}
+}
+async function remPut(body, done) {
+  try {
+    const r = await fetch("/v1/remote/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    note(r.ok ? (typeof done === "function" ? done(j) : done) : "remote access: " + (j.error?.message || "HTTP " + r.status));
+    if (r.ok) $("rempw").value = "";
+  } catch (e) { note("remote access: " + (e.message || e)); }
+  remShow();
+}
+$("remsave").addEventListener("click", () => {
+  const body = { enabled: $("remon").checked, allow_tools: $("remtools").checked,
+    hosts: $("remhosts").value.split(/[\s,]+/).filter(Boolean) };
+  if ($("rempw").value) body.password = $("rempw").value;
+  if (body.allow_tools && !remToolsWas && !confirm("Full access lets anyone with the password run any command on this computer, " +
+    "read your projects and change the server from the internet. Turn it on?")) return;
+  remPut(body, (c) => c.enabled ? "remote access on: open https://" + (c.hosts[0] || "<host>").replace("*.", "<name>.") + " through the tunnel"
+    : body.enabled ? "remote access stays off: set a password first" : "remote access off");
+});
+$("remout").addEventListener("click", () => remPut({ sign_out_all: true }, "every remote device signed out"));
+$("remlogout").addEventListener("click", async () => {
+  try { await fetch("/v1/remote/logout", { method: "POST" }); } catch (e) {}
+  location.reload();
+});
 // a chat's notes: the copy it started with (taken at its first message with memory on; "" without it, nothing kept);
 // a project's chat: the global notes and the project's
 function memFor(id) {
@@ -849,7 +963,7 @@ function projSystem(id) {
 $("tempon").addEventListener("change", () => { $("temp").disabled = $("temp").hidden = !$("tempon").checked; savePrefs(); });
 $("theme").addEventListener("change", () => { applyTheme(); savePrefs(); });
 const openPanel = (on) => $("panel").classList.toggle("open", on);
-$("gear").addEventListener("click", () => { const on = !$("panel").classList.contains("open"); openPanel(on); if (on) { dataSummary(); memShow(); } });
+$("gear").addEventListener("click", () => { const on = !$("panel").classList.contains("open"); openPanel(on); if (on) { dataSummary(); memShow(); remShow(); } });
 // An answer that failed, as a box: the server's message in plain text ("could not load model X: ..." split into its
 // title and its reason). A model that does not fit next to speech to text: buttons to unload speech to text (then
 // sending again loads the model with that memory) or to open Settings' GPU memory.
@@ -942,9 +1056,9 @@ for (const [btn, which] of [["memchatbtn", "model"], ["memwhbtn", "whisper"], ["
     } catch (e) { note(String(e.message || e), 9000); b.textContent = was; }
     b.disabled = false;
   });
-$("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); memShow(); mcpShow(); });
+$("gearside").addEventListener("click", () => { openPanel(true); dataSummary(); memShow(); mcpShow(); remShow(); });
 // (a small screen shows the chat or the list: the chat's own gear goes to the list with the settings open)
-$("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); memShow(); mcpShow(); });
+$("gearchat").addEventListener("click", () => { app.classList.remove("chatting"); openPanel(true); dataSummary(); memShow(); mcpShow(); remShow(); });
 $("panelback").addEventListener("click", () => openPanel(false));
 
 // the thinking choices this model has: Qwen3.8 off / low / medium / high, others on / off, none without the switch
@@ -1276,7 +1390,7 @@ function showEmpty(t) {
 function addUser(text, media, at) {
   $("empty")?.remove();
   const d = document.createElement("div");
-  d.className = "msg user";
+  d.className = thread.dataset.loading ? "msg user" : "msg user pop";  // (pop: a new message slides in, not a chat being opened)
   if (media && media.length) {
     const box = document.createElement("div");
     box.className = "imgs";
@@ -1359,7 +1473,7 @@ async function addFiles(files) {
 function addAssistant(at) {
   $("empty")?.remove();
   const d = document.createElement("div");
-  d.className = "msg assistant";
+  d.className = thread.dataset.loading ? "msg assistant" : "msg assistant pop";
   d.innerHTML = '<div class="progress"><div></div></div><details class="think" hidden><summary>Thinking</summary><div></div></details><div class="content"></div><div class="tools"></div><div class="stats"></div>';
   stamp(d, at);
   thread.appendChild(d);
@@ -2212,7 +2326,7 @@ const TERM_LOG = 200, TERM_OUT = 16000;
 const termOf = (id) => { if (!terms.has(id)) terms.set(id, { open: false, log: [] }); return terms.get(id); };
 function termUsable(id) { return $("term").value !== "off" && !!id && !!terms.get(id)?.open; }
 // run_command for the model: in every chat unless Settings > Terminal is off (a closed terminal it opens, see runTermTool)
-const termOffered = (id) => $("term").value !== "off" && !!id;
+const termOffered = (id) => $("term").value !== "off" && !!id && remoteTools;  // (remoteTools: false in a remote session without them)
 async function termRun(id, command, timeout_s, signal) {
   const res = await fetch("/v1/tools/run_command", { method: "POST", headers: { "Content-Type": "application/json" }, signal,
     body: JSON.stringify({ command, chat_id: id, session: true, timeout_s, project_id: projectOf(id) || undefined }) });
@@ -3048,6 +3162,9 @@ async function openConv(id) {
   renderTerm();
   history = job ? job.history : Array.isArray(c.history) ? c.history : [];
   thread.replaceChildren();
+  // (the chat's messages drawn at once, without each sliding in; a running answer's next bubbles do)
+  thread.dataset.loading = "1";
+  setTimeout(() => delete thread.dataset.loading, 0);
   // (a running answer: the messages before its question from the history, then its own bubbles as they are)
   const k = job ? history.indexOf(job.user) : -1;
   let el = null, files = [];  // (files: the documents written since the last user message)
@@ -3854,6 +3971,7 @@ showEmpty("New conversation");
 loadConvs();
 loadMemory();
 loadProjects();
+remShow();
 // ---- Transcripts (Whisper on the server, /v1/transcripts): audio and video files to text and subtitles. The list
 // over the side (files uploaded in 16-MB pieces, the server's queue with its progress), the transcript in place of the
 // chat: the media with the word being played lit, a word clicked plays from it, a segment double-clicked is edited

@@ -174,6 +174,8 @@
     //  already did, instead of the per-tile kernel; ARC_TP_RG_GU=0: per tile as before)
     static const bool tp_rg_gu = !getenv("ARC_TP_RG_GU") || atoi(getenv("ARC_TP_RG_GU")) != 0;
     // (two passes: every prompt chunk through moe_rg, which runs both; decode + GEMM has one)
+    // (Flash Next's gate / up stay per tile: through moe_rg they took 8.6 s of a 4K prompt against 6.3 s, 174 against
+    //  189 tok/s, 2026-11-05)
     const bool use_rg = rg_ok && (q2g || (gemm_ok && T < rg_max) || (g4 && !gemm_ok && g4_rg_gu) ||
                                   (tp_moe() && tp_rg_gu)),
                rg_down = rg_ok && (q2g || T < rg_max || !gemm_ok);
@@ -186,6 +188,8 @@
       //  16 lanes in 16 rows; Flash Next 4K prompt: gate / up 8.6 -> 7.0 s with the scales left out entirely)
       static const bool asct_on = !getenv("ARC_MOE_ASCT") || atoi(getenv("ARC_MOE_ASCT")) != 0;
       const bool asct = asct_on && tm > 1 && !q2f;
+      // (tried 2026-11-05: the tile's activations loaded once per step into local memory for the work-group's 16
+      //  rows, two work-group barriers a step: bit-identical but gate / up 6.2 -> 9.6 s of a Flash Next 4K prompt)
       cl_kernel k = kernel("decode", (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : grf_env("ARC_MOE_GRF")) +
                                          "-DMOE_Q -DQT=" + std::to_string(L.ex_type[0]) + " -DGROWS=" +
                                          std::to_string(grows) + " -DTM=" + std::to_string(tm) + xdef + hld + q2fd +

@@ -38,6 +38,7 @@
 #include "doc_template.h"
 #include "xlsx.h"
 #include "server_terminal.h"
+#include "server_remote.h"
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
@@ -1355,7 +1356,29 @@ int main(int argc, char** argv) {
     r.set("error", err);
     return rs.send(503, "application/json", r.dump());
   };
+  // remote access through a tunnel, with a password (tools/server_remote.h, docs/remote-access.md)
+  remote::access().load();
+  http.gate = [](HttpRequest& rq, HttpResponse& rs) { return remote::access().gate(rq, rs); };
+  http.head_gate = [](const HttpRequest& rq) { return remote::access().head_gate(rq); };
   http.handler = [&](const HttpRequest& rq, HttpResponse& rs) {
+    // (remote access settings: this computer only; the gate refuses them for remote sessions)
+    if (rq.path == "/v1/remote/config" && !rq.remote) return remote::access().config(rq, rs);
+    if (rq.path == "/v1/remote/status") {
+      Json j = Json::object();
+      j.set("remote", rq.remote);
+      j.set("tools", !rq.remote || remote::access().tools_allowed());  // (run_command, folders, MCP)
+      return rs.send(200, "application/json", j.dump());
+    }
+    // (the web UI installed as an app: a phone's "Add to home screen", a browser's "Install")
+    if (rq.method == "GET" && rq.path == "/manifest.webmanifest")
+      return rs.send(200, "application/manifest+json",
+                     R"({"name":"arcinferzero","short_name":"arcinferzero","start_url":"/","scope":"/","display":"standalone",)"
+                     R"("background_color":"#111b21","theme_color":"#00a884","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]})");
+    if (rq.method == "GET" && rq.path == "/icon.svg")
+      return rs.send(200, "image/svg+xml",
+                     R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#00a884"/>)"
+                     R"(<path fill="#fff" d="M256 120c-75 0-136 53-136 118 0 33 15 63 40 85l-12 69 59-30c16 6 32 9 49 9 75 0 136-53 136-118S331 120 256 120z"/>)"
+                     R"(<circle cx="206" cy="238" r="16" fill="#00a884"/><circle cx="256" cy="238" r="16" fill="#00a884"/><circle cx="306" cy="238" r="16" fill="#00a884"/></svg>)");
     // the web UI's files and chats on disk (tools/server_files.h): no model involved
     if (rq.path == "/v1/files" || rq.path.rfind("/v1/files/", 0) == 0 || rq.path.rfind("/files/", 0) == 0 ||
         rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)

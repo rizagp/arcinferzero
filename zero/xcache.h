@@ -191,6 +191,7 @@ struct XCache {
   ~XCache() {
     try { join(); } catch (const std::exception&) {}  // (a failed prefetch: its experts are dropped, nothing to report)
     try { save_state(); } catch (const std::exception&) {}  // (a destructor must not throw: no state saved then)
+    if (trace_) { fclose(trace_); trace_ = nullptr; }
     if (zrt::oom_hook && active() == this) { zrt::oom_hook = nullptr; active() = nullptr; }
     zrt::sync();
     for (Pool& P : pools) {
@@ -671,7 +672,36 @@ struct XCache {
     xaddr[(size_t)l * NE + e] = (uint64_t)pools[pool_of[l]].addr[s];
     return true;
   }
+  // ARC_XTRACE=file (diagnostics): every ensure() call appended to the file, for replaying cache policies offline
+  // (bench/xtrace_sim.py). Per process run: a header (magic, NL, NE, pools; per pool its slots and its keys in LRU
+  // order, most recent first; then the layer -> pool map), then per call: layer, prompt flag, n, the n expert ids.
+  FILE* trace_ = nullptr;
+  bool trace_tried_ = false;
+  void trace_ensure(int l, const int* ids, size_t n, bool prompt) {
+    if (!trace_tried_) {
+      trace_tried_ = true;
+      const char* p = getenv("ARC_XTRACE");
+      if (!p || !*p) return;
+      trace_ = fopen(p, "ab");
+      if (!trace_) return;
+      const int hdr[4] = {0x58545231, NL, NE, (int)pools.size()};
+      fwrite(hdr, 4, 4, trace_);
+      for (auto& P : pools) {
+        std::vector<int> keys;
+        for (int s = P.head; s >= 0; s = P.next[s]) keys.push_back(P.key[s]);
+        const int h2[2] = {P.n, (int)keys.size()};
+        fwrite(h2, 4, 2, trace_);
+        fwrite(keys.data(), 4, keys.size(), trace_);
+      }
+      fwrite(pool_of.data(), 4, pool_of.size(), trace_);
+    }
+    if (!trace_) return;
+    const int r[3] = {l, prompt ? 1 : 0, (int)n};
+    fwrite(r, 4, 3, trace_);
+    fwrite(ids, 4, n, trace_);
+  }
   void ensure(int l, const int* ids, size_t n, bool prompt, bool dummy_rest) {
+    trace_ensure(l, ids, n, prompt);
     // (a deep prefetch of another layer keeps running, unless it uses this layer's staging half)
     if (pf_layer_ < 0 || pf_layer_ == l || pf_layer_ % 2 == l % 2) join();
     const int busy = pf_.joinable() ? pf_layer_ : -1;

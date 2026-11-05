@@ -29,7 +29,8 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
   public addresses only), and you can talk to it: the microphone stays open (Gemma 4 E4B / 12B hear the audio
   themselves; with `--whisper auto` Qwen3-ASR writes it down for any model), it answers aloud sentence by sentence,
   can be interrupted, and looks things up while it talks. Speech to text also fills a **Transcripts** and a
-  **Meetings** tab.
+  **Meetings** tab. From a phone or anywhere it works through a Cloudflare Tunnel with a password, installable as
+  an app ([docs/remote-access.md](docs/remote-access.md)).
 - **Long documents read properly**: a document the context takes comes whole; a longer one by its outline, page
   ranges or a search; and for all of it, `digest_file` has the model read it part by part (sections and functions
   kept whole) into notes saved with the chat. Answers say which page they come from.

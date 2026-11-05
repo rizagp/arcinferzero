@@ -29,12 +29,20 @@ static int quant_mismatch(const std::vector<int8_t>& aq, const std::vector<float
 }
 
 int main(int argc, char** argv) {
-  const std::string file = argc > 1 ? argv[1] : "zero/kernels/ops.cl";
+  // (the non-GEMM kernels are kept in parts since 2026-11-03, KernelParts in zero/clrt.h: all of them, in order)
+  const std::string file = argc > 1 ? argv[1] : "";
+  auto ops_src = [&]() {
+    if (!file.empty()) return read_file(file);
+    std::string s;
+    for (const char* f : {"ops.cl", "ops_attn.cl", "ops_attn_g.cl", "ops_vit.cl", "ops_flashnext.cl", "ops_dflash.cl"})
+      s += read_file(std::string("zero/kernels/") + f);
+    return s;
+  };
   const int E = 2560, HC = 4, HD = HC * E, LR = 320, KP = 512, M = 16, Mv = 7;
   const float eps = 1e-6f;
   ClRt cl;
   if (!cl.init()) return 1;
-  cl_program prog = cl.build(read_file(file), "-cl-std=CL3.0 -cl-mad-enable");
+  cl_program prog = cl.build(ops_src(), "-cl-std=CL3.0 -cl-mad-enable");
   std::mt19937 rng(3);
   std::normal_distribution<float> nd(0.0f, 1.0f);
   auto rnd = [&](size_t n, float sc) { std::vector<float> v(n); for (auto& x : v) x = nd(rng) * sc; return v; };

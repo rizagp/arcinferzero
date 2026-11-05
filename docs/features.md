@@ -101,6 +101,8 @@ chat's folder (each command allowed by the user), chats search.
   stereo, WAV, MP3 or M4A at a chosen bitrate) and meeting recordings, with speakers and times.
 - **Speech to text only**: `serverz -m none` runs Qwen3-ASR / Whisper without a chat model (a 2:43 voice message in
   25 s); a chat model loads later on request.
+- **From a phone, anywhere** (2026-11-05): through a Cloudflare Tunnel with a password, as an app on the home screen
+  ([docs/remote-access.md](remote-access.md)). The terminal and folders stay off remotely unless you allow them.
 
 ## 9b. Memory and projects (2026-11-02)
 

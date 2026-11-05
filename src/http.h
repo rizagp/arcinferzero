@@ -22,6 +22,7 @@ struct HttpRequest {
   std::string method, path, query, body;
   std::map<std::string, std::string> headers;  // lower-case keys
   bool local_peer = false;  // (the connection comes from this machine: 127.x.x.x or ::1, whatever the Host header says)
+  bool remote = false;  // (a signed-in remote request through a tunnel: tools/server_remote.h, HttpServer::gate)
   std::string header(const std::string& k) const {
     auto it = headers.find(k);
     return it == headers.end() ? "" : it->second;
@@ -194,6 +195,12 @@ class HttpServer {
  public:
   using Handler = std::function<void(const HttpRequest&, HttpResponse&)>;
   Handler handler;
+  // (remote access, tools/server_remote.h: before the host and origin checks; 0 = not remote, the usual checks;
+  //  1 = answered there; 2 = a signed-in remote request, to the handler with rq.remote set)
+  std::function<int(HttpRequest&, HttpResponse&)> gate;
+  // (the same, from the request line and headers alone, before the body is read: "" = go on, else a 401 and the
+  //  connection closed)
+  std::function<std::string(const HttpRequest&)> head_gate;
 
   // host may be an IPv4 / IPv6 literal or a name (localhost). An unknown host is an error: it must never silently
   // become INADDR_ANY (that exposed the server on every interface when --host was mistyped).
@@ -335,7 +342,7 @@ class HttpServer {
       return p.compare(0, n, pre) == 0 && (p.size() == n || p[n] == '/');
     };
     for (const char* pre : {"/v1/files", "/files", "/v1/chats", "/v1/transcripts", "/v1/live", "/v1/tools", "/v1/server", "/sessions",
-                            "/v1/memory", "/v1/projects"})
+                            "/v1/memory", "/v1/projects", "/v1/remote", "/v1/mcp"})
       if (under(pre)) return false;
     const std::string m = rq.method == "OPTIONS" ? rq.header("access-control-request-method") : rq.method;
     if (m == "GET" || m == "HEAD") return true;
@@ -454,6 +461,11 @@ class HttpServer {
         p = e;
       }
       buf.erase(0, he + 4);
+      if (head_gate) {
+        std::string why;
+        try { why = head_gate(rq); } catch (...) { why = "server error"; }
+        if (!why.empty()) return reply_close(c, 401, why.c_str());
+      }
       // body. The bodies of all connections together stay within kBodyBudget (64 connections x 256 MiB would be
       // 16 GiB): a request past it gets 503; its share is given back once it is answered
       struct BodyHold {
@@ -529,6 +541,25 @@ class HttpServer {
       // A browser page from another site must not drive this no-authentication server (CORS alone would still let a
       // simple POST through). Local pages and the server's own web UI keep working; command-line clients send no Origin.
       const std::string origin = rq.header("origin");
+      int g = 0;
+      try {
+        g = gate ? gate(rq, rs) : 0;
+      } catch (const std::exception& e) {  // (Windows' hashing or random numbers failed, or memory)
+        if (!rs.done()) rs.send(500, "application/json", "{\"error\":{\"message\":\"remote access check failed\"}}");
+        (void)e;
+        g = 1;
+      }
+      if (g == 1) {  // (answered by the gate: a login page, a sign-in, a refusal)
+        if (rs.streaming() || !rs.alive()) break;
+        continue;
+      }
+      if (g == 2) {  // (a remote session: its origin was checked by the gate)
+        rs.cors_origin = "";
+        if (rq.method == "OPTIONS") rs.send(204, "text/plain", "");
+        else run_handler(rq, rs);
+        if (rs.streaming() || !rs.alive()) break;
+        continue;
+      }
       // (DNS rebinding: a page of another site whose name resolves to 127.0.0.1 sends its own name as Host and as
       //  Origin; a server bound to this machine only answers requests that name this machine)
       if (loopback_ && !rq.header("host").empty() && !local_host(rq.header("host")))
@@ -545,29 +576,31 @@ class HttpServer {
       }
       rs.cors_origin = origin;
       if (rq.method == "OPTIONS") rs.send(204, "text/plain", "");
-      else {
-        try {
-          handler(rq, rs);
-        } catch (const std::exception& e) {
-          std::string m;  // (the message as a JSON string)
-          for (const char* ep = e.what(); *ep; ++ep) {
-            const unsigned char ch = (unsigned char)*ep;
-            if (ch == '"' || ch == '\\') { m += '\\'; m += (char)ch; }
-            else if (ch < 0x20) { char u[8]; snprintf(u, sizeof u, "\\u%04x", ch); m += u; }
-            else m += (char)ch;
-          }
-          const std::string body = "{\"error\":{\"message\":\"" + m + "\",\"type\":\"server_error\"}}";
-          if (!rs.done() && !rs.streaming()) rs.send(500, "application/json", body);
-          else if (rs.streaming() && !rs.done()) {  // (a stream that broke off: an error event, as OpenAI sends one)
-            try { rs.sse_event(body); } catch (...) {}
-            rs.sse_end();
-          }
-        }
-        if (!rs.done() && !rs.streaming()) rs.send(404, "application/json", "{\"error\":{\"message\":\"not found\"}}");
-      }
+      else run_handler(rq, rs);
       if (rs.streaming() || !rs.alive()) break;
     }
     shutdown(c, SD_BOTH);
     closesocket(c);
+  }
+  // the handler, its exception as a 500 (or an error event in a stream that broke off), 404 when it sent nothing
+  void run_handler(const HttpRequest& rq, HttpResponse& rs) {
+    try {
+      handler(rq, rs);
+    } catch (const std::exception& e) {
+      std::string m;  // (the message as a JSON string)
+      for (const char* ep = e.what(); *ep; ++ep) {
+        const unsigned char ch = (unsigned char)*ep;
+        if (ch == '"' || ch == '\\') { m += '\\'; m += (char)ch; }
+        else if (ch < 0x20) { char u[8]; snprintf(u, sizeof u, "\\u%04x", ch); m += u; }
+        else m += (char)ch;
+      }
+      const std::string body = "{\"error\":{\"message\":\"" + m + "\",\"type\":\"server_error\"}}";
+      if (!rs.done() && !rs.streaming()) rs.send(500, "application/json", body);
+      else if (rs.streaming() && !rs.done()) {  // (a stream that broke off: an error event, as OpenAI sends one)
+        try { rs.sse_event(body); } catch (...) {}
+        rs.sse_end();
+      }
+    }
+    if (!rs.done() && !rs.streaming()) rs.send(404, "application/json", "{\"error\":{\"message\":\"not found\"}}");
   }
 };

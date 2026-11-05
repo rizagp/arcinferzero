@@ -1,5 +1,60 @@
 # Changelog
 
+## 2026-11-05 (night): remote access with a password; motion in the web UI; expert cache policies measured
+
+- **Remote access** (docs/remote-access.md): the web UI from a phone or anywhere through a Cloudflare Tunnel, with a
+  password.
+  - Settings > Remote access (on this computer only): on / off, the tunnel's host names (`*.trycloudflare.com` for
+    a quick tunnel), the password, sign everyone out. `scripts\remote-tunnel.ps1` starts the tunnel.
+  - The password is kept as PBKDF2-HMAC-SHA256 (200,000 rounds, random salt) in `remote.json`. A session cookie is
+    `HttpOnly`, `Secure` and `SameSite=Strict`, valid for 30 days.
+  - Wrong passwords: one second's wait each. 8 within 15 minutes lock that visitor out; 40 from everyone lock every
+    sign-in. Parallel guesses count before they finish.
+  - Before signing in, a remote request may only fetch the sign-in page or send a small sign-in. Anything else is
+    refused before its body is read.
+  - A remote page may only send its own origin. A request through a tunnel or proxy for any other host is refused,
+    so a tunnel that rewrites the Host header cannot pass as local.
+  - Unless "Full access remotely" is on, a remote session is not "this computer". Every local-only check refuses
+    it: the terminal, projects and their folders, memory, MCP servers (their tokens too), slots, loading models by
+    hand, and the OCR save into a folder.
+  - Local use is unchanged: requests that name localhost go through the same checks as before.
+- **Files the model wrote (HTML, SVG, XML) open sandboxed at their own address** (`/files/<id>`): a page with
+  scripts cannot act as the web UI. The web UI already showed them in a sandboxed frame.
+- A self audit (an independent review of this change) found the gaps fixed above before they shipped:
+  - `local_peer` was true for every tunnel request;
+  - `mcp.json` was readable remotely;
+  - bodies were read before the password check;
+  - parallel guesses passed the lockout;
+  - the app manifest needed the cookie;
+  - sessions outlived turning access off;
+  - forwarding headers of other proxies were not checked.
+- **The web UI installs as an app** (`/manifest.webmanifest`, `/icon.svg`): "Add to home screen" on a phone.
+- **Motion** (docs/webui-plan.md):
+  - new messages slide in from their side;
+  - three dots wait in the answer until the first token;
+  - the prompt bar shows a sheen until the server reports progress;
+  - menus and dropdowns pop in, buttons press, and on a phone a chat slides in.
+  - Opening a chat draws its messages at once. Everything uses transform and opacity, and nothing animates with
+    reduced motion on.
+- **Security fix:** a page of another local server (`http://localhost:<another port>`) could reach `/v1/mcp`, which
+  starts MCP servers (programs). `/v1/mcp` is now only for the server's own page or a client without an Origin, as
+  the tools and files already were.
+- **Measured, not changed: the expert cache by use instead of recency** (QUEUE). Every expert route was recorded
+  (`ARC_XTRACE=file`, zero/xcache.h) and replayed with the cache's own slots (`bench/xtrace_sim.py`).
+  - Flash Next, 19 % cached: a protected part for experts used again saves at most 2.8 % of the generation misses;
+    choosing the least-used victim costs 0.5-19 % more.
+  - Qwen3.6 35B, 98.4 % hits: -1.1 to +1.1 %.
+  - The bound with the future known (Belady) is -52 % / -76 %: what would help is predicting the next layer's
+    experts, not counting the past. The LRU cache stays.
+- **Measured, not changed: Flash Next's prompt gate / up** (QUEUE 21.15). The 4K prompt runs at 186-194 tok/s, and
+  gate / up take 6.2-6.3 s of its 20.6 s of GPU time. Two variants were slower, so both were left out:
+  - through moe_rg, as the down projection: 8.6 s, 170-174 tok/s;
+  - the tile's activations shared through local memory: bit-identical, but 9.6 s, 166-170 tok/s.
+- **Tests:** `test_hc` and `test_fa` (hyper-connection and float attention kernels) failed in `run_tests.ps1` since
+  `ops.cl` was split into parts on 2026-11-03. They built from `ops.cl` alone, so their kernels were not found.
+  They now build from every part in order and pass. The whole suite: 53 passed, 5 skipped (4B, E4B, 27B, 35B, Flash
+  Next, DFlash2, server, error paths).
+
 ## 2026-11-05 (evening): measured, not changed: Vulkan, fewer kernels, GEMVs inside the model
 
 - **Vulkan instead of Level Zero: not worth a port** (`bench/vk_probe`). Bandwidth 74.1 against 72-75 GB/s; a

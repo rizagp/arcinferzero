@@ -20,8 +20,16 @@ static double rel_err(const std::vector<float>& a, const std::vector<double>& b)
 }
 
 int main(int argc, char** argv) {
-  const std::string file = argc > 1 ? argv[1] : "zero/kernels/ops.cl";
-  const std::string src = read_file(file);
+  // (the non-GEMM kernels are kept in parts since 2026-11-03, KernelParts in zero/clrt.h: all of them, in order)
+  const std::string file = argc > 1 ? argv[1] : "";
+  auto ops_src = [&]() {
+    if (!file.empty()) return read_file(file);
+    std::string s;
+    for (const char* f : {"ops.cl", "ops_attn.cl", "ops_attn_g.cl", "ops_vit.cl", "ops_flashnext.cl", "ops_dflash.cl"})
+      s += read_file(std::string("zero/kernels/") + f);
+    return s;
+  };
+  const std::string src = ops_src();
   ClRt cl;
   if (!cl.init()) return 1;
   std::mt19937 rng(7);
