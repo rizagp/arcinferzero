@@ -395,6 +395,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .trsummary { max-width: 980px; margin: 0 auto 14px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--head); line-height: 1.55; }
 .trsummary h1, .trsummary h2, .trsummary h3 { font-size: 15px; margin: 10px 0 4px; }
 .trsummary ul { margin: 4px 0; padding-left: 22px; }
+.trsumhead { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.trsumhead select { font-size: 12px; max-width: 100%; }
 
 @media (max-width: 760px) {
   .app.trmode:not(.trviewing) .trview { display: none; }
@@ -613,6 +615,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <button class="fbtn" id="trdocx" title="Minutes as a Word document (the summary and the transcript, or the form chosen next to it)" hidden>Minutes DOCX</button>
       <select id="trtpl" aria-label="Minutes form" title="A form of yours (a .docx in %USERPROFILE%\.arcinferzero\templates): the loaded chat model fills it from the transcript; or the plain minutes" hidden></select>
       <button class="fbtn" id="trpdf" title="Minutes as a PDF (the summary and the transcript)" hidden>PDF</button>
+      <button class="fbtn" id="trredo" title="Transcribe it again with the speech model, language, accuracy and glossary chosen in the list's options (on the left); the text now stays until the new one is done, and is kept if it is stopped" hidden>↻ Transcribe again</button>
       <button class="iconbtn" id="trcancel" title="Stop the transcription (what is done is kept)" aria-label="Stop" hidden><svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg></button>
       <button class="iconbtn" id="trdel" title="Delete the transcript and its file" aria-label="Delete" hidden><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>
     </header>
@@ -3968,7 +3971,7 @@ function trClose() {  // (nothing chosen)
   $("trvideo").pause();
   $("trvideo").removeAttribute("src");
   $("trvideo").dataset.id = "";
-  for (const id of ["trmedia", "trtools", "trfoot", "trcancel", "trdel", "trsum", "trdocx", "trpdf", "trmark", "trstoplive"]) $(id).hidden = true;
+  for (const id of ["trmedia", "trtools", "trfoot", "trcancel", "trdel", "trsum", "trdocx", "trpdf", "trredo", "trmark", "trstoplive"]) $(id).hidden = true;
   $("trname").textContent = "Transcripts";
   $("trsub").textContent = "";
   $("trbody").replaceChildren();
@@ -4210,8 +4213,38 @@ function trHeader(m) {
   // (a summary and minutes for every finished transcript, not only meetings: a lecture, an interview, a voice note)
   const done = !rec && (m.status === "done" || m.status === "cancelled");
   $("trsum").hidden = $("trdocx").hidden = $("trpdf").hidden = !done;
+  // (made again any time, by the model loaded now: the one before kept to pick again)
+  const has = tr.sel === m.id && tr.meta && tr.meta.summary;
+  $("trsum").textContent = has ? "↻ Summarize again" : "Summarize";
+  $("trsum").title = has ? "A new summary by the chat model loaded now; the one there now is kept, to pick again above the summary"
+    : "Summary, decisions, tasks and open questions, by the loaded chat model";
   $("trtpl").hidden = !done || !trForms.length;
+  // (again with another speech model: finished, failed or stopped, its file still there, speech to text loaded)
+  $("trredo").hidden = rec || !caps.stt || !["done", "failed", "cancelled"].includes(m.status) || !m.size;
 }
+$("trredo").addEventListener("click", async () => {
+  const m = tr.meta, id = tr.sel;
+  if (!m || !id || $("trredo").disabled) return;
+  const pick = (s) => s.options[s.selectedIndex]?.text || s.value;
+  const model = !$("trmodel").hidden ? $("trmodel").value : "";
+  const terms = $("trterms").value.trim();
+  const opts = { language: $("trlang").value, beam_size: +$("trbeam").value, terms, ...(model ? { model } : {}) };
+  const what = [model ? pick($("trmodel")).replace(/^Model: /, "") : "", pick($("trlang")).replace(/^Language: /, ""),
+    model === "whisper" || !model ? pick($("trbeam")) : "", terms ? "glossary: " + (terms.length > 60 ? terms.slice(0, 60) + "…" : terms) : "no glossary"]
+    .filter(Boolean).join(", ");
+  if (!confirm("Transcribe \"" + m.name + "\" again (" + what + ")?\n\nThese are the options in the list on the left. " +
+      "The text now stays until the new one is done" + (m.edited ? " (your edits to it are then replaced)" : "") +
+      "; stopped or failed, the text now is kept." + (m.summary ? " The summary stays as it is: summarize again after." : ""))) return;
+  $("trredo").disabled = true;
+  try {
+    const r = await fetch("/v1/transcripts/" + id + "/redo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(opts) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+    trNote("transcribing it again" + (j.position > 1 ? " (" + j.position + " in line)" : "") + "…", 6000);
+    trPoll();
+  } catch (e) { trNote("could not transcribe it again: " + (e.message || e), 12000); }
+  $("trredo").disabled = false;
+});
 async function trOpen(id) {
   tr.want = id;
   app.classList.add("trviewing");
@@ -4277,7 +4310,35 @@ function trRender() {
   if (m && m.summary && !rec) {
     const s = document.createElement("div");
     s.className = "trsummary";
-    s.innerHTML = markdown(m.summary);
+    // (which model wrote it and when; the others made before, to show one of them instead)
+    const when = (t) => t ? new Date(t * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+    const label = (model, at) => [model || "summary", when(at)].filter(Boolean).join(" · ");
+    const head = document.createElement("div");
+    head.className = "trsumhead";
+    const others = Array.isArray(m.summaries) ? m.summaries : [];
+    if (others.length) {
+      const sel = document.createElement("select");
+      sel.setAttribute("aria-label", "Summary version");
+      sel.title = "The summaries made before (another model, or again): pick one to show it and put it in the minutes";
+      sel.innerHTML = '<option value="">' + esc(label(m.summary_model, m.summarized)) + " (shown)</option>" +
+        others.map((o, k) => '<option value="' + k + '">' + esc(label(o.model, o.at)) + "</option>").join("");
+      sel.addEventListener("change", async () => {
+        if (sel.value === "") return;
+        const id = tr.sel;
+        sel.disabled = true;
+        try {
+          const r = await fetch("/v1/transcripts/" + id, { method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ summary_use: +sel.value }) });
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          await trSummaryReload(id);
+        } catch (e) { trNote("could not switch the summary: " + (e.message || e), 8000); sel.disabled = false; sel.value = ""; }
+      });
+      head.append("Summary: ", sel, " (" + (others.length + 1) + " versions)");
+    } else head.textContent = "Summary · " + label(m.summary_model, m.summarized);
+    s.appendChild(head);
+    const txt = document.createElement("div");
+    txt.innerHTML = markdown(m.summary);
+    s.appendChild(txt);
     body.appendChild(s);
   }
   if (rec && !d.segments.length && !live.partial.length) {
@@ -4873,9 +4934,11 @@ window.addEventListener("pagehide", () => { if (live.on && live.id) navigator.se
 function trLines(d) {
   return d.segments.map((g) => "[" + trClock(g.start) + "] " + (g.speaker ? g.speaker + ": " : "") + g.text.trim());
 }
-async function trAsk(system, user, max, extra) {  // (extra: more request fields, e.g. response_format)
+// (max: a token limit; none given, the answer goes on until the model ends it or the context is full: a summary or
+//  minutes of a 2-hour meeting is not cut short; extra: more request fields, e.g. response_format)
+async function trAsk(system, user, max, extra) {
   const r = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: loadedId || modelId, stream: false, enable_thinking: false, temperature: 0.3, max_tokens: max || 1500,
+    body: JSON.stringify({ model: loadedId || modelId, stream: false, enable_thinking: false, temperature: 0.3, ...(max ? { max_tokens: max } : {}),
       messages: [{ role: "system", content: system }, { role: "user", content: user }], ...(extra || {}) }) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
@@ -4925,7 +4988,7 @@ $("trsum").addEventListener("click", async () => {
         return out;
       };
       const sums = await pool(parts.map((p, k) => async () => "Part " + (k + 1) + ":\n" + await trAsk("Summarize this part of a meeting transcript in " +
-          (lang || "its language") + ": what was said, decided and asked, each point with its [m:ss] time. Markdown bullets only, at most 15.", p, 700)),
+          (lang || "its language") + ": what was said, decided and asked, each point with its [m:ss] time, every topic of it. Markdown bullets only.", p)),
         (d, n) => "summarizing the parts: " + d + " of " + n + " done" + (width > 1 ? " (" + Math.min(width, n) + " at a time)" : "") + "…");
       // (the parts' summaries together in rounds while they are more than the budget: a long meeting with a small
       //  context overflowed the last call; a round's groups asked at once too)
@@ -4940,16 +5003,18 @@ $("trsum").addEventListener("click", async () => {
         if (groups.length >= level.length) break;  // (no progress: one part alone is over the budget)
         ++round;
         level = await pool(groups.map((g) => async () => "Parts:\n" + await trAsk("Merge these summaries of consecutive parts of one meeting into one, in " +
-            (lang || "their language") + ": keep every decision, action item and open question with its [m:ss] time. Markdown bullets only, at most 20.", g, 900)),
+            (lang || "their language") + ": keep every decision, action item and open question with its [m:ss] time. Markdown bullets only.", g)),
           (d, n) => "putting the parts together (round " + round + "): " + d + " of " + n + "…");
       }
       trNote("putting the parts together…", 600000);
       text = await trAsk(SYS + " You get the summaries of the meeting's parts, in order, instead of the transcript.", level.join("\n\n"));
     }
-    const r = await fetch("/v1/transcripts/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ summary: text }) });
+    // (the one before kept on the server among the others, to pick again: another model's may read better)
+    const r = await fetch("/v1/transcripts/" + id, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ summary: text, model: loadedId || modelId || "" }) });
     if (!r.ok) throw new Error("not saved");
     trNote("summarized", 3000);
-    if (tr.sel === id && tr.meta) { tr.meta.summary = text; if (!trEditing()) trRender(); }  // (an edit in progress kept)
+    await trSummaryReload(id);
   } catch (e) { trNote("summary failed: " + (e.message || e), 12000); }
   $("trsum").disabled = false;
 });
@@ -4992,6 +5057,15 @@ async function trFormsLoad() {
 $("trtpl").addEventListener("change", () => { prefs.tr = { ...(prefs.tr || {}), form: $("trtpl").value }; store.set("arcinferzero-prefs", prefs); });
 // (the chat model's context before a transcript is cut to fit it: with no model loaded yet ctxLen is 0 and the parts
 //  were cut for 8K, a 2-hour meeting in 12 parts instead of 1 on a 100K model; a one-word request loads it first)
+// (the shown transcript's summary and the others, from the server, after one is made or picked; an edit in progress kept)
+async function trSummaryReload(id) {
+  let j = null;
+  try { j = await (await fetch("/v1/transcripts/" + id)).json(); } catch (e) {}
+  if (!j || j.error || tr.sel !== id || !tr.meta) return;
+  Object.assign(tr.meta, { summary: j.summary, summaries: j.summaries, summary_model: j.summary_model, summarized: j.summarized });
+  trHeader(tr.meta);
+  if (!trEditing()) trRender();
+}
 async function trCtxReady() {
   if (ctxLen) return;
   trNote("loading the chat model…", 600000);
@@ -5033,7 +5107,9 @@ async function trMinutesForm(form) {
           try {
             notes[k] = "Part " + (k + 1) + ":\n" + await trAsk("Write notes of this part of a meeting transcript in " + lang + " for its minutes: " +
               "the topics discussed and what was said about each, decisions, questions (who asked, from which unit, and the answer), " +
-              "agreed actions and important notes, each with its [m:ss] time. Markdown bullets only.", parts[k], 1200);
+              "agreed actions and important notes, each with its [m:ss] time. Markdown bullets only.", parts[k]);
+            // (no limit on the notes' length, 2026-11-05: a 40-minute part filled the 1200 tokens it had and its notes
+            //  ended mid-way, the rest of that part missing from the minutes of a 2-hour meeting)
           } catch (e) { failed = true; throw e; }
           trNote("reading the meeting: " + (++done) + " of " + parts.length + " parts…", 600000);
         }
@@ -5060,7 +5136,7 @@ async function trMinutesForm(form) {
     const schema = { type: "object", required: ["fields", "tables"], properties: {
       fields: { type: "object", required: [...new Set(form.fields)], properties: fieldProps },  // (a label twice: once)
       tables: { type: "array", maxItems: form.tables.length, items: { anyOf: [{ type: "null" }, { type: "array", items: { type: "array", items: textOrLines } }] } } } };
-    const answer = await trAsk(SYS, facts, 6000, { response_format: { type: "json_schema", json_schema: { name: "minutes", schema } } });
+    const answer = await trAsk(SYS, facts, 0, { response_format: { type: "json_schema", json_schema: { name: "minutes", schema } } });
     const js = answer.replace(/^[\s\S]*?(\{[\s\S]*\})[\s\S]*$/, "$1");
     let data;
     try { data = JSON.parse(js); } catch (e) { throw new Error("the model's answer was not the form's JSON (cut short?): try again, or a larger model"); }

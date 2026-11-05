@@ -571,6 +571,9 @@ class Service {
   //   PUT    /v1/transcripts/<id>/transcript       the transcript edited (its full JSON), saved over it
   //   GET    /v1/transcripts/<id>/export?format=srt[&max_chars=42&max_lines=2&max_cue_s=7&word_cues=1]
   //   GET    /v1/transcripts/<id>/media            the uploaded file (byte ranges: a <video> / <audio> seeks)
+  //   POST   /v1/transcripts/<id>/redo             {model, language, beam_size, terms, ...}: a finished, failed or
+  //                                                 stopped one transcribed again (another speech model); the old
+  //                                                 text stays until the new pass is done, and is kept if it stops
   //   POST   /v1/transcripts/<id>/cancel           stops it, queued or running (what was done is kept)
   //   DELETE /v1/transcripts/<id>                  stops it and deletes its folder
   //   POST   /v1/transcripts/import                {path, name, kind, tracks, speakers}: a finished recording of
@@ -845,23 +848,52 @@ class Service {
       Json t;
       if (Json::try_parse(slurp(dir / "transcript.json"), t)) m.set("transcript", t);
       if (fs::exists(dir / "summary.md")) m.set("summary", slurp(dir / "summary.md"));
+      if (Json v; Json::try_parse(slurp(dir / "summaries.json"), v) && v.is_array()) m.set("summaries", v);
       if (m["status"].str() == "queued") m.set("position", (double)queue_position(tid));
       return rs.send(200, "application/json", m.dump());
     }
     if (what.empty() && rq.method == "PUT") {
       Json in;
-      if (!Json::try_parse(rq.body, in) || !in.is_object() || (!in["name"].is_string() && !in["summary"].is_string()))
-        return fail(400, "{\"name\": ...} or {\"summary\": ...} expected");
-      if (in["summary"].is_string()) {  // (a meeting's summary, Markdown)
-        if (in["summary"].str().size() > (1u << 20)) return fail(400, "summary: 1 MB at most");
-        if (!write_atomic(dir / "summary.md", in["summary"].str())) return fail(500, "cannot write the summary");
-      }
-      std::lock_guard<std::mutex> lk(lib_mu_);
+      if (!Json::try_parse(rq.body, in) || !in.is_object() ||
+          (!in["name"].is_string() && !in["summary"].is_string() && !in["summary_use"].is_number()))
+        return fail(400, "{\"name\": ...}, {\"summary\": ..., \"model\": ...} or {\"summary_use\": k} expected");
+      // (a summary made again, another chat model: the one before kept among the others, summaries.json, newest
+      //  first, 10 at most; summary_use k: the k-th of them made the shown one again, the shown one kept in its place)
+      std::lock_guard<std::mutex> lk(lib_mu_);  // (held for the files too: two summaries at once kept both)
       // (found again, not metas_[tid]: a delete meanwhile left nothing to rename, and [] would have made an empty one)
       auto it = metas_.find(tid);
       if (it == metas_.end()) return fail(404, "no transcript " + tid);
+      if (in["summary"].is_string() || in["summary_use"].is_number()) {
+        Json others = Json::array();
+        if (Json v; Json::try_parse(slurp(dir / "summaries.json"), v) && v.is_array()) others = v;
+        const std::string now_text = fs::exists(dir / "summary.md") ? slurp(dir / "summary.md") : "";
+        Json shown = Json::object();
+        shown.set("text", now_text);
+        shown.set("model", it->second["summary_model"].str());
+        shown.set("at", it->second["summarized"].as_number(0));
+        std::string text, model;
+        double at = (double)std::time(nullptr);
+        Json kept = Json::array();
+        if (in["summary_use"].is_number()) {
+          const int64_t k = in["summary_use"].as_int(-1);
+          if (k < 0 || k >= (int64_t)others.size()) return fail(400, "summary_use: no such summary");
+          text = others[(size_t)k]["text"].str();
+          model = others[(size_t)k]["model"].str();
+          at = others[(size_t)k]["at"].as_number(0);
+          for (size_t i = 0; i < others.size(); ++i) kept.push(i == (size_t)k ? shown : others[i]);
+        } else {
+          text = in["summary"].str();
+          model = clean_name(in["model"].str(), 80, "");
+          if (text.size() > (1u << 20)) return fail(400, "summary: 1 MB at most");
+          if (!now_text.empty() && now_text != text) kept.push(shown);
+          for (size_t i = 0; i < others.size() && kept.size() < 10; ++i) kept.push(others[i]);
+        }
+        if (!write_atomic(dir / "summary.md", text)) return fail(500, "cannot write the summary");
+        if (!write_atomic(dir / "summaries.json", kept.dump())) return fail(500, "cannot write the summaries");
+        it->second.set("summary_model", model);
+        it->second.set("summarized", at);
+      }
       if (in["name"].is_string() && !in["name"].str().empty()) it->second.set("name", clean_name(in["name"].str(), 200, "recording"));
-      if (in["summary"].is_string()) it->second.set("summarized", (double)std::time(nullptr));
       save_meta(tid);
       return rs.send(200, "application/json", it->second.dump());
     }
@@ -944,6 +976,52 @@ class Service {
       const auto mt = kMime.find(ext);
       rs.extra = "X-Content-Type-Options: nosniff\r\n";
       return rs.send_file(file, mt == kMime.end() ? "application/octet-stream" : mt->second, rq.header("range"));
+    }
+    // transcribed again (another speech model, language or glossary): {model, language, beam_size, terms, prompt, ...}
+    // over the options it had; queued, its text replaced when the new pass is done (the old one served until then)
+    if (what == "redo" && rq.method == "POST") {
+      Json in;
+      if (!Json::try_parse(rq.body.empty() ? std::string("{}") : rq.body, in) || !in.is_object()) return fail(400, "a JSON object expected");
+      Json o = m["options"].is_object() ? m["options"] : Json::object();
+      for (const char* k : {"model", "language", "beam_size", "terms", "prompt", "dual_language", "condition_on_previous_text"}) {
+        const Json& v = in[k];
+        if (v.is_string()) o.set(k, v.str());
+        else if (v.is_number()) {
+          std::ostringstream s;
+          s << v.as_number();
+          o.set(k, s.str());
+        } else if (v.is_bool()) o.set(k, v.as_bool() ? "true" : "false");
+      }
+      whisper::Options opt;
+      std::string bad;
+      if (!read_options([&](const char* k) { return o[k].str(); }, false, opt, bad)) return fail(400, bad);
+      std::error_code ec;
+      if (!fs::is_regular_file(src, ec)) return fail(409, "its audio file is gone: it cannot be transcribed again");
+      std::lock_guard<std::mutex> lk(lib_mu_);
+      auto it = metas_.find(tid);
+      if (it == metas_.end() || it->second["status"].str() == "deleting") return fail(404, "no transcript " + tid);
+      Json& cur = it->second;
+      const std::string st = cur["status"].str();
+      if (st != "done" && st != "failed" && st != "cancelled")
+        return fail(409, "only a finished, failed or stopped transcript can be transcribed again (it is " + st + ")");
+      // (what it was, back when the new pass is stopped or fails: the old text is not written over by a part of the new)
+      Json prev = Json::object();
+      for (const char* k : {"options", "status", "progress", "done_s", "segments", "words", "languages", "error", "x_realtime", "elapsed_s"})
+        if (cur.has(k)) prev.set(k, cur[k]);
+      if (cur.has("edited")) prev.set("edited", cur["edited"]);
+      cur.set("edited", nullptr);  // (the new text has no edits of the user's)
+      cur.set("redo_prev", prev);
+      cur.set("options", o);
+      cur.set("status", "queued");
+      cur.set("progress", 0.0);
+      cur.set("done_s", 0.0);
+      cur.set("error", nullptr);
+      cur.set("attempts", 0.0);
+      save_meta(tid);
+      lib_cv_.notify_all();
+      Json x = cur;
+      x.set("position", (double)queue_position(tid));
+      return rs.send(200, "application/json", x.dump());
     }
     if (what == "cancel" && rq.method == "POST") {
       std::lock_guard<std::mutex> lk(lib_mu_);
@@ -2026,10 +2104,21 @@ class Service {
     namespace fs = std::filesystem;
     using clk = std::chrono::steady_clock;
     const fs::path dir = lib_ / tid;
+    // (a pass again, /redo, that was stopped or failed: the record as it was, its text kept; lib_mu_ held)
+    auto undo_redo = [&](Json& m, const std::string& why) {
+      const Json prev = m["redo_prev"];
+      if (!prev.is_object()) return false;
+      for (const auto& [k, v] : prev.entries()) m.set(k, v);
+      m.set("redo_prev", nullptr);
+      m.set("error", "transcribing it again " + why + ": the earlier text is kept");
+      save_meta(tid);
+      return true;
+    };
     auto finish = [&](const std::string& status, const std::string& error) {
       std::lock_guard<std::mutex> lk(lib_mu_);
       if (delete_running_) return;  // (deleted meanwhile: its "deleting" kept on disk until the folder goes)
       Json& m = metas_[tid];
+      if (undo_redo(m, "failed (" + error + ")")) return;
       m.set("status", status);
       if (!error.empty()) m.set("error", error);
       save_meta(tid);
@@ -2048,7 +2137,7 @@ class Service {
     std::vector<std::vector<float>> audio;
     try {
       const double lim = std::max(max_seconds, kLibraryMaxSeconds);  // (--whisper-max-minutes when it is more)
-      if (tracks > 1) audio = audio::decode_16k_wav_channels(src, lim);
+      if (tracks > 1) audio = audio::decode_16k_channels(src, tracks, lim);  // (the WAV, or the M4A / MP3 kept: a redo)
       else audio.push_back(audio::decode_16k_file(src, lim));
     } catch (const std::exception& e) {
       return finish("failed", std::string(e.what()) + " (audio and video files Windows can decode)");
@@ -2108,6 +2197,8 @@ class Service {
       save_meta(tid);
       return;
     }
+    if ((stopped || !part_err.empty()) && undo_redo(m, stopped ? "was stopped" : "failed " + part_err)) return;
+    m.set("redo_prev", nullptr);
     if (!write_atomic(dir / "transcript.json", whisper::to_json(r))) {
       m.set("status", "failed");
       m.set("error", "cannot write the transcript (disk full?)");

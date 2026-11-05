@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-05 (afternoon): transcribe again with another model; summaries kept per model; minutes not cut short
+
+- **↻ Transcribe again** (a transcript's header): a finished, failed or stopped transcript is transcribed again with
+  the speech model, language, accuracy and glossary chosen in the list's options (`POST /v1/transcripts/<id>/redo`).
+  - The text there now stays until the new pass is done.
+  - If the new pass is stopped or fails, the record and the text are put back as they were.
+  - A two-track recording (Me / Others) kept as M4A or MP3 is read one channel per track. Before, only its WAV could
+    be read, and a second pass failed with "not a WAV file".
+- **Summarize again keeps the summary before it.** The button reads "↻ Summarize again" once there is a summary.
+  - Each summary is saved with the chat model that wrote it.
+  - A list above the summary shows up to 10 earlier ones (model and time); picking one shows it and puts it in the
+    minutes, and the shown one is kept in its place (`summaries.json`, `PUT {summary_use: k}`).
+- **No length limit on summaries and minutes.** Each answer goes on until the model ends it or the context is full.
+  - The notes of each part of a long meeting had 1200 tokens. On a 2-hour meeting, part 2 reached that limit and its
+    notes stopped mid-way, so the rest of that part was missing from the minutes.
+  - The part summaries (700 tokens, at most 15 points), the merges (900, at most 20) and the form (6000) had limits too.
+
 ## 2026-11-05: a recording survives a muted or switched microphone; a tab's sound without the speakers
 
 - **A live recording no longer stops when the microphone goes away.** Muting it, Bluetooth earphones connected or

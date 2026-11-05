@@ -506,7 +506,8 @@ inline void mf_check(HRESULT hr, const char* what) {
 // Media Foundation's MP3 decoder drops the encoder delay from its first buffer, ~12 ms, and keeps it in the next
 // one's time; MP3 in AVI starts one 36-ms frame in). The format is read again when the decoder changes it (an AAC
 // stream's real rate and channels come with its first sample).
-inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay) {
+// pick >= 0: that channel alone instead of the mix (a two-track recording kept as M4A / MP3, transcribed again)
+inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay, int pick = -1) {
   // (the audio stream alone: a selected video stream that is never read keeps its samples queued, gigabytes over an
   //  hours-long video)
   rd->SetStreamSelection((DWORD)MF_SOURCE_READER_ALL_STREAMS, FALSE);
@@ -524,6 +525,7 @@ inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay) {
     cur->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &sr);
     cur->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &ch);
     if (!sr || !ch) throw std::runtime_error("audio: unknown sample rate or channel count");
+    if (pick >= (int)ch) throw std::runtime_error("audio: the file has " + std::to_string(ch) + " channel(s), not one per track");
     if (sr < 1000 || sr > 384000 || ch > 64) throw std::runtime_error("audio: unsupported format (" + std::to_string(sr) +
                                                                      " Hz, " + std::to_string(ch) + " channels)");
   };
@@ -545,10 +547,14 @@ inline void mf_decode(IMFSourceReader* rd, To16k& sink, double delay) {
           const size_t n = len / (4 * ch);
           const float* f = (const float*)p;
           mono.resize(n);
-          for (size_t i = 0; i < n; ++i) {
-            float acc = 0;
-            for (UINT32 c = 0; c < ch; ++c) acc += f[i * ch + c];
-            mono[i] = acc / ch;
+          if (pick >= 0) {
+            for (size_t i = 0; i < n; ++i) mono[i] = f[i * ch + pick];
+          } else {
+            for (size_t i = 0; i < n; ++i) {
+              float acc = 0;
+              for (UINT32 c = 0; c < ch; ++c) acc += f[i * ch + c];
+              mono[i] = acc / ch;
+            }
           }
           mb->Unlock();
           const double t = delay + ts / 1e7;
@@ -695,6 +701,37 @@ inline std::vector<std::vector<float>> decode_16k_wav_channels(const std::filesy
   }
   std::vector<std::vector<float>> out;
   for (To16k& s : sinks) out.push_back(finish_16k(s, max_seconds));
+  return out;
+}
+
+// a recording's tracks apart from its WAV, or from the M4A / MP3 it was kept as (each channel decoded alone)
+inline std::vector<std::vector<float>> decode_16k_channels(const std::filesystem::path& path, int tracks, double max_seconds = 0) {
+  {
+    std::ifstream f(path, std::ios::binary);
+    char magic[4] = {};
+    f.read(magic, 4);
+    if (!memcmp(magic, "RIFF", 4)) return decode_16k_wav_channels(path, max_seconds);
+  }
+  std::vector<std::vector<float>> out;
+  for (int c = 0; c < tracks; ++c) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) throw std::runtime_error("cannot read " + path.string());
+    const uint64_t size = std::filesystem::file_size(path);
+    auto at = [&](uint64_t o, void* d, size_t n) -> size_t {
+      f.clear();
+      f.seekg((std::streamoff)o);
+      f.read((char*)d, (std::streamsize)n);
+      return (size_t)f.gcount();
+    };
+    To16k sink(max_seconds);
+    const double delay = mp4_audio_delay(at, size);
+    MfSession ses;
+    ComPtr<IMFSourceReader> rd;
+    mf_check(MFCreateSourceReaderFromURL(std::filesystem::absolute(path).wstring().c_str(), nullptr, &rd),
+             "unrecognized audio format");
+    mf_decode(rd.p, sink, delay, c);
+    out.push_back(finish_16k(sink, max_seconds));
+  }
   return out;
 }
 
