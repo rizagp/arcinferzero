@@ -1023,6 +1023,12 @@ async function refreshModel() {
       // (false: Qwen3-ASR alone, --asr without --whisper: no Whisper to choose, no live text while recording)
       whisper: !!stt && !(typeof stt === "object" && stt.whisper === false),
       ocr: !!p.ocr };  // (an OCR model: the server asks it with its own task prompts, tools/server_ocr.h)
+    // (the speech models this server can load again, unloaded now: Transcribe again offers them and loads its own)
+    try {
+      const s = (await (await fetch("/v1/server/memory")).json()).speech || {};
+      caps.asrCan = !!s.asr_can_load;
+      caps.whisperCan = !!s.whisper_can_load;
+    } catch (e) {}
     $("input").placeholder = caps.ocr ? "OCR: add an image and send (its text), or name the task: dokumen, tabel, rumus, json + the fields"
       : "Type a message (@ attaches a saved file)";
     $("slots").value = String(caps.slots);
@@ -3874,13 +3880,19 @@ function trCaps() {
     : "Meetings need speech to text on the server (start it with --asr auto or --whisper auto)";
   // (the transcript models this server has: Qwen3-ASR, Gemma 4 E4B, Whisper under its own name; the first the default)
   const sel = $("trmodel");
-  sel.querySelector('[value="qwen3-asr"]').hidden = !caps.asr;
+  // (unloaded but loadable ones too, marked: Transcribe again loads the one it needs, the chat model unloaded for it
+  //  when the GPU memory is short)
+  const asrOn = !!caps.asr || !!caps.asrCan, whOn = (!!caps.stt && caps.whisper) || !!caps.whisperCan;
+  const qopt = sel.querySelector('[value="qwen3-asr"]');
+  qopt.hidden = !asrOn;
+  qopt.textContent = "Model: Qwen3-ASR" + (caps.asr ? "" : " (unloaded)");
   sel.querySelector('[value="e4b"]').hidden = !caps.chatAsr;
   const wopt = sel.querySelector('[value="whisper"]');
-  wopt.hidden = wopt.disabled = !caps.whisper;  // (Qwen3-ASR alone: no Whisper to pick)
-  wopt.textContent = "Model: " + (/large-v3$/.test(caps.stt) ? "Whisper large-v3" : caps.stt || "Whisper");
-  sel.hidden = !caps.asr && !caps.chatAsr;
-  if (sel.selectedOptions[0]?.hidden || !sel.value) sel.value = caps.asr ? "qwen3-asr" : "whisper";
+  wopt.hidden = wopt.disabled = !whOn;  // (Qwen3-ASR alone: no Whisper to pick)
+  wopt.textContent = "Model: " + (/large-v3$/.test(caps.stt) ? "Whisper large-v3" : caps.stt || "Whisper") +
+    (caps.stt && caps.whisper ? "" : " (unloaded)");
+  sel.hidden = !asrOn && !caps.chatAsr;
+  if (sel.selectedOptions[0]?.hidden || !sel.value) sel.value = asrOn ? "qwen3-asr" : "whisper";
   trBeamShown();
   // (the Speech setting likewise: only what this server has; nothing when it has no speech to text)
   const sp = $("speech");
@@ -4014,7 +4026,8 @@ function trState(x) {
     case "running": return { text: Math.floor(100 * (x.progress || 0)) + " % · " + trClock(x.done_s) + " / " + trClock(x.duration) +
       (x.x_realtime ? " · " + Math.round(x.x_realtime) + "x realtime" : ""), p: x.progress || 0 };
     case "done": return { text: trClock(x.duration) + (langs ? " · " + langs : "") + " · " + (x.words || 0) + " words · " +
-      new Date(x.created * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) };
+      new Date(x.created * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) +
+      (x.redo_error ? " · " + x.redo_error : "") };
     case "merging": return { text: "Merging " + Math.floor(100 * (x.progress || 0)) + " %", p: x.progress || 0 };
     case "failed": return { text: "Failed: " + (x.error || "unknown error"), err: true };
     case "cancelled": return { text: "Stopped at " + trClock(x.done_s) + " (what was done is kept)" };
@@ -4157,6 +4170,11 @@ function trUpload(files) {
   const opts = { language: $("trlang").value, beam_size: +$("trbeam").value, terms: $("trterms").value.trim(), kind: tr.kind,
     ...(!$("trmodel").hidden ? { model: $("trmodel").value } : {}) };
   trUploading = trUploading.then(async () => {
+    // (a speech model chosen that is unloaded: loaded first, the chat model unloaded for it if the memory is short;
+    //  the file waited in the queue forever before)
+    if (opts.model && opts.model !== "e4b" && !(opts.model === "whisper" ? caps.stt && caps.whisper : caps.asr)) {
+      try { await trSpeechRoom(opts.model); } catch (e) { trNote("could not load the speech model: " + (e.message || e), 12000); }
+    }
     for (const f of files) {
       let rec;
       try {
@@ -4220,7 +4238,41 @@ function trHeader(m) {
     : "Summary, decisions, tasks and open questions, by the loaded chat model";
   $("trtpl").hidden = !done || !trForms.length;
   // (again with another speech model: finished, failed or stopped, its file still there, speech to text loaded)
-  $("trredo").hidden = rec || !caps.stt || !["done", "failed", "cancelled"].includes(m.status) || !m.size;
+  $("trredo").hidden = rec || !(caps.stt || caps.asrCan || caps.whisperCan) || !["done", "failed", "cancelled"].includes(m.status) || !m.size;
+}
+// the speech model a pass again needs, loaded first; GPU memory short: the chat model unloaded for it (it loads again,
+// with the context left, at the next chat). Gemma 4 E4B is a chat model: Whisper and Qwen3-ASR make room for it.
+// The user's words: "kalau retranscribe, misal vram ga muat, model chat diunload dulu" (2026-11-05)
+async function trSpeechRoom(model) {
+  const post = async (path, which) => {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ which }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
+    return j;
+  };
+  const mem = await (await fetch("/v1/server/memory")).json();
+  const s = mem.speech || {};
+  if (model === "e4b") {
+    if (!s.whisper && !s.asr) return;
+    if (!confirm("Gemma 4 E4B writes it as the chat model: Whisper and Qwen3-ASR are unloaded to give it room " +
+        "(Settings, GPU memory loads them again). Go on?")) throw new Error("not started");
+    for (const w of ["whisper", "asr"]) if (s[w]) { trNote("unloading " + (w === "asr" ? "Qwen3-ASR" : "Whisper") + "…", 60000); await post("/v1/server/unload", w); }
+  } else {
+    const which = model === "whisper" ? "whisper" : model === "qwen3-asr" ? "asr" : s.asr || s.asr_can_load ? "asr" : "whisper";
+    if (s[which]) return;
+    const name = which === "asr" ? "Qwen3-ASR" : "Whisper";
+    trNote("loading " + name + "…", 120000);
+    try { await post("/v1/server/load", which); }
+    catch (e) {
+      if (!/GPU memory/i.test(e.message) || !mem.chat) throw e;
+      // (not under an answer being written in this page: it would stop it half-way)
+      if (jobs.size) throw new Error("not enough GPU memory for " + name + ", and the chat model is answering: try again when it is done");
+      trNote("not enough GPU memory: unloading the chat model " + mem.chat.model + " for " + name + "…", 120000);
+      await post("/v1/server/unload", "model");
+      await post("/v1/server/load", which);
+    }
+  }
+  await refreshModel();
 }
 $("trredo").addEventListener("click", async () => {
   const m = tr.meta, id = tr.sel;
@@ -4237,6 +4289,7 @@ $("trredo").addEventListener("click", async () => {
       "; stopped or failed, the text now is kept." + (m.summary ? " The summary stays as it is: summarize again after." : ""))) return;
   $("trredo").disabled = true;
   try {
+    await trSpeechRoom(model);
     const r = await fetch("/v1/transcripts/" + id + "/redo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(opts) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error?.message || "HTTP " + r.status);
@@ -4251,7 +4304,8 @@ async function trOpen(id) {
   let m;
   try { m = await (await fetch("/v1/transcripts/" + id)).json(); } catch (e) { m = null; }
   if (tr.want !== id) return;  // (another one chosen meanwhile)
-  if (!m || m.error) { tr.want = tr.sel; trNote("could not open the transcript"); return; }  // (trPoll opens the shown one again)
+  // (an API error is an object; a record's own error is a string: a failed one, or a pass again that failed, opens)
+  if (!m || (m.error && typeof m.error === "object")) { tr.want = tr.sel; trNote("could not open the transcript"); return; }  // (trPoll opens the shown one again)
   // (the one shown, opened again while its text is edited or saved: its record only, the text kept; a re-render took
   //  the edit away, and the copy fetched before the save landed came back over it)
   if (tr.sel === id && tr.data && (trEditing() || tr.saveFn || tr.inflight)) {
@@ -4312,7 +4366,7 @@ function trRender() {
     s.className = "trsummary";
     // (which model wrote it and when; the others made before, to show one of them instead)
     const when = (t) => t ? new Date(t * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
-    const label = (model, at) => [model || "summary", when(at)].filter(Boolean).join(" · ");
+    const label = (model, at) => [model, when(at)].filter(Boolean).join(" · ") || "summary";  // (one made before 2026-11-05: no model)
     const head = document.createElement("div");
     head.className = "trsumhead";
     const others = Array.isArray(m.summaries) ? m.summaries : [];
@@ -5061,7 +5115,7 @@ $("trtpl").addEventListener("change", () => { prefs.tr = { ...(prefs.tr || {}), 
 async function trSummaryReload(id) {
   let j = null;
   try { j = await (await fetch("/v1/transcripts/" + id)).json(); } catch (e) {}
-  if (!j || j.error || tr.sel !== id || !tr.meta) return;
+  if (!j || (j.error && typeof j.error === "object") || tr.sel !== id || !tr.meta) return;
   Object.assign(tr.meta, { summary: j.summary, summaries: j.summaries, summary_model: j.summary_model, summarized: j.summarized });
   trHeader(tr.meta);
   if (!trEditing()) trRender();

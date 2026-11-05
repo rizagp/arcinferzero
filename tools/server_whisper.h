@@ -601,10 +601,21 @@ class Service {
       }
       if ((m["ext"].str() == "mp3" || m["ext"].str() == "m4a") && m["recording"].as_bool())
         fs::remove(e.path() / "source.wav", ec);  // (a WAV a player held)
+      if (st == "done" && m["error"].str().rfind("transcribing it again", 0) == 0) {  // (written there by 6c6009c)
+        m.set("redo_error", m["error"]);
+        m.set("error", nullptr);
+      }
       if (st == "uploading") {  // (the server stopped during the upload: the browser has let the file go)
         m.set("status", "failed");
         m.set("error", "the upload did not finish before the server stopped");
         fs::remove(e.path() / ("source." + m["ext"].str()), ec);
+      } else if (st == "running" && m["attempts"].as_int() >= 2 && m["redo_prev"].is_object()) {
+        // (a pass again the server ended twice on: the record as it was, its text was never written over)
+        const Json prev = m["redo_prev"];
+        for (const auto& [k, v] : prev.entries()) m.set(k, v);
+        m.set("redo_prev", nullptr);
+        m.set("redo_error", "transcribing it again stopped the server twice (a GPU error?): the earlier text is kept");
+        m.set("attempts", 0.0);
       } else if (st == "running" && m["attempts"].as_int() >= 2) {  // (the server ended twice while on it)
         m.set("status", "failed");
         m.set("error", "the server stopped twice while transcribing this (a GPU error?): start it again to retry");
@@ -1016,6 +1027,7 @@ class Service {
       cur.set("progress", 0.0);
       cur.set("done_s", 0.0);
       cur.set("error", nullptr);
+      cur.set("redo_error", nullptr);
       cur.set("attempts", 0.0);
       save_meta(tid);
       lib_cv_.notify_all();
@@ -1034,6 +1046,11 @@ class Service {
         cur.set("status", "cancelled");
         save_meta(tid);
         if (auto s = live_of(tid)) live_stop(s);
+      } else if (st == "queued" && cur["redo_prev"].is_object()) {  // (a pass again not started: back as it was)
+        const Json prev = cur["redo_prev"];
+        for (const auto& [k, v] : prev.entries()) cur.set(k, v);
+        cur.set("redo_prev", nullptr);
+        save_meta(tid);
       } else if (st == "queued" || st == "uploading") {
         cur.set("status", "cancelled");
         save_meta(tid);
@@ -2110,7 +2127,8 @@ class Service {
       if (!prev.is_object()) return false;
       for (const auto& [k, v] : prev.entries()) m.set(k, v);
       m.set("redo_prev", nullptr);
-      m.set("error", "transcribing it again " + why + ": the earlier text is kept");
+      // (apart from "error": a finished record with an error read as one that could not be opened)
+      m.set("redo_error", "transcribing it again " + why + ": the earlier text is kept");
       save_meta(tid);
       return true;
     };

@@ -12,6 +12,18 @@
   - Each summary is saved with the chat model that wrote it.
   - A list above the summary shows up to 10 earlier ones (model and time); picking one shows it and puts it in the
     minutes, and the shown one is kept in its place (`summaries.json`, `PUT {summary_use: k}`).
+- **Transcribe again loads the speech model it needs.**
+  - Whisper or Qwen3-ASR are offered also while they are unloaded, marked "(unloaded)". The page loads the chosen
+    one first, for Transcribe again and for new uploads; before, a new upload waited in the queue forever.
+  - If the GPU memory is short, the page unloads the chat model first. The next chat loads it again. It does not
+    unload it while this page is writing an answer.
+  - Gemma 4 E4B transcribes as the chat model, so Whisper and Qwen3-ASR are unloaded to give it room, after a
+    question.
+- **Failsafes of Transcribe again:**
+  - stopped while it waits in the queue, the transcript is put back as it was (before, it was marked stopped);
+  - if the server stops twice during it, the record is put back with a note, not marked failed;
+  - a pass again that failed is noted apart from the record's error (`redo_error`), shown after its details. The
+    first build wrote it as the record's error, and the page then said "could not open the transcript".
 - **No length limit on summaries and minutes.** Each answer goes on until the model ends it or the context is full.
   - The notes of each part of a long meeting had 1200 tokens. On a 2-hour meeting, part 2 reached that limit and its
     notes stopped mid-way, so the rest of that part was missing from the minutes.
