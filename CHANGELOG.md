@@ -15,6 +15,12 @@
   such as Zoom is captured through "Entire screen" with "Share system audio".
 - Every dropdown takes the page's colours. The minutes form's dropdown was the browser's white, and open lists were
   light in the dark theme (`color-scheme` now follows the theme).
+- Every dropdown has one look:
+  - rounded corners, an arrow, a ring on hover and on keyboard focus;
+  - in Chrome / Edge with `appearance: base-select` (checked in Chrome 152), the open list is a rounded card with
+    rounded rows, and the arrow turns while it is open;
+  - a choice longer than its room wraps instead of running under the arrow;
+  - the minutes form's dropdown looks like the buttons beside it.
 
 ## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
 
