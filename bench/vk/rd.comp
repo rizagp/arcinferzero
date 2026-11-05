@@ -1,0 +1,16 @@
+#version 450
+// membw_probe's GPU reader in Vulkan: 8 independent 16-byte loads in flight per invocation, each step's loads
+// contiguous over the whole grid
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer X { uvec4 x[]; };
+layout(std430, binding = 1) buffer O { uint o[]; };
+layout(push_constant) uniform P { int n4; };
+void main() {
+  uvec4 a[8];
+  for (int u = 0; u < 8; ++u) a[u] = uvec4(0);
+  const int g = int(gl_NumWorkGroups.x * gl_WorkGroupSize.x);
+  for (int i = int(gl_GlobalInvocationID.x); i + 7 * g < n4; i += 8 * g)
+    for (int u = 0; u < 8; ++u) a[u] += x[i + u * g];
+  for (int u = 1; u < 8; ++u) a[0] += a[u];
+  if ((a[0].x ^ a[0].y ^ a[0].z ^ a[0].w) == 0x9e3779b9u) o[0] = 1u;  // (keeps the reads; almost never true)
+}
