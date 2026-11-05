@@ -39,6 +39,11 @@
   Others recording), and a "↻ Share sound again" button takes it up again. The browser's dialog needs a click, so
   this cannot be done for you. Stop sharing in the browser's bar still ends the recording. Checked in the page with
   stand-in shares: kept on, shared again, and the old share's late end ignored.
+- **Transcripts stays open with speech to text unloaded.** Unloading Whisper and Qwen3-ASR to make room for
+  Qwen3.6 35B locked the whole menu, saved transcripts, summaries and minutes forms included, though none of them
+  needs a speech model. The menu is now open while the server has its transcript library, and says that new
+  transcriptions need speech to text loaded again. `@` on a transcript in a chat works then too. Checked with the 35B
+  loaded and both speech models unloaded: the menu opens, a transcript shows Summarize and the forms.
 
 ## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
 

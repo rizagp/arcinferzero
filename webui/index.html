@@ -1031,6 +1031,9 @@ async function refreshModel() {
     +caps.sampling.top_p.toFixed(2) + ", top-k " + caps.sampling.top_k + ")" : "");
   if (!$("tempon").checked && t !== null) $("temp").value = +t.toFixed(2);
   showModel();
+  // (the transcript library: there while the server runs speech to text, loaded or unloaded in Settings)
+  if (caps.stt) caps.lib = true;
+  else try { caps.lib = (await fetch("/v1/transcripts")).ok; } catch (e) { caps.lib = false; }
   trCaps();
 }
 let models = [];
@@ -3739,7 +3742,7 @@ async function mentionUpdate() {
   if (!mention.on || Date.now() - mention.at > 30000) {  // (the lists, fetched again after 30 s)
     mention.at = Date.now();
     try { fileData = (await (await fetch("/v1/files")).json()).data || []; } catch (e) {}
-    try { mention.transcripts = caps.stt ? ((await (await fetch("/v1/transcripts")).json()).data || []).filter((t) => t.status === "done" || t.status === "cancelled") : []; } catch (e) {}
+    try { mention.transcripts = caps.lib ? ((await (await fetch("/v1/transcripts")).json()).data || []).filter((t) => t.status === "done" || t.status === "cancelled") : []; } catch (e) {}
   }
   // (read again after the lists came: an @ deleted or a message sent meanwhile leaves the menu closed)
   const upto = input.value.slice(0, input.selectionStart), m = at();
@@ -3851,9 +3854,12 @@ const tr = { kind: "", list: [], sel: "", want: "", selStatus: "", meta: null, d
   saveT: 0, saveFn: null, saving: Promise.resolve(), inflight: 0, noteT: 0, listIds: "" };
 $("trfmts").innerHTML = TR_FORMATS.map(([v, t]) => '<label><input type="checkbox" value="' + v + '"> ' + t + "</label>").join(" ");
 function trCaps() {
-  $("trbtn").disabled = $("mtbtn").disabled = $("trside").disabled = !caps.stt;
+  // (open while the server has its transcript library, also with Whisper and Qwen3-ASR unloaded: the transcripts,
+  //  summaries and minutes need no speech model; a new transcription or recording then says to load one)
+  $("trbtn").disabled = $("mtbtn").disabled = $("trside").disabled = !caps.lib;
   $("trbtn").title = caps.stt ? "Transcripts: upload audio and video files, or record (the microphone, a tab's sound, or both as Me / Others): " +
       "text, subtitles, summaries and minutes (" + (caps.whisper ? "Whisper" : "Qwen3-ASR") + " on this server)"
+    : caps.lib ? "Transcripts: the saved ones, their summaries and minutes (speech to text is unloaded: Settings, GPU memory loads it again for new ones)"
     : "Transcripts need speech to text on the server (start it with --asr auto or --whisper auto)";
   $("mtbtn").title = caps.stt ? "Meetings: recorded with your microphone and the meeting's sound, transcribed as Me / Others, summarized" +
       (caps.whisper ? "" : " (Qwen3-ASR alone: the text comes after Stop, none while recording)")
@@ -3944,7 +3950,11 @@ function trMode(on, kind) {
   if (keep && src.some(([v]) => v === keep)) $("trsrc").value = keep;
   $("trch").hidden = true;  // (recordings are mono: a meeting one track per source; the Mono / Stereo choice gone)
   liveButtons();
-  if (on) { openPanel(false); openFiles(false); trPoll(); trFormsLoad(); }
+  if (on) {
+    openPanel(false); openFiles(false); trPoll(); trFormsLoad();
+    if (!caps.stt) trNote("speech to text is unloaded: the saved transcripts, their summaries and minutes work; " +
+      "Settings > GPU memory loads it again for new ones", 10000);
+  }
   else { clearTimeout(tr.timer); app.classList.remove("trviewing"); $("trvideo").pause(); }
 }
 function trClose() {  // (nothing chosen)
