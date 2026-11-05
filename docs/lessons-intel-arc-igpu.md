@@ -312,6 +312,10 @@ predicating the loads gave 905 -> 843 ms, bit-identical. Check bit identity afte
 - **Benchmarks of one kernel can mislead.** Small-matrix benchmarks lie about GB/s (kernel launch time dominates;
   measure on matrices that stream from memory); a GEMV row choice that won in the bench was 2 % slower in the model;
   a peak DP4a microbenchmark favoured SIMD8, which was 28 % slower in the GEMM. Confirm every win end to end.
+- **Other programs' memory traffic moves every bandwidth number.** The iGPU shares the memory with the CPU: one CPU
+  thread copying memory cut the 4B's GEMVs from 67.5 to 55 GB/s, while CPU arithmetic changed nothing. A profile
+  taken at a busy moment (48-60 GB/s) looked like "the GEMVs are slower inside the model", which they were not
+  (2026-11-05, section 5). Compare two things back to back, alternated, rather than against an older number.
 - **Estimates from one component can be wrong in either direction.** Level Zero was first dismissed because the gaps
   between kernels were only 1.6–2 %; run end to end it was clearly faster (35B time to first token 6.45 -> 4.07 s).
 - **Measure the noise floor before judging an accuracy change.** For the MoE models even f16 against int8 K/V

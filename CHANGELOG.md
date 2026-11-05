@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-05 (evening): measured, not changed: Vulkan, fewer kernels, GEMVs inside the model
+
+- **Vulkan instead of Level Zero: not worth a port** (`bench/vk_probe`). Bandwidth 74.1 against 72-75 GB/s; a
+  launch 1.07 against 1.50 µs. llama.cpp's Vulkan backend on the 4B: prompt 254 against 855 tok/s, generation
+  15.0 against 16.9.
+- **Fewer kernels per token: not worth it.** 426-852 empty kernels added to every 4B token cost nothing. Fusing would
+  save only the small kernels' own work (~1.7 ms a token, 3 %). Gate and up as one stacked GEMV were 1-2 ms a token
+  slower.
+- **The GEMVs are not slower inside the model.** Every GEMV of the 4B back to back, with no other kernel, took
+  43.7 ms, and ~45 ms in the model (`--prof-gen`, measured right after). The earlier 48-60 GB/s profile was taken
+  while other programs used the memory: one CPU thread copying memory slows the GEMVs from 67.5 to 55 GB/s, while CPU
+  arithmetic changes nothing. The size of the data read and the weights' alignment change nothing either. This
+  corrects the 2026-11-04 note below that put the lower profile numbers on its events.
+- Details: `docs/lessons-intel-arc-igpu.md` section 5, QUEUE 31.13.
+
 ## 2026-11-05 (afternoon): transcribe again with another model; summaries kept per model; minutes not cut short
 
 - **↻ Transcribe again** (a transcript's header): a finished, failed or stopped transcript is transcribed again with
