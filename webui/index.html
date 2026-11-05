@@ -3258,6 +3258,40 @@ async function transcribe(url, signal) {
   return String(j.text || "").trim();
 }
 function note(t, ms) { voice.status(t); setTimeout(() => { if (!voice.on && $("vstat").textContent === t) voice.status(""); }, ms || 5000); }
+// The microphone of Talk or of a voice message opened again when its track ends (Bluetooth earphones switched,
+// connected or gone, a headset's mute), as a live recording does (live.reconnect): the same capture goes on, the
+// new default input feeding the same processor. Only for the session it was started for (owner.gen: a stop moves it
+// on), tried again after 1, 2, 3 ... s while the device is still switching.
+function micWatch(owner, gen) {
+  const t = owner.stream?.getAudioTracks()[0];
+  t?.addEventListener("ended", () => {
+    if (owner.on && owner.gen === gen && owner.stream?.getAudioTracks()[0] === t) micReopen(owner, gen, 0);
+  });
+  // (the sound card changed under it: the processor kept running)
+  if (owner.ctx) owner.ctx.onstatechange = () => { if (owner.on && owner.gen === gen && owner.ctx?.state === "suspended") owner.ctx.resume().catch(() => {}); };
+}
+async function micReopen(owner, gen, tries) {
+  const mine = () => owner.on && owner.gen === gen && !!owner.ctx;
+  if (!mine()) return;
+  const say = (t, ms) => (owner === voice ? voice.status(t) : note(t, ms));
+  if (!tries) say("the microphone changed (Bluetooth earphones?): opening it again…", 6000);
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (!mine()) { s.getTracks().forEach((t) => t.stop()); return; }
+    const src = owner.ctx.createMediaStreamSource(s);
+    src.connect(owner.node);
+    owner.src?.disconnect();
+    owner.stream?.getTracks().forEach((t) => t.stop());
+    owner.src = src;
+    owner.stream = s;
+    micWatch(owner, gen);
+    say(owner === voice ? "listening… (" + (s.getAudioTracks()[0]?.label || "the default microphone") + ")"
+      : "recording from " + (s.getAudioTracks()[0]?.label || "the default microphone") + " now", 5000);
+  } catch (e) {
+    if (tries < 8 && mine()) setTimeout(() => micReopen(owner, gen, tries + 1), 1000 * (tries + 1));
+    else if (mine()) say("the microphone could not be opened again: " + (e.message || e), 15000);
+  }
+}
 const rec = {
   on: false, starting: false, gen: 0, stream: null, ctx: null, node: null, src: null, frames: [], rate: 48000, t0: 0, timer: 0,
   async start() {
@@ -3289,6 +3323,7 @@ const rec = {
       return;
     }
     this.frames = []; this.t0 = performance.now(); this.on = true;
+    micWatch(this, this.gen);  // (the microphone gone: opened again, the voice message goes on)
     const tick = () => { const s = Math.floor((performance.now() - this.t0) / 1000); $("rectime").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
     tick(); this.timer = setInterval(tick, 250);
     updateButtons();
@@ -3396,6 +3431,7 @@ const voice = {
       return;
     }
     this.on = true;
+    micWatch(this, this.gen);  // (the microphone gone: opened again, Talk goes on)
     updateButtons();
     this.status("listening…");
   },

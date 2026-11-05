@@ -29,6 +29,10 @@
   - buttons, dropdowns and Run / Don't run share an 8 px corner;
   - neutral buttons hover in the accent colour, and only the delete buttons turn red;
   - disabled buttons look disabled.
+- Talk and voice messages keep their microphone as a live recording does. When its track ends (Bluetooth
+  earphones switched, connected or gone), the new default input is opened and feeds the same capture: Talk keeps
+  listening, and a voice message keeps recording. Retries come after 1, 2, 3 ... s, only for the session they
+  started in. Checked in the page with stand-in microphones: replaced twice, and nothing after a stop.
 
 ## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
 
