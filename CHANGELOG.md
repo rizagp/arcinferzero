@@ -33,6 +33,12 @@
   earphones switched, connected or gone), the new default input is opened and feeds the same capture: Talk keeps
   listening, and a voice message keeps recording. Retries come after 1, 2, 3 ... s, only for the session they
   started in. Checked in the page with stand-in microphones: replaced twice, and nothing after a stop.
+- **A shared sound that drops no longer stops a live recording.** Chrome ends the shared sound's track (a tab's, or
+  the system's with the screen) when the sound output changes, for example Bluetooth earphones on or off, while the
+  share itself goes on. The recording now goes on with that track silent (the microphone keeps recording in a Me /
+  Others recording), and a "↻ Share sound again" button takes it up again. The browser's dialog needs a click, so
+  this cannot be done for you. Stop sharing in the browser's bar still ends the recording. Checked in the page with
+  stand-in shares: kept on, shared again, and the old share's late end ignored.
 
 ## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
 

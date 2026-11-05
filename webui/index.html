@@ -464,6 +464,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
       <div class="trlive">
         <button class="fbtn" id="trlive" title="Record and transcribe as it is spoken: the text comes ~2 s behind; when you stop, the whole recording is transcribed again accurately"><span class="dot"></span><span id="trlivetxt">Record</span></button>
         <select id="trsrc" aria-label="Sound to record"></select>
+        <button class="fbtn" id="trreshare" hidden title="The shared sound stopped (the sound output changed, e.g. Bluetooth earphones): share it again, the recording goes on">↻ Share sound again</button>
       </div>
       <div class="tradd" id="tradd"><span id="traddtxt">Drop audio or video files here, or</span> <button id="trpick">upload files</button>
         <input type="file" id="trfile" multiple hidden accept="audio/*,video/*,.mkv,.webm,.opus,.ogg,.oga,.m4a,.wma,.wmv,.avi,.mov,.flac,.aac"></div>
@@ -4528,16 +4529,18 @@ const live = {
     // (kept: the microphone opened again with the same settings when it goes away, see reconnect)
     const micAudio = wantSt ? { channelCount: { ideal: 2 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
       : { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+    let shareOpts = null;  // (kept too: the sound shared again with the same choices, see reshare)
     try {
       for (const w of want) {
         if (w === "mic") {
           streams.push(await navigator.mediaDevices.getUserMedia({ audio: micAudio }));
         } else {
-          const s = await navigator.mediaDevices.getDisplayMedia({ video: quiet ? { displaySurface: "browser" } : true,
+          shareOpts = { video: quiet ? { displaySurface: "browser" } : true,
             audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, ...(quiet ? { suppressLocalAudioPlayback: true } : {}) },
             // (silent here: tabs only, Chrome cannot keep a window's or the screen's sound off the speakers; the
             //  dialog opens on its Tab list)
-            ...(quiet ? { preferCurrentTab: false, selfBrowserSurface: "exclude", surfaceSwitching: "include" } : { systemAudio: "include" }) });
+            ...(quiet ? { preferCurrentTab: false, selfBrowserSurface: "exclude", surfaceSwitching: "include" } : { systemAudio: "include" }) };
+          const s = await navigator.mediaDevices.getDisplayMedia(shareOpts);
           if (!s.getAudioTracks().length) {
             s.getTracks().forEach((t) => t.stop());
             throw new Error(quiet ? "no sound: pick a browser tab (not a window or the screen) and tick \"Share tab audio\""
@@ -4614,7 +4617,7 @@ const live = {
       return;
     }
     Object.assign(this, { on: true, id: rec.id, streams, chunks: [], since: 0, draft: [], partial: [], marks: [], heard: 0, t0: performance.now(),
-      sent: 0, fails: 0, retryAt: 0, behind: false, kinds: want, micAudio });
+      sent: 0, fails: 0, retryAt: 0, behind: false, kinds: want, micAudio, shareOpts, lostK: null });
     streams.forEach((s, k) => this.watch(s, k));
     // (the sound card changed under it, Bluetooth earphones connected or gone: the capture keeps running)
     this.ctx.onstatechange = () => { if (this.on && this.ctx.state === "suspended") this.ctx.resume().catch(() => {}); };
@@ -4632,13 +4635,57 @@ const live = {
   // a source's end: a share stopped from the browser's own bar ends the recording; the microphone gone (Bluetooth
   // earphones switched, connected or disconnected, another default input) is opened again and the recording goes
   // on: the gap is silence on its track, so the timeline stays right
+  //
+  // The shared sound (a tab's, or the system's with the screen) is another case: Chrome ends its audio track when the
+  // sound output changes (Bluetooth earphones on or off) while the share itself goes on. That is not a Stop: the
+  // recording goes on with that track silent, and "Share sound again" takes it up again (the browser's dialog needs a
+  // click, so it cannot be done for you). Stop sharing in the browser's bar ends the video too: that ends it.
   watch(s, k) {
     for (const t of s.getAudioTracks())
       t.addEventListener("ended", () => {
         if (!this.on || this.streams[k] !== s) return;  // (stopped, or already replaced)
-        if (this.kinds?.[k] === "mic") this.reconnect(k);
-        else this.stop();
+        if (this.kinds?.[k] === "mic") return this.reconnect(k);
+        // (the video still live: only the sound went. Its own end event may come just after: it stops then)
+        if (s.getVideoTracks().some((v) => v.readyState === "live")) return this.shareLost(k);
+        this.stop();
       });
+    for (const v of s.getVideoTracks())
+      v.addEventListener("ended", () => { if (this.on && this.streams[k] === s) this.stop(); });
+  },
+  shareLost(k) {
+    this.lostK = k;
+    liveButtons();
+    trNote("the shared sound stopped (the sound output changed: Bluetooth earphones?). The recording goes on" +
+      (this.n > 1 ? " with the microphone" : "") + ": press “↻ Share sound again” to record it again", 60000);
+  },
+  async reshare() {
+    const k = this.lostK, id = this.id;
+    if (!this.on || k == null || !this.shareOpts) return;
+    $("trreshare").disabled = true;
+    try {
+      const s = await navigator.mediaDevices.getDisplayMedia(this.shareOpts);
+      if (!s.getAudioTracks().length) {
+        s.getTracks().forEach((t) => t.stop());
+        throw new Error("no sound: tick “Share system audio” (the screen) or “Share tab audio” (a tab)");
+      }
+      if (!this.on || this.id !== id) { s.getTracks().forEach((t) => t.stop()); return; }
+      const src = this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks()));
+      if (this.up) src.connect(this.up);
+      else src.connect(this.merger, 0, k);
+      this.sources[k]?.disconnect();
+      const old = this.streams[k];
+      this.sources[k] = src;
+      this.streams[k] = s;  // (before the old share is stopped: its end events then find it replaced)
+      old?.getTracks().forEach((t) => t.stop());
+      this.lostK = null;
+      this.watch(s, k);
+      trNote("the shared sound is recorded again", 6000);
+    } catch (e) {
+      trNote("not shared again (" + (e.message || e) + "): the recording goes on without it", 12000);
+    } finally {
+      $("trreshare").disabled = false;
+      liveButtons();
+    }
   },
   async reconnect(k, tries = 0, id = this.id) {
     // (only for the recording it was started for: a retry still pending after a Stop must not put a microphone into
@@ -4791,7 +4838,10 @@ function liveButtons() {
   $("trlive").disabled = live.starting || live.stopping;
   $("trlivetxt").textContent = live.on ? "Stop" : live.starting ? "Starting…" : live.stopping ? "Finishing…" : "Record";
   $("trsrc").disabled = $("trch").disabled = live.on || live.starting || live.stopping;
+  $("trreshare").hidden = !(live.on && live.lostK != null);  // (the shared sound lost while recording)
+  $("trsrc").hidden = !$("trreshare").hidden;  // (in its place meanwhile: the row stays one line)
 }
+$("trreshare").addEventListener("click", () => live.reshare());
 $("trlive").addEventListener("click", () => live.on ? live.stop() : live.start());
 // (Stop on a recording of another page, or of one that closed: the server ends it, its accurate pass follows)
 $("trstoplive").addEventListener("click", () => {
