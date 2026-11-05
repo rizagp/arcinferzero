@@ -41,7 +41,7 @@ select {
   -webkit-appearance: none !important; appearance: none !important; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238696a0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") !important;
   background-repeat: no-repeat !important; background-position: right 10px center !important; background-size: 12px 12px !important;
-  padding-right: 30px !important; border-radius: 10px !important; transition: box-shadow .15s;
+  padding-right: 30px !important; border-radius: 8px !important; transition: box-shadow .15s;
 }
 select:hover { box-shadow: inset 0 0 0 1px var(--muted); }
 select:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
@@ -51,7 +51,8 @@ select:disabled { cursor: default; opacity: .6; box-shadow: none; }
      choice longer than its room wraps, centred, instead of pushing the row wider) */
   select { appearance: base-select !important; display: inline-flex; align-items: center; text-align: start; line-height: 1.3;
            background-image: none !important; padding-right: 10px !important; }
-  select::picker-icon { color: var(--muted); margin-inline-start: 8px; transition: rotate .15s; }
+  /* (at the right edge on a wide dropdown, at least 8 px after the text on a narrow one) */
+  select::picker-icon { color: var(--muted); margin-inline-start: auto; padding-inline-start: 8px; transition: rotate .15s; }
   select:open::picker-icon { rotate: 180deg; }
   ::picker(select) {
     appearance: base-select; margin-top: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px;
@@ -160,8 +161,11 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 .frow .iconbtn { width: 32px; height: 32px; }
 .frow .iconbtn svg { width: 18px; height: 18px; }
 .ffoot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--head); }
-.fbtn { flex: 1; padding: 7px 8px; border-radius: 6px; background: var(--side); border: 1px solid var(--line); font-size: 13px; }
-.fbtn:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.fbtn { flex: 1; padding: 7px 8px; border-radius: 8px; background: var(--side); border: 1px solid var(--line); font-size: 13px; }
+/* (hover: the accent; red only for the buttons that delete, .danger: Summarize turned red as Clear chats did) */
+.fbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.fbtn.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+.fbtn:disabled { opacity: .6; cursor: default; }
 .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px; background: rgba(0,0,0,.06); color: var(--text); text-decoration: none; font-size: 13px; max-width: 260px; }
 .chip b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .chip small { color: var(--muted); flex: none; }
@@ -251,7 +255,7 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
 .ask p { margin: 0 0 6px; font-size: 14px; line-height: 1.45; }
 .ask .name { font-weight: 600; overflow-wrap: anywhere; }
 .ask .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-.ask button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--side); color: var(--text); font-size: 13px; }
+.ask button { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--side); color: var(--text); font-size: 13px; }
 .ask button.yes { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .ask .lab { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 .ask .in { display: block; width: 100%; box-sizing: border-box; margin-top: 3px; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--input); color: var(--text); font-size: 14px; }
@@ -553,8 +557,8 @@ details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; ov
         <div class="sec">
           <h3>Data</h3>
           <div class="opt"><div class="lab">Saved in the arcinferzero folder<small id="datasum">…</small></div></div>
-          <div class="opt"><button class="fbtn" id="clrchats" title="Delete every chat; the files stay (Files panel)">Clear chats</button>
-            <button class="fbtn" id="clrall" title="Delete every chat and every uploaded file">Clear chats and files</button></div>
+          <div class="opt"><button class="fbtn danger" id="clrchats" title="Delete every chat; the files stay (Files panel)">Clear chats</button>
+            <button class="fbtn danger" id="clrall" title="Delete every chat and every uploaded file">Clear chats and files</button></div>
         </div>
         <div class="sec">
           <h3>Appearance</h3>
@@ -4493,12 +4497,15 @@ const live = {
         if (w === "mic") {
           streams.push(await navigator.mediaDevices.getUserMedia({ audio: micAudio }));
         } else {
-          const s = await navigator.mediaDevices.getDisplayMedia({ video: true,
+          const s = await navigator.mediaDevices.getDisplayMedia({ video: quiet ? { displaySurface: "browser" } : true,
             audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, ...(quiet ? { suppressLocalAudioPlayback: true } : {}) },
+            // (silent here: tabs only, Chrome cannot keep a window's or the screen's sound off the speakers; the
+            //  dialog opens on its Tab list)
             ...(quiet ? { preferCurrentTab: false, selfBrowserSurface: "exclude", surfaceSwitching: "include" } : { systemAudio: "include" }) });
           if (!s.getAudioTracks().length) {
             s.getTracks().forEach((t) => t.stop());
-            throw new Error("the shared tab or screen has no sound: share it again with \"Share tab audio\" (or \"Share system audio\") ticked");
+            throw new Error(quiet ? "no sound: pick a browser tab (not a window or the screen) and tick \"Share tab audio\""
+              : "the shared tab or screen has no sound: share it again with \"Share tab audio\" (or \"Share system audio\") ticked");
           }
           streams.push(s);
         }
@@ -4597,12 +4604,15 @@ const live = {
         else this.stop();
       });
   },
-  async reconnect(k, tries = 0) {
-    if (!this.on) return;
+  async reconnect(k, tries = 0, id = this.id) {
+    // (only for the recording it was started for: a retry still pending after a Stop must not put a microphone into
+    //  the next recording, which may have no microphone at all)
+    const mine = () => this.on && this.id === id;
+    if (!mine()) return;
     if (!tries) trNote("the microphone changed (Bluetooth earphones?): opening it again, the recording goes on…", 8000);
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: this.micAudio });
-      if (!this.on) { s.getTracks().forEach((t) => t.stop()); return; }
+      if (!mine()) { s.getTracks().forEach((t) => t.stop()); return; }
       const src = this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks()));
       if (this.up) src.connect(this.up);
       else src.connect(this.merger, 0, k);
@@ -4612,8 +4622,8 @@ const live = {
       this.watch(s, k);
       trNote("recording from " + (s.getAudioTracks()[0]?.label || "the default microphone") + " now", 6000);
     } catch (e) {  // (the device is still switching: tried again after 1, 2, 3 ... s)
-      if (tries < 8 && this.on) setTimeout(() => this.reconnect(k, tries + 1), 1000 * (tries + 1));
-      else trNote("the microphone could not be opened again (" + (e.message || e) + "): the recording goes on with silence on it; Stop ends it", 20000);
+      if (tries < 8 && mine()) setTimeout(() => this.reconnect(k, tries + 1, id), 1000 * (tries + 1));
+      else if (mine()) trNote("the microphone could not be opened again (" + (e.message || e) + "): the recording goes on with silence on it; Stop ends it", 20000);
     }
   },
   async send(force) {

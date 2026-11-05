@@ -21,6 +21,14 @@
     rounded rows, and the arrow turns while it is open;
   - a choice longer than its room wraps instead of running under the arrow;
   - the minutes form's dropdown looks like the buttons beside it.
+- Self audit of these changes:
+  - a microphone retry still pending after Stop could join the next recording and replace its tab sound; each
+    retry now belongs to its own recording;
+  - "silent here" with a window or the screen picked says to pick a tab, and the dialog opens on the Tab list;
+  - the arrow sits at the right edge of a wide dropdown;
+  - buttons, dropdowns and Run / Don't run share an 8 px corner;
+  - neutral buttons hover in the accent colour, and only the delete buttons turn red;
+  - disabled buttons look disabled.
 
 ## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
 
