@@ -1028,6 +1028,7 @@ async function refreshModel() {
       const s = (await (await fetch("/v1/server/memory")).json()).speech || {};
       caps.asrCan = !!s.asr_can_load;
       caps.whisperCan = !!s.whisper_can_load;
+      if (!caps.chatAsr && s.chat_asr) caps.chatAsr = String(s.chat_asr);  // (E4B with speech to text unloaded)
     } catch (e) {}
     $("input").placeholder = caps.ocr ? "OCR: add an image and send (its text), or name the task: dokumen, tabel, rumus, json + the fields"
       : "Type a message (@ attaches a saved file)";

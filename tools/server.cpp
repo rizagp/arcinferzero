@@ -1839,6 +1839,9 @@ int main(int argc, char** argv) {
           s.set("whisper_can_load", wh->can_load("whisper"));
           s.set("asr", wh->asr_loaded());
           s.set("asr_can_load", wh->can_load("asr"));
+          // (Gemma 4 E4B as a transcript model: there with Whisper and Qwen3-ASR unloaded too, when /props has no
+          //  speech to text and so no chat_asr)
+          if (!wh->chat_asr_id.empty() && wh->chat_asr) s.set("chat_asr", wh->chat_asr_id);
           s.set("gpu_bytes", (double)wh->gpu_bytes());
         }
         r.set("speech", wh ? s : Json());

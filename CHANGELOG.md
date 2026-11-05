@@ -19,6 +19,8 @@
     unload it while this page is writing an answer.
   - Gemma 4 E4B transcribes as the chat model, so Whisper and Qwen3-ASR are unloaded to give it room, after a
     question.
+  - Gemma 4 E4B is offered while Whisper and Qwen3-ASR are unloaded too (`/v1/server/memory` names it). Before, it
+    was missing from the list just when it was the only speech model there.
 - **Failsafes of Transcribe again:**
   - stopped while it waits in the queue, the transcript is put back as it was (before, it was marked stopped);
   - if the server stops twice during it, the record is put back with a note, not marked failed;
