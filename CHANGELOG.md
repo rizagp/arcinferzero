@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-05: a recording survives a muted or switched microphone; a tab's sound without the speakers
+
+- **A live recording no longer stops when the microphone goes away.** Muting it, Bluetooth earphones connected or
+  disconnected, or another default input all ended the microphone's track, and the page took that as Stop: a
+  meeting was cut into three recordings. Now the page opens the microphone again (the new default) and the same
+  recording goes on.
+  - The gap is silence on that track, so the timeline stays right.
+  - If the device is still switching, the page tries again after 1, 2, 3 ... s.
+  - If the microphone cannot be opened, the recording continues with silence on its track.
+  - Stopping a share from the browser's bar still ends the recording.
+- New source **"A tab's sound, silent here"**: a tab's sound (a video) is recorded and transcribed without being
+  played on the speakers (`suppressLocalAudioPlayback`, Chrome / Edge). It works for browser tabs only; a desktop app
+  such as Zoom is captured through "Entire screen" with "Share system audio".
+- Every dropdown takes the page's colours. The minutes form's dropdown was the browser's white, and open lists were
+  light in the dark theme (`color-scheme` now follows the theme).
+
 ## 2026-11-04 (night): MCP servers for the model, a self audit of every kernel, the web UI and speech
 
 - **MCP servers** (docs/mcp.md): the web UI's model can use the tools of other programs on this computer, Blender

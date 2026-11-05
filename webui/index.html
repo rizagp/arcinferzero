@@ -11,6 +11,7 @@
   --line: #e9edef; --hover: #f5f6f6; --active: #f0f2f5; --accent: #00a884; --accent-text: #ffffff;
   --chat: #efeae2; --dots: rgba(0, 0, 0, .045); --in: #ffffff; --out: #d9fdd3; --code: #f6f6f4; --think: #f7f8fa;
   --input: #ffffff; --danger: #d0453f; --shadow: 0 1px .5px rgba(11, 20, 26, .13);
+  color-scheme: light;  /* (the browser's own parts: a dropdown's open list, scrollbars, date pickers) */
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -18,6 +19,7 @@
     --line: #222d34; --hover: #202c33; --active: #2a3942; --accent: #00a884; --accent-text: #111b21;
     --chat: #0b141a; --dots: rgba(255, 255, 255, .03); --in: #202c33; --out: #005c4b; --code: #182229; --think: #182229;
     --input: #2a3942; --danger: #f15c6d; --shadow: 0 1px .5px rgba(11, 20, 26, .4);
+    color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
@@ -25,8 +27,12 @@
   --line: #222d34; --hover: #202c33; --active: #2a3942; --accent: #00a884; --accent-text: #111b21;
   --chat: #0b141a; --dots: rgba(255, 255, 255, .03); --in: #202c33; --out: #005c4b; --code: #182229; --think: #182229;
   --input: #2a3942; --danger: #f15c6d; --shadow: 0 1px .5px rgba(11, 20, 26, .4);
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
+/* every dropdown in the page's colours (one without a rule of its own, the minutes form's, was the browser's white) */
+select { font: inherit; font-size: 13px; color: var(--text); background: var(--head); border: 0; border-radius: 6px; padding: 5px 8px; }
+select option { color: var(--text); background: var(--side); }
 html, body { height: 100%; margin: 0; overflow: hidden; }
 body { background: var(--app); color: var(--text); font: 14.5px/1.5 "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
@@ -3858,6 +3864,7 @@ function trMode(on, kind) {
   $("trtitle").textContent = "Transcripts";
   $("traddtxt").textContent = "Drop audio or video files here, or";
   const src = [["mic", "Microphone"], ["tab", "A tab's or the screen's sound (an online meeting, a video)"],
+    ["tabq", "A tab's sound, silent here (a video transcribed without playing it on the speakers)"],
     ["both", "Microphone + a tab's or the screen's sound (Me / Others)"]];
   const keep = (prefs.tr || {}).src;
   $("trsrc").innerHTML = src.map(([v, t]) => '<option value="' + v + '">' + t + "</option>").join("");
@@ -4441,17 +4448,22 @@ const live = {
   },
   async begin() {
     if (voice.on || voice.starting) voice.stop();  // (Talk's spoken answers would go into the meeting and its recording)
-    const src = $("trsrc").value, want = src === "both" ? ["mic", "tab"] : [src], streams = [];
+    // (tabq: a tab's sound captured but not played here, suppressLocalAudioPlayback: Chrome / Edge 109+)
+    const src = $("trsrc").value, quiet = src === "tabq", want = src === "both" ? ["mic", "tab"] : [quiet ? "tab" : src], streams = [];
     // (Stereo chosen, one source, the Transcripts tab: left and right kept; a microphone then without the browser's
     //  echo and noise suppression, which make it mono)
     const wantSt = tr.kind !== "meeting" && want.length === 1 && $("trch").value === "stereo";
+    // (kept: the microphone opened again with the same settings when it goes away, see reconnect)
+    const micAudio = wantSt ? { channelCount: { ideal: 2 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      : { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
     try {
       for (const w of want) {
         if (w === "mic") {
-          streams.push(await navigator.mediaDevices.getUserMedia({ audio: wantSt ? { channelCount: { ideal: 2 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-            : { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }));
+          streams.push(await navigator.mediaDevices.getUserMedia({ audio: micAudio }));
         } else {
-          const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }, systemAudio: "include" });
+          const s = await navigator.mediaDevices.getDisplayMedia({ video: true,
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, ...(quiet ? { suppressLocalAudioPlayback: true } : {}) },
+            ...(quiet ? { preferCurrentTab: false, selfBrowserSurface: "exclude", surfaceSwitching: "include" } : { systemAudio: "include" }) });
           if (!s.getAudioTracks().length) {
             s.getTracks().forEach((t) => t.stop());
             throw new Error("the shared tab or screen has no sound: share it again with \"Share tab audio\" (or \"Share system audio\") ticked");
@@ -4473,17 +4485,25 @@ const live = {
       this.stereo = wantSt && streams[0].getAudioTracks()[0].getSettings().channelCount !== 1;
       this.n = this.stereo ? 2 : streams.length;
       const merger = this.ctx.createChannelMerger(this.n);
+      this.merger = merger;
+      this.up = null;
+      this.sources = [];
       if (this.stereo) {  // (left and right of the one source: a mono one gives the same on both)
         // (through a 2-channel gain node first: it up-mixes a mono input to both sides; the splitter itself takes only
         //  "discrete", which leaves the right side of a mono input silent, and Chrome refuses "speakers" on it)
         const up = new GainNode(this.ctx, { channelCount: 2, channelCountMode: "explicit", channelInterpretation: "speakers" });
         const sp = this.ctx.createChannelSplitter(2);
-        this.ctx.createMediaStreamSource(new MediaStream(streams[0].getAudioTracks())).connect(up);
+        this.sources[0] = this.ctx.createMediaStreamSource(new MediaStream(streams[0].getAudioTracks()));
+        this.sources[0].connect(up);
         up.connect(sp);
         sp.connect(merger, 0, 0);
         sp.connect(merger, 1, 1);
+        this.up = up;
       } else {
-        streams.forEach((s, k) => this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks())).connect(merger, 0, k));
+        streams.forEach((s, k) => {
+          this.sources[k] = this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks()));
+          this.sources[k].connect(merger, 0, k);
+        });
       }
       // (16384 frames, 0.34 s a call: the page's own work (a long transcript drawn again) has that long before a
       //  buffer of sound is lost)
@@ -4519,9 +4539,10 @@ const live = {
       return;
     }
     Object.assign(this, { on: true, id: rec.id, streams, chunks: [], since: 0, draft: [], partial: [], marks: [], heard: 0, t0: performance.now(),
-      sent: 0, fails: 0, retryAt: 0, behind: false });
-    // (a share ended from the browser's own bar ends the recording)
-    streams.forEach((s) => s.getAudioTracks().forEach((t) => t.addEventListener("ended", () => this.stop())));
+      sent: 0, fails: 0, retryAt: 0, behind: false, kinds: want, micAudio });
+    streams.forEach((s, k) => this.watch(s, k));
+    // (the sound card changed under it, Bluetooth earphones connected or gone: the capture keeps running)
+    this.ctx.onstatechange = () => { if (this.on && this.ctx.state === "suspended") this.ctx.resume().catch(() => {}); };
     if (!caps.whisper) trNote("recording: Qwen3-ASR alone on this server writes the text after Stop (none while recording)", 12000);
     this.timer = setInterval(() => this.send(), 500);
     this.clock = setInterval(() => {
@@ -4532,6 +4553,36 @@ const live = {
     tr.list = [rec, ...tr.list];
     trRenderList();
     trOpen(rec.id);
+  },
+  // a source's end: a share stopped from the browser's own bar ends the recording; the microphone gone (Bluetooth
+  // earphones switched, connected or disconnected, another default input) is opened again and the recording goes
+  // on: the gap is silence on its track, so the timeline stays right
+  watch(s, k) {
+    for (const t of s.getAudioTracks())
+      t.addEventListener("ended", () => {
+        if (!this.on || this.streams[k] !== s) return;  // (stopped, or already replaced)
+        if (this.kinds?.[k] === "mic") this.reconnect(k);
+        else this.stop();
+      });
+  },
+  async reconnect(k, tries = 0) {
+    if (!this.on) return;
+    if (!tries) trNote("the microphone changed (Bluetooth earphones?): opening it again, the recording goes on…", 8000);
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: this.micAudio });
+      if (!this.on) { s.getTracks().forEach((t) => t.stop()); return; }
+      const src = this.ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks()));
+      if (this.up) src.connect(this.up);
+      else src.connect(this.merger, 0, k);
+      this.sources[k]?.disconnect();
+      this.sources[k] = src;
+      this.streams[k] = s;
+      this.watch(s, k);
+      trNote("recording from " + (s.getAudioTracks()[0]?.label || "the default microphone") + " now", 6000);
+    } catch (e) {  // (the device is still switching: tried again after 1, 2, 3 ... s)
+      if (tries < 8 && this.on) setTimeout(() => this.reconnect(k, tries + 1), 1000 * (tries + 1));
+      else trNote("the microphone could not be opened again (" + (e.message || e) + "): the recording goes on with silence on it; Stop ends it", 20000);
+    }
   },
   async send(force) {
     if (this.sending || !this.id || !this.chunks.length) return;
