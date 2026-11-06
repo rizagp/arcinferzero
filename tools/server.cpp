@@ -937,6 +937,7 @@ int main(int argc, char** argv) {
   int port = 8080;
   bool swap = true, help = false, web_tools = true, terminal = true, precise = false;
   std::string whisper_opt = "off", whisper_dev = "gpu", asr_opt = "default";  // (default: auto when Whisper is on)
+  bool whisper_given = false;  // (--whisper on the command line; without it the cache's model is offered, not loaded)
   double whisper_max_min = 180;
   ServeOpts so;
   so.eo.ctx = 40960;
@@ -1058,7 +1059,7 @@ int main(int argc, char** argv) {
     else if (a == "--gpus") so.gpus = std::clamp(to_int(a, next()), 1, 64);
     else if (a == "--no-swap") swap = false;
     else if (a == "--no-web-tools") web_tools = false;
-    else if (a == "--whisper") whisper_opt = next();
+    else if (a == "--whisper") whisper_opt = next(), whisper_given = true;
     else if (a == "--asr") asr_opt = next();
     else if (a == "--asr-slots") so.asr_slots = std::clamp(to_int(a, next()), 1, 4);
     else if (a == "--whisper-device") {
@@ -1281,6 +1282,7 @@ int main(int argc, char** argv) {
   // -m none: speech to text only (transcripts), a chat model loaded later by the first request naming one; with no
   // speech option given, Qwen3-ASR alone (the default transcript model, ~3.7 GB of GPU memory)
   const bool no_chat = model == "none";
+  const bool asr_given = asr_opt != "default";  // (--asr on the command line, before the default below)
   if (no_chat && whisper_opt == "off" && asr_opt == "default") asr_opt = "auto";
 
   // the NPU (--npu on / force, ARC_NPU): Level Zero initialized for every driver type before anything starts the GPU
@@ -1301,6 +1303,18 @@ int main(int argc, char** argv) {
     fprintf(stderr, "arcinferzero-server: -m none with --whisper off --asr off: nothing to run\n");
     return 1;
   }
+  // Settings can load and unload the speech models whatever the start said, unless it said off: without --whisper the
+  // cache's Whisper is offered (unloaded), without --asr its Qwen3-ASR, and the service exists with nothing loaded when
+  // a chat model started alone. Before, Settings said "not on this server" with the models on the disk.
+  if (!whisper_given || (wh && !asr_given)) {
+    if (!wh) {
+      wh = std::make_unique<srvwh::Service>(std::string(), false, so.eo.kernel_dir);
+      wh->max_seconds = whisper_max_min * 60;
+    }
+    if (!whisper_given) wh->offer_whisper(whisper::find_model());
+    if (!asr_given) wh->offer_asr(q3asr::find_model(), so.asr_slots);
+    so.whisper_props = wh->props();
+  }
   std::unique_ptr<Loaded> cur;
   std::string unloaded_path;  // (the chat model unloaded in Settings: first in /v1/models while none is loaded)
   if (no_chat)
@@ -1313,7 +1327,7 @@ int main(int argc, char** argv) {
       // (one that does not fit next to speech to text, models switchable: the server starts without it, as -m none,
       //  so the web UI can free memory and load it; else the reason and the end, as before)
       const bool fit = std::string(e.what()).find("does not fit in the GPU memory") != std::string::npos;
-      if (!(fit && swap && wh)) return 1;
+      if (!(fit && swap && wh && wh->gpu_bytes())) return 1;  // (speech to text loaded: it holds the memory)
       fprintf(stderr, "starting without a chat model (unload speech to text in the web UI's Settings, GPU memory, then a "
                       "request naming the model loads it)\n");
     }

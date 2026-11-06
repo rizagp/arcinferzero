@@ -140,6 +140,10 @@ class Service {
     whisper_dir_ = dir;
     m_ = std::make_unique<whisper::Model>(dir);
     eng_ = std::make_unique<WhisperEngine>(*m_, kernel_dir, 5, on_npu);
+    id = whisper_name(dir);
+    snap();
+  }
+  static std::string whisper_name(const std::string& dir) {
     std::string name = std::filesystem::path(dir).filename().string();
     if (name.size() == 40 && name.find_first_not_of("0123456789abcdef") == std::string::npos)  // (a snapshot hash)
       name = std::filesystem::path(dir).parent_path().parent_path().filename().string();
@@ -147,8 +151,19 @@ class Service {
     if (r != std::string::npos) name = name.substr(r + 2);
     if (name.rfind("faster-", 0) == 0) name = name.substr(7);
     if (name.size() > 4 && name.compare(name.size() - 4, 4, "-ct2") == 0) name.resize(name.size() - 4);
-    id = name;
-    snap();
+    return name;
+  }
+  // Not loaded at the start, but loadable (Settings, Transcribe again): a server started without that option whose
+  // Hugging Face cache has the model. Before any request (at start).
+  void offer_asr(const std::string& gguf, int slots) {
+    if (gguf.empty() || !asr_gguf_.empty()) return;
+    asr_gguf_ = gguf;
+    asr_slots_ = slots;
+  }
+  void offer_whisper(const std::string& dir) {
+    if (dir.empty() || !whisper_dir_.empty()) return;
+    whisper_dir_ = dir;
+    id = whisper_name(dir);
   }
   // (read by any thread: copies kept by snap() wherever the engines change, so no reader touches an engine that
   //  set_loaded is freeing)
@@ -201,7 +216,7 @@ class Service {
         try {
           if (which == "whisper") {
             if (load && !eng_) {
-              if (whisper_dir_.empty()) throw std::runtime_error("this server was started without Whisper (--whisper off)");
+              if (whisper_dir_.empty()) throw std::runtime_error("this server has no Whisper (--whisper off, or none in the Hugging Face cache)");
               auto m = std::make_unique<whisper::Model>(whisper_dir_);
               auto e = std::make_unique<WhisperEngine>(*m, kernel_dir_, 5, npu);
               m_ = std::move(m);
@@ -212,7 +227,7 @@ class Service {
             }
           } else {
             if (load && !asr_eng_) {
-              if (asr_gguf_.empty()) throw std::runtime_error("this server was started without Qwen3-ASR (--asr off)");
+              if (asr_gguf_.empty()) throw std::runtime_error("this server has no Qwen3-ASR (--asr off, or none in the Hugging Face cache)");
               load_asr(asr_gguf_, kernel_dir_, asr_slots_);
             } else if (!load && asr_eng_) {
               asr_enc_.reset();

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-06: the speech models load from Settings whatever the server was started with
+
+- Settings > GPU memory said "not on this server" for Whisper when the server had started without `--whisper`, with
+  the model in the Hugging Face cache, and a server started with a chat model alone offered no speech models at all.
+  Now Whisper and Qwen3-ASR found in the cache can be loaded and unloaded there, and by Transcribe again, whatever the
+  start said. They are not loaded at the start, so they take no GPU memory until asked. Only an explicit
+  `--whisper off` or `--asr off` keeps one away.
+- The Transcripts tab is therefore there on every server, with its saved transcripts.
+
 ## 2026-11-05 (night): remote access with a password; motion in the web UI; expert cache policies measured
 
 - **Remote access** (docs/remote-access.md): the web UI from a phone or anywhere through a Cloudflare Tunnel, with a
