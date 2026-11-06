@@ -10,7 +10,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, on discrete cards | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
-| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per 256 values; DPAS on XMX, DP4a else; iGPU too. Slower today on a B60 and the laptop: the rotations cost more than the GEMMs gain | 8 |
+| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_NOD=1`: without the random signs. Slower than the default on the laptop; this form not yet run on a B60 | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
@@ -224,6 +224,60 @@ One Pro B60, Qwen3.8 27B IQ3_S, `runz --bench-pp 4096 --n 16 --prof`, the owner'
 - **H8's accuracy on the B60:** USAGE.md, 4 x 512: perplexity 6.6371 -> 6.6577; KL against the default path mean
   0.00120, max 0.0777, same top token 98.04 %.
 - **H8 over several B60s:** [multi-gpu.md](multi-gpu.md).
+
+**Why that H8 did not gain what urakozz's does.** Its engine (urakozz/intel-arc-inference-server, Apache-2.0, a B70, a
+W4A16 checkpoint; `src/kernels/prefill/pf_int8.cl`, `src/runtime/prefill/int8.cc`, spec 5) gains 1.28x over its bf16
+prompt, 2,104 tok/s. Its GEMM runs 2.29x faster than the bf16 one (gate || up: 6.08 -> 2.66 ms) at 72-81 % of the int8
+DPAS peak, and pays about 50 % of that GEMM's time for its rotations. Ours on the B60 (2D + H8): the GEMM 1.33x, ~60
+of ~194 T/s (31 %), the rotations 47 %. So the rotations cost about the same share: the GEMM is what falls short. The
+differences its code shows:
+
+| | urakozz | ours before 2026-11-06 | ours now (`ARC_H8=1`) |
+|---|---|---|---|
+| Scales | one per column, one per token, applied once at the end of K | one per 256 values | the same as urakozz |
+| Column scales | computed once per weight | every decode | once per weight |
+| Rotation | in registers, 64 floats x 16 lanes; words through local memory once | through local memory, a barrier per stage | in registers |
+| Signs before the rotation | random, per K | none | random, by a hash of the index |
+| DPAS sums | stay in the DPAS accumulators | each DPAS starts at zero, then an add per token | stay in the accumulators (no B60 run yet) |
+| Activations | 2D loads, 32 rows at once | 2D loads, 8 rows at once | the same as before |
+| Weights | 2D loads with a prefetch, 32 columns a sub-group | block reads, 16 columns | the same as before |
+| Sub-group tile | 32 tokens x 32 columns, a 256 x 128 work-group, a split barrier each 64 values | 16 x 16 | the same as before |
+| Registers | not stated for its production kernel (its W4A8 probe: 256) | 128 | the same as before |
+
+Its production default since 2026-10-27 is bf16 again, by its operator's decision, with int8 opt-in.
+
+**The iGPU, 2026-11-06, 27B IQ3_S, `--bench-pp 4096 --n 16 --prof`, best of 3 per run, alternated with the default;
+KL against the default path on USAGE.md, 4 x 512:**
+
+| Form | tok/s | GEMMs' GPU time | Rotations | 27B KL mean / max | 4B KL mean / max |
+|---|---|---|---|---|---|
+| Default | 139.9-140.3 | 25.7-26.1 s | - | - | - |
+| H8, one scale per 256 values | 111.9 | 25.6 s | 6.64 s | 0.00100 / 0.030 | 0.00403 / 2.41 |
+| H8, per column and token, a second rounding pass | 105.7 | 26.8 s | 7.87 s | 0.00198 / 0.094 | 0.00521 / 2.07 |
+| **H8 now: in registers, one pass, signs** | **121.2-122.5** | 25.0-25.3 s | 4.23-4.33 s | 0.00148 / 0.048 | 0.00243 / 0.072 |
+
+- On DP4a the scales were not the cost: the GEMMs gained 1-4 %. DP4a runs the same dot products with or without them.
+  With the rotations free, H8 could only reach ~+3 % over the default. **It stays off on the iGPU.**
+- The rotation in registers: `h8_act` 1.68 -> 0.58 s, `h8_weights` 4.96 -> 3.70 s. Without the signs the 4B's KL is
+  0.00310, max 0.56 (with them 0.00243, 0.072).
+- 4B (weights resident, rotated once): 846-925 tok/s against 885-900 by default, within the run-to-run spread.
+- These are against the default path, not against f32 (the default path: 27B KL 0.0003-0.0004 against f32).
+- Split models (`ARC_TP_SIM`, 2 and 4 shards, a 903-token prompt): 27B greedy text equal to one GPU over 16 tokens, KL
+  per row at most 0.006. 4B: the text parts at a close choice (one GPU H8, row 3, KL 0.137, the worst seen: 0.66 / 0.23
+  against 0.46 / 0.45; 2 and 4 shards, row 6, a tie of 0.31 / 0.30).
+
+**What a B60 should run next** (none of this form has run on an XMX GPU; the kernels build for Battlemage with ocloc,
+and a failure of the start check now only leaves H8 out of the XMX GEMMs, with the rest of XMX kept for runs without
+`ARC_H8`):
+
+```powershell
+$env:ARC_H8=1; .\bin\runz.exe <27B gguf> --bench-pp 4096 --n 16 --prof
+$env:ARC_GEMM_TM=32; .\bin\runz.exe <27B gguf> --bench-pp 4096 --n 16 --prof; Remove-Item Env:ARC_GEMM_TM
+$env:ARC_GEMM_GRF=256; .\bin\runz.exe <27B gguf> --bench-pp 4096 --n 16 --prof; Remove-Item Env:ARC_GEMM_GRF
+.\bin\runz.exe <27B gguf> --perplexity USAGE.md --ppl-chunks 4 --ppl-kl base.kl; Remove-Item Env:ARC_H8
+```
+
+If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D loads and urakozz's wider tile.
 
 **Arc 140T (Core Ultra 9 285H, issue #5): XMX not measured yet.** Its 180 tok/s (pp2048) and 6.0 tok/s are without XMX:
 `ClRt::xmx` (zero/clrt.h) needs a GPU without 8-lane sub-groups because the XMX GEMM has 16 lanes, and its log has no

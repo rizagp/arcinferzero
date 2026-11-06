@@ -404,8 +404,10 @@
     struct Soft { bool& f; ~Soft() { f = false; } } soft{cl_.soft_fail};
     cl_.soft_fail = true;
     try {
-      for (int q : {101, 100, 103, 102, 8, 12, 13, 14, 110})  // (110: H8, zero/engine_h8.h, per-256 activations only)
-        for (int a32 = q == 110 ? 0 : 1; a32 >= 0; --a32) {
+      for (int q : {101, 100, 103, 102, 8, 12, 13, 14, 110, 111})  // (110, 111: H8, zero/engine_h8.h, never per-32 activations)
+        for (int a32 = q >= 110 ? 0 : 1; a32 >= 0; --a32) {
+          // (only when asked for: an H8 kernel that fails its check must not take XMX away from everything else)
+          if (q >= 110 && !(h8_env() && q == h8_qtype())) continue;
           const std::string nm = std::to_string(q) + (a32 ? "/act32" : "");
           const int cg = xe2_cg_for(N);
           auto make = [&](int x) { return gemm_kernel(q, a32 != 0, x, cg); };

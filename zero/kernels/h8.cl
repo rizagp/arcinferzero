@@ -126,3 +126,190 @@ __kernel void h8_act(__global const uint* restrict aq, __global const float* res
   aqh[((size_t)m * K + e0) / 4] = pack_q(v, amax > 0.0f ? 127.0f / amax : 0.0f);
   if (t % 64 == 0) asch[(size_t)(e0 / 256) * M + m] = amax / (127.0f * sqrt((float)HB));
 }
+
+// ---- H8R (gemm.cl QTYPE 111): one scale per column and one per token, the rotation in registers. A sub-group holds a
+// whole rotation block of one column or one token: NV floats x 16 lanes = HB values. The butterflies between registers
+// and between lanes need no barrier, where h8_weights / h8_act above take one per stage through local memory. The
+// order of the stages does not change a Walsh-Hadamard transform, so the two sides below, which hold a block's values
+// differently, compute the same one. The way of working follows urakozz/intel-arc-inference-server (Apache-2.0,
+// src/kernels/prefill/pf_int8.cl): register butterflies, a column's scale computed once, the signs D. -DH8_D: each
+// value's sign flipped by its index in the block first, so a block's mean does not all land on one coefficient.
+#define NV (HB / 16)   // floats per lane
+#define WPL (HB / 64)  // int8x4 words per lane (weights: a lane's values are contiguous)
+#define TP (HB / 4 + 1)  // the words' pitch in local memory, one more than a column's
+
+inline float h8_signed(float v, uint i) {
+#ifdef H8_D
+  uint x = i * 0x9E3779B1u;
+  x ^= x >> 15;
+  x *= 0x85EBCA77u;
+  return as_float(as_uint(v) ^ (x & 0x80000000u));
+#else
+  return v;
+#endif
+}
+
+// register stages over v[0 .. NV), then the stages between the 16 lanes
+inline void h8_fwht_regs(float* v) {
+  const uint l = get_sub_group_local_id();
+#pragma unroll
+  for (uint h = 1; h < NV; h <<= 1)
+#pragma unroll
+    for (uint j = 0; j < NV; ++j)
+      if ((j & h) == 0) {
+        const float a = v[j], b = v[j + h];
+        v[j] = a + b;
+        v[j + h] = a - b;
+      }
+#pragma unroll
+  for (uint h = 1; h < 16; h <<= 1)
+#pragma unroll
+    for (uint j = 0; j < NV; ++j) {
+      const float o = intel_sub_group_shuffle_xor(v[j], h);
+      v[j] = (l & h) ? (o - v[j]) : (v[j] + o);
+    }
+}
+
+#ifdef SRC
+// grid (N / 16 * 256, K / HB), local (256, 1): one group = 16 columns x one rotation block. Sub-group c owns column c,
+// lane l owns the block's values 4 WPL l .. + NV - 1. The words come through local memory once, as block reads could
+// not hold one column in one sub-group
+inline void h8r_load(__global const uint* restrict wq, __global const uint* restrict wh, int K, __local uint* tin,
+                     float* v) {
+  const int lid = get_local_id(0), c = get_sub_group_id(), l = get_sub_group_local_id();
+  const int g = get_group_id(0), blk = get_group_id(1), nsb = K / 256;
+#pragma unroll
+  for (int i = 0; i < WPL; ++i) {
+    const int t = lid + 256 * i, row = t / SG, col = t % SG, e = blk * HB + 4 * row;
+    tin[col * TP + row] = wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * SG + col];
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const int e0 = blk * HB + 4 * WPL * l, s = e0 / 256;
+  const uint i0 = 4 * WPL * l;
+#if SRC == 8
+  __global const uint* hp = wh + ((size_t)g * nsb + s) * (8 * SG);
+#else
+  __global const uint* hp = wh + ((size_t)g * nsb + s) * (10 * SG);
+  const float d = as_float(hp[c]), dmin = as_float(hp[SG + c]);
+  const int b160 = (e0 % 256) / 16;  // (a lane's 16-blocks are in one word of scales and of mins)
+  const uint hs = hp[(2 + b160 / 4) * SG + c];
+#if SRC >= 102
+  const uint hm = hp[(6 + b160 / 4) * SG + c];
+#endif
+#endif
+#pragma unroll
+  for (int i = 0; i < WPL; ++i) {
+    const uint word = tin[c * TP + WPL * l + i];
+#if SRC == 8
+    const float dq = as_float(hp[((e0 % 256 + 4 * i) / 32) * SG + c]);
+#else
+    const int b16 = b160 + i / 4;
+#if SRC & 1
+    const int sc = (int)(char)(hs >> ((b16 & 2) ? 16 : 0));
+#else
+    const int sc = (int)(char)(hs >> (8 * (b16 & 3)));
+#endif
+#if SRC >= 102
+    const float mn = (float)((hm >> (8 * (b16 & 3))) & 0xFF);
+#else
+    const float mn = 0.0f;
+#endif
+    const float dq = d * (float)sc, off = dmin * mn;
+#endif
+#pragma unroll
+    for (int b = 0; b < 4; ++b) {
+#if SRC == 8
+      const float x = dq * (float)(char)(word >> (8 * b));
+#else
+      const float x = dq * (float)(char)(word >> (8 * b)) - off;
+#endif
+      v[4 * i + b] = h8_signed(x, i0 + 4 * i + b);
+    }
+  }
+  h8_fwht_regs(v);
+}
+
+// each column's scale, by the largest rotated value of all its blocks (once per weight; col starts at zero).
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void h8r_colmax(__global const uint* restrict wq, __global const uint* restrict wh,
+                         __global uint* restrict col, int K) {
+  __local uint tin[SG * TP];
+  float v[NV];
+  h8r_load(wq, wh, K, tin, v);
+  float amax = 0.0f;
+#pragma unroll
+  for (int j = 0; j < NV; ++j) amax = fmax(amax, fabs(v[j]));
+  amax = sub_group_reduce_max(amax);
+  if (get_sub_group_local_id() == 0)
+    atomic_max((volatile __global uint*)(col + get_group_id(0) * SG + get_sub_group_id()),
+               as_uint(amax / (127.0f * sqrt((float)HB))));
+}
+
+// the weight rotated at those scales, in place
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void h8r_weights(__global uint* wq, __global const uint* restrict wh, __global const float* restrict col,
+                          int K) {
+  __local uint tin[SG * TP];
+  __local uint tout[SG * TP];
+  float v[NV];
+  h8r_load(wq, wh, K, tin, v);
+  const int c = get_sub_group_id(), l = get_sub_group_local_id();
+  const float cs = col[get_group_id(0) * SG + c];
+  const float iv = cs > 0.0f ? 1.0f / (cs * sqrt((float)HB)) : 0.0f;
+#pragma unroll
+  for (int i = 0; i < WPL; ++i) {
+    const float q[4] = {v[4 * i], v[4 * i + 1], v[4 * i + 2], v[4 * i + 3]};
+    tout[c * TP + WPL * l + i] = pack_q(q, iv);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const int lid = get_local_id(0), g = get_group_id(0), blk = get_group_id(1), nsb = K / 256;
+#pragma unroll
+  for (int i = 0; i < WPL; ++i) {
+    const int t = lid + 256 * i, row = t / SG, cl = t % SG, e = blk * HB + 4 * row;
+    wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * SG + cl] = tout[cl * TP + row];
+  }
+}
+#else
+// A token's blocks, one sub-group each, into int8 with the token's one scale in asch[M]. A lane holds the words at 4 l
+// of each 64 bytes (block reads): its values are index 64 r + 4 l + b of the block, v[4 r + b]. grid (16 * K / HB * M),
+// local (16 * K / HB)
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void h8r_act(__global const uint* restrict aq, __global const float* restrict asc, int act32,
+                      __global uint* restrict aqh, __global float* restrict asch, int M, int K) {
+  __local float red[32];
+  const int nblk = K / HB, m = get_group_id(0), bk = get_sub_group_id();
+  const uint l = get_sub_group_local_id();
+  float v[NV];
+#pragma unroll
+  for (int r = 0; r < NV / 4; ++r) {
+    const uint word = intel_sub_group_block_read(aq + (size_t)m * (K / 4) + (size_t)bk * (HB / 4) + r * SG);
+    const int e0 = bk * HB + 64 * r;
+    float sc;
+    if (act32) {  // (lanes 0-7 are the first 32 values of the 64, lanes 8-15 the second)
+      const float s0 = asc[(size_t)(e0 / 32) * M + m], s1 = asc[(size_t)(e0 / 32 + 1) * M + m];
+      sc = l < 8 ? s0 : s1;
+    } else {
+      sc = asc[(size_t)(e0 / 256) * M + m];
+    }
+#pragma unroll
+    for (int b = 0; b < 4; ++b)
+      v[4 * r + b] = h8_signed(sc * (float)(char)(word >> (8 * b)), 64 * r + 4 * l + b);
+  }
+  h8_fwht_regs(v);
+  float amax = 0.0f;
+#pragma unroll
+  for (int j = 0; j < NV; ++j) amax = fmax(amax, fabs(v[j]));
+  amax = sub_group_reduce_max(amax);
+  if (l == 0) red[bk] = amax;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  amax = 0.0f;
+  for (int i = 0; i < nblk; ++i) amax = fmax(amax, red[i]);
+  if (bk == 0 && l == 0) asch[m] = amax / (127.0f * sqrt((float)HB));
+  const float iv = amax > 0.0f ? 127.0f / amax : 0.0f;
+#pragma unroll
+  for (int r = 0; r < NV / 4; ++r) {
+    const float q[4] = {v[4 * r], v[4 * r + 1], v[4 * r + 2], v[4 * r + 3]};
+    intel_sub_group_block_write(aqh + (size_t)m * (K / 4) + (size_t)bk * (HB / 4) + r * SG, pack_q(q, iv));
+  }
+}
+#endif

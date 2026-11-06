@@ -11,7 +11,12 @@
 // in place once per decode (h8_weights); their H8 superblock scales go to a header buffer of their own (a resident
 // weight's in h8_res_, a staged one's per role in stage_hh_). The activations stay as the fused norm / quantization
 // kernels write them (aq_ / asc_, per-32 or per-256 scales) and are rotated into h8_aq_ / h8_asc_ before each GEMM
-// (h8_act: ~1 % of a GEMM's time).
+// (h8_act: 14 % of the GEMMs' time on a B60, 2026-11-06).
+//
+// H8R, per-column and per-token scales (gemm.cl QTYPE 111, kernels h8r_* of h8.cl, the default within ARC_H8=1;
+// ARC_H8_SB=1 keeps the per-256 ones, QTYPE 110): a weight's column scales are computed once from its first decode
+// (h8_col_, N floats) and each token's scale in the rotation's one pass (h8_asc_[token]), the rotations in registers,
+// and a GEMM's dot products over the whole of K are one integer sum. ARC_H8_NOD=1: without the random signs.
 //
 // Off unless ARC_H8=1 until it is measured; never with ARC_NPU (shared weight buffers); never with a two-pass model (q2mm_: Gemma 4 26B / 12B, Qwen3 ASR's text
 // model), never for a mixture of experts' expert GEMMs (their own kernels) or the vision / audio encoders (only the
@@ -29,6 +34,11 @@
     static const bool on = getenv("ARC_H8") && atoi(getenv("ARC_H8")) != 0;
     return on;
   }
+  static bool h8_row() {  // (one scale per column and per token; ARC_H8_SB=1: per 256 values)
+    static const bool sb = getenv("ARC_H8_SB") && atoi(getenv("ARC_H8_SB")) != 0;
+    return !sb;
+  }
+  static int h8_qtype() { return h8_row() ? 111 : 110; }
   // (q2_init has run: q2mm_ known)
   void h8_init() {
     // (never with the NPU: its shares copy a weight (N.gate = L.gate) over the same buffers, so the in-place conversion
@@ -40,7 +50,10 @@
       fprintf(stderr, "arcinferzero: ARC_H8 is off with ARC_NPU (both convert the same weights)\n");
     // (once per process: a split model's shards each init; bench/gemm_sweep.ps1 reads this line)
     static std::once_flag said;
-    if (h8_ && !opt.dry) std::call_once(said, [] { fprintf(stderr, "arcinferzero: H8 on for the prompt GEMMs (Hadamard-rotated int8)\n"); });
+    if (h8_ && !opt.dry) std::call_once(said, [] {
+      fprintf(stderr, "arcinferzero: H8 on for the prompt GEMMs (Hadamard-rotated int8, one scale per %s)\n",
+              h8_row() ? "column and token" : "256 values");
+    });
   }
   // the rotation block for a row length K: the largest power of two up to 1024 (ARC_H8_HB) dividing it; K is a whole
   // number of 256-superblocks, so at least 256
@@ -55,18 +68,46 @@
   }
   bool h8_ok(const GpuWeight& w) const {
     return h8_ && w.role >= 0 && w.role <= 10 &&  // (weight_role's named matrices of the text model)
-           (w.gemm_qtype == (int)GGML_Q8_0 || (w.gemm_qtype >= 100 && w.gemm_qtype <= 103)) && w.K % 256 == 0 && w.N % 16 == 0;
+           (w.gemm_qtype == (int)GGML_Q8_0 || (w.gemm_qtype >= 100 && w.gemm_qtype <= 103)) && w.K % 256 == 0 && w.N % 16 == 0 &&
+           (!h8_row() || (w.K / h8_block(w.K) <= 32 && w.K <= 130000));  // (H8R: red[32]; the sum over K within int32)
   }
   // its buffers with the others (alloc_buffers), so the memory plan counts them; a dry run too
   void h8_reserve(size_t M, int maxK) {
     if (!h8_) return;
     h8_aq_ = buf(M * (size_t)maxK);
     h8_asc_ = buf(M * (size_t)(maxK / 256) * 4);
+    if (h8_row()) return;
     for (int r = 0; r < kRoles; ++r)  // (a role's H8 scales: N * K / 256 floats, an eighth of its W8 header at most)
       if (stage_need_h_[r]) stage_hh_[r] = buf(stage_hh_bytes_[r] = stage_need_h_[r] / 8 + 64);
   }
   cl_kernel h8_kernel(int hb, int src, const char* name) {
     return kernel("h8", "-DHB=" + std::to_string(hb) + (src ? " -DSRC=" + std::to_string(src) : std::string()), name);
+  }
+  // (H8R: 64 floats x 16 lanes in registers; ARC_H8_NOD=1: without the signs)
+  cl_kernel h8r_kernel(int hb, int src, const char* name) {
+    static const bool nod = getenv("ARC_H8_NOD") && atoi(getenv("ARC_H8_NOD")) != 0;
+    return kernel("h8", std::string("-cl-intel-256-GRF-per-thread ") + (nod ? "" : "-DH8_D ") + "-DHB=" + std::to_string(hb) +
+                            (src ? " -DSRC=" + std::to_string(src) : std::string()), name);
+  }
+  // H8R: a weight's column scales (N floats), computed once from its decoded form, then the weight rotated in place
+  std::map<const GpuWeight*, cl_mem> h8_col_;
+  cl_mem h8r_weights(const GpuWeight& w, cl_mem wq, cl_mem wh) {
+    const int hb = h8_block(w.K);
+    int K = w.K;
+    size_t gws[2] = {(size_t)w.N / 16 * 256, (size_t)(w.K / hb)}, lws[2] = {256, 1};
+    auto it = h8_col_.find(&w);
+    if (it == h8_col_.end()) {
+      const std::vector<uint32_t> zero((size_t)w.N, 0u);
+      cl_mem col = buf(zero.size() * 4, zero.data());
+      cl_kernel km = h8r_kernel(hb, w.gemm_qtype, "h8r_colmax");
+      set_args(km, 0, wq, wh, col, K);
+      run("h8_colmax", km, 2, gws, lws);
+      it = h8_col_.emplace(&w, col).first;
+    }
+    cl_kernel k = h8r_kernel(hb, w.gemm_qtype, "h8r_weights");
+    set_args(k, 0, wq, wh, it->second, K);
+    run("h8_weights", k, 2, gws, lws);
+    return it->second;
   }
   // W8 / Q8_0 weights (wq, wh) into H8 in place, their scales into hh
   void h8_weights(const GpuWeight& w, cl_mem wq, cl_mem wh, cl_mem hh) {
@@ -80,8 +121,16 @@
   // this GEMM's input (aq_ / asc_, per-32 scales when act32) rotated into h8_aq_ / h8_asc_
   void h8_act(int Mp, int K, bool act32) {
     const int hb = h8_block(K);
-    cl_kernel k = h8_kernel(hb, 0, "h8_act");
     int a32 = act32 ? 1 : 0, M = Mp, KK = K;
+    if (h8_row()) {
+      cl_kernel k = h8r_kernel(hb, 0, "h8r_act");
+      set_args(k, 0, aq_, asc_, a32, h8_aq_, h8_asc_, M, KK);
+      const size_t wg = 16 * (size_t)(K / hb);
+      size_t gws[1] = {wg * Mp}, lws[1] = {wg};
+      run("h8_act", k, 1, gws, lws);
+      return;
+    }
+    cl_kernel k = h8_kernel(hb, 0, "h8_act");
     set_args(k, 0, aq_, asc_, a32, h8_aq_, h8_asc_, M, KK);
     size_t gws[3] = {(size_t)hb / 4, (size_t)Mp, (size_t)(K / hb)}, lws[3] = {(size_t)hb / 4, 1, 1};
     run("h8_act", k, 3, gws, lws);
@@ -89,6 +138,23 @@
   // the H8 form of a weight for this GEMM: resident ones converted once, staged ones after each decode (stage_owner_
   // stays the weight, so a layer's next chunks find it converted)
   void h8_prepare(const GpuWeight& w, cl_mem& wq, cl_mem& hh) {
+    if (w.wq && h8_row()) {
+      auto it = h8_col_.find(&w);
+      hh = it != h8_col_.end() ? it->second : h8r_weights(w, w.wq, w.wh);
+      wq = w.wq;
+      return;
+    }
+    if (h8_row()) {
+      wq = stage_q_[w.role];
+      if (stage_owner_[w.role] != &w) {
+        decode_w8(w, wq, stage_h_[w.role]);
+        hh = h8r_weights(w, wq, stage_h_[w.role]);
+        stage_owner_[w.role] = &w;
+      } else {
+        hh = h8_col_.at(&w);
+      }
+      return;
+    }
     if (w.wq) {
       auto it = h8_res_.find(&w);
       if (it == h8_res_.end()) {
@@ -118,7 +184,7 @@
     h8_prepare(w, wq, hh);
     h8_act(Mp, w.K, act32);
     const int cg = xe2_cg_for(w.N);
-    cl_kernel k = gemm_kernel(110, false, -1, cg);
+    cl_kernel k = gemm_kernel(h8_qtype(), false, -1, cg);
     int M = Mp, N = w.N, K = w.K;
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-06: H8 with one scale per column and token, the rotation in registers
+
+- `ARC_H8=1` (opt-in) now works as urakozz's int8 prefill does: one scale per column, computed once per weight, and one
+  per token, so a GEMM's dot products over K are one integer sum; the rotation in registers instead of a barrier per
+  stage through local memory; random signs before it; on XMX the sums stay in the DPAS accumulators. `ARC_H8_SB=1`
+  keeps the per-256 form, `ARC_H8_NOD=1` leaves out the signs.
+- Laptop iGPU, 27B 4K prompt: H8 111.9 -> 122.5 tok/s, rotations 6.64 -> 4.3 s, and KL against the default path 4B
+  0.00403 -> 0.00243 (largest row 2.41 -> 0.072), 27B 0.00100 -> 0.00148. **The default path stays faster on the iGPU
+  (140 tok/s) and stays the default:** DP4a's GEMMs gained only 1-4 % from the scales.
+- Not run on an XMX GPU yet; a B60 has to say what it gains (docs/xe2-tuning.md section 8 has the commands and the
+  comparison with urakozz's code).
+- The start-time XMX check tests an H8 kernel only when H8 is asked for, so one cannot take XMX away from other runs.
+- The default path's logits are bit-identical (4B, 27B).
+
 ## 2026-11-06: 2D block loads by default on discrete cards; the B60 and 140T results
 
 - **Prompts on discrete cards:** the XMX GEMM now loads its activations with 2D block loads and a prefetch. A Pro B60's

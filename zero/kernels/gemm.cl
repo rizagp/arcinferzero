@@ -41,12 +41,18 @@
 #define Q6_K 14
 #define Q8_0 8
 
-#if QTYPE == 110
+#if QTYPE == 110 || QTYPE == 111
 // H8 (QUEUE 31.12, kernels/h8.cl): weights and activations Hadamard-rotated, int8 with one scale per superblock each:
 // the W8 values layout, a header of one float per superblock, no per-16 / per-32 scales or mins; activations with
 // per-256 scales (never ACT32). The superblock's 256-value dot product is one integer sum.
+// 111 (H8R): one scale per column (wh[column]) and per token (asc[token]) over the whole of K, so a split's whole dot
+// product is one integer sum (|sum| <= 127 * 127 * K, within int32 up to K = 133,000); on XMX the DPAS accumulates it
+// itself, with no add of its own per token.
 #define W8 1
 #define H8 1
+#if QTYPE == 111
+#define H8R 1
+#endif
 #define SC32 1
 #define HAS_MIN 0
 #define DPJ 16
@@ -109,6 +115,7 @@
 #else
 #define XMAD(a, b) intel_sub_group_i8_i8_matrix_mad_k32((a), as_int8(b), (int8)(0))
 #endif
+#define XMADA(a, b, c) intel_sub_group_i8_i8_matrix_mad_k32((a), as_int8(b), (c))
 #define XUNPACK(v, c) { c[0] = v.s0; c[1] = v.s1; c[2] = v.s2; c[3] = v.s3; c[4] = v.s4; c[5] = v.s5; c[6] = v.s6; c[7] = v.s7; }
 #endif
 
@@ -175,12 +182,23 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
   float res[TM];
 #pragma unroll
   for (int m = 0; m < TM; ++m) res[m] = 0.0f;
+#if defined(H8R) && defined(XMX)
+  int8 xacc[TM / 8];
+#pragma unroll
+  for (int v = 0; v < TM / 8; ++v) xacc[v] = (int8)(0);
+#elif defined(H8R)
+  int isum[TM];
+#pragma unroll
+  for (int m = 0; m < TM; ++m) isum[m] = 0;
+#endif
 
   // superblocks [s_begin, s_end) of K (split-K: later splits accumulate into C)
   for (int s = s_begin; s < s_end; ++s) {
     __global const uint* hp = whp + s * HDR * SG;
     // ---- per-superblock weight header
-#if defined(H8)
+#if defined(H8R)
+    // (none: one scale per column, read after the loop)
+#elif defined(H8)
     const float d = as_float(intel_sub_group_block_read(hp));
 #elif defined(W8)
     const uint2 hd = intel_sub_group_block_read2(hp);
@@ -216,7 +234,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
     for (int m = 0; m < TM; ++m) tmn[m] = 0.0f;
 #endif
 #endif
-#ifndef ACT32
+#if !defined(ACT32) && !defined(H8R)
 #if QTYPE == Q8_0
     float isum[TM];
 #pragma unroll
@@ -314,7 +332,9 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
 #pragma unroll
       for (int mg = 0; mg < TM; mg += TP) {
 #ifdef XMX
-#if SC32
+#if defined(H8R)
+      // (the sums stay in the DPAS accumulators)
+#elif SC32
       int c0[TP], c1[TP];
 #else
       int c0[TP], c1[TP], c2[TP], c3[TP];
@@ -346,7 +366,10 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
         const short8 al = (short8)(ta[0], ta[1], ta[2], ta[3], ta[4], ta[5], ta[6], ta[7]);
         const short8 ah = (short8)(tb[0], tb[1], tb[2], tb[3], tb[4], tb[5], tb[6], tb[7]);
 #endif
-#if SC32
+#if defined(H8R)
+        xacc[mg / 8] = XMADA(ah, ((uint8)(hi[0], hi[1], hi[2], hi[3], hi[4], hi[5], hi[6], hi[7])),
+                             XMADA(al, ((uint8)(lo[0], lo[1], lo[2], lo[3], lo[4], lo[5], lo[6], lo[7])), xacc[mg / 8]));
+#elif SC32
         const int8 r0 = XMAD(al, ((uint8)(lo[0], lo[1], lo[2], lo[3], lo[4], lo[5], lo[6], lo[7])));
         const int8 r1 = XMAD(ah, ((uint8)(hi[0], hi[1], hi[2], hi[3], hi[4], hi[5], hi[6], hi[7])));
         XUNPACK(r0, c0)
@@ -402,6 +425,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
         }
 #endif
 #endif  // XMX
+#if !(defined(H8R) && defined(XMX))
 #pragma unroll
       for (int p = 0; p < TP; ++p) {
         const int m = mg + p;
@@ -437,6 +461,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
 #endif
 #endif
       }
+#endif  // !(H8R && XMX)
       }
     }
 
@@ -450,7 +475,7 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
 #endif
     }
 #endif
-#ifndef ACT32
+#if !defined(ACT32) && !defined(H8R)
     // ---- superblock epilogue: activation scale (and the min term)
     float av[TMV];
 #pragma unroll
@@ -487,6 +512,26 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
     }
 #endif
   }
+
+#ifdef H8R
+  // ---- the one epilogue: the column's scale x each token's
+  const float dcol = as_float(intel_sub_group_block_read(wh + (size_t)g * SG));
+  float av[TMV];
+#pragma unroll
+  for (int v = 0; v < TMV; ++v)
+    av[v] = as_float(intel_sub_group_block_read((__global const uint*)(asc + m0 + 16 * v)));
+#ifdef XMX
+  int isum[TM];
+#pragma unroll
+  for (int v = 0; v < TM / 8; ++v) {
+    const int8 x = xacc[v];
+    isum[8 * v + 0] = x.s0; isum[8 * v + 1] = x.s1; isum[8 * v + 2] = x.s2; isum[8 * v + 3] = x.s3;
+    isum[8 * v + 4] = x.s4; isum[8 * v + 5] = x.s5; isum[8 * v + 6] = x.s6; isum[8 * v + 7] = x.s7;
+  }
+#endif
+#pragma unroll
+  for (int m = 0; m < TM; ++m) res[m] = BCAST(av[m / 16], m % 16) * dcol * (float)isum[m];
+#endif
 
 #ifdef MOE_TILES
   const float rsc = use_scale ? rowscale[rl] : 1.0f;
