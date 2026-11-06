@@ -58,19 +58,22 @@
     return xe2_ && !g256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
 
-  // ARC_GEMM_2D=1 (QUEUE 31.8): the XMX prompt GEMM's activations with 2D block loads (cl_intel_subgroup_2d_block_io,
-  // gemm.cl -DX2D): a step's 8 token rows x 64 bytes in one 8b_8r32x2c load, the DPAS A operands as the hardware lays
-  // them out, instead of 16 one-row block reads; ARC_GEMM_2D_PF=1 also prefetches the next 64 bytes of those rows.
-  // Dense GEMMs only (the MoE tile kernel reads rows through a row map). Off until a B60 measures it; when on, the
-  // start-time XMX check runs with it, and if it does not build or differs, XMX goes on without it
+  // QUEUE 31.8: the XMX prompt GEMM's activations with 2D block loads (cl_intel_subgroup_2d_block_io, gemm.cl -DX2D): a
+  // step's 8 token rows x 64 bytes in one 8b_8r32x2c load, the DPAS A operands as the hardware lays them out, instead of
+  // 16 one-row block reads; the prefetch (-DX2D_PF) also asks for the next 64 bytes of those rows. Dense GEMMs only (the
+  // MoE tile kernel reads rows through a row map). On by default on discrete cards: a Pro B60's 27B prompt went 608 ->
+  // 752 tok/s, 763 with the prefetch (issue #4, 2026-11-06). ARC_GEMM_2D=0 / ARC_GEMM_2D_PF=0 turn them off. The
+  // start-time XMX check runs with them, and if they do not build or differ, XMX goes on without them
   bool x2d_ = false;
+  static bool x2d_switch(const char* name) {  // (ARC_XMX_TRY on an iGPU: only when asked for)
+    const char* e = getenv(name);
+    return e != nullptr ? atoi(e) != 0 : !zrt::integrated();
+  }
   std::string xe2_x2d() const {
-    static const bool pf = getenv("ARC_GEMM_2D_PF") && atoi(getenv("ARC_GEMM_2D_PF")) != 0;
+    static const bool pf = x2d_switch("ARC_GEMM_2D_PF");
     return x2d_ ? std::string(pf ? " -DX2D -DX2D_PF" : " -DX2D") : std::string();
   }
-  bool x2d_wanted() const {
-    return xe2_ && cl_.block2d && getenv("ARC_GEMM_2D") && atoi(getenv("ARC_GEMM_2D")) != 0;
-  }
+  bool x2d_wanted() const { return xe2_ && cl_.block2d && x2d_switch("ARC_GEMM_2D"); }
 
   // ---- the f16 XMX prompt GEMM (kernels/gemm_x16.cl) for the W8 layouts (the 27B's IQ3_S, decoded just in time).
   // Off until measured on a B60: ARC_X16=1 on a discrete GPU with XMX. ARC_X16_TRY=1 anywhere, DPAS emulated where

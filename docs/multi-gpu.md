@@ -104,8 +104,11 @@ file, cache tables).
   attention, for 10 more sums per token: a gain at long contexts and prompts, a small loss at short ones (estimated
   for B60s: ~0.57 ms more sums against ~0.3 ms less reading per token). Laptop, ARC_TP_SIM, 1,687-token prompt, KL to
   one GPU over the positions before the greedy texts part: 0.0109, against 0.0076 with the attention whole. Both are
-  within the 4-GPU split's own range (0.0074-0.0115), and 2 GPUs are bit-identical to before. It stays off until
-  B60s measure it.
+  within the 4-GPU split's own range (0.0074-0.0115), and 2 GPUs are bit-identical to before. 4 B60s, 2026-11-06,
+  `--bench-pp 16384 --n 64`: prompt 3,435-3,442 -> **4,287-4,292 tok/s** (+25 %), median step 8.8 -> 8.1 ms, each GPU
+  5.54 instead of 6.11 GiB. It stays off for now: no KL on B60s, and its one generation run spent about 4.4 s on the
+  first token (cause not known, perhaps kernels compiling). An earlier comment in issue #4 gives 4,260 tok/s over 4
+  without saying this was on; whether the default went down since has not been checked.
 - **Off in a split model:** decode + GEMM for prompt experts (it decodes every expert of a layer; moe_rg runs the
   prompt chunks instead, the same results bit for bit on one GPU), and the cached / missing split of a token's
   experts (ARC_XSPLIT): with experts missing it gave run-to-run differences in a split model, see QUEUE F30.
@@ -189,6 +192,17 @@ first step):
   79edbcd): 20 runs each of 1, 2, 3 and 4 GPUs, 80 loads, no abort; loading 8.7 / 14.9 / 11.7 / 9.3 s (1-4 GPUs,
   averages); every run's median step within 0.4 ms (2: 27.7-28.1 ms, 3: 22.8-23.1, 4: 18.5-18.7) and pp512 within
   2 tok/s (512.8 / 542.1 / 546.5).
+
+**27B with `ARC_H8=1`, 2026-11-06** (commit 9c18778, `--bench-pp 4096 --n 16`; one GPU with H8 570 tok/s, 44.9 ms):
+
+| GPUs | Prompt | Against one GPU | Median step | About | Waiting per token |
+|---|---|---|---|---|---|
+| 2 | 863 tok/s | 1.51x | 27.3 ms | 36.6 tok/s | 22.63 ms |
+| 4 | 1,232 tok/s | 2.16x | 18.2 ms | 55 tok/s | 13.17 ms |
+
+- `tg16` says 11.63 and 42.36 tok/s because it counts the slow first step. Use the median.
+- There is no 27B run over 4 GPUs at 4K without H8 in these logs, so what H8 adds over several GPUs is not known. 2D
+  block loads over several GPUs have not run yet.
 
 Next for speed: f16 parts for prompts (half the bytes), the next GPU waiting on an event instead of a host wait and
 a barrier, and batch decoding (a step's sums carry several rows for the cost of one).

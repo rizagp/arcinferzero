@@ -23,8 +23,8 @@
 #   X16CG       with X16 on: ARC_X16_CG, 16-column groups per sub-group 1, 2 or 4 [1]
 #   H8          ARC_H8=1: the H8 GEMM (QUEUE 31.12, zero/engine_h8.h): weights and activations Hadamard-rotated, int8
 #               with one scale per 256 values, no per-16 / per-32 rescaling [off]
-#   X2D         ARC_GEMM_2D=1: the XMX GEMM's activations by 2D block loads (QUEUE 31.8); "pf": with ARC_GEMM_2D_PF=1,
-#               the next 64 bytes prefetched [off]
+#   X2D         the XMX GEMM's activations by 2D block loads (QUEUE 31.8; ARC_GEMM_2D=0 turns them off); "on": without
+#               the prefetch of the next 64 bytes (ARC_GEMM_2D_PF=0); "pf": with it [pf]
 param(
   [Parameter(Mandatory = $true)][string[]]$Models,
   [int]$Tokens = 4096,
@@ -58,7 +58,7 @@ function Invoke-Run([string]$model, [hashtable]$set) {
       "X16GRF" { $env:ARC_X16 = "1"; $env:ARC_X16_GRF = "$($set[$k])" }
       "X16CG" { $env:ARC_X16 = "1"; $env:ARC_X16_CG = "$($set[$k])" }
       "H8" { if ($set[$k] -eq "on") { $env:ARC_H8 = "1" } }
-      "X2D" { if ($set[$k] -ne "off") { $env:ARC_GEMM_2D = "1" }; if ($set[$k] -eq "pf") { $env:ARC_GEMM_2D_PF = "1" } }
+      "X2D" { $env:ARC_GEMM_2D = $(if ($set[$k] -eq "off") { "0" } else { "1" }); $env:ARC_GEMM_2D_PF = $(if ($set[$k] -eq "pf") { "1" } else { "0" }) }
     }
   }
   # (stderr lines of runz are output here, not errors that stop the sweep; the variables are removed even after
@@ -102,9 +102,9 @@ $grid = [ordered]@{
   X16GRF = @(256, 128)
   X16CG = @(1, 2, 4)
   H8    = @("off", "on")
-  X2D   = @("off", "on", "pf")
+  X2D   = @("pf", "on", "off")
 }
-$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; CG = 1; ACT = 32; X16 = "off"; H8 = "off"; X2D = "off" }
+$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; CG = 1; ACT = 32; X16 = "off"; H8 = "off"; X2D = "pf" }
 
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function Line([string]$what, $r) { [string]::Format($inv, "{0,-28} {1,10:F1} tok/s  {2}", $what, $r.tps, $r.path) }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-06: 2D block loads by default on discrete cards; the B60 and 140T results
+
+- **Prompts on discrete cards:** the XMX GEMM now loads its activations with 2D block loads and a prefetch. A Pro B60's
+  27B prompt goes 608 -> 763 tok/s (+25 %, the owner's runs with the switches on). `ARC_GEMM_2D=0` and
+  `ARC_GEMM_2D_PF=0` turn them off. If they do not build or differ from DP4a at start, XMX goes on without them. iGPUs
+  are unchanged (laptop: 4B logits bit-identical). Logits on a B60 and runs over several GPUs are still to be checked.
+- `bench\gemm_sweep.ps1`: the X2D row is pf (default), on, off.
+- **Measured and recorded, nothing changed** (docs/xe2-tuning.md section 8, docs/multi-gpu.md):
+  - H8 stays off: 570 tok/s on one B60 against 608, because the rotations cost more than the GEMMs gain. KL 0.0012
+    against the default path.
+  - H8 over 2 and 4 B60s: 863 and 1,232 tok/s (27B).
+  - `ARC_TP_ATT_QSPLIT=1`, 35B over 4 B60s: 3,441 -> 4,290 tok/s. It stays opt-in.
+  - The 140T has not run XMX or H8 yet: the engine's XMX GEMM needs a GPU without 8-lane sub-groups, and its H8 runs
+    came from a package older than H8.
+
 ## 2026-11-06: the speech models load from Settings whatever the server was started with
 
 - Settings > GPU memory said "not on this server" for Whisper when the server had started without `--whisper`, with

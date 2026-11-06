@@ -9,13 +9,13 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
-| `ARC_GEMM_2D=1` | off | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes); `ARC_GEMM_2D_PF=1` prefetches too (QUEUE 31.8; not yet measured) | QUEUE 31.8 |
-| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per 256 values; DPAS on XMX, DP4a else; iGPU too (not yet measured anywhere) | QUEUE 31.12 |
+| `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, on discrete cards | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
+| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per 256 values; DPAS on XMX, DP4a else; iGPU too. Slower today on a B60 and the laptop: the rotations cost more than the GEMMs gain | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
-| `ARC_GEMV_PF=1` | off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60 to measure) | 7 |
+| `ARC_GEMV_PF=1` | off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
 
@@ -122,6 +122,10 @@ $env:ARC_LAUNCH_STATS=1; .\bin\runz.exe <35B-A3B gguf> --bench-pp 256 --n 32; Re
 ```
 
 A replay saving several us a kernel there would make it worth building (35B: up to a third of a 13 ms token).
+**A B60, 2026-11-06 (4,096 floats):** 700 kernels 1.790 ms appended, 0.459 ms replayed (2.56 -> 0.66 us a kernel). The
+35B takes 632 launches and 2.89 ms of host time per 12.0 ms token (4.6 us a launch). So a replay could save 1.2-2.5 ms
+of a token, ~10-20 %, if the host's time is on the token's critical path and a step can be replayed at all: the
+experts change every token. Not measured in the engine, not built.
 Whatever is built for the B-series goes in `zero/xe2/` and kernels of its own, chosen on discrete GPUs only: the
 iGPU kernels stay as they are.
 
@@ -186,9 +190,48 @@ $env:ARC_X16=1; .\bin\runz.exe C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --bench-
 - The XMX checks run once per process. A split model's GPUs are the same device, and each shard checked again: 4
   B60s took 8.7-14.9 s to load.
 
+## 8. 2D block loads and H8, measured (issue #4, 2026-11-06, commit 9c18778)
+
+One Pro B60, Qwen3.8 27B IQ3_S, `runz --bench-pp 4096 --n 16 --prof`, the owner's logs:
+
+| Prompt GEMMs | tok/s | GEMMs' GPU time (`gemm_down` / `up` / `gate`, ms) | Rotations |
+|---|---|---|---|
+| DP4a (`ARC_NO_XMX=1`) | 402 | 2,209 / 2,200 / 2,073 | - |
+| XMX | 608 | 1,401 / 1,350 / 1,316 | - |
+| XMX + H8 | 570 | 1,133 / 1,087 / 1,033 | 1,575 ms |
+| XMX + 2D | 752 | 1,100 / 1,072 / 1,005 | - |
+| **XMX + 2D + prefetch (the default now)** | **763** | 1,087 / 1,066 / 982 | - |
+| XMX + 2D + H8 | 688 | 824 / 802 / 761 | 1,575 ms |
+
+- **2D block loads with the prefetch are the default on discrete cards.** Generation does not use these kernels (20.5
+  tok/s in every row). iGPUs do not get them: the laptop's logits are bit-identical (4B, 16 tokens, `--dump-logits`),
+  and an iGPU with XMX has not measured them.
+- **What guards them:** at start the kernels are compared with DP4a bit for bit on random data (K = 1024), and the log
+  says "with 2D block loads" when they pass. **Not yet checked:** logits on a real model bit for bit on a B60, and any
+  run of them over several GPUs. Before a release:
+
+  ```powershell
+  $env:ARC_GEMM_2D=0; .\bin\runz.exe <model.gguf> "<a prompt>" --n 16 --dump-logits off.bin; Remove-Item Env:ARC_GEMM_2D
+  .\bin\runz.exe <model.gguf> "<a prompt>" --n 16 --dump-logits on.bin
+  fc.exe /b off.bin on.bin
+  .\bin\runz.exe <model.gguf> --bench-pp 4096 --n 16 --gpus 4
+  ```
+
+- **H8 stays off.** Its GEMMs are ~20 % faster alone and ~40 % with 2D loads, but rotating the weights (1,105 ms) and
+  the activations (470 ms) costs more. With rotations costing nothing, 2D + H8 would take 4,278 ms of GPU time, about
+  950 tok/s: an upper bound worked out from the table, not a measurement. Fusing the rotations into `decode_w8` and
+  the quantization kernels is what could reach part of it.
+- **H8's accuracy on the B60:** USAGE.md, 4 x 512: perplexity 6.6371 -> 6.6577; KL against the default path mean
+  0.00120, max 0.0777, same top token 98.04 %.
+- **H8 over several B60s:** [multi-gpu.md](multi-gpu.md).
+
+**Arc 140T (Core Ultra 9 285H, issue #5): XMX not measured yet.** Its 180 tok/s (pp2048) and 6.0 tok/s are without XMX:
+`ClRt::xmx` (zero/clrt.h) needs a GPU without 8-lane sub-groups because the XMX GEMM has 16 lanes, and its log has no
+"XMX on" line. The `ARC_H8=1` runs came from an older package (f9e62e6, before H8): no "H8 on" line, no `h8_*` kernels.
+Testing XMX on it needs an 8-lane XMX kernel first.
+
 ## Not done yet (needs an Xe2 card to develop on)
 
-- An XMX kernel built around the 2D block loads of Xe2 (`cl_intel_subgroup_2d_block_io`).
 - XMX for the 2-8 token verification passes of MTP / DFlash2 (now the GEMV-style kernels).
 - Several models' worth of GPUs as replicas (one engine per GPU, requests spread over them) and pipeline
   parallelism for prompts.

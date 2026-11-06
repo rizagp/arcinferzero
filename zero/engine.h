@@ -258,8 +258,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       {
         std::lock_guard<std::mutex> g(xmx_mu);
         if (xmx_known < 0) {
-          // (ARC_GEMM_2D=1, zero/xe2/engine_xe2.h: the check with the 2D block loads first; a build that fails or
-          //  differs leaves them out and checks again, so XMX itself is not lost to them)
+          // (zero/xe2/engine_xe2.h: the check with the 2D block loads first, where they are wanted; a build that fails
+          //  or differs leaves them out and checks again, so XMX itself is not lost to them)
           x2d_ = x2d_wanted();
           xmx_known = xmx_check() ? 1 : 0;
           if (x2d_ && !xmx_known) {
