@@ -10,7 +10,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
-| `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX even if the start-time speed check finds it no faster | 8 |
+| `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX (gemm_x8.cl), still checked against DP4a bit for bit; off because a 140T measured it 1.6x slower in the 27B's GEMMs | 8 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
@@ -364,12 +364,15 @@ If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D
 - **`gemm_x8.cl`:** 8 columns per sub-group, so a 16-column group is two sub-groups, with more loads per value. Tested on
   the 125H with DP4a in place of DPAS (`ARC_XMX_TRY=2`, `-DX8_EMU`): logits bit-identical to the DP4a kernel (4B, 27B, H8),
   the same KL against f32, the same greedy text over 2 and 4 simulated shards; a wrong kernel (`ARC_XMX_TRY=3`) is refused.
-  **Not run on real DPAS yet.**
-- On a GPU with 8-lane sub-groups the start also compares a stored W8 GEMM on the check's small data (best of 6, 16
-  launches each), and XMX is taken only at least 5 % faster. The log says "XMX speed check". It measures the kernels' own
-  speed, not memory limits, so the prompt's real gain can be smaller.
-- The 140T so far, all on DP4a: 27B pp2048 180 tok/s, 6.0 tok/s; with `ARC_H8=1` 160 tok/s, as the rotations (1.56 s) cost
-  more than the GEMMs gain (~5 %).
+- **On real DPAS (140T, issue #5, package 911b6fa, 2026-11-07): right but slower.** The start-time check passed and the
+  27B's logits were bit-identical to DP4a (`fc`), but its 2K prompt ran at 113-120 tok/s against 178-182 on DP4a: gate /
+  up / down 3.54-3.70 s each against 2.25-2.30 s (1.6x). Generation is the same either way (5.9-6.0 tok/s: GEMVs). With
+  H8 on top, 106-112 tok/s. The start-time speed check (a 64 x 64 x 1024 GEMM) had found XMX 17 % faster and taken it:
+  that small shape stays in the caches, and with 8 columns per sub-group the real GEMMs read activations twice as often.
+- **Since then XMX is off on 8-lane GPUs** (the GPU runs as with `ARC_NO_XMX=1`, which is the 180 tok/s above);
+  `ARC_XMX_FORCE=1` takes it, with the bit-for-bit check. The speed check is gone.
+- The 140T before, all on DP4a: 27B pp2048 180 tok/s, 6.0 tok/s; with `ARC_H8=1` 160 tok/s, as the rotations (1.56 s)
+  cost more than the GEMMs gain (~5 %).
 
 ## Not done yet (needs an Xe2 card to develop on)
 

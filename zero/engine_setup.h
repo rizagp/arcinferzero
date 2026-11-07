@@ -465,31 +465,9 @@
             run("xmx_check", k, 2, gws, lws);
           });
         }
-      // (a GPU with 8-lane sub-groups, Arrow Lake H: no one has measured gemm_x8 yet, and its 8 columns per sub-group mean
-      //  more loads, so XMX is taken only if it is faster; best of 6, a stored W8 GEMM. ARC_XMX_FORCE=1 takes it anyway)
-      if (cl_.sg8 && bad.empty() && !getenv("ARC_XMX_TRY")) {
-        const int cg = xe2_cg_for(N);
-        cl_kernel kk[2] = {gemm_kernel(101, true, 0, cg), gemm_kernel(101, true, 1, cg)};
-        double best[2] = {1e30, 1e30};
-        int MM = M, NN = N, KK = K, ldc = N, coff = 0, ac = 0, rg = 4, s0 = 0, s1 = nsb;
-        size_t gws[2] = {(size_t)N * (M / gemm_tm() / 2), 2}, lws[2] = {16 * (size_t)cg, 2};
-        for (int r = 0; r < 6; ++r)
-          for (int x = 0; x < 2; ++x) {
-            set_args(kk[x], 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
-            std::vector<float> back(c0.size());
-            const auto t0 = std::chrono::steady_clock::now();
-            for (int l = 0; l < 16; ++l) run("xmx_check", kk[x], 2, gws, lws);  // (enough work to stand above the launches)
-            CL_CHECK(clEnqueueReadBuffer(cl_.queue, bc, CL_TRUE, 0, back.size() * 4, back.data(), 0, nullptr, nullptr));
-            best[x] = std::min(best[x], std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
-          }
-        const bool faster = best[1] < 0.95 * best[0], force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
-        fprintf(stderr, "arcinferzero: XMX speed check (8-lane GPU): DP4a %.3f ms, XMX %.3f ms: %s\n", best[0], best[1],
-                faster ? "XMX" : force ? "XMX (ARC_XMX_FORCE)" : "DP4a");
-        if (!faster && !force) {
-          xmx_slow_ = true;
-          return false;
-        }
-      }
+      // (a GPU with 8-lane sub-groups, Arrow Lake H, comes here only with ARC_XMX_FORCE=1 (zero/engine.h). The speed
+      //  check that stood here timed a 64 x 64 x 1024 GEMM: on a 140T it found XMX 17 % faster while the 27B's real
+      //  GEMMs were 1.6x slower, so it was removed, 2026-11-07)
     } catch (const zrt::GpuWaitError&) {
       throw;  // (a split model's GPU that hangs: not a verdict on XMX, which is kept for the process)
     } catch (const std::exception& e) {

@@ -247,7 +247,16 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     q2_init();
     h8_init();  // (H8 prompt GEMMs, ARC_H8=1: zero/engine_h8.h; after q2_init, before alloc_buffers)
     if (!opt.dry) build_kernels();
-    if (!opt.dry && (cl_.xmx || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
+    // (8-lane GPUs, Arrow Lake H / Arc 140T: XMX only with ARC_XMX_FORCE=1. A 140T, issue #5, 2026-11-07: gemm_x8 right
+    //  bit for bit on real DPAS, but the 27B's 2K prompt 114-120 tok/s against 180 on DP4a, GEMMs 1.6x slower, while
+    //  the start-time speed check on its small shape had picked XMX. Off, the GPU runs as with ARC_NO_XMX)
+    const bool xmx_force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
+    if (!opt.dry && cl_.xmx && cl_.sg8 && !xmx_force && !getenv("ARC_XMX_TRY")) {
+      static bool said = false;
+      if (!said) fprintf(stderr, "arcinferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
+      said = true;
+    }
+    if (!opt.dry && ((cl_.xmx && (!cl_.sg8 || xmx_force)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
       // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: every GPU that offers XMX, discrete
       // or integrated; a GPU without it, as the 125H, never comes here)
       xe2_ = true;

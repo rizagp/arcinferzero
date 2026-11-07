@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-07: XMX off again on 8-lane GPUs (Arc 140T)
+
+- A 140T ran package 911b6fa (issue #5): `gemm_x8.cl` passed the start-time check, and the 27B's logits were
+  bit-identical to DP4a on real DPAS. But its 2K prompt fell from 178-182 to 113-120 tok/s (GEMMs 1.6x slower).
+- The start-time speed check had picked XMX: its 64 x 64 x 1024 GEMM stays in the caches. It is removed.
+- 8-lane GPUs run as with `ARC_NO_XMX=1` again; `ARC_XMX_FORCE=1` still takes XMX after the bit-for-bit check. Other GPUs
+  are unchanged (the 125H: no XMX; `ARC_XMX_TRY=2` still runs).
+
 ## 2026-11-07: MoE expert GEMM work-group shapes (for the B60)
 
 - A B60's profile of the 35B-A3B (16K prompt, issue #4) showed the expert GEMMs at about 21 TOPS, against about 50 for
