@@ -353,16 +353,22 @@ If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D
 |---|---|---|---|
 | Lunar Lake (140V), `lnl-m` | real `dpas.8x8` | yes | 128 |
 | Panther Lake, `ptl-h` | builds; its code not read | yes | 128 |
-| Arrow Lake H (140T), `arl-h` | builds, but **no `dpas` in the code** (`mul`, `mad`), at 16 and at 8 lanes: it looks emulated | no | 256 (128 spills: its registers are 32 bytes) |
+| Arrow Lake H (140T), `arl-h` | `gemm_x8.cl`: real `dpas.8x8 (8\|M0)` in all W8 and H8 layouts, no spills. Native types stay on DP4a | no | 256 (the 16-lane form spilled with 128: its registers are 32 bytes) |
 | Meteor Lake (125H) | the driver does not offer it | no | unchanged, 256: logits bit-identical |
 
-- Whether Arrow Lake's driver gives real DPAS is not known here: ocloc may compile for a device without it. So on a
-  GPU with 8-lane sub-groups the start compares a stored W8 GEMM on the check's small data (best of 6, 16 launches
-  each), and XMX is taken only at least 5 % faster. The log says "XMX speed check". It measures the kernels' own speed,
-  not memory limits, so the prompt's real gain can be smaller.
-- The 140T's numbers so far, 180 tok/s (pp2048) and 6.0 tok/s, are without XMX: `ClRt::xmx` refused every GPU with
-  8-lane sub-groups until now. Its `ARC_H8=1` runs came from an older package (f9e62e6, before H8): no "H8 on" line, no
-  `h8_*` kernels.
+- **Why a kernel of its own:** the extension says a device whose smallest sub-group is 8 lanes must call DPAS from an
+  8-lane sub-group, with an `int8` operand a. `gemm.cl`'s 16-lane `short8` form is undefined there. On a 140T (issue #5,
+  commit 515f416, driver 32.0.101.8864) its results differed from DP4a in every layout, and the engine stayed on DP4a. An
+  earlier note here called the DPAS "emulated": that came from an ocloc test using the wrong form.
+- **`gemm_x8.cl`:** 8 columns per sub-group, so a 16-column group is two sub-groups, with more loads per value. Tested on
+  the 125H with DP4a in place of DPAS (`ARC_XMX_TRY=2`, `-DX8_EMU`): logits bit-identical to the DP4a kernel (4B, 27B, H8),
+  the same KL against f32, the same greedy text over 2 and 4 simulated shards; a wrong kernel (`ARC_XMX_TRY=3`) is refused.
+  **Not run on real DPAS yet.**
+- On a GPU with 8-lane sub-groups the start also compares a stored W8 GEMM on the check's small data (best of 6, 16
+  launches each), and XMX is taken only at least 5 % faster. The log says "XMX speed check". It measures the kernels' own
+  speed, not memory limits, so the prompt's real gain can be smaller.
+- The 140T so far, all on DP4a: 27B pp2048 180 tok/s, 6.0 tok/s; with `ARC_H8=1` 160 tok/s, as the rotations (1.56 s) cost
+  more than the GEMMs gain (~5 %).
 
 ## Not done yet (needs an Xe2 card to develop on)
 

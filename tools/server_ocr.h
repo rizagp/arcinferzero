@@ -124,7 +124,8 @@
         // (this computer, and not a page another local program serves: such a page may call the chat API, and the
         //  connection is local for it too, so local_peer alone let it write a .md into any folder. Only the server's
         //  own page, Origin = http://<Host>, or a client that sends no Origin; BUGS.md 1, 2026-10-31)
-        std::string origin = rq.header("origin"), own = "http://" + rq.header("host");
+        //  (a remote session with full access: its page is https, through the tunnel)
+        std::string origin = rq.header("origin"), own = (rq.remote ? "https://" : "http://") + rq.header("host");
         for (std::string* x : {&origin, &own})
           for (char& c : *x) c = (char)tolower((unsigned char)c);
         if (!rq.local_peer || (!origin.empty() && origin != own)) {

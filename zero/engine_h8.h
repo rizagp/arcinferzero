@@ -24,7 +24,7 @@
 // per matrix input, so the shards' parts still sum to the product. ARC_H8_HB=256 / 512: smaller blocks (tests).
 
   bool h8_ = false;
-  std::string h8_src_;
+  std::string h8_src_, x8_src_;
   cl_mem h8_aq_ = nullptr, h8_asc_ = nullptr;   // (one GEMM input rotated: int8 [M][K], per-256 scales [K / 256][M])
   cl_mem stage_hh_[kRoles] = {};                // (the H8 scales of the weight staged per role)
   size_t stage_hh_bytes_[kRoles] = {};
@@ -56,8 +56,7 @@
     //  ran twice on the shared rows, and the NPU read its own rows as W8 after they had become H8; kernel audit 2026-11-03)
     h8_ = h8_env() && !q2mm_ && !npu_wanted();
     if (h8_ && h8_float()) {
-      const int maxK = std::max({hp.n_embd, hp.n_ff, hp.ssm_d_inner, hp.n_head * hp.head_dim, hp.hce(), hp.n_ff_exp_pad});
-      h8f_off_ = (size_t)max_chunk * maxK;
+      h8f_off_ = (size_t)max_chunk * aq_max_k();
       h8f_defs_ = " -DH8F=" + std::to_string(h8f_off_);
     }
     if (h8_env() && q2mm_ && !opt.dry)

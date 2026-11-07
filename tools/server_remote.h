@@ -208,6 +208,7 @@ struct Access {
       return p.compare(0, n, pre) == 0 && (p.size() == n || p[n] == '/');
     };
     if (p == "/v1/tools/run_command") return true;
+    if (under("/sessions")) return true;     // (the conversation cache on disk: its folder, wiping it)
     if (under("/v1/projects")) return true;  // (folder paths, the folder browser, adding folders)
     if (under("/v1/mcp")) return true;       // (mcp.json holds the servers' tokens; /v1/mcp/tools starts programs)
     if (p == "/v1/memory" && rq.method != "GET") return true;
@@ -277,6 +278,7 @@ f.addEventListener("submit", async (e) => {
   };
   std::map<std::string, Tries> tries;  // visitor -> its tries
   Tries all_tries;
+  uint64_t session_gen = 0;  // (bumped wherever sessions are ended: a sign-in checked before that makes no session)
   static constexpr int kPerVisitor = 8, kAll = 40;
   static void prune(Tries& t, std::chrono::steady_clock::time_point now) {
     t.fails.erase(std::remove_if(t.fails.begin(), t.fails.end(), [&](auto x) { return now - x > std::chrono::minutes(15); }),
@@ -287,7 +289,8 @@ f.addEventListener("submit", async (e) => {
     const std::string who = rq.header("cf-connecting-ip").substr(0, 64);
     {
       std::lock_guard<std::mutex> g(mu);
-      if (tries.size() > 10000) tries.clear();  // (memory: a flood of addresses; the global limit still holds)
+      if (tries.size() > 10000)  // (memory: a flood of addresses; the global limit still holds. Not those being checked)
+        for (auto i = tries.begin(); i != tries.end();) i = i->second.inflight ? std::next(i) : tries.erase(i);
       Tries& t = tries[who];
       prune(t, now);
       prune(all_tries, now);
@@ -297,6 +300,7 @@ f.addEventListener("submit", async (e) => {
       ++t.inflight, ++all_tries.inflight;
     }
     bool ok = false;
+    uint64_t gen0 = 0;
     try {
       Json j;
       if (Json::try_parse(rq.body, j)) {
@@ -305,7 +309,7 @@ f.addEventListener("submit", async (e) => {
         unsigned it;
         {
           std::lock_guard<std::mutex> g(mu);
-          salt_c = salt, hash_c = hash, it = iters;
+          salt_c = salt, hash_c = hash, it = iters, gen0 = session_gen;
         }
         ok = !hash_c.empty() && !pw.empty() && pw.size() <= 1024 && equal_ct(pbkdf2(pw, unhex(salt_c), it), hash_c);
       }
@@ -332,6 +336,9 @@ f.addEventListener("submit", async (e) => {
     const std::string tok = random_hex(32);
     {
       std::lock_guard<std::mutex> g(mu);
+      // (the settings changed while the password was being checked, which takes a while: a new password, "sign everyone
+      //  out", full access turned on. The old password's check must not leave a session behind them)
+      if (gen0 != session_gen || !enabled) return deny(rs, 401, "the settings changed: sign in again");
       const auto t = std::chrono::system_clock::now();
       for (auto i = sessions.begin(); i != sessions.end();) i = t > i->second.until ? sessions.erase(i) : std::next(i);
       sessions[tok] = {t + std::chrono::hours(24 * kDays)};
@@ -390,14 +397,22 @@ f.addEventListener("submit", async (e) => {
       // (sessions end when access goes off, the host names change or a session would get more than it signed in for)
       const bool was_on = enabled, had_tools = allow_tools;
       const std::vector<std::string> old_hosts = hosts;
+      const std::string old_salt = salt, old_hash = hash;
+      const unsigned old_iters = iters;
+      auto end_sessions = [&] { sessions.clear(), ++session_gen; };
       if (j.has("enabled")) enabled = j["enabled"].as_bool(false);
       if (j.has("allow_tools")) allow_tools = j["allow_tools"].as_bool(false);
       if (set_hosts) hosts = nh;
-      if ((was_on && !enabled) || hosts != old_hosts || (!had_tools && allow_tools)) sessions.clear();
-      if (!nhash.empty()) salt = nsalt, hash = nhash, iters = 200000, sessions.clear();  // (a new password signs everyone out)
-      if (j["sign_out_all"].as_bool(false)) sessions.clear();
+      if ((was_on && !enabled) || hosts != old_hosts || (!had_tools && allow_tools)) end_sessions();
+      if (!nhash.empty()) salt = nsalt, hash = nhash, iters = 200000, end_sessions();  // (a new password signs everyone out)
+      if (j["sign_out_all"].as_bool(false)) end_sessions();
       if (enabled && hash.empty()) enabled = false;  // (never on without a password)
-      if (!save_locked()) return deny(rs, 500, "could not write remote.json");
+      if (!save_locked()) {
+        // (not kept in memory only, to come back different after a restart; turning access off stays, the safe side)
+        const bool off = !enabled;
+        enabled = was_on && !off, allow_tools = had_tools, hosts = old_hosts, salt = old_salt, hash = old_hash, iters = old_iters;
+        return deny(rs, 500, "could not write remote.json: nothing changed");
+      }
     }
     rs.send(200, "application/json", config_json().dump());
   }
@@ -417,6 +432,17 @@ f.addEventListener("submit", async (e) => {
       return 0;
     }
     rq.remote = true;
+    // (plain http through a tunnel: a password must not leave the browser unencrypted. The page moves to https; anything
+    //  else is refused. Cloudflare's own "Always Use HTTPS" may be off on a named tunnel)
+    if (lower(rq.header("x-forwarded-proto")) == "http") {
+      if (rq.method == "GET" || rq.method == "HEAD") {
+        rs.extra += "Location: https://" + rq.header("host") + rq.path + (rq.query.empty() ? "" : "?" + rq.query) + "\r\n";
+        rs.send(301, "text/plain", "");
+      } else {
+        deny(rs, 403, "https only");
+      }
+      return 1;
+    }
     const std::string origin = rq.header("origin");
     if (!origin.empty() && lower(origin) != "https://" + host_only(rq.header("host"))) {
       deny(rs, 403, "cross-origin requests are not allowed");
@@ -456,7 +482,8 @@ f.addEventListener("submit", async (e) => {
   // sign-in page) or send a small sign-in; anything else is refused at once, so the internet cannot fill the
   // connections or the memory with bodies before the password. "" = go on.
   std::string head_gate(const HttpRequest& rq) {
-    if (!is_remote_host(rq.header("host"))) return "";
+    // (through a tunnel but no remote host, or access turned off: gate refuses it anyway, and its body is not read first)
+    if (!is_remote_host(rq.header("host"))) return proxied(rq) && rq.method != "GET" && rq.method != "HEAD" ? "not available" : "";
     if (session_ok(rq)) return "";
     if (rq.method == "GET" || rq.method == "HEAD") return rq.header("content-length").empty() && rq.header("transfer-encoding").empty() ? "" : "no body";
     if (rq.method == "POST" && (rq.path == "/v1/remote/login" || rq.path == "/v1/remote/logout")) {

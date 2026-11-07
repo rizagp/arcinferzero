@@ -198,10 +198,22 @@ class Service {
     std::unique_lock<std::shared_timed_mutex> ex(engines_mu_, std::chrono::seconds(3));
     if (!ex.owns_lock()) { bad = "a transcription is running: try again when it is done"; return false; }
     if (load && (which == "whisper" ? !eng_ : !asr_eng_)) {
-      // (room for it first: the chat model loaded since may have taken its memory; its size as when it was loaded)
-      const size_t need = (which == "whisper" ? last_wh_bytes_ : last_asr_bytes_) + ((size_t)128 << 20);
+      // (room for it first: the chat model loaded since may have taken its memory; its size as when it was loaded, or,
+      //  never loaded yet, its largest file: it takes at least that)
+      size_t last = which == "whisper" ? last_wh_bytes_ : last_asr_bytes_;
+      if (!last) {
+        std::error_code ec;
+        if (which == "asr") {
+          last = (size_t)std::filesystem::file_size(asr_gguf_, ec);
+          if (ec) last = 0;
+        } else {
+          for (const auto& f : std::filesystem::directory_iterator(whisper_dir_, ec))
+            if (f.is_regular_file(ec)) last = std::max(last, (size_t)f.file_size(ec));
+        }
+      }
+      const size_t need = last + ((size_t)128 << 20);
       uint64_t b = 0, u = 0;
-      if (need > ((size_t)128 << 20) && zrt::video_budget(b, u) && (double)u + need + Engine::kDriverSlack > (double)b) {
+      if (last && zrt::video_budget(b, u) && (double)u + need + Engine::kDriverSlack > (double)b) {
         char m[200];
         snprintf(m, sizeof m, "not enough free GPU memory: it needs %.1f GiB, %.1f GiB are free. Unload the chat model "
                               "first (it loads again with less context)", need / 1073741824.0,
@@ -213,6 +225,12 @@ class Service {
     bool ok = true;
     turn_.run(true, [&] {
       gpu([&] {
+        // (GPU memory short while loading: an error here, not the end of the server; a file's size is only the least it
+        //  takes, and other programs use the GPU too. ARC_SPEECH_OOM=1, tests: its first large allocation fails)
+        struct Oom {
+          Oom() { zrt::oom_throws = true; zrt::oom_test = getenv("ARC_SPEECH_OOM") != nullptr; }
+          ~Oom() { zrt::oom_throws = zrt::oom_test = false; }
+        } oom_guard;
         try {
           if (which == "whisper") {
             if (load && !eng_) {
@@ -240,6 +258,15 @@ class Service {
         } catch (const std::exception& e) {
           bad = e.what();
           ok = false;
+          if (bad.find("allocation of") != std::string::npos)  // (the web UI then offers to unload the chat model)
+            bad = "not enough GPU memory to load it (" + bad + "). Unload the chat model first (it loads again with less context)";
+          if (load && which == "asr") {  // (a part made before it failed: not half a model)
+            asr_enc_.reset();
+            asr_tok_.reset();
+            asr_eng_.reset();
+            asr_bytes_ = 0;
+            asr_id.clear();
+          }
         }
         snap();
       });
@@ -278,11 +305,11 @@ class Service {
     // when Qwen3-ASR is not loaded and for translations
     const std::string mdl = apic::strip_tag(field("model"));  // (gemma4-e4b:latest, as audio_route)
     if (!eng_ && translate) {
-      bad = "translations need Whisper (this server runs Qwen3-ASR alone: start it with --whisper auto)";
+      bad = "translations need Whisper: load it in the web UI's Settings (GPU memory)";
       return false;
     }
     if (!eng_ && names_whisper(mdl)) {
-      bad = "model: Whisper is not loaded (this server runs Qwen3-ASR alone: start it with --whisper auto)";
+      bad = "model: Whisper is not loaded: load it in the web UI's Settings (GPU memory)";
       return false;
     }
     if (names_chat_asr(mdl)) {
@@ -296,7 +323,7 @@ class Service {
       }
       opt.engine = "e4b";
     } else if (names_asr(mdl) && asr_id.empty()) {
-      bad = "model: Qwen3-ASR is not loaded (start the server with --asr auto)";
+      bad = "model: Qwen3-ASR is not loaded: load it in the web UI's Settings (GPU memory)";
       return false;
     } else if (names_asr(mdl) && translate) {
       bad = "model: Qwen3-ASR transcribes only (translations: Whisper)";
@@ -911,6 +938,8 @@ class Service {
           text = in["summary"].str();
           model = clean_name(in["model"].str(), 80, "");
           if (text.size() > (1u << 20)) return fail(400, "summary: 1 MB at most");
+          if (text.find_first_not_of(" \t\r\n") == std::string::npos)  // (it hid the summary and its earlier versions)
+            return fail(400, "summary: it is empty");
           if (!now_text.empty() && now_text != text) kept.push(shown);
           for (size_t i = 0; i < others.size() && kept.size() < 10; ++i) kept.push(others[i]);
         }
@@ -1032,7 +1061,7 @@ class Service {
         return fail(409, "only a finished, failed or stopped transcript can be transcribed again (it is " + st + ")");
       // (what it was, back when the new pass is stopped or fails: the old text is not written over by a part of the new)
       Json prev = Json::object();
-      for (const char* k : {"options", "status", "progress", "done_s", "segments", "words", "languages", "error", "x_realtime", "elapsed_s"})
+      for (const char* k : {"options", "status", "progress", "done_s", "duration", "segments", "words", "languages", "error", "x_realtime", "elapsed_s"})
         if (cur.has(k)) prev.set(k, cur[k]);
       if (cur.has("edited")) prev.set("edited", cur["edited"]);
       cur.set("edited", nullptr);  // (the new text has no edits of the user's)
@@ -1056,7 +1085,9 @@ class Service {
       if (it == metas_.end()) return fail(404, "no transcript " + tid);
       Json& cur = it->second;
       const std::string st = cur["status"].str();
-      if (tid == running_) cancel_running_ = true;
+      // (queued while its job still runs: a pass again asked during the recording's MP3 / M4A encode, status already
+      //  done. The job's stop flag would not reach it, as the next job clears that flag)
+      if (tid == running_ && st != "queued") cancel_running_ = true;
       else if (st == "live") {  // (the recording stops; its draft is kept, no accurate pass)
         cur.set("status", "cancelled");
         save_meta(tid);
@@ -2231,13 +2262,18 @@ class Service {
       return;
     }
     if ((stopped || !part_err.empty()) && undo_redo(m, stopped ? "was stopped" : "failed " + part_err)) return;
-    m.set("redo_prev", nullptr);
+    // (a pass again that heard nothing, a model or language that does not suit it: not an empty transcript over a good one)
+    if (r.segments.empty() && m["redo_prev"].is_object() && m["redo_prev"]["segments"].as_number(0) > 0 &&
+        undo_redo(m, "wrote no text"))
+      return;
     if (!write_atomic(dir / "transcript.json", whisper::to_json(r))) {
+      if (undo_redo(m, "could not be saved (disk full?)")) return;  // (the earlier text is still there)
       m.set("status", "failed");
       m.set("error", "cannot write the transcript (disk full?)");
       save_meta(tid);
       return;
     }
+    m.set("redo_prev", nullptr);
     Json langs = Json::array();
     std::vector<std::string> seen;
     size_t words = 0;

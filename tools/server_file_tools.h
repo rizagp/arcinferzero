@@ -1096,14 +1096,17 @@ static void files_api(const HttpRequest& rq, HttpResponse& rs) {
       const std::string id = rq.path.substr(7);
       if (!files::valid_id(id, 16) || !st.get(id, i)) return fail(404, "no file " + id);
       // (content-addressed: the same id is always the same bytes)
-      rs.extra = "Cache-Control: max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
+      // (private: a shared cache in front of a tunnel must not keep what a password protects)
+      rs.extra = "Cache-Control: private, max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\n";
       if (q("download")) rs.extra += "Content-Disposition: attachment; filename=\"" + i.name + "\"\r\n";
       // (a page or drawing the model wrote, opened at its own address: its scripts must not run as this server's page,
-      //  which can drive the tools and the remote access settings; sandboxed, it gets an origin of its own. The web
-      //  UI shows these in a sandboxed frame anyway, see openPage)
+      //  which can drive the tools and the remote access settings. mime_of gives these text/plain with nosniff, so they
+      //  do not run; by the file's extension, in case that ever changes, the sandbox as a second layer. The web UI shows
+      //  them in a sandboxed frame, see openPage)
       {
-        const std::string mt = files::mime_of(i.name);
-        if (mt.find("html") != std::string::npos || mt.find("svg") != std::string::npos || mt.find("xml") != std::string::npos)
+        std::string ext = std::filesystem::path(i.name).extension().string();
+        for (char& ch : ext) ch = (char)tolower((unsigned char)ch);
+        if (ext == ".html" || ext == ".htm" || ext == ".xhtml" || ext == ".svg" || ext == ".xml")
           rs.extra += "Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads\r\n";
       }
       // (read from disk 1 MB at a time, with Range: before, the whole file in memory, and 404 above 2 GB)

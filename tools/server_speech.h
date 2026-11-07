@@ -175,14 +175,17 @@ inline bool audio_route(const HttpRequest& rq, HttpResponse& rs, const AudioRout
   const bool translate = rq.path == "/v1/audio/translations";
   const std::string want = apic::strip_tag(field("model"));
   const bool chat_model = !want.empty() && a.is_chat_model(want);
-  if (a.wh && (!chat_model || a.wh->names_chat_asr(want))) {
+  // (nothing of the service loaded: as without it, unless the request names one of its models. Every server has the
+  //  service now, to load speech models from Settings)
+  const bool live = a.wh && (a.wh->has_whisper() || a.wh->asr_loaded());
+  if (a.wh && ((live && !chat_model) || a.wh->names_chat_asr(want))) {
     a.wh->handle(rs, form, translate);
     return true;
   }
   // (with the speech service only its models transcribe, and Whisper translates: Gemma 4 12B, which hears audio
   //  without an encoder, wrote a translated summary of the user's recording and garbled a clear one; the user's
   //  choice, 2026-10-28)
-  if (a.wh) {
+  if (live) {
     rs.send(400, "application/json",
             std::string("{\"error\":{\"message\":\"model: ") +
                 (translate ? "translations take Whisper (no model, whisper-1 or whisper)"
@@ -194,7 +197,7 @@ inline bool audio_route(const HttpRequest& rq, HttpResponse& rs, const AudioRout
   for (char& c : lw) c = (char)tolower((unsigned char)c);
   if (lw.find("whisper") != std::string::npos || lw.find("qwen3-asr") != std::string::npos) {
     rs.send(400, "application/json", "{\"error\":{\"message\":\"" + std::string(lw.find("whisper") != std::string::npos ? "Whisper" : "Qwen3-ASR") +
-                                         " is off: start the server with --whisper auto\",\"type\":\"invalid_request_error\"}}");
+                                         " is not loaded: load it in the web UI's Settings (GPU memory)\",\"type\":\"invalid_request_error\"}}");
     return true;
   }
   Json req = Json::object();

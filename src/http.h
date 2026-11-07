@@ -64,9 +64,10 @@ class HttpResponse {
     h += extra;
     h += close_after ? "Connection: close\r\n\r\n" : "Connection: keep-alive\r\n\r\n";
     raw(h);
-    raw(body);
+    if (!no_body) raw(body);
     done_ = true;
   }
+  bool no_body = false;      // (a HEAD request: the headers only, or the body would be read as the next reply on this connection)
   bool close_after = false;  // (the connection closes after this reply: said so, not keep-alive; BUGS.md 7)
   // A file, or the one byte range a Range header asks for ("bytes=a-b", "bytes=a-", "bytes=-n": 206 with
   // Content-Range; past the end: 416), read and sent 1 MB at a time (media of gigabytes for a <video> that seeks).
@@ -172,7 +173,7 @@ class HttpResponse {
   }
   static const char* reason(int s) {
     switch (s) {
-      case 200: return "OK"; case 204: return "No Content"; case 400: return "Bad Request"; case 403: return "Forbidden";
+      case 200: return "OK"; case 204: return "No Content"; case 301: return "Moved Permanently"; case 400: return "Bad Request"; case 403: return "Forbidden";
       case 404: return "Not Found"; case 405: return "Method Not Allowed"; case 409: return "Conflict";
       case 413: return "Payload Too Large"; case 415: return "Unsupported Media Type"; case 416: return "Range Not Satisfiable";
       case 429: return "Too Many Requests"; case 500: return "Internal Server Error"; case 502: return "Bad Gateway";
@@ -538,6 +539,7 @@ class HttpServer {
         buf.erase(0, len);
       }
       HttpResponse rs(c);
+      rs.no_body = rq.method == "HEAD";
       // A browser page from another site must not drive this no-authentication server (CORS alone would still let a
       // simple POST through). Local pages and the server's own web UI keep working; command-line clients send no Origin.
       const std::string origin = rq.header("origin");

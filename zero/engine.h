@@ -262,7 +262,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
           //  or differs leaves them out and checks again, so XMX itself is not lost to them)
           x2d_ = x2d_wanted();
           xmx_known = xmx_check() ? 1 : 0;
-          if (x2d_ && !xmx_known) {
+          if (x2d_ && !xmx_known && !xmx_slow_) {
             fprintf(stderr, "arcinferzero: 2D block loads (ARC_GEMM_2D) do not build or differ: not used\n");
             x2d_ = false;
             xmx_known = xmx_check() ? 1 : 0;
@@ -896,13 +896,17 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     g4_att8_ = q2_ && hp.gemma && hp.n_ple > 0 && !(getenv("ARC_G4_ATT8") && atoi(getenv("ARC_G4_ATT8")) == 0);
     if (!q2mm_) return;
     const size_t M = max_chunk;
-    const int maxK = std::max({hp.n_embd, hp.n_ff, hp.ssm_d_inner, hp.n_head * hp.head_dim, hp.hce(), hp.n_ff_exp_pad});
+    const int maxK = aq_max_k();
     q2_aq_ = M * maxK;
     q2_sc_ = M * (maxK / 32) * 4;
     q2_ab_ = M * (maxK / 16) * 2;
     q2_defs_ = " -DQ2_AQ=" + std::to_string(q2_aq_) + " -DQ2_SC=" + std::to_string(q2_sc_ / 4) + " -DQ2_AB=" +
                std::to_string(q2_ab_ / 2);
 
+  }
+  // the longest row written into aq_ (the shared expert's input, and the MTP head's 2 * n_embd, count too)
+  int aq_max_k() const {
+    return std::max({hp.n_embd, 2 * hp.n_embd, hp.n_ff, hp.ssm_d_inner, hp.n_head * hp.head_dim, hp.hce(), hp.n_ff_exp_pad, hp.n_ff_shexp});
   }
   void matmul(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int acc, bool act32) {
     // (the output head with a logit softcap: the cap applies to the sum of both passes, not to each; the head GEMVs

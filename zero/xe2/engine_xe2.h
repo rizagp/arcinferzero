@@ -10,7 +10,7 @@
   bool xe2_ = false;  // (set before the XMX check: the GPU offers XMX, or ARC_XMX_TRY)
   // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows
   //  the XMX GEMM spilling with 128)
-  bool xe2_grf128() const { return xe2_ && !cl_.sg8; }
+  bool xe2_grf128() const { return xe2_ && (!cl_.sg8 || getenv("ARC_XMX_TRY")); }
 
   // the dense prompt GEMM with the default register file (128) instead of 256 registers per thread: more threads per
   // core; on a Pro B60 the 27B's prompt went 450 -> 617 tok/s (issue #4, 2026-11-02). ARC_GEMM_GRF=256 as before.

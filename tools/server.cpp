@@ -1376,7 +1376,11 @@ int main(int argc, char** argv) {
   http.head_gate = [](const HttpRequest& rq) { return remote::access().head_gate(rq); };
   http.handler = [&](const HttpRequest& rq, HttpResponse& rs) {
     // (remote access settings: this computer only; the gate refuses them for remote sessions)
-    if (rq.path == "/v1/remote/config" && !rq.remote) return remote::access().config(rq, rs);
+    if (rq.path == "/v1/remote/config" && !rq.remote) {
+      // (this computer: with --host, a peer on the network is not "remote" but must not set the password either)
+      if (!rq.local_peer) return rs.send(403, "application/json", "{\"error\":{\"message\":\"remote access settings: from this computer only\"}}");
+      return remote::access().config(rq, rs);
+    }
     if (rq.path == "/v1/remote/status") {
       Json j = Json::object();
       j.set("remote", rq.remote);
@@ -2086,7 +2090,10 @@ int main(int argc, char** argv) {
           hears = cur && cur->srv->has_audio();
         }
         const std::string speech = in["speech"].str();
-        if (speech == "whisper" || (speech != "model" && !hears)) {
+        // (nothing of the service loaded and nothing asked of it: as without the service, the request goes to the model
+        //  it names, which may hear it; every server has the service now, to load speech models from Settings)
+        const bool none = speech.empty() && !wh->has_whisper() && !wh->asr_loaded();
+        if (!none && (speech == "whisper" || (speech != "model" && !hears))) {
           std::string bad;
           int st = 400;
           if (!wh->audio_to_text(in, bad, st, [&] { return rs.client_gone(); }))

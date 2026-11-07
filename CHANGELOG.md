@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-11-07: an XMX kernel for GPUs with 8-lane sub-groups (Arc 140T)
+
+- A 140T's log (issue #5) showed the 16-lane XMX GEMM differing from DP4a in every layout. The extension requires an 8-lane
+  sub-group on such GPUs, so that form was undefined there, and the earlier note that its DPAS looked emulated was wrong.
+- `zero/kernels/gemm_x8.cl`: the W8 and H8 layouts at 8 lanes, with real `dpas` for Arrow Lake H in ocloc and no spills.
+  Native types and MoE tiles stay on DP4a on these GPUs. It is checked against DP4a at start, then taken only if at least
+  5 % faster.
+- Not run on real DPAS yet. On the 125H with DP4a in its place (`ARC_XMX_TRY=2`): logits bit-identical (4B, 27B, H8).
+  GPUs without XMX, as the 125H, are unchanged.
+
+## 2026-11-07: self audit of remote access, speech, the web UI and H8
+
+Full list: [docs/self-audit-2026-11-07.md](docs/self-audit-2026-11-07.md). The ones that matter most:
+
+- **Security:** with `--host`, a peer on the network could set the remote password through `/v1/remote/config`: it is from
+  this computer only now. A sign-in being checked can no longer outlive a new password or "sign everyone out". Bodies
+  through a tunnel with access off are refused before they are read. `/sessions` is fenced, and plain http moves to https.
+- **Crash:** the first load of an offered speech model could end the server when GPU memory was short. It is an error now.
+- **Lost work:** the transcript model, accuracy, kept format and glossary were not being saved (a stray comment in
+  `trSavePrefs`). A pass again could replace a good transcript with an empty one, or an open edit could overwrite the new
+  text.
+- **Audio without speech models:** a chat with audio and `/v1/audio/*` reach a model that hears again.
+- The tool loop guard looks at results too: a cycle stops, and polling a job whose output changes goes on.
+- The default path's logits are bit-identical (4B, 27B). H8's KL is unchanged. Tests: 53 passed, 5 skipped.
+
 ## 2026-11-07: a Pro B60 measures the new H8 (no code changed)
 
 - 27B, 4K prompt, one card: default with 2D loads 764 tok/s, `ARC_H8=1` 918 tok/s (+20 %). KL against the default path
@@ -13,9 +38,9 @@
 - Lunar Lake, Panther Lake and Arrow Lake H now go through the XMX check and take the defaults found on the B60: XMX
   GEMMs, 2D block loads with a prefetch where the driver has them, and 128 registers on GPUs with 64-byte registers.
   None of this has been measured on such an iGPU yet.
-- Arrow Lake H (Arc 140T) was refused XMX until now because it has 8-lane sub-groups. ocloc shows no real `dpas` in its
-  code, so there XMX is taken only if a start-time speed check finds it at least 5 % faster than DP4a; the log gives
-  both times. `ARC_XMX_FORCE=1` takes it anyway. It keeps 256 registers (128 spills).
+- Arrow Lake H (Arc 140T) was refused XMX until now because it has 8-lane sub-groups. XMX is taken there only if a
+  start-time speed check finds it at least 5 % faster than DP4a; the log gives both times. `ARC_XMX_FORCE=1` takes it
+  anyway. It keeps 256 registers (128 spills). (Its kernel: see the entry above.)
 - A GPU without XMX, as the 125H, is unchanged: logits bit-identical (4B, 27B).
 
 ## 2026-11-06: H8 with one scale per column and token, the rotation in registers

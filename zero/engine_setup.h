@@ -299,12 +299,16 @@
       x16_src_ = read_file(opt.kernel_dir + "/gemm_x16.cl");
       if (x16_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gemm_x16.cl");
     }
+    if (which == "x8" && x8_src_.empty()) {  // (the XMX prompt GEMM of GPUs with 8-lane sub-groups, gemm_kernel)
+      x8_src_ = read_file(opt.kernel_dir + "/gemm_x8.cl");
+      if (x8_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gemm_x8.cl");
+    }
     if (which == "h8" && h8_src_.empty()) {  // (the H8 rotations, zero/engine_h8.h)
       h8_src_ = read_file(opt.kernel_dir + "/h8.cl");
       if (h8_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/h8.cl");
     }
     const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_.for_kernel(name) : which == "moe" ? moe_src_
-                             : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : ops_.for_kernel(name);
+                             : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_ : ops_.for_kernel(name);
     auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);
@@ -330,6 +334,18 @@
   }
   // (xe2_gemm_grf / moe_grf / cg: zero/xe2/engine_xe2.h, the defaults on GPUs without XMX)
   cl_kernel gemm_kernel(int qtype, bool act32, int xmx = -1, int cg = 1) {
+    // (a GPU with 8-lane sub-groups, Arrow Lake H: its DPAS needs a kernel of its own, for the W8 and H8 layouts; the
+    //  native types stay on DP4a there. ARC_XMX_TRY=2 / 3: the same kernel with DP4a for DPAS, right and wrong)
+    if (cl_.sg8) {
+      if ((xmx < 0 ? xmx_ : xmx != 0) && qtype >= 100) {
+        static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
+        return kernel("x8", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
+                                (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) + xe2_cg_defs(cg) +
+                                (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : ""),
+                      "gemm_x8");
+      }
+      xmx = 0;
+    }
     return kernel("gemm", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
                               (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) +
                               xe2_cg_defs(cg) + gemm_extra() +
@@ -339,7 +355,7 @@
   // the mixture-of-experts prompt GEMM over slot tiles (gemm.cl MOE_TILES; W8 layouts 100..103, per-32 scales)
   cl_kernel moe_gemm_kernel(int qtype, int xmx = -1) {
     return kernel("gemm", xe2_moe_grf() + "-DACT32 -DMOE_TILES -DQTYPE=" + std::to_string(qtype) +
-                              ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() : ""),
+                              ((xmx < 0 ? xmx_ : xmx != 0) && !cl_.sg8 ? xmx_defs() : ""),  // (8-lane GPUs: DP4a, gemm_x8 has no tiles)
                   "gemm");
   }
   // XMX for the prompt GEMMs (gemm.cl -DXMX): taken only when the GPU offers 16-lane DPAS (ClRt::xmx) and the XMX
@@ -351,6 +367,7 @@
   // (ARC_XMX_TRY=1: the check on any GPU; =2: a DP4a variant in the XMX slot, which must pass; =3: a wrong one, which
   //  must fail)
   bool xmx_ = false;
+  bool xmx_slow_ = false;  // (the check failed on speed, the results being right: no retry without 2D loads)
   bool xmx_check() {
     // (M: 4 tiles of tm tokens, so every work-group shape below covers at least one; 64 with the default tm 16)
     // (N: 4 column groups, so ARC_GEMM_CG up to 4 is checked too)
@@ -408,6 +425,7 @@
         for (int a32 = q >= 110 ? 0 : 1; a32 >= 0; --a32) {
           // (only when asked for: an H8 kernel that fails its check must not take XMX away from everything else)
           if (q >= 110 && !(h8_env() && q == h8_qtype())) continue;
+          if (cl_.sg8 && q < 100) continue;  // (the native types stay on DP4a on 8-lane GPUs: nothing to compare)
           const std::string nm = std::to_string(q) + (a32 ? "/act32" : "");
           const int cg = xe2_cg_for(N);
           auto make = [&](int x) { return gemm_kernel(q, a32 != 0, x, cg); };
@@ -431,6 +449,7 @@
         }
       for (int q : {100, 101})  // (the tile kernel has no layouts with mins)
         for (int acc : {0, 2}) {
+          if (cl_.sg8) continue;  // (DP4a on 8-lane GPUs: moe_gemm_kernel)
           auto make = [&](int x) { return moe_gemm_kernel(q, x); };
           check(std::to_string(q) + "/moe" + (acc ? "/swiglu" : ""), make, [&](cl_kernel k) {
             int MM = M, NN = N, KK = K, ldc = N, ac = acc, e0 = 0, e1 = 2, um = acc ? 1 : 0, us = acc ? 0 : 1;
@@ -439,9 +458,9 @@
             run("xmx_check", k, 2, gws, lws);
           });
         }
-      // (a GPU with 8-lane sub-groups, Arrow Lake H: the 16-lane builtin may be emulated there, with no dpas in ocloc's
-      //  code, so XMX is taken only if it is faster; best of 6, a stored W8 GEMM. ARC_XMX_FORCE=1 takes it anyway)
-      if (cl_.sg8 && bad.empty()) {
+      // (a GPU with 8-lane sub-groups, Arrow Lake H: no one has measured gemm_x8 yet, and its 8 columns per sub-group mean
+      //  more loads, so XMX is taken only if it is faster; best of 6, a stored W8 GEMM. ARC_XMX_FORCE=1 takes it anyway)
+      if (cl_.sg8 && bad.empty() && !getenv("ARC_XMX_TRY")) {
         const int cg = xe2_cg_for(N);
         cl_kernel kk[2] = {gemm_kernel(101, true, 0, cg), gemm_kernel(101, true, 1, cg)};
         double best[2] = {1e30, 1e30};
@@ -459,7 +478,10 @@
         const bool faster = best[1] < 0.95 * best[0], force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
         fprintf(stderr, "arcinferzero: XMX speed check (8-lane GPU): DP4a %.3f ms, XMX %.3f ms: %s\n", best[0], best[1],
                 faster ? "XMX" : force ? "XMX (ARC_XMX_FORCE)" : "DP4a");
-        if (!faster && !force) return false;
+        if (!faster && !force) {
+          xmx_slow_ = true;
+          return false;
+        }
       }
     } catch (const zrt::GpuWaitError&) {
       throw;  // (a split model's GPU that hangs: not a verdict on XMX, which is kept for the process)

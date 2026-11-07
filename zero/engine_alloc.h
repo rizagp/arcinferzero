@@ -3,7 +3,7 @@
 
   void alloc_buffers() {
     const size_t M = max_chunk;
-    const int maxK = std::max({hp.n_embd, hp.n_ff, hp.ssm_d_inner, hp.n_head * hp.head_dim, hp.hce(), hp.n_ff_exp_pad});
+    const int maxK = aq_max_k();
     const int ldq = hp.n_head * hp.head_dim * 2 + 2 * hp.n_head_kv * hp.head_dim;
     const int big_w = std::max({hp.conv_dim(), 2 * hp.n_ff, ldq});
     x_ = buf(M * hp.hce() * 4);

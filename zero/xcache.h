@@ -682,7 +682,10 @@ struct XCache {
       trace_tried_ = true;
       const char* p = getenv("ARC_XTRACE");
       if (!p || !*p) return;
-      trace_ = fopen(p, "ab");
+      // (a split model's shards: a file each, "<file>.1" ...; one file interleaved their headers and records)
+      static std::atomic<int> nth{0};
+      const int k = nth++;
+      trace_ = fopen(k ? (std::string(p) + "." + std::to_string(k)).c_str() : p, "ab");
       if (!trace_) return;
       const int hdr[4] = {0x58545231, NL, NE, (int)pools.size()};
       fwrite(hdr, 4, 4, trace_);
