@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-08: f16 XMX at 8 lanes for the Arc 140T (opt-in)
+
+- `ARC_X16=1` now also works on iGPUs with 8-lane DPAS (`gemm_x16.cl -DX16_SG8`). The weights and activations are f16,
+  so one DPAS sums the whole row with no per-32 rescaling between DPAS, where the 140T's int8 XMX kernel lost to DP4a.
+  Strata chose f16 XMX for the A770, the same 8-lane XMX generation.
+- ocloc for Arrow Lake H: real DPAS, no spills at 8 / 16 / 32 tokens and 128 / 256 registers.
+- On the 125H with DPAS emulated: the start-time check passes (largest error 2.9e-4). KL against DP4a: 4B 0.00087, 27B
+  0.00069.
+- `bench\igpu_grf_sweep.ps1` measures it with its own settings, and its KL.
+- Off by default; the 140T has to measure it.
+
 ## 2026-11-08: a 140T sweep with 128 registers and H8; its last results recorded
 
 - The 140T's `igpu_sweep` (issue #5): DP4a still ahead, 172-185 tok/s on the 27B's prompt. The best XMX variant was 128

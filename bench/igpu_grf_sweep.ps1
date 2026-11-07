@@ -20,7 +20,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
 if (-not (Test-Path $Model)) { throw "model not found: $Model" }
-$vars = @("ARC_NO_XMX", "ARC_XMX_FORCE", "ARC_GEMM_GRF", "ARC_H8", "ARC_H8_SB", "ARC_H8_D", "ARC_GEMM_TM", "ARC_GEMM_WGY",
+$vars = @("ARC_NO_XMX", "ARC_XMX_FORCE", "ARC_X16", "ARC_X16_TM", "ARC_X16_GRF", "ARC_GEMM_GRF", "ARC_H8", "ARC_H8_SB", "ARC_H8_D", "ARC_GEMM_TM", "ARC_GEMM_WGY",
           "ARC_GEMM_RG", "ARC_GEMM_CG", "ARC_GEMM_SPLIT")
 $names = @{ TM = "ARC_GEMM_TM"; WGY = "ARC_GEMM_WGY"; RG = "ARC_GEMM_RG"; CG = "ARC_GEMM_CG"; SPLIT = "ARC_GEMM_SPLIT" }
 $inv = [Globalization.CultureInfo]::InvariantCulture
@@ -49,6 +49,9 @@ function Invoke-Bench([hashtable]$envs) {
   $path = if ($o -match "XMX on for the prompt GEMMs") { "XMX" } elseif ($o -match "XMX results differ") { "DP4a (XMX differed!)" }
           elseif ($o -match "XMX kernels do not build") { "DP4a (XMX did not build!)" } else { "DP4a" }
   if ($o -match "H8 on for the prompt GEMMs") { $path += " + H8" }
+  if ($o -match "f16 XMX on for the W8") { $path += " + f16 XMX" }
+  elseif ($o -match "f16 XMX results differ") { $path += " (f16 XMX differed!)" }
+  elseif ($o -match "f16 XMX kernels do not build") { $path += " (f16 XMX did not build!)" }
   if (-not $tps) {
     $err = ($o -split "`n" | Where-Object { $_ -match "error|cannot|failed|exception" } | Select-Object -First 1)
     return [pscustomobject]@{ tps = 0; path = "failed: $err" }
@@ -140,6 +143,29 @@ foreach ($bn in $bases.Keys) {
 }
 
 ""
+"=== f16 XMX (ARC_X16=1, gemm_x16.cl at 8 lanes: f16 weights and activations, the DPAS summing the whole row)"
+$x16 = @{ ARC_X16 = 1 }
+$xb = Invoke-Bench $x16
+Line "base (32 tokens, 256 registers)" $xb
+$xtop = @{ tps = $xb.tps; env = $x16 }
+$xgrid = [ordered]@{
+  "X16_TM=16" = @{ ARC_X16_TM = 16 }; "X16_TM=8" = @{ ARC_X16_TM = 8 }; "X16_GRF=128" = @{ ARC_X16_GRF = 128 }
+  "WGY=2" = @{ ARC_GEMM_WGY = 2 }; "WGY=4" = @{ ARC_GEMM_WGY = 4 }; "RG=2" = @{ ARC_GEMM_RG = 2 }; "RG=8" = @{ ARC_GEMM_RG = 8 }
+  "SPLIT=0" = @{ ARC_GEMM_SPLIT = 0 }
+}
+if (-not $Quick) { $xgrid["WGY=16"] = @{ ARC_GEMM_WGY = 16 }; $xgrid["X16_TM=16 X16_GRF=128"] = @{ ARC_X16_TM = 16; ARC_X16_GRF = 128 } }
+foreach ($n in $xgrid.Keys) {
+  $e = $x16.Clone(); foreach ($k in $xgrid[$n].Keys) { $e[$k] = $xgrid[$n][$k] }
+  $r = Invoke-Bench $e
+  Line $n $r
+  if ($r.tps -gt $xtop.tps) { $xtop = @{ tps = $r.tps; env = $e } }
+}
+Line "base again (drift)" (Invoke-Bench $x16)
+[string]::Format($inv, "  best: {0} -> {1:F1} tok/s ({2:+0.0;-0.0} % against DP4a default)",
+                 (($xtop.env.GetEnumerator() | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join " "), $xtop.tps,
+                 100.0 * ($xtop.tps / $ref.tps - 1))
+
+""
 "=== other H8 forms, on the faster H8 base with its best tiles"
 $hb = if ($best["XMX GRF128 H8"].tps -ge $best["DP4a H8"].tps) { "XMX GRF128 H8" } else { "DP4a H8" }
 $h8sets = [ordered]@{
@@ -158,6 +184,7 @@ $p0 = [regex]::Match($o, "perplexity: ([\d.]+)")
 "DP4a default: perplexity " + $(if ($p0.Success) { $p0.Groups[1].Value } else { "?" })
 $klsets = [ordered]@{}
 foreach ($bn in $bases.Keys) { $klsets["$bn, best tiles"] = (Env-Of $bases[$bn] $best[$bn].tiles) }
+$klsets["f16 XMX, best"] = $xtop.env
 $klsets["$hb + ARC_H8_SB=1"] = $h8sets["$hb + ARC_H8_SB=1 (per-256 scales)"]
 $klsets["$hb + ARC_H8_D=1"] = $h8sets["$hb + ARC_H8_D=1 (random signs)"]
 foreach ($n in $klsets.Keys) {

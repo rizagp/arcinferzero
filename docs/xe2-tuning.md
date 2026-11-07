@@ -9,7 +9,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_MOE_CG` / `ARC_MOE_WY` | 1 / 1 | sub-groups per work-group of the MoE expert GEMM (prompt chunks of 1,280+ tokens): along a tile's columns (its activation rows shared through L1) / along the tiles, mostly one expert's (its weights shared). Bit-identical at every shape. A B60's 35B 16K prompt spent 1.55 s of 5.08 in these GEMMs (+0.26 s `decode_w8`), about 21 TOPS against ~50 for the dense GEMMs; laptop: no gain (2026-11-07) | 1 |
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
-| `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
+| `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights; since 2026-11-08 also on iGPUs with 8-lane DPAS (the 140T: `gemm_x16.cl -DX16_SG8`) | 6, 8 |
 | `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX (gemm_x8.cl), still checked against DP4a bit for bit; off because a 140T measured it 1.6x slower in the 27B's GEMMs. On iGPUs with 16-lane XMX: XMX without the speed check | 8 |
 | `ARC_X8_W=1` | off | 8-lane GPUs with `ARC_XMX_FORCE=1`: gemm_x8 with one sub-group for both 8-column halves of a 16-column group, the activations loaded once (ocloc `arl-h`: 28 % fewer memory messages and 17 % fewer instructions per DPAS, no spills at 256 registers and 16 tokens); bit-identical | 8 |
 | `ARC_GEMM_GRF=128` on 8-lane GPUs | 256 there | the default register file for gemm_x8 too (no spills at 16 tokens without `ARC_X8_W`; spills with it or with 32 tokens, except H8). Since 2026-11-08 also the DP4a GEMM of iGPUs (it spills there: 6x slower on the 125H) | 8 |
@@ -413,6 +413,19 @@ DP4a GEMM 4.7x slower in this check, 47 ms against 10). If XMX loses, those swit
   (128 registers: twice the threads) more than by its loads, which X8W cut. Chunk sizes (1K / 2K / 4K for an 8K prompt)
   change nothing. Generation: the GEMV switches within noise (second run 5.89-6.09 tok/s; the first run's low values
   were a stall in the first steps, its median steps 162-168 ms as the second's).
+- **f16 XMX at 8 lanes for the 140T (2026-11-08): `ARC_X16=1`, `gemm_x16.cl -DX16_SG8`.**
+  - **Why:** the 140T's int8 XMX kernel lost to DP4a mostly in the vector work between DPAS (the per-32 rescaling). In
+    f16 the weights are decoded with their scales, and one DPAS accumulator sums the whole row. Strata made the same
+    choice for the A770, which is Xe1 with 8-lane XMX like the 140T.
+  - **Form:** the extension's 8-lane form (a: `int8`, two halves per lane), two sub-groups per 16-column group, the
+    grid of the 16-lane kernel.
+  - **ocloc `arl-h`:** real `dpas.8x8` in all four W8 layouts at 8, 16 and 32 tokens per sub-group, and no spills at
+    256 or 128 registers. Counted per multiply it has slightly more instructions than the int8 kernel (one f16 DPAS
+    covers k = 16, the int8 one k = 32), so only a 140T can say whether it is faster.
+  - **On the 125H, DPAS emulated (`ARC_X16_TRY=1`):** the start-time check passes with a largest error of 2.9e-4 of
+    the result. KL against DP4a over 4 perplexity chunks: 4B 0.00087 (max 0.048), 27B 0.00069 (max 0.018); 27B
+    perplexity 6.2847 -> 6.2797. Results are the same at every TM.
+  - **Not done:** MoE experts (Flash Next) on it; they stay on DP4a per tile.
 - **Next for the 140T (2026-11-08): `bench\igpu_grf_sweep.ps1`.** Four bases swept: XMX with 128 registers and DP4a
   at its 256, each without and with H8. Each setting (TM, WGY, RG, CG, split-K) is changed alone, the two best are
   crossed, and all gains are put together. Then the other H8 forms (`ARC_H8_SB`, `ARC_H8_D`) on the faster H8 base,

@@ -127,12 +127,14 @@
     static const bool g128 = getenv("ARC_X16_GRF") && std::string(getenv("ARC_X16_GRF")) == "128";
     return kernel("x16", std::string(g128 ? "" : "-cl-intel-256-GRF-per-thread ") + "-DQTYPE=" + std::to_string(qtype) +
                              " -DX16_TM=" + std::to_string(tm) + (cg != 1 ? " -DX16_CG=" + std::to_string(cg) : "") +
-                             (x16_emu_ ? " -DX16_EMU" : ""),
+                             (x16_emu_ ? " -DX16_EMU" : "") + (cl_.sg8 ? " -DX16_SG8" : ""),
                   "gemm_x16");
   }
   bool x16_wanted() const {
     const bool tr = getenv("ARC_X16_TRY") && atoi(getenv("ARC_X16_TRY")) != 0;
-    return tr || (getenv("ARC_X16") && atoi(getenv("ARC_X16")) != 0 && cl_.xmx && !zrt::integrated());
+    // (iGPUs: only those with 8-lane DPAS, the 140T, where the int8 XMX GEMM lost to DP4a in its rescaling: gemm_x16.cl
+    //  -DX16_SG8, 2026-11-08; the 16-lane iGPUs have not been measured with it)
+    return tr || (getenv("ARC_X16") && atoi(getenv("ARC_X16")) != 0 && cl_.xmx && (!zrt::integrated() || cl_.sg8));
   }
   void x16_init() {
     if (!x16_wanted()) return;
@@ -189,7 +191,7 @@
     const int tm = x16_tm_for(Mp);
     if (qtype < 100 || qtype > 103 || !tm || N % 16 || K % 256) return false;
     x16_act(aq, asc, Mp, K, act32);
-    const int cg = x16_cg_for(N);
+    const int cg = cl_.sg8 ? 1 : x16_cg_for(N);
     cl_kernel k = x16_kernel(qtype, cg, tm);
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
@@ -271,7 +273,7 @@
                       run("x16_check", k, 2, gws, lws);
                     } else {
                       x16_act(ba, bs, M, K, a32);
-                      const int cg = x16_cg_for(N), tm = x16_tm_for(M);
+                      const int cg = cl_.sg8 ? 1 : x16_cg_for(N), tm = x16_tm_for(M);
                       cl_kernel k = x16_kernel(q, cg, tm);
                       size_t gws[2] = {(size_t)N / cg * (M / tm), 1}, lws[2] = {16, 1};
                       set_args(k, 0, bq, bh, x16_ah_, x16_rs_, bc, MM, NN, KK, ld, co, ac, rg, s0, s1);

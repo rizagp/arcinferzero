@@ -15,6 +15,10 @@
 // ~4000 do not overflow (256 before: a weight of 256 or more became inf, and its column NaN).
 // -DACT_ONLY: act_half alone (built without the GEMM).
 // -DX16_EMU: DPAS emulated with shuffles (tests on GPUs without XMX: same products, f32 sums in another order).
+// -DX16_SG8 (GPUs whose DPAS takes 8-lane sub-groups: Arrow Lake H, Arc 140T; ARC_X16=1): the same GEMM at 8 lanes, the
+// extension's form there (a: int8, lane l holding values 2l, 2l + 1 of each row; b: lane n = column n). A 16-column
+// group is two sub-groups (half 0: columns 0-7, half 1: 8-15), the work-group shape and the grid unchanged. The 140T's
+// int8 XMX kernel (gemm_x8.cl) spent its time in the per-32 rescaling between DPAS; here the DPAS sums the whole row.
 
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
@@ -49,7 +53,26 @@ __kernel void act_half(__global const char* restrict aq, __global const float* r
 }
 
 #ifndef ACT_ONLY
-#ifdef X16_EMU
+#if defined(X16_EMU) && defined(X16_SG8)
+// one DPAS 8 x 8 x 16 (f16, f32 sums) at 8 lanes: a: lane l holds A[r][2l] (low half), A[r][2l + 1] (high) in component
+// r; b: lane n = column n, its 16 values as 8 pairs; result: component r = row r, lane = column
+inline float8 x16_mad(int8 a, int8 b, float8 acc) {
+  const int bw[8] = {b.s0, b.s1, b.s2, b.s3, b.s4, b.s5, b.s6, b.s7};
+  float c[8] = {acc.s0, acc.s1, acc.s2, acc.s3, acc.s4, acc.s5, acc.s6, acc.s7};
+  const uint ar[8] = {(uint)a.s0, (uint)a.s1, (uint)a.s2, (uint)a.s3, (uint)a.s4, (uint)a.s5, (uint)a.s6, (uint)a.s7};
+#pragma unroll
+  for (int k = 0; k < 16; ++k) {
+    const half2 bh = as_half2(bw[k >> 1]);
+    const float bk = (k & 1) ? (float)bh.s1 : (float)bh.s0;
+#pragma unroll
+    for (int r = 0; r < 8; ++r) {
+      const half2 ah = as_half2(intel_sub_group_shuffle(ar[r], k >> 1));
+      c[r] = fma((k & 1) ? (float)ah.s1 : (float)ah.s0, bk, c[r]);
+    }
+  }
+  return (float8)(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
+}
+#elif defined(X16_EMU)
 // one DPAS 8 x 16 x 16 (f16, f32 sums): a: lane l holds A[r][l] in component r; b: lane n = column n, its 16 values
 // as 8 pairs (k = 2i low half, 2i + 1 high); result: component r = row r, lane = column
 inline float8 x16_mad(short8 a, int8 b, float8 acc) {
@@ -91,6 +114,88 @@ inline int2 x16_dec(uint w, float s, float mn) {
 #define X16_CG 1  // 16-column groups per sub-group: their weights decoded once per k-step, each 8-token A read used X16_CG times
 #endif
 
+#ifdef X16_SG8
+#if X16_CG != 1
+#error "X16_SG8: one column group per sub-group"
+#endif
+// grid and work-groups as below (local (16, WGY)): two 8-lane sub-groups per 16-column group, each its half's 8 columns
+// x X16_TM tokens. The layouts keep 16 lanes: a column's word w of a step at + w * 16, half h's columns at + 8 * h.
+__attribute__((intel_reqd_sub_group_size(8)))
+__kernel void gemm_x16(__global const uint* restrict wq, __global const uint* restrict wh,
+                       __global const half* restrict ah, __global const float* restrict rs, __global float* restrict C,
+                       int M, int N, int K, int ldc, int c_off, int accumulate, int rgroup, int s_begin, int s_end) {
+  const int NC = N / 16, rows = M / (X16_TM * (int)get_local_size(1));
+  const int w = get_group_id(0), grp = w / (rgroup * NC), rem = w % (rgroup * NC);
+  const int rin = min(rgroup, rows - grp * rgroup);
+  const int g0 = rem / rin, row = grp * rgroup + rem % rin;
+  const int hg = ((int)get_local_id(0) / 8) & 1;  // (which half of the group's columns)
+  const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * X16_TM;
+  const int nsb = K / 256;
+  __global const ushort* ap = (__global const ushort*)ah + (size_t)m0 * K;
+
+  float8 acc[NRG];
+#pragma unroll
+  for (int i = 0; i < NRG; ++i) acc[i] = (float8)(0.0f);
+
+  for (int s = s_begin; s < s_end; ++s) {
+    __global const uint* hp = wh + ((size_t)g0 * nsb + s) * (HDR * 16) + hg * 8;
+    float d[1];
+    uint hsc[1][4];
+    d[0] = as_float(intel_sub_group_block_read(hp)) * WSCALE;
+#pragma unroll
+    for (int q = 0; q < 4; ++q) hsc[0][q] = intel_sub_group_block_read(hp + (2 + q) * 16);
+#if HAS_MIN
+    float dmin[1];
+    uint hmn[1][4];
+    dmin[0] = as_float(intel_sub_group_block_read(hp + 16)) * WSCALE;
+#pragma unroll
+    for (int q = 0; q < 4; ++q) hmn[0][q] = intel_sub_group_block_read(hp + (6 + q) * 16);
+#endif
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      const int k0 = s * 256 + j * 64;
+      __global const uint* dp = wq + ((size_t)g0 * nsb * 4 + s * 4 + j) * DPJ * 16 + hg * 8;
+      // (one 16-block c at a time, as the 16-lane kernel's X16_CG > 1 order: per accumulator c = 0..3 within j)
+#pragma unroll
+      for (int c = 0; c < 4; ++c) {
+        const float sc = X16_SC(0, j, c), mn = X16_MN(0, j, c);
+        const int2 p0 = x16_dec(intel_sub_group_block_read(dp + (4 * c + 0) * 16), sc, mn);
+        const int2 p1 = x16_dec(intel_sub_group_block_read(dp + (4 * c + 1) * 16), sc, mn);
+        const int2 p2 = x16_dec(intel_sub_group_block_read(dp + (4 * c + 2) * 16), sc, mn);
+        const int2 p3 = x16_dec(intel_sub_group_block_read(dp + (4 * c + 3) * 16), sc, mn);
+        const int8 B = (int8)(p0.s0, p0.s1, p1.s0, p1.s1, p2.s0, p2.s1, p3.s0, p3.s1);
+#pragma unroll
+        for (int i = 0; i < NRG; ++i) {
+          // 8 token rows, their 16 values of this block: lane l the pair 2l, 2l + 1 of each row (one uint)
+#define X16_AROW(r) (int)intel_sub_group_block_read((__global const uint*)(ap + (size_t)(8 * i + (r)) * K + k0 + 16 * c))
+          const int8 A = (int8)(X16_AROW(0), X16_AROW(1), X16_AROW(2), X16_AROW(3), X16_AROW(4), X16_AROW(5), X16_AROW(6), X16_AROW(7));
+#undef X16_AROW
+          acc[i] = x16_mad(A, B, acc[i]);
+        }
+      }
+    }
+  }
+
+  // ---- C: each row's result times its activation scale (rs) and 1 / WSCALE; accumulate as gemm.cl
+#pragma unroll
+  for (int i = 0; i < NRG; ++i) {
+    const float res[8] = {acc[i].s0, acc[i].s1, acc[i].s2, acc[i].s3, acc[i].s4, acc[i].s5, acc[i].s6, acc[i].s7};
+#pragma unroll
+    for (int r = 0; r < 8; ++r) {
+      const int m = m0 + 8 * i + r;
+      __global uint* cp = (__global uint*)(C + c_off + (size_t)m * ldc + g0 * 16 + hg * 8);
+      float v = res[r] * (rs[m] * (1.0f / WSCALE));
+      if (accumulate == 1) {
+        v += as_float(intel_sub_group_block_read(cp));
+      } else if (accumulate == 2) {  // fused SwiGLU: C holds the gate projection, v the up projection
+        const float gt = as_float(intel_sub_group_block_read(cp));
+        v *= gt / (1.0f + exp(-gt));
+      }
+      intel_sub_group_block_write(cp, as_uint(v));
+    }
+  }
+}
+#else
 // grid (N / X16_CG * rows, WGY), local (16, WGY), rows = M / (X16_TM * WGY): the work-group and row-group order of
 // gemm.cl, each sub-group X16_CG * 16 columns x X16_TM tokens
 __attribute__((intel_reqd_sub_group_size(SG)))
@@ -210,4 +315,5 @@ __kernel void gemm_x16(__global const uint* restrict wq, __global const uint* re
     }
   }
 }
+#endif  // X16_SG8
 #endif  // ACT_ONLY
