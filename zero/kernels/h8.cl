@@ -282,6 +282,14 @@ __kernel void h8r_act(__global const uint* restrict aq, __global const float* re
   float v[NV];
 #pragma unroll
   for (int r = 0; r < NV / 4; ++r) {
+#ifdef H8F
+    // (the values as they were before their first rounding, ops.cl quant_store16)
+    const float4 fv = vload4(0, (__global const float*)((__global const char*)aq + H8F) + (size_t)m * K + bk * HB + 64 * r + 4 * l);
+    v[4 * r + 0] = h8_signed(fv.s0, 64 * r + 4 * l + 0);
+    v[4 * r + 1] = h8_signed(fv.s1, 64 * r + 4 * l + 1);
+    v[4 * r + 2] = h8_signed(fv.s2, 64 * r + 4 * l + 2);
+    v[4 * r + 3] = h8_signed(fv.s3, 64 * r + 4 * l + 3);
+#else
     const uint word = intel_sub_group_block_read(aq + (size_t)m * (K / 4) + (size_t)bk * (HB / 4) + r * SG);
     const int e0 = bk * HB + 64 * r;
     float sc;
@@ -294,6 +302,7 @@ __kernel void h8r_act(__global const uint* restrict aq, __global const float* re
 #pragma unroll
     for (int b = 0; b < 4; ++b)
       v[4 * r + b] = h8_signed(sc * (float)(char)(word >> (8 * b)), 64 * r + 4 * l + b);
+#endif
   }
   h8_fwht_regs(v);
   float amax = 0.0f;

@@ -965,10 +965,29 @@ static int run_main(int argc, char** argv) {
         const std::vector<float> last(lg.begin(), lg.end());  // logits_at() overwrites the shared logits buffer
         double sum = 0, mx = 0;
         int agree = 0;  // (positions whose top token is the reference's)
+        // (the logits' size against the reference's, each row's mean taken out: log-probs and logits differ by a constant)
+        double d2 = 0, r2 = 0, worst_cos = 1, top5 = 0;
+        std::vector<int> ia(V), ib(V);
         for (size_t r = kl_from; r < toks.size(); ++r) {
           const std::vector<float>& l = eng.logits_at((int)(r - kl_c0));
           const float* rr = ref.data() + (r - kl_from) * V;
           const double k = kl_of(l, rr);
+          {
+            double ma = 0, mb = 0;
+            for (size_t i = 0; i < V; ++i) ma += l[i], mb += rr[i];
+            ma /= (double)V, mb /= (double)V;
+            double ab = 0, aa = 0, bb = 0;
+            for (size_t i = 0; i < V; ++i) {
+              const double x = l[i] - ma, y = rr[i] - mb;
+              ab += x * y, aa += x * x, bb += y * y, d2 += (x - y) * (x - y);
+            }
+            r2 += bb;
+            worst_cos = std::min(worst_cos, ab / std::sqrt(aa * bb));
+            for (size_t i = 0; i < V; ++i) ia[i] = ib[i] = (int)i;
+            std::partial_sort(ia.begin(), ia.begin() + 5, ia.end(), [&](int a, int b) { return l[a] > l[b]; });
+            std::partial_sort(ib.begin(), ib.begin() + 5, ib.end(), [&](int a, int b) { return rr[a] > rr[b]; });
+            for (int a = 0; a < 5; ++a) top5 += std::find(ib.begin(), ib.begin() + 5, ia[a]) != ib.begin() + 5 ? 0.2 : 0.0;
+          }
           if (getenv("ARC_KL_SHOW") && k > atof(getenv("ARC_KL_SHOW"))) printf("pos %zu KL %.3f\n", r, k);  // (ARC_KL_SHOW=x: positions above x)
           sum += k;
           mx = std::max(mx, k);
@@ -977,6 +996,8 @@ static int run_main(int argc, char** argv) {
         const size_t n = toks.size() - kl_from;
         printf("\nKL(ref || arcinferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu",
                sum / n, n, mx, agree, n);
+        printf("\nlogits against the reference: relative L2 %.3f %%, worst cosine %.6f, top-5 overlap %.3f",
+               100.0 * std::sqrt(d2 / r2), worst_cos, top5 / (double)n);
         std::copy(last.begin(), last.end(), const_cast<float*>(lg.data()));
       }
     }

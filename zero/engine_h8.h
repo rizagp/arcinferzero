@@ -16,7 +16,7 @@
 // H8R, per-column and per-token scales (gemm.cl QTYPE 111, kernels h8r_* of h8.cl, the default within ARC_H8=1;
 // ARC_H8_SB=1 keeps the per-256 ones, QTYPE 110): a weight's column scales are computed once from its first decode
 // (h8_col_, N floats) and each token's scale in the rotation's one pass (h8_asc_[token]), the rotations in registers,
-// and a GEMM's dot products over the whole of K are one integer sum. ARC_H8_NOD=1: without the random signs.
+// and a GEMM's dot products over the whole of K are one integer sum. See h8_float for the activations' source.
 //
 // Off unless ARC_H8=1 until it is measured; never with ARC_NPU (shared weight buffers); never with a two-pass model (q2mm_: Gemma 4 26B / 12B, Qwen3 ASR's text
 // model), never for a mixture of experts' expert GEMMs (their own kernels) or the vision / audio encoders (only the
@@ -39,11 +39,27 @@
     return !sb;
   }
   static int h8_qtype() { return h8_row() ? 111 : 110; }
+  // H8R rotates a Qwen model's activations as they are before their first rounding: quant_store16 keeps a float copy
+  // after the int8 rows of aq_, in the four kernels of build_kernels (rmsnorm_quant, swiglu_quant, gated_norm_quant,
+  // attn_gate_quant; not the encoders', whose aq is a buffer of their own). Their int8 rows stay for the GEMMs H8 does
+  // not cover and the generation path. Gemma and Flash Next have quantization kernels of their own and rotate the
+  // int8 form. ARC_H8_INT=1: the int8 form here too.
+  std::string h8f_defs_;
+  size_t h8f_off_ = 0;
+  bool h8_float() const {
+    static const bool i8 = getenv("ARC_H8_INT") && atoi(getenv("ARC_H8_INT")) != 0;
+    return h8_row() && !i8 && !hp.hc && !hp.gemma;
+  }
   // (q2_init has run: q2mm_ known)
   void h8_init() {
     // (never with the NPU: its shares copy a weight (N.gate = L.gate) over the same buffers, so the in-place conversion
     //  ran twice on the shared rows, and the NPU read its own rows as W8 after they had become H8; kernel audit 2026-11-03)
     h8_ = h8_env() && !q2mm_ && !npu_wanted();
+    if (h8_ && h8_float()) {
+      const int maxK = std::max({hp.n_embd, hp.n_ff, hp.ssm_d_inner, hp.n_head * hp.head_dim, hp.hce(), hp.n_ff_exp_pad});
+      h8f_off_ = (size_t)max_chunk * maxK;
+      h8f_defs_ = " -DH8F=" + std::to_string(h8f_off_);
+    }
     if (h8_env() && q2mm_ && !opt.dry)
       fprintf(stderr, "arcinferzero: ARC_H8 is not for a two-pass model: its prompt GEMMs stay as they are\n");
     if (h8_env() && !q2mm_ && npu_wanted() && !opt.dry)
@@ -54,6 +70,7 @@
       fprintf(stderr, "arcinferzero: H8 on for the prompt GEMMs (Hadamard-rotated int8, one scale per %s)\n",
               h8_row() ? "column and token" : "256 values");
     });
+    if (h8_ && h8f_off_ && !opt.dry) { static std::once_flag f; std::call_once(f, [] { fprintf(stderr, "arcinferzero: H8 rotates the activations from f32\n"); }); }
   }
   // the rotation block for a row length K: the largest power of two up to 1024 (ARC_H8_HB) dividing it; K is a whole
   // number of 256-superblocks, so at least 256
@@ -83,11 +100,11 @@
   cl_kernel h8_kernel(int hb, int src, const char* name) {
     return kernel("h8", "-DHB=" + std::to_string(hb) + (src ? " -DSRC=" + std::to_string(src) : std::string()), name);
   }
-  // (H8R: 64 floats x 16 lanes in registers; ARC_H8_NOD=1: without the signs)
-  cl_kernel h8r_kernel(int hb, int src, const char* name) {
-    static const bool nod = getenv("ARC_H8_NOD") && atoi(getenv("ARC_H8_NOD")) != 0;
-    return kernel("h8", std::string("-cl-intel-256-GRF-per-thread ") + (nod ? "" : "-DH8_D ") + "-DHB=" + std::to_string(hb) +
-                            (src ? " -DSRC=" + std::to_string(src) : std::string()), name);
+  // (H8R: 64 floats x 16 lanes in registers; ARC_H8_D=1: with urakozz's random signs, which gained nothing on our models)
+  cl_kernel h8r_kernel(int hb, int src, const char* name, const std::string& extra = std::string()) {
+    static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
+    return kernel("h8", std::string("-cl-intel-256-GRF-per-thread ") + (d ? "-DH8_D " : "") + "-DHB=" + std::to_string(hb) +
+                            (src ? " -DSRC=" + std::to_string(src) : std::string()) + extra, name);
   }
   // H8R: a weight's column scales (N floats), computed once from its decoded form, then the weight rotated in place
   std::map<const GpuWeight*, cl_mem> h8_col_;
@@ -123,7 +140,7 @@
     const int hb = h8_block(K);
     int a32 = act32 ? 1 : 0, M = Mp, KK = K;
     if (h8_row()) {
-      cl_kernel k = h8r_kernel(hb, 0, "h8r_act");
+      cl_kernel k = h8r_kernel(hb, 0, "h8r_act", h8f_defs_);
       set_args(k, 0, aq_, asc_, a32, h8_aq_, h8_asc_, M, KK);
       const size_t wg = 16 * (size_t)(K / hb);
       size_t gws[1] = {wg * Mp}, lws[1] = {wg};

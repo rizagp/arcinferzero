@@ -7,7 +7,7 @@
     const int ldq = hp.n_head * hp.head_dim * 2 + 2 * hp.n_head_kv * hp.head_dim;
     const int big_w = std::max({hp.conv_dim(), 2 * hp.n_ff, ldq});
     x_ = buf(M * hp.hce() * 4);
-    aq_ = buf(M * maxK * (q2mm_ ? 2 : 1));
+    aq_ = buf(M * maxK * (q2mm_ ? 2 : 1) + h8f_off_ * 4);  // (h8f_off_: ARC_H8_FLOAT's float copy, zero/engine_h8.h)
     x16_reserve(M, maxK);  // (the f16 XMX GEMM's activations, when it is on: zero/xe2/engine_xe2.h)
     h8_reserve(M, maxK);   // (the H8 GEMM's rotated activations and staged scales, ARC_H8=1: zero/engine_h8.h)
     if (hp.hc) {

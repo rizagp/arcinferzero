@@ -13,6 +13,13 @@
   comparison with urakozz's code).
 - The start-time XMX check tests an H8 kernel only when H8 is asked for, so one cannot take XMX away from other runs.
 - The default path's logits are bit-identical (4B, 27B).
+- Against f32, 480 tokens: 27B default KL 0.00054, H8 0.00141, urakozz's method simulated on our model 0.00080; 4B
+  0.00100, 0.00274, 0.00150. `runz --kl-ref` also prints the logits' relative L2, worst cosine and top-5 overlap;
+  `ref_forward REF_HAD_D=1` simulates the signs. The signs show no clear gain.
+- H8 on Qwen models now rotates the activations from f32 instead of their int8 form, without the signs (`ARC_H8_INT=1`:
+  from int8; `ARC_H8_D=1`: with signs). KL against f32: 27B 0.00141 -> 0.00113, 4B 0.00274 -> 0.00195. The iGPU's 27B
+  H8 prompt goes 122 -> 116-117 tok/s, +285 MB. The default path's logits stay bit-identical (4B, 27B); its memory and
+  kernels do not change.
 
 ## 2026-11-06: 2D block loads by default on discrete cards; the B60 and 140T results
 

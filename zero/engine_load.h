@@ -8,8 +8,9 @@
     dec_.load(dir, KernelParts::kDecode);
     if (hp.moe) moe_src_ = read_file(dir + "/moe.cl");
     auto p = [&](const char* n) { return kernel("ops", "", n); };
-    k_rmsnorm_ = p("rmsnorm_quant");
-    k_swiglu_ = p("swiglu_quant");
+    // (h8f_defs_: H8's float copy of the activations, zero/engine_h8.h; empty otherwise)
+    k_rmsnorm_ = kernel("ops", h8f_defs_, "rmsnorm_quant");
+    k_swiglu_ = kernel("ops", h8f_defs_, "swiglu_quant");
     if (getenv("ARC_CT")) conv_ct_ = std::max(1, atoi(getenv("ARC_CT")));
     {
       const char* g = getenv("ARC_CONV_GRF");
@@ -20,9 +21,9 @@
       k_gdn_conv1_ = kernel("ops", co + " -DCONV_UPD", "gdn_conv");
     }
     k_conv_upd_ = p("conv_state_update");
-    k_gnorm_ = hp.hc ? kernel("ops", "-DGATE_SIGMOID", "gated_norm_quant") : p("gated_norm_quant");
+    k_gnorm_ = hp.hc ? kernel("ops", "-DGATE_SIGMOID", "gated_norm_quant") : kernel("ops", h8f_defs_, "gated_norm_quant");
     k_attn_prep_ = kernel("ops", sb_opt(256), "attn_prep");
-    k_attn_gate_ = p("attn_gate_quant");
+    k_attn_gate_ = kernel("ops", h8f_defs_, "attn_gate_quant");
     k_gdn_gates_ = p("gdn_gates");
     const std::string big = "-cl-intel-256-GRF-per-thread -DGQ=" + std::to_string(gq());
     k_attn_ = kernel("ops", big, "attn_fa");

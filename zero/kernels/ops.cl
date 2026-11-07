@@ -59,6 +59,11 @@ inline void quant_store16(const float* v, int s, int m, int M, int K, __global c
 #endif
   }
   vstore4((uint4)(pk[0], pk[1], pk[2], pk[3]), 0, (__global uint*)(aq + (size_t)m * K + s * 256 + 16 * lane));
+#ifdef H8F
+  // (zero/engine_h8.h h8_float: the values before rounding too, H8F bytes further on, for the H8 rotation)
+  vstore16((float16)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15]), 0,
+           (__global float*)(aq + H8F) + (size_t)m * K + s * 256 + 16 * lane);
+#endif
   absum[((size_t)s * 16 + lane) * M + m] = (ushort)(short)sum;
   if (act32) {
     if ((lane & 1) == 0) asc[((size_t)s * 8 + lane / 2) * M + m] = amax / 127.0f;

@@ -172,8 +172,16 @@ static int had_block(const std::string& name, int K) {
 }
 static void fwht_blocks(float* v, int K, int hb) {  // (normalized: orthonormal, so the product is unchanged)
   const float s = 1.0f / std::sqrt((float)hb);
+  static const bool signs = getenv("REF_HAD_D") && atoi(getenv("REF_HAD_D")) != 0;  // (REF_HAD_D=1: signs first, zero/kernels/h8.cl h8_signed)
   for (int b0 = 0; b0 < K; b0 += hb) {
     float* p = v + b0;
+    if (signs)
+      for (int j = 0; j < hb; ++j) {
+        uint32_t x = (uint32_t)j * 0x9E3779B1u;
+        x ^= x >> 15;
+        x *= 0x85EBCA77u;
+        if (x >> 31) p[j] = -p[j];
+      }
     for (int len = 1; len < hb; len <<= 1)
       for (int i = 0; i < hb; i += len << 1)
         for (int j = i; j < i + len; ++j) {

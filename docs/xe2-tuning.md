@@ -10,7 +10,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, on discrete cards | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
-| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_NOD=1`: without the random signs. Slower than the default on the laptop; this form not yet run on a B60 | 8 |
+| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. Slower than the default on the laptop; this form not yet run on a B60 | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
@@ -237,12 +237,16 @@ differences its code shows:
 | Scales | one per column, one per token, applied once at the end of K | one per 256 values | the same as urakozz |
 | Column scales | computed once per weight | every decode | once per weight |
 | Rotation | in registers, 64 floats x 16 lanes; words through local memory once | through local memory, a barrier per stage | in registers |
-| Signs before the rotation | random, per K | none | random, by a hash of the index |
+| Signs before the rotation | random, per K | none | none (`ARC_H8_D=1`: random): no gain measured on our models |
+| Activations rotated from | bf16, not rounded before | int8 | f32, but the int8 rounding still runs |
+| Weights rotated from | the file's int4, in one kernel | our W8 form, decoded first | the same as before |
 | DPAS sums | stay in the DPAS accumulators | each DPAS starts at zero, then an add per token | stay in the accumulators (no B60 run yet) |
 | Activations | 2D loads, 32 rows at once | 2D loads, 8 rows at once | the same as before |
 | Weights | 2D loads with a prefetch, 32 columns a sub-group | block reads, 16 columns | the same as before |
 | Sub-group tile | 32 tokens x 32 columns, a 256 x 128 work-group, a split barrier each 64 values | 16 x 16 | the same as before |
 | Registers | not stated for its production kernel (its W4A8 probe: 256) | 128 | the same as before |
+| Slabs | rotates and multiplies 1024 columns at a time | a whole matrix at a time | the same as before |
+| Fused GEMMs | gate and up in one GEMM, the SiLU in its end; qkv and z in one | separate launches | the same as before |
 
 Its production default since 2026-10-27 is bf16 again, by its operator's decision, with int8 opt-in.
 
@@ -254,17 +258,59 @@ KL against the default path on USAGE.md, 4 x 512:**
 | Default | 139.9-140.3 | 25.7-26.1 s | - | - | - |
 | H8, one scale per 256 values | 111.9 | 25.6 s | 6.64 s | 0.00100 / 0.030 | 0.00403 / 2.41 |
 | H8, per column and token, a second rounding pass | 105.7 | 26.8 s | 7.87 s | 0.00198 / 0.094 | 0.00521 / 2.07 |
-| **H8 now: in registers, one pass, signs** | **121.2-122.5** | 25.0-25.3 s | 4.23-4.33 s | 0.00148 / 0.048 | 0.00243 / 0.072 |
+| H8 in registers, one pass, signs, from int8 | 121.2-122.5 | 25.0-25.3 s | 4.23-4.33 s | 0.00148 / 0.048 | 0.00243 / 0.072 |
+| **H8 now: also from f32, no signs** | **115.8-117.2** | not read | 4.24-4.33 s | 0.00154 / 0.064 | 0.00267 / 0.118 |
 
 - On DP4a the scales were not the cost: the GEMMs gained 1-4 %. DP4a runs the same dot products with or without them.
   With the rotations free, H8 could only reach ~+3 % over the default. **It stays off on the iGPU.**
-- The rotation in registers: `h8_act` 1.68 -> 0.58 s, `h8_weights` 4.96 -> 3.70 s. Without the signs the 4B's KL is
-  0.00310, max 0.56 (with them 0.00243, 0.072).
+- The rotation in registers: `h8_act` 1.68 -> 0.58 s, `h8_weights` 4.96 -> 3.70 s.
+- The signs show no clear gain. Against the default path on USAGE.md the 4B went 0.00310 / max 0.56 without them to
+  0.00243 / 0.072 with them, but against f32 below it goes the other way, so they are off (`ARC_H8_D=1`: on).
 - 4B (weights resident, rotated once): 846-925 tok/s against 885-900 by default, within the run-to-run spread.
 - These are against the default path, not against f32 (the default path: 27B KL 0.0003-0.0004 against f32).
 - Split models (`ARC_TP_SIM`, 2 and 4 shards, a 903-token prompt): 27B greedy text equal to one GPU over 16 tokens, KL
   per row at most 0.006. 4B: the text parts at a close choice (one GPU H8, row 3, KL 0.137, the worst seen: 0.66 / 0.23
   against 0.46 / 0.45; 2 and 4 shards, row 6, a tie of 0.31 / 0.30).
+
+**Against f32** (`tools/ref_forward`, 480 tokens of USAGE.md, one chunk; `runz --kl-ref` now also prints the logits'
+relative L2, worst cosine and top-5 overlap, each row's mean taken out). "Simulated" is the closest to urakozz's method
+on our models: `ref_forward REF_HAD=1024 REF_HAD_D=1`, activations rotated straight from f32, one int8 scale per token
+and per weight row. It keeps our weights' quantization (IQ3_S, Q4_K), not his W4A16 file.
+
+| Model, form | KL mean | KL max | Same top token | Relative L2 | Worst cosine | Top-5 |
+|---|---|---|---|---|---|---|
+| 27B default | 0.00054 | 0.015 | 475 / 480 | 2.55 % | 0.952 | 0.986 |
+| 27B H8 per 256 values | 0.00109 | 0.020 | 468 | 3.55 % | 0.936 | 0.977 |
+| 27B H8 from int8, signs | 0.00141 | 0.058 | 465 | 5.45 % | 0.790 | 0.976 |
+| 27B H8 from int8, no signs | 0.00151 | 0.042 | 470 | 5.46 % | 0.805 | 0.975 |
+| 27B simulated | 0.00080 | 0.032 | 476 | 4.59 % | 0.802 | 0.983 |
+| 27B simulated, no signs | 0.00083 | 0.026 | 476 | 3.22 % | 0.939 | 0.980 |
+| 4B default | 0.00100 | 0.032 | 472 / 480 | 2.46 % | 0.998 | 0.979 |
+| 4B H8 per 256 values | 0.00195 | 0.025 | 469 | 3.42 % | 0.992 | 0.974 |
+| 4B H8 from int8, signs | 0.00274 | 0.126 | 468 | 4.03 % | 0.989 | 0.968 |
+| 4B H8 from int8, no signs | 0.00245 | 0.030 | 468 | 3.98 % | 0.995 | 0.970 |
+| 4B simulated | 0.00150 | 0.011 | 471 | 3.15 % | 0.996 | 0.970 |
+| 4B simulated, no signs | 0.00155 | 0.039 | 468 | 3.20 % | 0.996 | 0.978 |
+
+| 27B H8 from f32, signs | 0.00133 | 0.127 | 476 | 5.13 % | 0.791 | 0.975 |
+| **27B H8 now: from f32, no signs** | **0.00113** | 0.046 | 474 | 4.05 % | 0.828 | 0.977 |
+| 4B H8 from f32, signs | 0.00191 | 0.050 | 469 | 3.55 % | 0.995 | 0.974 |
+| **4B H8 now: from f32, no signs** | **0.00195** | 0.018 | 464 | 3.63 % | 0.995 | 0.977 |
+
+- Every form is about ten times under the 0.015 limit on the mean.
+- **Rotating the activations from f32 instead of their int8 form** lowers the KL: 27B 0.00151 -> 0.00113, 4B 0.00245
+  -> 0.00195 (both without signs). It costs ~5 % on the iGPU (122 -> 116-117 tok/s): the quantization kernels write a
+  float copy as well (0.99 -> 2.2 s), `h8_act` reads it value by value (0.58 -> 0.99 s), and it takes four more times
+  the int8 activations' memory (27B at 4096 tokens: +285 MB). The int8 rounding still runs for the GEMMs H8 does not
+  cover and for generation; a chunk's kernels could skip it. It closes part of the gap to the simulation. What is left is not separated yet. The simulation has only the GEMMs' error, where
+  the engine also has its attention and its weights first decoded to int8; the default's own 0.00054 / 0.00100 is of
+  that size.
+- The signs do not earn their place in these runs: the largest row's KL is higher with them in five of six pairs
+  (27B from f32 0.127 against 0.046), the means about equal.
+- The per-column form has a higher KL than the per-256 one in the engine: coarser scales cost accuracy.
+- Urakozz publishes no KL for this path. His 12.0 -> 12.5 % relative L2 (against bf16, the file's own error included)
+  means about 3.5 % added, if the errors are independent (worked out here): the same size as ours, 3.2-4.6 %
+  in the simulation, but on another model file, prompts and reference.
 
 **What a B60 should run next** (none of this form has run on an XMX GPU; the kernels build for Battlemage with ocloc,
 and a failure of the start check now only leaves H8 out of the XMX GEMMs, with the rest of XMX kept for runs without
