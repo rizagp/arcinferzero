@@ -468,6 +468,62 @@
       // (a GPU with 8-lane sub-groups, Arrow Lake H, comes here only with ARC_XMX_FORCE=1 (zero/engine.h). The speed
       //  check that stood here timed a 64 x 64 x 1024 GEMM: on a 140T it found XMX 17 % faster while the 27B's real
       //  GEMMs were 1.6x slower, so it was removed, 2026-11-07)
+      // iGPUs with XMX (Lunar / Panther Lake): their memory is shared and slower than a discrete card's, so XMX may not
+      // pay there either. A GEMM of a model's size (512 tokens x 17408 x 5120, the 27B's gate: 89 MB of weights, past
+      // the caches), as the engine launches it (2D loads too where on), best of 3 each; XMX only if 3 % faster.
+      // ARC_XMX_FORCE=1: no check; ARC_XMX_SPEED=1: the check also under ARC_XMX_TRY (tests) and on discrete cards
+      const bool spd_env = getenv("ARC_XMX_SPEED") && atoi(getenv("ARC_XMX_SPEED")) != 0;
+      const bool force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
+      if (bad.empty() && !force && (spd_env || (zrt::integrated() && !getenv("ARC_XMX_TRY")))) {
+        const int SM = 512, SN = 17408, SK = 5120, sng = SN / 16, snsb = SK / 256;
+        std::vector<uint32_t> sw((size_t)sng * snsb * 4 * 16 * 16), sh((size_t)sng * snsb * 10 * 16);
+        for (auto& v : sw) v = rnd();
+        for (auto& v : sh) {
+          const float f = rndf(0.001f, 0.01f);
+          memcpy(&v, &f, 4);
+        }
+        std::vector<int8_t> sa((size_t)SM * SK);
+        for (auto& v : sa) v = (int8_t)(rnd() >> 24);
+        std::vector<float> ss((size_t)(SK / 32) * SM);
+        for (auto& v : ss) v = rndf(0.01f, 0.01f);
+        cl_mem q8 = buf(sw.size() * 4, sw.data()), h8 = buf(sh.size() * 4, sh.data()), a8 = buf(sa.size(), sa.data()),
+               s8 = buf(ss.size() * 4, ss.data()), b8 = buf((size_t)(SK / 16) * SM * 2), c8 = buf((size_t)SM * SN * 4);
+        // (DP4a as it would run without XMX: the GPU's own defaults, not the discrete cards' switches (xe2_), which
+        //  are dropped too if XMX loses: zero/engine.h)
+        const int wgy = 8;
+        int cgs[2];
+        cl_kernel kk[2];
+        {
+          const bool sv = xe2_, sx = x2d_;
+          xe2_ = false, x2d_ = false;
+          cgs[0] = xe2_cg_for(SN);
+          kk[0] = gemm_kernel(101, true, 0, cgs[0]);
+          xe2_ = sv, x2d_ = sx;
+        }
+        cgs[1] = xe2_cg_for(SN);
+        kk[1] = gemm_kernel(101, true, 1, cgs[1]);
+        int MM = SM, NN = SN, KK = SK, ldc = SN, coff = 0, ac = 0, rg = 4, s0 = 0, s1 = snsb;
+        double best[2] = {1e30, 1e30};
+        float back = 0;
+        for (int r = 0; r < 4; ++r)  // (round 0 warms up: not counted)
+          for (int x = 0; x < 2; ++x) {
+            size_t gws[2] = {(size_t)SN * (SM / gemm_tm() / wgy), (size_t)wgy}, lws[2] = {16 * (size_t)cgs[x], (size_t)wgy};
+            set_args(kk[x], 0, q8, h8, a8, s8, b8, c8, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
+            const auto t0 = std::chrono::steady_clock::now();
+            run("xmx_check", kk[x], 2, gws, lws);
+            CL_CHECK(clEnqueueReadBuffer(cl_.queue, c8, CL_TRUE, 0, 4, &back, 0, nullptr, nullptr));
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (r > 0) best[x] = std::min(best[x], ms);
+          }
+        for (cl_mem* m : {&q8, &h8, &a8, &s8, &b8, &c8}) free_buf(*m);
+        const bool faster = best[1] < 0.97 * best[0];
+        fprintf(stderr, "arcinferzero: XMX speed check (a 512 x 17408 x 5120 GEMM): DP4a %.1f ms, XMX %.1f ms: %s\n",
+                best[0], best[1], faster ? "XMX" : "DP4a");
+        if (!faster) {
+          xmx_slow_ = true;
+          return false;
+        }
+      }
     } catch (const zrt::GpuWaitError&) {
       throw;  // (a split model's GPU that hangs: not a verdict on XMX, which is kept for the process)
     } catch (const std::exception& e) {

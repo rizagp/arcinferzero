@@ -10,7 +10,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
-| `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX (gemm_x8.cl), still checked against DP4a bit for bit; off because a 140T measured it 1.6x slower in the 27B's GEMMs | 8 |
+| `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX (gemm_x8.cl), still checked against DP4a bit for bit; off because a 140T measured it 1.6x slower in the 27B's GEMMs. On iGPUs with 16-lane XMX: XMX without the speed check | 8 |
+| `ARC_XMX_SPEED=1` | off | the start-time speed check (a model-sized GEMM, XMX against DP4a) on discrete cards too, and under `ARC_XMX_TRY` (tests); iGPUs with XMX always run it | 8 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
@@ -353,8 +354,17 @@ If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D
 | GPU | XMX GEMM in ocloc 2026.1 | 2D loads | Registers for the GEMM |
 |---|---|---|---|
 | Lunar Lake (140V), `lnl-m` | real `dpas.8x8` | yes | 128 |
-| Panther Lake, `ptl-h` | builds; its code not read | yes | 128 |
-| Arrow Lake H (140T), `arl-h` | `gemm_x8.cl`: real `dpas.8x8 (8\|M0)` in all W8 and H8 layouts, no spills. Native types stay on DP4a | no | 256 (the 16-lane form spilled with 128: its registers are 32 bytes) |
+| Panther Lake (B390 and others), `ptl-h` | real `dpas.8x8` in all 19 builds (W8 100-103, Q8_0, Q4_K, Q5_K, Q6_K, each with and without per-32 activations, H8R, the MoE tiles at 128 and 256 registers), no DP4a left, 16 2D loads, **no spills** (read 2026-11-07) | yes | 128 |
+| Arrow Lake H (140T), `arl-h` | `gemm_x8.cl`: real `dpas.8x8 (8\|M0)` in all W8 and H8 layouts, no spills (read again 2026-11-07 with the 140T's options, 256 registers: scratch 0 in all ten). For the same 16 DPAS it has ~2,430 instructions against Panther Lake's ~1,890, each DPAS covering 8 columns instead of 16: about 2.5x the vector work per multiply. Native types stay on DP4a | no | 256 (the 16-lane form spilled with 128: its registers are 32 bytes) |
+
+**The start-time speed check on iGPUs with XMX (2026-11-07).** After the bit-for-bit check, an iGPU with 16-lane XMX
+times a GEMM of a model's size (512 tokens x 17,408 x 5,120, the 27B's gate: 89 MB of weights, past the caches), as the
+engine launches it, 2D loads included. Best of 3 each after a warm-up; XMX is taken only if at least 3 % faster. DP4a is
+timed as it would run without XMX: the GPU's own defaults, not the discrete cards' switches (128 registers made the 125H's
+DP4a GEMM 4.7x slower in this check, 47 ms against 10). If XMX loses, those switches are dropped as well. The log line is
+"XMX speed check (a 512 x 17408 x 5120 GEMM)". Discrete cards skip it (`ARC_XMX_SPEED=1` runs it there);
+`ARC_XMX_FORCE=1` skips it. Tested on the 125H only with DP4a in the XMX slot (`ARC_XMX_TRY=2 ARC_XMX_SPEED=1`): DP4a
+10.0-10.3 ms, the stand-in 15.6-15.7 ms, DP4a kept, the same greedy text. No iGPU with XMX has run it yet.
 | Meteor Lake (125H) | the driver does not offer it | no | unchanged, 256: logits bit-identical |
 
 - **Why a kernel of its own:** the extension says a device whose smallest sub-group is 8 lanes must call DPAS from an

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-07: a model-sized XMX speed check on iGPUs; Panther Lake's XMX code read
+
+- iGPUs with 16-lane XMX (Lunar Lake, Panther Lake such as the B390) now time a 512 x 17,408 x 5,120 GEMM at start, XMX
+  against DP4a, and keep XMX only if it is at least 3 % faster. DP4a is timed with the iGPU's own settings. If XMX loses,
+  the discrete cards' settings are dropped too, so the GPU runs as one without XMX.
+- Discrete cards skip the check (`ARC_XMX_SPEED=1` runs it). `ARC_XMX_FORCE=1` skips it anywhere.
+- ocloc for Panther Lake (`ptl-h`): real DPAS in all 19 builds, 2D loads, no spills. The 140T's `gemm_x8` (`arl-h`, the
+  options of its log): no spills either, but about 2.5x the vector work per multiply.
+- Tested on the 125H only with DP4a standing in for XMX: DP4a kept, the same text. No iGPU with XMX has run it yet.
+
 ## 2026-11-07: XMX off again on 8-lane GPUs (Arc 140T)
 
 - A 140T ran package 911b6fa (issue #5): `gemm_x8.cl` passed the start-time check, and the 27B's logits were

@@ -263,7 +263,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       // (once per process: a split model's GPUs are all the same device (ClRt::open_devices), the check's settings
       //  come from the environment; 4 B60s loaded in 8.7-14.9 s, each shard checking again)
       static std::mutex xmx_mu;
-      static int xmx_known = -1, x2d_known = 0;
+      static int xmx_known = -1, x2d_known = 0, slow_known = 0;
       {
         std::lock_guard<std::mutex> g(xmx_mu);
         if (xmx_known < 0) {
@@ -277,12 +277,15 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
             xmx_known = xmx_check() ? 1 : 0;
           }
           x2d_known = x2d_ && xmx_known ? 1 : 0;
+          slow_known = xmx_slow_ ? 1 : 0;
           if (xmx_known) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)%s\n",
                                  x2d_known ? ", with 2D block loads" : "");
         }
       }
       xmx_ = xmx_known == 1;
       x2d_ = x2d_known == 1;
+      // (XMX slower than DP4a in the speed check of an iGPU: the GPU's own defaults, as on one without XMX)
+      if (slow_known) xe2_ = false;
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
     {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
