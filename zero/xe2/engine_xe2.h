@@ -1,12 +1,16 @@
 // Tuning switches for GPUs with XMX (Xe2 / Xe3: Arc B580, Pro B60), zero/xe2/: A/B settings that only the owners of
 // these cards can measure (docs/xe2-tuning.md). A part of class Engine (zero/engine.h), included inside the class
 // body like zero/mgpu/engine_tp_shard.h: not a header of its own.
-// On only for discrete GPUs with XMX (one card or the multi-GPU shards). Off on every iGPU, with XMX or not (Xe-LPG,
-// Lunar / Arrow Lake): there every kernel is built and launched exactly as without this file (xe2_ stays false, so
-// the GEMM keeps 256 registers per thread, one column group per work-group, the GEMV its default register file).
-// ARC_XMX_TRY turns it on anywhere, for the tests of the switches themselves.
+// On for every GPU that offers XMX: discrete cards (one or the multi-GPU shards) and iGPUs with it (Lunar Lake, Panther
+// Lake, Arrow Lake H). Off on the others, as Xe-LPG: there every kernel is built and launched exactly as without this
+// file (xe2_ stays false, so the GEMM keeps 256 registers per thread, one column group per work-group, the GEMV its
+// default register file). Only discrete B60s have measured these defaults. ARC_XMX_TRY turns it on anywhere, for the
+// tests of the switches themselves.
 
   bool xe2_ = false;  // (set before the XMX check: the GPU offers XMX, or ARC_XMX_TRY)
+  // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows
+  //  the XMX GEMM spilling with 128)
+  bool xe2_grf128() const { return xe2_ && !cl_.sg8; }
 
   // the dense prompt GEMM with the default register file (128) instead of 256 registers per thread: more threads per
   // core; on a Pro B60 the 27B's prompt went 450 -> 617 tok/s (issue #4, 2026-11-02). ARC_GEMM_GRF=256 as before.
@@ -16,7 +20,7 @@
       const char* e = getenv("ARC_GEMM_GRF");
       return e != nullptr && std::string(e) == "256";
     }();
-    return xe2_ && !grf256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+    return xe2_grf128() && !grf256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
   // ARC_MOE_GRF=128: the same for the MoE expert GEMMs (256 until measured on a B-series card: their 128 build is the
   // one that spilled on the iGPU)
@@ -55,19 +59,19 @@
   // as before. The iGPUs keep 256 (the 125H forced to 128: 27B MTP 11.78 -> 9.57 tok/s, 2026-11-03)
   std::string xe2_gemv_mt_grf() const {
     static const bool g256 = getenv("ARC_GEMV_MT_GRF") && std::string(getenv("ARC_GEMV_MT_GRF")) == "256";
-    return xe2_ && !g256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+    return xe2_grf128() && !g256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
 
   // QUEUE 31.8: the XMX prompt GEMM's activations with 2D block loads (cl_intel_subgroup_2d_block_io, gemm.cl -DX2D): a
   // step's 8 token rows x 64 bytes in one 8b_8r32x2c load, the DPAS A operands as the hardware lays them out, instead of
   // 16 one-row block reads; the prefetch (-DX2D_PF) also asks for the next 64 bytes of those rows. Dense GEMMs only (the
-  // MoE tile kernel reads rows through a row map). On by default on discrete cards: a Pro B60's 27B prompt went 608 ->
-  // 752 tok/s, 763 with the prefetch (issue #4, 2026-11-06). ARC_GEMM_2D=0 / ARC_GEMM_2D_PF=0 turn them off. The
-  // start-time XMX check runs with them, and if they do not build or differ, XMX goes on without them
+  // MoE tile kernel reads rows through a row map). On by default wherever the driver offers them with XMX: a Pro B60's
+  // 27B prompt went 608 -> 752 tok/s, 763 with the prefetch (issue #4, 2026-11-06). ARC_GEMM_2D=0 / ARC_GEMM_2D_PF=0 turn
+  // them off. The start-time XMX check runs with them, and if they do not build or differ, XMX goes on without them
   bool x2d_ = false;
-  static bool x2d_switch(const char* name) {  // (ARC_XMX_TRY on an iGPU: only when asked for)
+  static bool x2d_switch(const char* name) {
     const char* e = getenv(name);
-    return e != nullptr ? atoi(e) != 0 : !zrt::integrated();
+    return e != nullptr ? atoi(e) != 0 : true;
   }
   std::string xe2_x2d() const {
     static const bool pf = x2d_switch("ARC_GEMM_2D_PF");

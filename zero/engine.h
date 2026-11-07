@@ -248,9 +248,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     h8_init();  // (H8 prompt GEMMs, ARC_H8=1: zero/engine_h8.h; after q2_init, before alloc_buffers)
     if (!opt.dry) build_kernels();
     if (!opt.dry && (cl_.xmx || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
-      // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: discrete cards only, B580 / B60 and
-      // the multi-GPU shards on them; iGPUs with XMX too, Lunar / Arrow Lake, keep the iGPU kernels)
-      xe2_ = !zrt::integrated() || getenv("ARC_XMX_TRY") != nullptr;
+      // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: every GPU that offers XMX, discrete
+      // or integrated; a GPU without it, as the 125H, never comes here)
+      xe2_ = true;
       // (once per process: a split model's GPUs are all the same device (ClRt::open_devices), the check's settings
       //  come from the environment; 4 B60s loaded in 8.7-14.9 s, each shard checking again)
       static std::mutex xmx_mu;

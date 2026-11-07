@@ -9,7 +9,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
-| `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, on discrete cards | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
+| `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX even if the start-time speed check finds it no faster | 8 |
+| `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. Slower than the default on the laptop; this form not yet run on a B60 | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
@@ -325,10 +326,22 @@ $env:ARC_GEMM_GRF=256; .\bin\runz.exe <27B gguf> --bench-pp 4096 --n 16 --prof; 
 
 If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D loads and urakozz's wider tile.
 
-**Arc 140T (Core Ultra 9 285H, issue #5): XMX not measured yet.** Its 180 tok/s (pp2048) and 6.0 tok/s are without XMX:
-`ClRt::xmx` (zero/clrt.h) needs a GPU without 8-lane sub-groups because the XMX GEMM has 16 lanes, and its log has no
-"XMX on" line. The `ARC_H8=1` runs came from an older package (f9e62e6, before H8): no "H8 on" line, no `h8_*` kernels.
-Testing XMX on it needs an 8-lane XMX kernel first.
+**iGPUs with XMX (2026-11-07): the same defaults as the discrete cards, none of it measured on one yet.**
+
+| GPU | XMX GEMM in ocloc 2026.1 | 2D loads | Registers for the GEMM |
+|---|---|---|---|
+| Lunar Lake (140V), `lnl-m` | real `dpas.8x8` | yes | 128 |
+| Panther Lake, `ptl-h` | builds; its code not read | yes | 128 |
+| Arrow Lake H (140T), `arl-h` | builds, but **no `dpas` in the code** (`mul`, `mad`), at 16 and at 8 lanes: it looks emulated | no | 256 (128 spills: its registers are 32 bytes) |
+| Meteor Lake (125H) | the driver does not offer it | no | unchanged, 256: logits bit-identical |
+
+- Whether Arrow Lake's driver gives real DPAS is not known here: ocloc may compile for a device without it. So on a
+  GPU with 8-lane sub-groups the start compares a stored W8 GEMM on the check's small data (best of 6, 16 launches
+  each), and XMX is taken only at least 5 % faster. The log says "XMX speed check". It measures the kernels' own speed,
+  not memory limits, so the prompt's real gain can be smaller.
+- The 140T's numbers so far, 180 tok/s (pp2048) and 6.0 tok/s, are without XMX: `ClRt::xmx` refused every GPU with
+  8-lane sub-groups until now. Its `ARC_H8=1` runs came from an older package (f9e62e6, before H8): no "H8 on" line, no
+  `h8_*` kernels.
 
 ## Not done yet (needs an Xe2 card to develop on)
 

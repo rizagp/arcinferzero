@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-07: iGPUs with XMX use it, with the discrete cards' defaults
+
+- Lunar Lake, Panther Lake and Arrow Lake H now go through the XMX check and take the defaults found on the B60: XMX
+  GEMMs, 2D block loads with a prefetch where the driver has them, and 128 registers on GPUs with 64-byte registers.
+  None of this has been measured on such an iGPU yet.
+- Arrow Lake H (Arc 140T) was refused XMX until now because it has 8-lane sub-groups. ocloc shows no real `dpas` in its
+  code, so there XMX is taken only if a start-time speed check finds it at least 5 % faster than DP4a; the log gives
+  both times. `ARC_XMX_FORCE=1` takes it anyway. It keeps 256 registers (128 spills).
+- A GPU without XMX, as the 125H, is unchanged: logits bit-identical (4B, 27B).
+
 ## 2026-11-06: H8 with one scale per column and token, the rotation in registers
 
 - `ARC_H8=1` (opt-in) now works as urakozz's int8 prefill does: one scale per column, computed once per weight, and one
