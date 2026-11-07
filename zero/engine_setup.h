@@ -457,6 +457,13 @@
             size_t gws[2] = {(size_t)N, 3}, lws[2] = {16, 1};  // (3 tile groups for 4 tiles: one loops)
             run("xmx_check", k, 2, gws, lws);
           });
+          // (ARC_MOE_CG / ARC_MOE_WY shapes: 2 column groups x 2 tiles per work-group, one tile left to loop)
+          check(std::to_string(q) + "/moe2x2" + (acc ? "/swiglu" : ""), make, [&](cl_kernel k) {
+            int MM = M, NN = N, KK = K, ldc = N, ac = acc, e0 = 0, e1 = 2, um = acc ? 1 : 0, us = acc ? 0 : 1;
+            set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, ac, bt, bts, e0, e1, bm, um, bw, us);
+            size_t gws[2] = {(size_t)N, 2}, lws[2] = {32, 2};
+            run("xmx_check", k, 2, gws, lws);
+          });
         }
       // (a GPU with 8-lane sub-groups, Arrow Lake H: no one has measured gemm_x8 yet, and its 8 columns per sub-group mean
       //  more loads, so XMX is taken only if it is faster; best of 6, a stored W8 GEMM. ARC_XMX_FORCE=1 takes it anyway)

@@ -150,8 +150,11 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
                    __global const int* restrict tstart, int e0, int e1, __global const int* restrict rowmap,
                    int use_map, __global const float* restrict rowscale, int use_scale) {
   const int nsb = K / 256, s_begin = 0, s_end = nsb, lane = get_sub_group_local_id();
-  const int gc = get_group_id(0), t_end = tstart[e1];
-  for (int t = tstart[e0] + get_group_id(1); t < t_end; t += get_num_groups(1)) {
+  // (a work-group may hold several sub-groups: along x the next column groups of the same tile (its activation rows
+  //  shared through L1), along y the next tiles (mostly the same expert's: its weight columns shared). Each output is
+  //  computed as with one sub-group per work-group, bit for bit)
+  const int gc = get_global_id(0) / SG, t_end = tstart[e1];
+  for (int t = tstart[e0] + get_global_id(1); t < t_end; t += get_global_size(1)) {
   const int e = tiles[1 + 3 * t], r0 = tiles[2 + 3 * t], nr = tiles[3 + 3 * t];
   const int g = (e - e0) * (N / SG) + gc;  // column group in the stacked decoded experts
   const int rl = r0 + min(lane, nr - 1);   // this lane's slot (rows past the tile repeat its last slot)

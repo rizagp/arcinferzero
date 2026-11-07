@@ -6,6 +6,7 @@ All the switches (environment variables; each is read once per process):
 |---|---|---|---|
 | `ARC_GEMM_GRF=256` | 128 on discrete cards | the dense prompt GEMM's register file | 1 |
 | `ARC_MOE_GRF=128` | 256 | the MoE expert GEMMs' register file | 1 |
+| `ARC_MOE_CG` / `ARC_MOE_WY` | 1 / 1 | sub-groups per work-group of the MoE expert GEMM (prompt chunks of 1,280+ tokens): along a tile's columns (its activation rows shared through L1) / along the tiles, mostly one expert's (its weights shared). Bit-identical at every shape. A B60's 35B 16K prompt spent 1.55 s of 5.08 in these GEMMs (+0.26 s `decode_w8`), about 21 TOPS against ~50 for the dense GEMMs; laptop: no gain (2026-11-07) | 1 |
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |

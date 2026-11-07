@@ -420,7 +420,12 @@
       }
       cl_kernel k = moe_gemm_kernel(100 + w8_variant(L.ex_type[i]));
       // tile work-groups per launch: about the average tile count of a group (more loop over the tiles)
-      const size_t ny = std::max<size_t>(64, (size_t)cur_T_ * hp.n_expert_used / 16 / (NE / G) + G);
+      // (ARC_MOE_CG / ARC_MOE_WY: sub-groups per work-group along the columns / the tiles, default 1 x 1; the same
+      //  sums in the same order whatever the shape)
+      static const int mcg = getenv("ARC_MOE_CG") ? std::max(1, atoi(getenv("ARC_MOE_CG"))) : 1,
+                       mwy = getenv("ARC_MOE_WY") ? std::max(1, atoi(getenv("ARC_MOE_WY"))) : 1;
+      const int cg = N % (16 * mcg) == 0 ? mcg : 1;
+      const size_t ny = (std::max<size_t>(64, (size_t)cur_T_ * hp.n_expert_used / 16 / (NE / G) + G) + mwy - 1) / mwy * mwy;
       for (int e0 = 0; e0 < NE; e0 += G) {
         if (xc_)
           decode_w8_x(L, i, e0, G, N, K);
@@ -430,7 +435,7 @@
             us = i == 2 ? 1 : 0;
         set_args(k, 0, moe_wq_, moe_wh_, i == 2 ? mhq_ : aq_, i == 2 ? mhsc_ : asc_, absum_, i == 2 ? my_ : mh_, M, NN,
                  KK, ldc, acc, mtiles_, mtstart_, e0, e1, stok_, um, swt_, us);
-        size_t gws[2] = {(size_t)N, ny}, lws[2] = {16, 1};
+        size_t gws[2] = {(size_t)N, ny}, lws[2] = {16 * (size_t)cg, (size_t)mwy};
         run(i == 2 ? "moe_down" : "moe_gateup", k, 2, gws, lws);
       }
     }

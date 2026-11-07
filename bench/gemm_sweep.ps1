@@ -13,6 +13,8 @@
 #   SPLIT       ARC_GEMM_SPLIT, superblocks per split-K piece, 0 = none [17]
 #   GRF         ARC_GEMM_GRF, registers per thread of the dense GEMM: 256 or 128 (the default file) [128]
 #   MOEGRF      ARC_MOE_GRF, the same for the MoE expert GEMMs [256]; MoE models only
+#   MOECG       ARC_MOE_CG, sub-groups per work-group along the columns of the MoE expert GEMM's tiles [1]; MoE only
+#   MOEWY       ARC_MOE_WY, sub-groups per work-group along the tiles (mostly the same expert's) [1]; MoE only
 #   CG          ARC_GEMM_CG, 16-column groups per work-group: 1, 2 or 4 [1]
 #   ACT         runz --act256: one activation scale per 256 values instead of 32 [32]; less accurate, so a winning
 #               ACT=256 needs a KL check before it could become a default (not part of "best of each together")
@@ -34,7 +36,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
-$vars = @("ARC_NO_XMX", "ARC_GEMM_TM", "ARC_GEMM_RG", "ARC_GEMM_WGY", "ARC_GEMM_SPLIT", "ARC_GEMM_GRF", "ARC_MOE_GRF", "ARC_GEMM_CG",
+$vars = @("ARC_NO_XMX", "ARC_GEMM_TM", "ARC_GEMM_RG", "ARC_GEMM_WGY", "ARC_GEMM_SPLIT", "ARC_GEMM_GRF", "ARC_MOE_GRF", "ARC_MOE_CG", "ARC_MOE_WY", "ARC_GEMM_CG",
           "ARC_X16", "ARC_X16_TM", "ARC_X16_GRF", "ARC_X16_CG", "ARC_H8", "ARC_GEMM_2D", "ARC_GEMM_2D_PF")
 
 # one run: the settings in $set (name -> value; CHUNK goes to the command line), returns tok/s and the GEMM path
@@ -50,6 +52,8 @@ function Invoke-Run([string]$model, [hashtable]$set) {
       "SPLIT" { $env:ARC_GEMM_SPLIT = "$($set[$k])" }
       "GRF" { $env:ARC_GEMM_GRF = "$($set[$k])" }
       "MOEGRF" { $env:ARC_MOE_GRF = "$($set[$k])" }
+      "MOECG" { $env:ARC_MOE_CG = "$($set[$k])" }
+      "MOEWY" { $env:ARC_MOE_WY = "$($set[$k])" }
       "CG" { $env:ARC_GEMM_CG = "$($set[$k])" }
       "ACT" { if ("$($set[$k])" -eq "256") { $args2 += "--act256" } }
       "CHUNK" { $args2 += @("--chunk", $set[$k]) }
@@ -94,7 +98,9 @@ $grid = [ordered]@{
   SPLIT = if ($Quick) { @(0, 17) } else { @(0, 9, 17, 34) }
   GRF   = @(256, 128)
   MOEGRF = @(256, 128)
-  CG    = if ($Quick) { @(1, 2) } else { @(1, 2, 4) }
+  MOECG = @(1, 2, 4)
+  MOEWY = if ($Quick) { @(1, 4) } else { @(1, 2, 4, 8) }
+  CG   = if ($Quick) { @(1, 2) } else { @(1, 2, 4) }
   ACT   = @(32, 256)
   CHUNK = if ($Quick) { @(2048, 4096) } else { @(1024, 2048, 4096, 8192) }
   X16   = @("off", "on")
@@ -104,7 +110,7 @@ $grid = [ordered]@{
   H8    = @("off", "on")
   X2D   = @("pf", "on", "off")
 }
-$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; CG = 1; ACT = 32; X16 = "off"; H8 = "off"; X2D = "pf" }
+$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; MOECG = 1; MOEWY = 1; CG = 1; ACT = 32; X16 = "off"; H8 = "off"; X2D = "pf" }
 
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function Line([string]$what, $r) { [string]::Format($inv, "{0,-28} {1,10:F1} tok/s  {2}", $what, $r.tps, $r.path) }
@@ -120,7 +126,7 @@ foreach ($model in $Models) {
   $best = @{}
   $x16_ran = $false
   foreach ($p in $grid.Keys) {
-    if ($p -eq "MOEGRF" -and -not $base.moe) { continue }  # (a dense model has no expert GEMMs)
+    if ($p -in @("MOEGRF", "MOECG", "MOEWY") -and -not $base.moe) { continue }  # (a dense model has no expert GEMMs)
     # (the f16 GEMM's own settings only where it ran: a model without W8 weights never takes it)
     if ($p -in @("X16TM", "X16GRF", "X16CG") -and -not $x16_ran) { continue }
     $bv = $null; $bt = 0

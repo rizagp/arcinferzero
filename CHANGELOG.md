@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-07: MoE expert GEMM work-group shapes (for the B60)
+
+- A B60's profile of the 35B-A3B (16K prompt, issue #4) showed the expert GEMMs at about 21 TOPS, against about 50 for
+  the dense GEMMs: each work-group held one sub-group, 16 columns x 16 slots, so nothing was shared through L1.
+- `ARC_MOE_CG` / `ARC_MOE_WY`: several sub-groups per work-group, along a tile's columns (activations shared) and along
+  the tiles, mostly one expert's (weights shared). Default 1 x 1, as before.
+- Logits bit-identical at every shape (35B on the laptop, five shapes). Laptop speed within noise (745-766 tok/s), so
+  the default stays until a B60 measures it: `bench\gemm_sweep.ps1` has the rows MOECG and MOEWY.
+
 ## 2026-11-07: an XMX kernel for GPUs with 8-lane sub-groups (Arc 140T)
 
 - A 140T's log (issue #5) showed the 16-lane XMX GEMM differing from DP4a in every layout. The extension requires an 8-lane
