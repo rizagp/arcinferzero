@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-08: a 140T sweep with 128 registers and H8; its last results recorded
+
+- The 140T's `igpu_sweep` (issue #5): DP4a still ahead, 172-185 tok/s on the 27B's prompt. The best XMX variant was 128
+  registers at 162-168 tok/s; `ARC_X8_W` did not help. GEMV switches stayed within noise.
+- `bench\igpu_grf_sweep.ps1` sweeps the tiles of XMX with 128 registers and of DP4a, each without and with H8. Then the
+  H8 forms, and KL / perplexity against DP4a.
+- `ARC_GEMM_GRF=128` and `ARC_GEMM_CG` also act on the DP4a GEMM of iGPUs when set. Bit-identical on the 125H (4B,
+  27B, H8). Defaults unchanged.
+- ocloc: DP4a with 128 registers spills on Arrow Lake H as on the 125H, so the sweep measures it once only.
+
 ## 2026-11-07: variants of the 8-lane XMX GEMM for the 140T, and a sweep script
 
 - `ARC_X8_W=1`: `gemm_x8.cl` with one 8-lane sub-group for both halves of a 16-column group, so 8 tokens' activations

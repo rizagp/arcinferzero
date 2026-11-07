@@ -12,7 +12,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
 | `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX (gemm_x8.cl), still checked against DP4a bit for bit; off because a 140T measured it 1.6x slower in the 27B's GEMMs. On iGPUs with 16-lane XMX: XMX without the speed check | 8 |
 | `ARC_X8_W=1` | off | 8-lane GPUs with `ARC_XMX_FORCE=1`: gemm_x8 with one sub-group for both 8-column halves of a 16-column group, the activations loaded once (ocloc `arl-h`: 28 % fewer memory messages and 17 % fewer instructions per DPAS, no spills at 256 registers and 16 tokens); bit-identical | 8 |
-| `ARC_GEMM_GRF=128` on 8-lane GPUs | 256 there | the default register file for gemm_x8 too (no spills at 16 tokens without `ARC_X8_W`; spills with it or with 32 tokens, except H8) | 8 |
+| `ARC_GEMM_GRF=128` on 8-lane GPUs | 256 there | the default register file for gemm_x8 too (no spills at 16 tokens without `ARC_X8_W`; spills with it or with 32 tokens, except H8). Since 2026-11-08 also the DP4a GEMM of iGPUs (it spills there: 6x slower on the 125H) | 8 |
+| `ARC_GEMM_CG` on iGPUs | 1 | since 2026-11-08 also the DP4a GEMM of iGPUs without XMX switches, when set (bit-identical) | 8 |
 | `ARC_XMX_SPEED=1` | off | the start-time speed check (a model-sized GEMM, XMX against DP4a) on discrete cards too, and under `ARC_XMX_TRY` (tests); iGPUs with XMX always run it | 8 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
@@ -405,6 +406,20 @@ DP4a GEMM 4.7x slower in this check, 47 ms against 10). If XMX loses, those swit
   X8W + 128 registers (4B, 27B; a 512-token chunked prompt), X8W + H8 identical to H8, and a wrong kernel refused. The
   script also measures prompts of real use (512, 2048, 8192 tokens; 8192 in 1024 / 2048-token chunks) for DP4a, XMX and
   the best variant, and the GEMV's switches (`ARC_GEMV_GRF`, `ARC_GVROWS`, `ARC_GEMV_PF`) for generation.
+- **The 140T's sweep (2026-11-07, package 6b8fb75, two runs): DP4a stays ahead.** 27B, 2K prompt: DP4a 172-183 tok/s;
+  XMX 108-114; the best XMX variant, 128 registers, 162-168 (8-9 % behind DP4a at 512, 2K and 8K tokens alike), then
+  32 tokens per sub-group 156-162. `ARC_X8_W=1` did not help (107), and with 128 registers it fell to 88. Column groups,
+  work-group heights, row groups and H8: 101-120. So the XMX kernel is held back by how many threads it keeps in flight
+  (128 registers: twice the threads) more than by its loads, which X8W cut. Chunk sizes (1K / 2K / 4K for an 8K prompt)
+  change nothing. Generation: the GEMV switches within noise (second run 5.89-6.09 tok/s; the first run's low values
+  were a stall in the first steps, its median steps 162-168 ms as the second's).
+- **Next for the 140T (2026-11-08): `bench\igpu_grf_sweep.ps1`.** Four bases swept: XMX with 128 registers and DP4a
+  at its 256, each without and with H8. Each setting (TM, WGY, RG, CG, split-K) is changed alone, the two best are
+  crossed, and all gains are put together. Then the other H8 forms (`ARC_H8_SB`, `ARC_H8_D`) on the faster H8 base,
+  and KL / perplexity of every best set against DP4a. `ARC_GEMM_GRF=128` and `ARC_GEMM_CG` now also act on the DP4a
+  GEMM of iGPUs when asked for (bit-identical; 4B and 27B logits on the 125H, H8 too). DP4a with 128 registers is
+  measured once only: ocloc for `arl-h` shows it spilling in every layout (750 scratch messages for the 27B's layout,
+  none at 256), and on the 125H it ran 6x slower (27B 120 -> 19 tok/s, 4B 958 -> 160).
 - The 140T before, all on DP4a: 27B pp2048 180 tok/s, 6.0 tok/s; with `ARC_H8=1` 160 tok/s, as the rotations (1.56 s)
   cost more than the GEMMs gain (~5 %).
 

@@ -15,11 +15,12 @@
   // the dense prompt GEMM with the default register file (128) instead of 256 registers per thread: more threads per
   // core; on a Pro B60 the 27B's prompt went 450 -> 617 tok/s (issue #4, 2026-11-02). ARC_GEMM_GRF=256 as before.
   // (On the 125H iGPU 128 made the 35B's prompt 3.4x slower: xe2_ is off there, which keeps 256.)
-  // (ARC_GEMM_GRF=128 on an 8-lane GPU: 128 there too, for its owner's sweep; ocloc showed the 16-lane form spilling
-  //  with it, gemm_x8 not checked at 128 for every layout)
+  // (ARC_GEMM_GRF=128 asked for: 128 on any GPU, the 8-lane ones and the DP4a GEMM of iGPUs without the xe2_ switches
+  //  too, for their owners' sweeps (bench\igpu_grf_sweep.ps1); the same sums, other occupancy. The 125H's DP4a GEMM
+  //  timed 4.7x slower with it, 2026-11-07, so it stays opt-in)
   std::string xe2_gemm_grf() const {
     static const std::string e = getenv("ARC_GEMM_GRF") ? getenv("ARC_GEMM_GRF") : "";
-    if (xe2_ && cl_.sg8 && e == "128") return std::string();
+    if (e == "128") return std::string();
     return xe2_grf128() && e != "256" ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
   // ARC_X8_W=1: gemm_x8.cl -DX8W, one 8-lane sub-group for both halves of a 16-column group (activations loaded once)
@@ -45,7 +46,9 @@
       fprintf(stderr, "arcinferzero: ARC_GEMM_CG=%d not supported (1, 2 or 4): 1\n", c);
       return 1;
     }();
-    return xe2_ && (N / 16) % cg == 0 ? cg : 1;
+    // (asked for with ARC_GEMM_CG: on any GPU, the DP4a GEMM of iGPUs without the xe2_ switches too)
+    static const bool asked = getenv("ARC_GEMM_CG") != nullptr;
+    return (xe2_ || asked) && (N / 16) % cg == 0 ? cg : 1;
   }
   static std::string xe2_cg_defs(int cg) { return cg != 1 ? " -DCG=" + std::to_string(cg) : std::string(); }
   // ARC_GEMV_GRF=256: the single-token GEMV with the large register file
