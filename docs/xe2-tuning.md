@@ -11,7 +11,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
 | `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX even if the start-time speed check finds it no faster | 8 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
-| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. Slower than the default on the laptop; this form not yet run on a B60 | 8 |
+| `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
@@ -208,8 +208,8 @@ One Pro B60, Qwen3.8 27B IQ3_S, `runz --bench-pp 4096 --n 16 --prof`, the owner'
   tok/s in every row). iGPUs do not get them: the laptop's logits are bit-identical (4B, 16 tokens, `--dump-logits`),
   and an iGPU with XMX has not measured them.
 - **What guards them:** at start the kernels are compared with DP4a bit for bit on random data (K = 1024), and the log
-  says "with 2D block loads" when they pass. **Not yet checked:** logits on a real model bit for bit on a B60, and any
-  run of them over several GPUs. Before a release:
+  says "with 2D block loads" when they pass. On a B60, 2026-11-07, the 27B's logits on an 11-token prompt and 16 tokens
+  were bit-identical with and without them (`fc`), and they ran over 2 and 4 cards. The check:
 
   ```powershell
   $env:ARC_GEMM_2D=0; .\bin\runz.exe <model.gguf> "<a prompt>" --n 16 --dump-logits off.bin; Remove-Item Env:ARC_GEMM_2D
@@ -313,7 +313,28 @@ and per weight row. It keeps our weights' quantization (IQ3_S, Q4_K), not his W4
   means about 3.5 % added, if the errors are independent (worked out here): the same size as ours, 3.2-4.6 %
   in the simulation, but on another model file, prompts and reference.
 
-**What a B60 should run next** (none of this form has run on an XMX GPU; the kernels build for Battlemage with ocloc,
+**The B60, 2026-11-07, commit 515f416, 27B IQ3_S, `--bench-pp 4096 --n 16 --prof`, the owner's log:**
+
+| Form | tok/s | GEMMs' GPU time | Rotations | Quantization kernels |
+|---|---|---|---|---|
+| Default: 2D + prefetch | 758.7-763.9 | 4,373 ms | - | 166 ms |
+| **H8 now** (per column and token, from f32, no signs, DPAS accumulators) | **916.2-918.5** | 2,766 ms | 555 ms | 328 ms |
+| H8 now, `ARC_GEMM_TM=32` | 747.6-750.0 | 3,772 ms | 552 ms | 328 ms |
+| H8 now, `ARC_GEMM_GRF=256` | 781.8-783.3 | 3,531 ms | 554 ms | 327 ms |
+
+| GPUs | Default: 2D + prefetch | H8 now |
+|---|---|---|
+| 2 | 1,090-1,097 tok/s, step 27.3 ms | not run |
+| 4 | 1,455-1,501 tok/s, step 18.4 ms | 1,546-1,570 tok/s, step 18.3 ms |
+
+- The per-column scales did what they were built for on XMX: the GEMMs are 1.58x the default's (1.33x in the per-256
+  form), about 72 T/s on gate + up, ~37 % of the int8 peak (worked out; urakozz's 72-81 % on a B70).
+- Against the default path: KL mean 0.00144, max 0.0274, same top token 97.25 %, perplexity 6.6371 -> 6.6501.
+- H8 takes 0.34 GiB more GPU memory. Generation is unchanged (20.5 tok/s).
+- Over 4 cards H8 adds 5 %: GPU time per card would allow ~1.1 s per chunk and a chunk takes 2.6 s, so the sums limit it.
+- Not run yet: H8 on the 35B or on a model with resident weights, so it stays opt-in.
+
+**What the B60 was asked to run first** (the kernels build for Battlemage with ocloc,
 and a failure of the start check now only leaves H8 out of the XMX GEMMs, with the rest of XMX kept for runs without
 `ARC_H8`):
 

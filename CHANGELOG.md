@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-07: a Pro B60 measures the new H8 (no code changed)
+
+- 27B, 4K prompt, one card: default with 2D loads 764 tok/s, `ARC_H8=1` 918 tok/s (+20 %). KL against the default path
+  0.00144. Wider tiles (750) and 256 registers (783) do not help H8.
+- Over 2 and 4 cards: default 1,097 and 1,501 tok/s, H8 1,570 over 4. The sums limit it there.
+- 2D loads gave bit-identical logits on a short prompt. H8 stays opt-in until the 35B and a model with resident weights
+  have run on it.
+
 ## 2026-11-07: iGPUs with XMX use it, with the discrete cards' defaults
 
 - Lunar Lake, Panther Lake and Arrow Lake H now go through the XMX check and take the defaults found on the B60: XMX

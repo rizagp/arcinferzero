@@ -201,8 +201,16 @@ first step):
 | 4 | 1,232 tok/s | 2.16x | 18.2 ms | 55 tok/s | 13.17 ms |
 
 - `tg16` says 11.63 and 42.36 tok/s because it counts the slow first step. Use the median.
-- There is no 27B run over 4 GPUs at 4K without H8 in these logs, so what H8 adds over several GPUs is not known. 2D
-  block loads over several GPUs have not run yet.
+- That was the per-256 H8.
+
+**27B, 2026-11-07** (commit 515f416, 2D block loads with a prefetch; one GPU 764 tok/s, 44.8 ms; H8 918 tok/s, 44.9 ms):
+
+| GPUs | Prompt | Against one GPU | Median step | H8 now: prompt |
+|---|---|---|---|---|
+| 2 | 1,097 tok/s | 1.44x | 27.3 ms | not run |
+| 4 | 1,501 tok/s | 1.96x | 18.4 ms | 1,570 tok/s (1.71x its one GPU) |
+
+Over 4 GPUs a chunk takes 2.6-2.7 s where the GPU time per card would allow 1.1-1.3 s: the sums are the limit now.
 
 Next for speed: f16 parts for prompts (half the bytes), the next GPU waiting on an event instead of a host wait and
 a barrier, and batch decoding (a step's sums carry several rows for the cost of one).

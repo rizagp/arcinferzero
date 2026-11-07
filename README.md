@@ -115,7 +115,7 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) run the same engine, with switches of their own in `zero/xe2/` that
 the iGPUs never take. Measured by a user on Arc Pro B60s
 ([issue #4](https://github.com/rizagp/arcinferzero/issues/4)):
-- Qwen3.8 27B IQ3_S, one B60: 4K prompt 617 tok/s, 21.5 tok/s generation.
+- Qwen3.8 27B IQ3_S, one B60: 4K prompt 764 tok/s (918 with `ARC_H8=1`), 21.5 tok/s generation; over 4 cards 1,501 (1,570).
 - Qwen3.6 35B-A3B, one B60: 4K prompt 3,232 tok/s, 77.5 tok/s generation.
 - **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel, sums through host memory since
   B60s have no peer access): 27B generation 1.63x on 2 GPUs, 2.44x on 4.
