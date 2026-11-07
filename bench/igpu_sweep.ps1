@@ -51,7 +51,7 @@ function Invoke-Run([hashtable]$envs, [int]$pp, [int]$tg, [int]$chunk = 0) {
   }
   $pps = [regex]::Matches($o, "pp\d+ run \d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s") | ForEach-Object { [double]$_.Groups[1].Value }
   $tgm = [regex]::Match($o, "tg\d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s")
-  $med = [regex]::Match($o, "median ([\d.]+) ms")
+  $med = [regex]::Match($o, "tg steps: .*?median ([\d.]+)")
   $path = if ($o -match "XMX on for the prompt GEMMs") { "XMX" } elseif ($o -match "XMX results differ") { "DP4a (XMX differed!)" }
           elseif ($o -match "XMX kernels do not build") { "DP4a (XMX did not build!)" } else { "DP4a" }
   if ($o -match "H8 on for the prompt GEMMs") { $path += " + H8" }

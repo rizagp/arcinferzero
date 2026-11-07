@@ -351,6 +351,12 @@ $env:ARC_GEMM_GRF=256; .\bin\runz.exe <27B gguf> --bench-pp 4096 --n 16 --prof; 
 
 If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D loads and urakozz's wider tile.
 
+**Next run on a B60 (2026-11-07): `bench\b60_sweep.ps1`.** From each of the two best paths, the default (2D loads with
+the prefetch, 764 tok/s) and H8 (918), it changes one setting at a time (TM, WGY, RG, CG, registers, split-K, 2D loads;
+a winner must be 3 % ahead), puts the winners together (or keeps the single best change if that is faster), then measures default, H8 and both "best" sets at 512, 4K and
+16K tokens (16K also in 4K chunks), checks their KL and perplexity against the default over 4 chunks of USAGE.md, and
+with `-MoeModel` the 35B's `ARC_MOE_CG` / `ARC_MOE_WY` shapes and H8 there.
+
 **iGPUs with XMX (2026-11-07): the same defaults as the discrete cards, none of it measured on one yet.**
 
 | GPU | XMX GEMM in ocloc 2026.1 | 2D loads | Registers for the GEMM |

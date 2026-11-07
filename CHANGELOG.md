@@ -8,6 +8,9 @@
 - `ARC_GEMM_GRF=128` now also applies on 8-lane GPUs.
 - `bench\igpu_sweep.ps1`: prompt GEMM settings with XMX forced; prompts of real use (512 / 2048 / 8192 tokens, chunk
   sizes); the GEMV switches for generation.
+- `bench\b60_sweep.ps1` for the B60: every tile, register and 2D-load setting changed alone from the default (764 tok/s)
+  and from H8 (918), the winners put together; then prompts of real use (512 / 4K / 16K, 16K in 4K chunks), KL and
+  perplexity against the default, and the 35B's expert GEMM shapes.
 - Bit-identical on the 125H with DP4a standing in for DPAS (4B, 27B, H8). Defaults unchanged: XMX stays off on 8-lane
   GPUs until a 140T measures a variant faster than DP4a.
 
