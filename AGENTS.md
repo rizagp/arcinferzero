@@ -42,7 +42,8 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
   - no heredocs: write a `.py` or message file and run that;
   - long runs in the background with a log file;
   - Python that writes text files uses `newline=""`.
-- **Git:** commit and push only when the user asks. Commits use the GitHub noreply address.
+- **Git:** commit and push only when the user asks. Commits use the GitHub noreply address, with no co-author
+  trailer (no `Co-Authored-By:` line for an AI or anyone else; the user, 2026-11-07).
 - **Docs** are Markdown in English, in plain words. (The user chats in Indonesian.)
 
 ## Map
