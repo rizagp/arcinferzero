@@ -6,6 +6,9 @@
 // W8 and H8 layouts only: QTYPE 100..103, 110, 111. The native types stay on DP4a on these GPUs.
 // A 16-column group is two sub-groups: half 0 owns columns 0-7 of the group, half 1 columns 8-15. The weight and output
 // layouts stay gemm.cl's, one word of a column every 16 uints.
+// -DX8W (ARC_X8_W=1): one sub-group takes both halves, so the activations of 8 tokens are loaded once for 16 columns
+// (two DPAS each) instead of once per half; the sub-groups of the second halves exit at once. The same sums per
+// column, bit for bit.
 // -DX8_EMU (tests on a GPU without XMX, ARC_XMX_TRY=2): the DPAS as the DP4a dot products the extension's text gives.
 // With -DDBG_NOBCAST (ARC_XMX_TRY=3) a wrong one, which the check must refuse.
 #define SG 8
@@ -19,6 +22,11 @@
 #define TMV (TM / SG)
 #ifndef CG
 #define CG 1
+#endif
+#ifdef X8W
+#define NH 2  // column halves per sub-group
+#else
+#define NH 1
 #endif
 #define BCAST(x, i) intel_sub_group_shuffle((x), (i))
 
@@ -84,69 +92,92 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
   const int rin = min(rgroup, rows - grp * rgroup);
   const int g = (rem / rin) * CG + (int)get_local_id(0) / LS, row = grp * rgroup + rem % rin;
   const int hg = ((int)get_local_id(0) / SG) & 1;  // (which half of the group's columns)
+#ifdef X8W
+  if (hg) return;  // (the first half's sub-group takes both)
+#endif
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * TM;
   const int nsb = K / 256;
 
+  // column half h of this sub-group: its weights at + h * SG (one word of a column every 16 uints)
   __global const uint* wqp = wq + (size_t)g * nsb * (4 * DPJ * LS) + hg * SG;
   __global const uint* whp = wh + (size_t)g * nsb * (HDR * LS) + hg * SG;
   __global const char* ap = aq + (size_t)m0 * K;
 
-  float res[TM];
+  float res[NH][TM];
 #pragma unroll
-  for (int m = 0; m < TM; ++m) res[m] = 0.0f;
+  for (int h = 0; h < NH; ++h)
+#pragma unroll
+    for (int m = 0; m < TM; ++m) res[h][m] = 0.0f;
 #ifdef H8R
-  int8 xacc[TM / 8];
+  int8 xacc[NH][TM / 8];
 #pragma unroll
-  for (int v = 0; v < TM / 8; ++v) xacc[v] = (int8)(0);
+  for (int h = 0; h < NH; ++h)
+#pragma unroll
+    for (int v = 0; v < TM / 8; ++v) xacc[h][v] = (int8)(0);
 #endif
 
   for (int s = s_begin; s < s_end; ++s) {
-    __global const uint* hp = whp + s * HDR * LS;
 #if defined(H8R)
     // (one scale per column, read after the loop)
 #elif defined(H8)
-    const float d = as_float(intel_sub_group_block_read(hp));
+    float d[NH];
+#pragma unroll
+    for (int h = 0; h < NH; ++h) d[h] = as_float(intel_sub_group_block_read(whp + s * HDR * LS + h * SG));
 #else
-    const float d = as_float(intel_sub_group_block_read(hp)), dmin = as_float(intel_sub_group_block_read(hp + LS));
-    const uint hsc[4] = {intel_sub_group_block_read(hp + 2 * LS), intel_sub_group_block_read(hp + 3 * LS),
-                         intel_sub_group_block_read(hp + 4 * LS), intel_sub_group_block_read(hp + 5 * LS)};
+    float d[NH], dmin[NH];
+    uint hsc[NH][4];
 #if HAS_MIN
-    const uint hmn[4] = {intel_sub_group_block_read(hp + 6 * LS), intel_sub_group_block_read(hp + 7 * LS),
-                         intel_sub_group_block_read(hp + 8 * LS), intel_sub_group_block_read(hp + 9 * LS)};
+    uint hmn[NH][4];
 #endif
+#pragma unroll
+    for (int h = 0; h < NH; ++h) {
+      __global const uint* hp = whp + s * HDR * LS + h * SG;
+      d[h] = as_float(intel_sub_group_block_read(hp));
+      dmin[h] = as_float(intel_sub_group_block_read(hp + LS));
+#pragma unroll
+      for (int q = 0; q < 4; ++q) hsc[h][q] = intel_sub_group_block_read(hp + (2 + q) * LS);
+#if HAS_MIN
+#pragma unroll
+      for (int q = 0; q < 4; ++q) hmn[h][q] = intel_sub_group_block_read(hp + (6 + q) * LS);
+#endif
+    }
 #endif
 
 #ifdef ACT32
-    float tq[TM];
+    float tq[NH][TM];
 #pragma unroll
-    for (int m = 0; m < TM; ++m) tq[m] = 0.0f;
+    for (int h = 0; h < NH; ++h)
+#pragma unroll
+      for (int m = 0; m < TM; ++m) tq[h][m] = 0.0f;
 #if HAS_MIN
-    float tmn[TM];
+    float tmn[NH][TM];
 #pragma unroll
-    for (int m = 0; m < TM; ++m) tmn[m] = 0.0f;
+    for (int h = 0; h < NH; ++h)
+#pragma unroll
+      for (int m = 0; m < TM; ++m) tmn[h][m] = 0.0f;
 #endif
 #elif !defined(H8R)
-    int isum[TM];
+    int isum[NH][TM];
 #pragma unroll
-    for (int m = 0; m < TM; ++m) isum[m] = 0;
+    for (int h = 0; h < NH; ++h)
+#pragma unroll
+      for (int m = 0; m < TM; ++m) isum[h][m] = 0;
 #endif
 
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
-      __global const uint* dp = wqp + (s * 4 + j) * DPJ * LS;
-      // values 0..31 and 32..63 of this column's 64, a word of 4 each
-      const int8 lo = (int8)(intel_sub_group_block_read(dp), intel_sub_group_block_read(dp + LS), intel_sub_group_block_read(dp + 2 * LS),
-                             intel_sub_group_block_read(dp + 3 * LS), intel_sub_group_block_read(dp + 4 * LS), intel_sub_group_block_read(dp + 5 * LS),
-                             intel_sub_group_block_read(dp + 6 * LS), intel_sub_group_block_read(dp + 7 * LS));
-      const int8 hi = (int8)(intel_sub_group_block_read(dp + 8 * LS), intel_sub_group_block_read(dp + 9 * LS), intel_sub_group_block_read(dp + 10 * LS),
-                             intel_sub_group_block_read(dp + 11 * LS), intel_sub_group_block_read(dp + 12 * LS), intel_sub_group_block_read(dp + 13 * LS),
-                             intel_sub_group_block_read(dp + 14 * LS), intel_sub_group_block_read(dp + 15 * LS));
-#if !defined(H8)
-      const int sc0 = SBYTE(hsc[j], 0), sc1 = SBYTE(hsc[j], 1), sc2 = SBYTE(hsc[j], 2), sc3 = SBYTE(hsc[j], 3);
-#if HAS_MIN
-      const int mn0 = UBYTE(hmn[j], 0), mn1 = UBYTE(hmn[j], 1), mn2 = UBYTE(hmn[j], 2), mn3 = UBYTE(hmn[j], 3);
-#endif
-#endif
+      // values 0..31 and 32..63 of this column's 64, a word of 4 each (per half)
+      int8 lo[NH], hi[NH];
+#pragma unroll
+      for (int h = 0; h < NH; ++h) {
+        __global const uint* dp = wqp + (s * 4 + j) * DPJ * LS + h * SG;
+        lo[h] = (int8)(intel_sub_group_block_read(dp), intel_sub_group_block_read(dp + LS), intel_sub_group_block_read(dp + 2 * LS),
+                       intel_sub_group_block_read(dp + 3 * LS), intel_sub_group_block_read(dp + 4 * LS), intel_sub_group_block_read(dp + 5 * LS),
+                       intel_sub_group_block_read(dp + 6 * LS), intel_sub_group_block_read(dp + 7 * LS));
+        hi[h] = (int8)(intel_sub_group_block_read(dp + 8 * LS), intel_sub_group_block_read(dp + 9 * LS), intel_sub_group_block_read(dp + 10 * LS),
+                       intel_sub_group_block_read(dp + 11 * LS), intel_sub_group_block_read(dp + 12 * LS), intel_sub_group_block_read(dp + 13 * LS),
+                       intel_sub_group_block_read(dp + 14 * LS), intel_sub_group_block_read(dp + 15 * LS));
+      }
 #ifdef ACT32
       float avl[TMV], avh[TMV];
 #pragma unroll
@@ -167,68 +198,79 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
 #endif
 #pragma unroll
       for (int mg = 0; mg < TM; mg += 8) {
-        // this chunk's values 0..31 and 32..63 of 8 tokens: a lane's word is 4 values of a row
+        // this chunk's values 0..31 and 32..63 of 8 tokens: a lane's word is 4 values of a row (loaded once for NH halves)
 #define X8_ROW(p, o) intel_sub_group_block_read((__global const uint*)(ap + (size_t)(mg + (p)) * K + s * 256 + j * 64 + (o)))
         const int8 al = (int8)(X8_ROW(0, 0), X8_ROW(1, 0), X8_ROW(2, 0), X8_ROW(3, 0), X8_ROW(4, 0), X8_ROW(5, 0), X8_ROW(6, 0), X8_ROW(7, 0));
         const int8 ah = (int8)(X8_ROW(0, 32), X8_ROW(1, 32), X8_ROW(2, 32), X8_ROW(3, 32), X8_ROW(4, 32), X8_ROW(5, 32), X8_ROW(6, 32), X8_ROW(7, 32));
+#pragma unroll
+        for (int h = 0; h < NH; ++h) {
 #ifdef H8R
-        xacc[mg / 8] = x8_mad(ah, hi, x8_mad(al, lo, xacc[mg / 8]));
+          xacc[h][mg / 8] = x8_mad(ah, hi[h], x8_mad(al, lo[h], xacc[h][mg / 8]));
 #else
-        int c0[8], c1[8];
+#if !defined(H8)
+          const int sc0 = SBYTE(hsc[h][j], 0), sc1 = SBYTE(hsc[h][j], 1), sc2 = SBYTE(hsc[h][j], 2), sc3 = SBYTE(hsc[h][j], 3);
+#if HAS_MIN
+          const int mn0 = UBYTE(hmn[h][j], 0), mn1 = UBYTE(hmn[h][j], 1), mn2 = UBYTE(hmn[h][j], 2), mn3 = UBYTE(hmn[h][j], 3);
+#endif
+#endif
+          int c0[8], c1[8];
 #if SC32
-        {
-          const int8 r0 = x8_mad(al, lo, (int8)(0)), r1 = x8_mad(ah, hi, (int8)(0));
-          vstore8(r0, 0, c0);
-          vstore8(r1, 0, c1);
-        }
+          {
+            const int8 r0 = x8_mad(al, lo[h], (int8)(0)), r1 = x8_mad(ah, hi[h], (int8)(0));
+            vstore8(r0, 0, c0);
+            vstore8(r1, 0, c1);
+          }
 #else
-        int c2[8], c3[8];
-        {
-          // (per-16 scales: each half of a 32-block alone, the other half's weights zero)
-          const int8 r0 = x8_mad(al, (int8)(lo.s0, lo.s1, lo.s2, lo.s3, 0, 0, 0, 0), (int8)(0));
-          const int8 r1 = x8_mad(al, (int8)(0, 0, 0, 0, lo.s4, lo.s5, lo.s6, lo.s7), (int8)(0));
-          const int8 r2 = x8_mad(ah, (int8)(hi.s0, hi.s1, hi.s2, hi.s3, 0, 0, 0, 0), (int8)(0));
-          const int8 r3 = x8_mad(ah, (int8)(0, 0, 0, 0, hi.s4, hi.s5, hi.s6, hi.s7), (int8)(0));
-          vstore8(r0, 0, c0);
-          vstore8(r1, 0, c1);
-          vstore8(r2, 0, c2);
-          vstore8(r3, 0, c3);
-        }
+          int c2[8], c3[8];
+          {
+            // (per-16 scales: each half of a 32-block alone, the other half's weights zero)
+            const int8 r0 = x8_mad(al, (int8)(lo[h].s0, lo[h].s1, lo[h].s2, lo[h].s3, 0, 0, 0, 0), (int8)(0));
+            const int8 r1 = x8_mad(al, (int8)(0, 0, 0, 0, lo[h].s4, lo[h].s5, lo[h].s6, lo[h].s7), (int8)(0));
+            const int8 r2 = x8_mad(ah, (int8)(hi[h].s0, hi[h].s1, hi[h].s2, hi[h].s3, 0, 0, 0, 0), (int8)(0));
+            const int8 r3 = x8_mad(ah, (int8)(0, 0, 0, 0, hi[h].s4, hi[h].s5, hi[h].s6, hi[h].s7), (int8)(0));
+            vstore8(r0, 0, c0);
+            vstore8(r1, 0, c1);
+            vstore8(r2, 0, c2);
+            vstore8(r3, 0, c3);
+          }
 #endif
 #pragma unroll
-        for (int p = 0; p < 8; ++p) {
-          const int m = mg + p;
+          for (int p = 0; p < 8; ++p) {
+            const int m = mg + p;
 #if defined(H8)
-          const int plo = c0[p], phi = c1[p];
+            const int plo = c0[p], phi = c1[p];
 #elif SC32
-          const int plo = MULS(c0[p], sc0), phi = MULS(c1[p], sc2);
+            const int plo = MULS(c0[p], sc0), phi = MULS(c1[p], sc2);
 #else
-          const int plo = MULS(c0[p], sc0) + MULS(c1[p], sc1), phi = MULS(c2[p], sc2) + MULS(c3[p], sc3);
+            const int plo = MULS(c0[p], sc0) + MULS(c1[p], sc1), phi = MULS(c2[p], sc2) + MULS(c3[p], sc3);
 #endif
 #ifdef ACT32
-          tq[m] = fma(BCAST(avl[m / SG], m % SG), (float)plo, fma(BCAST(avh[m / SG], m % SG), (float)phi, tq[m]));
+            tq[h][m] = fma(BCAST(avl[m / SG], m % SG), (float)plo, fma(BCAST(avh[m / SG], m % SG), (float)phi, tq[h][m]));
 #if HAS_MIN
-          const int mlo = MULMIN(BCAST(b0[m / SG], m % SG), mn0) + MULMIN(BCAST(b1[m / SG], m % SG), mn1);
-          const int mhi = MULMIN(BCAST(b2[m / SG], m % SG), mn2) + MULMIN(BCAST(b3[m / SG], m % SG), mn3);
-          tmn[m] = fma(BCAST(avl[m / SG], m % SG), (float)mlo, fma(BCAST(avh[m / SG], m % SG), (float)mhi, tmn[m]));
+            const int mlo = MULMIN(BCAST(b0[m / SG], m % SG), mn0) + MULMIN(BCAST(b1[m / SG], m % SG), mn1);
+            const int mhi = MULMIN(BCAST(b2[m / SG], m % SG), mn2) + MULMIN(BCAST(b3[m / SG], m % SG), mn3);
+            tmn[h][m] = fma(BCAST(avl[m / SG], m % SG), (float)mlo, fma(BCAST(avh[m / SG], m % SG), (float)mhi, tmn[h][m]));
 #endif
 #else
-          isum[m] += plo + phi;
+            isum[h][m] += plo + phi;
 #endif
-        }
+          }
 #endif  // H8R
+        }
       }
     }
 
 #ifdef ACT32
 #pragma unroll
-    for (int m = 0; m < TM; ++m) {
+    for (int h = 0; h < NH; ++h)
+#pragma unroll
+      for (int m = 0; m < TM; ++m) {
 #if HAS_MIN
-      res[m] = fma(d, tq[m], fma(-dmin, tmn[m], res[m]));
+        res[h][m] = fma(d[h], tq[h][m], fma(-dmin[h], tmn[h][m], res[h][m]));
 #else
-      res[m] = fma(d, tq[m], res[m]);
+        res[h][m] = fma(d[h], tq[h][m], res[h][m]);
 #endif
-    }
+      }
 #elif !defined(H8R)
     // ---- superblock epilogue: activation scale (and the min term)
     float av[TMV];
@@ -240,48 +282,58 @@ __kernel void gemm_x8(__global const uint* restrict wq, __global const uint* res
     for (int b = 0; b < 16; ++b)
 #pragma unroll
       for (int v = 0; v < TMV; ++v) bs[b][v] = (short)intel_sub_group_block_read_us(absum + ((size_t)s * 16 + b) * M + m0 + SG * v);
-    int mnv[16];
-#pragma unroll
-    for (int b = 0; b < 16; ++b) mnv[b] = UBYTE(hmn[b / 4], b & 3);
 #endif
 #pragma unroll
-    for (int m = 0; m < TM; ++m) {
-      const float a_s = BCAST(av[m / SG], m % SG);
-      res[m] = fma(a_s * d, (float)isum[m], res[m]);
+    for (int h = 0; h < NH; ++h) {
 #if HAS_MIN
-      int msum = 0;
+      int mnv[16];
 #pragma unroll
-      for (int b = 0; b < 16; ++b) msum += mnv[b] * BCAST(bs[b][m / SG], m % SG);
-      res[m] = fma(-a_s * dmin, (float)msum, res[m]);
+      for (int b = 0; b < 16; ++b) mnv[b] = UBYTE(hmn[h][b / 4], b & 3);
 #endif
+#pragma unroll
+      for (int m = 0; m < TM; ++m) {
+        const float a_s = BCAST(av[m / SG], m % SG);
+        res[h][m] = fma(a_s * d[h], (float)isum[h][m], res[h][m]);
+#if HAS_MIN
+        int msum = 0;
+#pragma unroll
+        for (int b = 0; b < 16; ++b) msum += mnv[b] * BCAST(bs[b][m / SG], m % SG);
+        res[h][m] = fma(-a_s * dmin[h], (float)msum, res[h][m]);
+#endif
+      }
     }
 #endif
   }
 
 #ifdef H8R
   // ---- the one epilogue: the column's scale x each token's
-  const float dcol = as_float(intel_sub_group_block_read(wh + (size_t)g * LS + hg * SG));
   float av[TMV];
 #pragma unroll
   for (int v = 0; v < TMV; ++v)
     av[v] = as_float(intel_sub_group_block_read((__global const uint*)(asc + m0 + SG * v)));
-  int isum[TM];
 #pragma unroll
-  for (int v = 0; v < TM / 8; ++v) vstore8(xacc[v], 0, isum + 8 * v);
+  for (int h = 0; h < NH; ++h) {
+    const float dcol = as_float(intel_sub_group_block_read(wh + (size_t)g * LS + hg * SG + h * SG));
+    int isum[TM];
 #pragma unroll
-  for (int m = 0; m < TM; ++m) res[m] = BCAST(av[m / SG], m % SG) * dcol * (float)isum[m];
+    for (int v = 0; v < TM / 8; ++v) vstore8(xacc[h][v], 0, isum + 8 * v);
+#pragma unroll
+    for (int m = 0; m < TM; ++m) res[h][m] = BCAST(av[m / SG], m % SG) * dcol * (float)isum[m];
+  }
 #endif
 
 #pragma unroll
-  for (int m = 0; m < TM; ++m) {
-    __global uint* cp = (__global uint*)(C + c_off + (size_t)(m0 + m) * ldc + (size_t)g * LS + hg * SG);
-    float v = res[m];
-    if (accumulate == 1) {
-      v += as_float(intel_sub_group_block_read(cp));
-    } else if (accumulate == 2) {  // fused SwiGLU: C holds the gate projection, v the up projection
-      const float gt = as_float(intel_sub_group_block_read(cp));
-      v *= gt / (1.0f + exp(-gt));
+  for (int h = 0; h < NH; ++h)
+#pragma unroll
+    for (int m = 0; m < TM; ++m) {
+      __global uint* cp = (__global uint*)(C + c_off + (size_t)(m0 + m) * ldc + (size_t)g * LS + hg * SG + h * SG);
+      float v = res[h][m];
+      if (accumulate == 1) {
+        v += as_float(intel_sub_group_block_read(cp));
+      } else if (accumulate == 2) {  // fused SwiGLU: C holds the gate projection, v the up projection
+        const float gt = as_float(intel_sub_group_block_read(cp));
+        v *= gt / (1.0f + exp(-gt));
+      }
+      intel_sub_group_block_write(cp, as_uint(v));
     }
-    intel_sub_group_block_write(cp, as_uint(v));
-  }
 }

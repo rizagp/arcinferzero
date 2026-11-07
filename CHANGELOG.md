@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-07: variants of the 8-lane XMX GEMM for the 140T, and a sweep script
+
+- `ARC_X8_W=1`: `gemm_x8.cl` with one 8-lane sub-group for both halves of a 16-column group, so 8 tokens' activations
+  are loaded once for 16 columns. ocloc (`arl-h`): 28 % fewer memory messages and 17 % fewer instructions per DPAS, no
+  spills.
+- `ARC_GEMM_GRF=128` now also applies on 8-lane GPUs.
+- `bench\igpu_sweep.ps1`: prompt GEMM settings with XMX forced; prompts of real use (512 / 2048 / 8192 tokens, chunk
+  sizes); the GEMV switches for generation.
+- Bit-identical on the 125H with DP4a standing in for DPAS (4B, 27B, H8). Defaults unchanged: XMX stays off on 8-lane
+  GPUs until a 140T measures a variant faster than DP4a.
+
 ## 2026-11-07: a model-sized XMX speed check on iGPUs; Panther Lake's XMX code read
 
 - iGPUs with 16-lane XMX (Lunar Lake, Panther Lake such as the B390) now time a 512 x 17,408 x 5,120 GEMM at start, XMX

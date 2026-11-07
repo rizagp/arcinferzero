@@ -341,7 +341,7 @@
         static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
         return kernel("x8", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
                                 (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) + xe2_cg_defs(cg) +
-                                (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : ""),
+                                x8_defs() + (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : ""),
                       "gemm_x8");
       }
       xmx = 0;

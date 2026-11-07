@@ -15,12 +15,17 @@
   // the dense prompt GEMM with the default register file (128) instead of 256 registers per thread: more threads per
   // core; on a Pro B60 the 27B's prompt went 450 -> 617 tok/s (issue #4, 2026-11-02). ARC_GEMM_GRF=256 as before.
   // (On the 125H iGPU 128 made the 35B's prompt 3.4x slower: xe2_ is off there, which keeps 256.)
+  // (ARC_GEMM_GRF=128 on an 8-lane GPU: 128 there too, for its owner's sweep; ocloc showed the 16-lane form spilling
+  //  with it, gemm_x8 not checked at 128 for every layout)
   std::string xe2_gemm_grf() const {
-    static const bool grf256 = [] {
-      const char* e = getenv("ARC_GEMM_GRF");
-      return e != nullptr && std::string(e) == "256";
-    }();
-    return xe2_grf128() && !grf256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+    static const std::string e = getenv("ARC_GEMM_GRF") ? getenv("ARC_GEMM_GRF") : "";
+    if (xe2_ && cl_.sg8 && e == "128") return std::string();
+    return xe2_grf128() && e != "256" ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+  }
+  // ARC_X8_W=1: gemm_x8.cl -DX8W, one 8-lane sub-group for both halves of a 16-column group (activations loaded once)
+  static std::string x8_defs() {
+    static const bool w = getenv("ARC_X8_W") && atoi(getenv("ARC_X8_W")) != 0;
+    return w ? " -DX8W" : "";
   }
   // ARC_MOE_GRF=128: the same for the MoE expert GEMMs (256 until measured on a B-series card: their 128 build is the
   // one that spilled on the iGPU)

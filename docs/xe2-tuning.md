@@ -11,6 +11,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_NO_XMX=1` | XMX where the GPU has it | DP4a only | 1 |
 | `ARC_X16=1` | off | the f16 XMX GEMM for W8 weights | 6 |
 | `ARC_XMX_FORCE=1` | off | on a GPU with 8-lane sub-groups (Arrow Lake H): XMX (gemm_x8.cl), still checked against DP4a bit for bit; off because a 140T measured it 1.6x slower in the 27B's GEMMs. On iGPUs with 16-lane XMX: XMX without the speed check | 8 |
+| `ARC_X8_W=1` | off | 8-lane GPUs with `ARC_XMX_FORCE=1`: gemm_x8 with one sub-group for both 8-column halves of a 16-column group, the activations loaded once (ocloc `arl-h`: 28 % fewer memory messages and 17 % fewer instructions per DPAS, no spills at 256 registers and 16 tokens); bit-identical | 8 |
+| `ARC_GEMM_GRF=128` on 8-lane GPUs | 256 there | the default register file for gemm_x8 too (no spills at 16 tokens without `ARC_X8_W`; spills with it or with 32 tokens, except H8) | 8 |
 | `ARC_XMX_SPEED=1` | off | the start-time speed check (a model-sized GEMM, XMX against DP4a) on discrete cards too, and under `ARC_XMX_TRY` (tests); iGPUs with XMX always run it | 8 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
@@ -381,6 +383,22 @@ DP4a GEMM 4.7x slower in this check, 47 ms against 10). If XMX loses, those swit
   that small shape stays in the caches, and with 8 columns per sub-group the real GEMMs read activations twice as often.
 - **Since then XMX is off on 8-lane GPUs** (the GPU runs as with `ARC_NO_XMX=1`, which is the 180 tok/s above);
   `ARC_XMX_FORCE=1` takes it, with the bit-for-bit check. The speed check is gone.
+- **Variants for the 140T's owner to measure (2026-11-07): `bench\igpu_sweep.ps1`.** `ARC_X8_W=1` (both halves in one
+  sub-group), `ARC_GEMM_GRF=128`, and the tiles that already applied (`ARC_GEMM_TM` / `_CG` / `_WGY` / `_RG`), all with
+  XMX forced. ocloc for `arl-h`, per DPAS:
+
+  | Build | Instructions | Memory messages | Spills |
+  |---|---|---|---|
+  | as before (256 registers, 16 tokens) | 152 | 16.6 | none |
+  | `ARC_X8_W=1` | 126 | 11.9 | none |
+  | `ARC_X8_W=1`, 32 tokens | 116 | 9.7 | per-16 layouts (100, 103) spill |
+  | 128 registers | 153 | 16.6 | none |
+  | 128 registers with `ARC_X8_W` or 32 tokens | | | spill (except H8) |
+
+  On the 125H with DP4a in place of DPAS (`ARC_XMX_TRY=2`): logits bit-identical to DP4a for X8W, X8W + 32 tokens and
+  X8W + 128 registers (4B, 27B; a 512-token chunked prompt), X8W + H8 identical to H8, and a wrong kernel refused. The
+  script also measures prompts of real use (512, 2048, 8192 tokens; 8192 in 1024 / 2048-token chunks) for DP4a, XMX and
+  the best variant, and the GEMV's switches (`ARC_GEMV_GRF`, `ARC_GVROWS`, `ARC_GEMV_PF`) for generation.
 - The 140T before, all on DP4a: 27B pp2048 180 tok/s, 6.0 tok/s; with `ARC_H8=1` 160 tok/s, as the rotations (1.56 s)
   cost more than the GEMMs gain (~5 %).
 
