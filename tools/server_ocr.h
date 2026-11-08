@@ -12,6 +12,25 @@
  private:
   bool ocr_ = false;
   static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; more: a note at the end)
+  struct OcrTally {  // (tokens and timings of the pages read, added up)
+    int64_t ptok = 0, ctok = 0;
+    double pn = 0, cn = 0, pms = 0, gn = 0, gms = 0;
+  };
+  // Where the .md files go: dir; with a copy in the chat's folder (chat) when dir is a folder of the user's; in_chat:
+  // dir is the chat's folder (its Files panel follows the file)
+  // proj_id: dir is in that project's folder, proj_rel its path there ("ocr"; "" the folder itself)
+  struct OcrDirs {
+    std::filesystem::path dir, chat;
+    bool in_chat = false;
+    std::string proj_id, proj_rel;
+  };
+  // one .md the text goes into, and its copy in the chat's files (or none); ref: its "project:<id>/<path>" in a
+  // project's folder
+  struct OcrMd {
+    std::filesystem::path md, md_chat;
+    bool in_chat = false;
+    std::string ref;
+  };
   // A PDF in the request's last user turn (a web UI file part): every page rendered by Windows (tools/pdf_render.h)
   // and read as an image with the turn's words, page after page, each under "## Page N / M" (streamed as each page
   // is done). False when the conversation has no PDF to read. Before, a PDF went in as its text layer: no image in
@@ -40,16 +59,15 @@
         if (p["type"].str() == "text" || p["type"].str() == "input_text") w += (w.empty() ? "" : "\n") + p["text"].str();
       return w;
     };
-    auto pdf_of = [](const Json& m, files::Info& out) {
+    std::string refused;  // (a project's file this request may not read: said, not skipped)
+    auto pdf_of = [&](const Json& m, files::Info& out) {
       for (const Json& p : m["content"].items()) {
         if (p["type"].str() != "file" && p["type"].str() != "input_file") continue;
         files::Info i;
-        const std::string fid = p["file"]["file_id"].str(p["file_id"].str());
-        if (files::store().get(fid, i) && files::lower(i.name).size() > 4 &&
-            files::lower(i.name).rfind(".pdf") == files::lower(i.name).size() - 4) {
+        const int got = ocr_file(rq, body, p, i, refused);
+        if (got < 0) return true;
+        if (got > 0 && files::lower(i.name).size() > 4 && files::lower(i.name).rfind(".pdf") == files::lower(i.name).size() - 4) {
           out = i;
-          // (the name the chat gave it: one file in several chats is one entry under whichever name came first)
-          if (p["file"]["filename"].is_string() && !p["file"]["filename"].str().empty()) out.name = p["file"]["filename"].str();
           return true;
         }
       }
@@ -68,6 +86,11 @@
       else if (i == last && has_parts(msgs[i])) break;
     }
     if (at < 0) return false;
+    if (!refused.empty()) {  // (only for the turn that brings the file, as in ocr_batch)
+      if (at < last) return false;
+      rs.send(403, "application/json", "{\"error\":{\"message\":" + Json(refused).dump() + "}}");
+      return true;
+    }
     const std::string words = text_of(msgs[last]), task = text_of(msgs[at]);  // (a continuation keeps the PDF's task)
     std::string err;
     std::string bytes;
@@ -93,99 +116,25 @@
     const bool stream = body["stream"].as_bool(false);
     const std::string id = "chatcmpl-arc" + std::to_string(++counter_);
     const long long created = (long long)time(nullptr);
-    if (stream) rs.sse_begin();
     std::string all;
-    int64_t ptok = 0, ctok = 0;
     // the .md next to the chat's files (started over with page 1, else appended)
-    std::filesystem::path md, md_chat;
-    bool in_chat = false;  // (in the chat's folder: its Files panel follows the file)
+    OcrDirs dirs;
+    OcrMd md;
     const Json& sv = body["ocr_save"];
     if (sv.as_bool(false) || sv.is_object()) {
       std::string name = sv["name"].str();
       if (name.empty()) name = std::filesystem::path(pdf.name).stem().string() + ".md";
-      name = std::filesystem::path(name).filename().string();  // (a name, never a path)
-      for (char& c : name)
-        if (strchr("<>:\"/\\|?*", c) || (unsigned char)c < 32) c = '_';
-      if (name.empty() || name[0] == '.') name = "ocr" + name;
-      if (files::lower(name).size() < 3 || files::lower(name).rfind(".md") != files::lower(name).size() - 3) name += ".md";
-      {  // (a device's name, "CON.md", "nul.md", "COM1.md": Windows opens the device, not a file)
-        const std::string st = files::lower(std::filesystem::path(name).stem().string());
-        const std::string base = st.substr(0, st.find('.'));
-        if (base == "con" || base == "prn" || base == "aux" || base == "nul" ||
-            ((base.rfind("com", 0) == 0 || base.rfind("lpt", 0) == 0) && base.size() == 4 && isdigit((unsigned char)base[3])))
-          name = "ocr " + name;
-      }
-      std::filesystem::path dir, chat_dir;
-      const std::string folder = sv["folder"].str(), chat = body["chat_id"].str();
-      // (the asking chat's folder: the PDF's copy found may be another chat's)
-      if (files::valid_id(chat)) chat_dir = std::filesystem::path(files::store().chat_dir_make(chat));
-      std::error_code ec;
-      if (!folder.empty()) {
-        // (this computer, and not a page another local program serves: such a page may call the chat API, and the
-        //  connection is local for it too, so local_peer alone let it write a .md into any folder. Only the server's
-        //  own page, Origin = http://<Host>, or a client that sends no Origin; BUGS.md 1, 2026-10-31)
-        //  (a remote session with full access: its page is https, through the tunnel)
-        std::string origin = rq.header("origin"), own = (rq.remote ? "https://" : "http://") + rq.header("host");
-        for (std::string* x : {&origin, &own})
-          for (char& c : *x) c = (char)tolower((unsigned char)c);
-        if (!rq.local_peer || (!origin.empty() && origin != own)) {
-          rs.send(403, "application/json", "{\"error\":{\"message\":\"ocr_save.folder: from this server's own page or a client on this computer only\"}}");
-          return true;
-        }
-        dir = std::filesystem::path(folder);
-        if (!dir.is_absolute() || !std::filesystem::is_directory(dir, ec)) {
-          rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("no such folder: " + folder).dump() + "}}");
-          return true;
-        }
-        if (std::filesystem::equivalent(dir, chat_dir, ec)) {  // (the chat's own folder named: as an empty folder)
-          chat_dir.clear();
-          in_chat = true;
-        }
-      } else {
-        dir = chat_dir.empty() ? std::filesystem::path(pdf.path).parent_path() : chat_dir;
-        chat_dir.clear();
-        in_chat = true;
-      }
-      md = dir / name;
-      // a folder of the user's: a copy in the chat's files as well, under the same name, which a chat model reads later
-      // (read_file NAME; it reads no folder of this computer)
-      if (!chat_dir.empty()) md_chat = chat_dir / name;
-      if (!sv["append"].as_bool(false)) {  // (a new file: never in an existing one's place, nor its copy)
-        const std::string stem = md.stem().string();
-        for (int k = 2; (std::filesystem::exists(md, ec) || (!md_chat.empty() && std::filesystem::exists(md_chat, ec))) && k < 1000; ++k) {
-          name = stem + " (" + std::to_string(k) + ").md";
-          md = dir / name;
-          if (!md_chat.empty()) md_chat = chat_dir / name;
-        }
-        // (999 names taken: the loop ended on one that exists, which the write below would have replaced)
-        if (std::filesystem::exists(md, ec) || (!md_chat.empty() && std::filesystem::exists(md_chat, ec))) {
-          rs.send(409, "application/json", "{\"error\":{\"message\":" + Json("every name from " + stem + ".md to " + stem +
-                                                                                 " (999).md is taken: choose another name").dump() + "}}");
-          return true;
-        }
-        for (const auto& f_path : {md, md_chat}) {
-          if (f_path.empty()) continue;
-          std::ofstream f(f_path, std::ios::binary | std::ios::trunc);
-          f << "# " << pdf.name << "\n\n";
-          if (!f.flush()) {  // (a read-only folder, a full disk: said now, not pages read into no file)
-            rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("cannot write " + name + " there").dump() + "}}");
-            return true;
-          }
-        }
-      }
+      if (!ocr_dirs(rq, body, std::filesystem::path(pdf.path).parent_path(), dirs, rs)) return true;
+      if (!ocr_md_make(dirs, ocr_md_name(name), sv["append"].as_bool(false), "# " + pdf.name + "\n\n", md, rs)) return true;
     }
-    auto save = [&](const std::string& piece) {
-      if (md.empty()) return;
-      std::ofstream(md, std::ios::binary | std::ios::app) << piece;
-      if (!md_chat.empty()) std::ofstream(md_chat, std::ios::binary | std::ios::app) << piece;
-      if (in_chat || !md_chat.empty()) files::store().refresh();  // (in the Files panel with its new size)
-    };
+    // (begun after the file checks: an error said before them went out as an event, not as the error it is)
+    if (stream) rs.sse_begin();
+    auto save = [&](const std::string& piece) { ocr_md_add(md, piece); };
     // (the file named at the end of each answer: its name in the chat's files, else its full path; with the copy's
     //  name after "; in this chat's files as")
-    const std::string where = md.empty() ? "" : in_chat ? md.filename().string()
-                                         : md.string() + (md_chat.empty() ? "" : "; in this chat's files as " + md_chat.filename().string());
+    const std::string where = ocr_md_where(md);
     fprintf(stderr, "OCR mode: %s, pages %d-%d of %d%s\n", pdf.name.c_str(), first, n, pages,
-            md.empty() ? "" : (", saved to " + md.filename().string()).c_str());  // (the file's name only: no user's path in the log)
+            md.md.empty() ? "" : (", saved to " + md.md.filename().string()).c_str());  // (the file's name only: no user's path in the log)
     if (first > pages) {
       const std::string note = "[OCR: every page of " + pdf.name + " is read (" + std::to_string(pages) + ")]";
       if (stream) {
@@ -197,7 +146,7 @@
       }
     }
     // (the pages' timings added up: the web UI's statistics line, which said "stopped" for an answer without them)
-    double t_pn = 0, t_cn = 0, t_pms = 0, t_gn = 0, t_gms = 0;
+    OcrTally tally;
     std::string failed;  // (a page the model could not read: the pages stop there, no "more pages" note to go on with)
     for (int p = first; p <= n && !rs.client_gone() && failed.empty(); ++p) {
       std::string piece = (p > first ? "\n\n" : "") + std::string("## Page ") + std::to_string(p) + " / " + std::to_string(pages) + "\n\n";
@@ -212,43 +161,13 @@
       if (png.empty()) {
         piece += "[the page could not be rendered: " + err + "]";
       } else {
-        Json url = Json::object(), img = Json::object(), txt = Json::object(), content = Json::array(), msg = Json::object(),
-             one = Json::array(), req = Json::object();
-        url.set("url", "data:image/png;base64," + apic::base64_encode(png));
-        img.set("type", "image_url");
-        img.set("image_url", url);
-        txt.set("type", "text");
-        txt.set("text", task);
-        content.push(img);
-        content.push(txt);
-        msg.set("role", "user");
-        msg.set("content", content);
-        one.push(msg);
-        req.set("messages", one);
-        req.set("stream", false);
-        HttpRequest rq2 = rq;
-        rq2.body = req.dump();
-        HttpResponse r2(INVALID_SOCKET);
-        int st = 0;
-        std::string out;
-        r2.on_send = [&](int s, const std::string& b) { st = s; out = b; };
-        chat(rq2, r2);  // (an image now: ocr_request gives it the task prompt; its tables come back as Markdown)
-        Json j;
-        Json::try_parse(out, j);
-        if (st != 200) {
-          failed = "page " + std::to_string(p) + ": " + j["error"]["message"].str("HTTP " + std::to_string(st));
-          piece += "[" + failed + "]";
+        std::string text;
+        if (ocr_image(rq, "data:image/png;base64," + apic::base64_encode(png), task, tally, text)) {
+          piece += text;
         } else {
-          piece += j["choices"][0]["message"]["content"].str();
+          failed = "page " + std::to_string(p) + ": " + text;
+          piece += "[" + failed + "]";
         }
-        ptok += j["usage"]["prompt_tokens"].as_int();
-        ctok += j["usage"]["completion_tokens"].as_int();
-        const Json& tm = j["timings"];
-        t_pn += tm["prompt_n"].as_number(0);
-        t_cn += tm["cache_n"].as_number(0);
-        t_pms += tm["prompt_ms"].as_number(0);
-        t_gn += tm["predicted_n"].as_number(0);
-        t_gms += tm["predicted_ms"].as_number(0);
       }
       save((p > 1 && p == first ? "\n\n" : "") + piece);
       if (stream) {
@@ -262,12 +181,12 @@
     std::string note;  // (pages left: the web UI's cue for "lanjut"; and the file the text went to)
     if (!failed.empty()) {  // (the web UI goes on only after a "more page(s)" note: a model that cannot read the pages, no
                             //  vision encoder, would have answered every "lanjut" with the same error, 450 times)
-      note = "\n\n[OCR: stopped at " + failed + (md.empty() ? "" : "; the pages before it are in " + where) + "]";
+      note = "\n\n[OCR: stopped at " + failed + (md.md.empty() ? "" : "; the pages before it are in " + where) + "]";
     } else if (pages > n && n >= first) {
       const int a = n + 1, b = std::min(pages, n + kOcrMaxPages);
       note = "\n\n[OCR: " + std::to_string(pages - n) + " more page(s); \"lanjut\" reads pages " + std::to_string(a) + "-" +
-             std::to_string(b) + (md.empty() ? "" : ", added to " + where) + "]";
-    } else if (!md.empty()) {
+             std::to_string(b) + (md.md.empty() ? "" : ", added to " + where) + "]";
+    } else if (!md.md.empty()) {
       note = "\n\n[OCR: saved to " + where + "]";
     }
     if (!note.empty()) {
@@ -279,18 +198,24 @@
         all += note;
       }
     }
+    ocr_finish(rs, stream, id, created, all, tally);
+    return true;
+  }
+  // The answer's end: usage and timings (the pages' added up), the last event or the whole answer
+  void ocr_finish(HttpResponse& rs, bool stream, const std::string& id, long long created, const std::string& all,
+                  const OcrTally& t) {
     Json usage = Json::object();
-    usage.set("prompt_tokens", ptok);
-    usage.set("completion_tokens", ctok);
-    usage.set("total_tokens", ptok + ctok);
+    usage.set("prompt_tokens", t.ptok);
+    usage.set("completion_tokens", t.ctok);
+    usage.set("total_tokens", t.ptok + t.ctok);
     Json timings = Json::object();
-    timings.set("prompt_n", t_pn);
-    timings.set("cache_n", t_cn);
-    timings.set("prompt_ms", t_pms);
-    timings.set("prompt_per_second", t_pms > 0 ? 1000.0 * t_pn / t_pms : 0.0);
-    timings.set("predicted_n", t_gn);
-    timings.set("predicted_ms", t_gms);
-    timings.set("predicted_per_second", t_gms > 0 ? 1000.0 * t_gn / t_gms : 0.0);
+    timings.set("prompt_n", t.pn);
+    timings.set("cache_n", t.cn);
+    timings.set("prompt_ms", t.pms);
+    timings.set("prompt_per_second", t.pms > 0 ? 1000.0 * t.pn / t.pms : 0.0);
+    timings.set("predicted_n", t.gn);
+    timings.set("predicted_ms", t.gms);
+    timings.set("predicted_per_second", t.gms > 0 ? 1000.0 * t.gn / t.gms : 0.0);
     if (stream) {
       Json fin = chunk(id, created, Json::object(), Json("stop"));
       fin.set("usage", usage);
@@ -298,7 +223,7 @@
       rs.sse_event(fin.dump());
       rs.sse_event("[DONE]");
       rs.sse_end();
-      return true;
+      return;
     }
     Json msg = Json::object(), c = Json::object(), choices = Json::array(), r = Json::object();
     msg.set("role", "assistant");
@@ -315,6 +240,487 @@
     r.set("usage", usage);
     r.set("timings", timings);
     rs.send(200, "application/json", r.dump());
+  }
+
+  // ---- the pieces ocr_pdf and ocr_batch share (their types: at the top)
+  // a request from this computer, from the server's own page or a client that sends no Origin (not a page another
+  // local program serves: such a page may call the chat API, and the connection is local for it too, so local_peer
+  // alone let it write a .md into any folder; BUGS.md 1, 2026-10-31). A remote session with full access: its page is
+  // https, through the tunnel.
+  static bool ocr_own_page(const HttpRequest& rq) {
+    std::string origin = rq.header("origin"), own = (rq.remote ? "https://" : "http://") + rq.header("host");
+    for (std::string* x : {&origin, &own})
+      for (char& c : *x) c = (char)tolower((unsigned char)c);
+    return rq.local_peer && (origin.empty() || origin == own);
+  }
+  // A message's file part as the file to read: 1 found (out), 0 none (not a file part, or no such upload), -1 refused
+  // (err). An upload of the chat's (files::store) or a project's file, "project:<id>/<path>": read where it is, no
+  // copy, and only as read_file reads one (tools/server_file_tools.h project_file): the request's own project
+  // (project_id, which the web UI sends for a project's chat), from this computer and the server's own page.
+  int ocr_file(const HttpRequest& rq, const Json& body, const Json& part, files::Info& out, std::string& err) {
+    if (part["type"].str() != "file" && part["type"].str() != "input_file") return 0;
+    std::string fid = part["file"]["file_id"].str(part["file_id"].str());
+    const std::string given = part["file"]["filename"].is_string() ? part["file"]["filename"].str() : "";
+    std::string pid, rel;
+    if (proj::split_id(fid, pid, rel)) {
+      proj::Project p;
+      std::filesystem::path f;
+      if (!ocr_own_page(rq)) err = "a project's files are only for this computer (this server's own page)";
+      else if (pid != body["project_id"].str()) err = "project:" + pid + " is not this chat's project: only the files of the chat's own project can be read";
+      else if (!memo::valid_project(pid) || !proj::find(pid, p)) err = "no project " + pid;
+      else if (proj::resolve_in(p, rel, f, err)) {
+        std::error_code ec;
+        out = files::Info();
+        out.id = fid;
+        out.path = f.string();
+        out.name = std::filesystem::path(rel).filename().string();  // (its name; the path inside the project in id)
+        out.kind = files::kind_of(rel);
+        out.bytes = std::filesystem::file_size(f, ec);
+        return 1;
+      }
+      return -1;
+    }
+    if (fid.rfind("/files/", 0) == 0) fid = fid.substr(7);
+    if (fid.rfind("file-", 0) == 0) fid = fid.substr(5);
+    if (!files::store().get(fid, out)) return 0;
+    // (the name the chat gave it: one file in several chats is one entry under whichever name came first)
+    if (!given.empty()) out.name = given;
+    return 1;
+  }
+  // the folder a project's chat saves its OCR text into by default: "ocr" in the project's folder (made when needed),
+  // which every chat of the project lists (list_files, scope "project"); empty when the request has no project, may
+  // not write there, or the folder cannot be made
+  std::filesystem::path ocr_project_dir(const HttpRequest& rq, const Json& body, proj::Project& p, bool make) {
+    const std::string pid = body["project_id"].str();
+    if (pid.empty() || !memo::valid_project(pid) || !proj::find(pid, p) || !ocr_own_page(rq)) return {};
+    std::error_code ec;
+    const std::filesystem::path root = std::filesystem::path(p.folder);
+    if (!std::filesystem::is_directory(root, ec)) return {};
+    const std::filesystem::path d = root / "ocr";
+    if (make) std::filesystem::create_directories(d, ec);  // (only when the .md goes there, not for another folder)
+    return d;
+  }
+  // a file name for a .md: a name, never a path; no character Windows refuses, no device's name, ending in .md
+  static std::string ocr_md_name(std::string name) {
+    name = std::filesystem::path(name).filename().string();
+    for (char& c : name)
+      if (strchr("<>:\"/\\|?*", c) || (unsigned char)c < 32) c = '_';
+    if (name.empty() || name[0] == '.') name = "ocr" + name;
+    if (files::lower(name).size() < 3 || files::lower(name).rfind(".md") != files::lower(name).size() - 3) name += ".md";
+    {  // (a device's name, "CON.md", "nul.md", "COM1.md": Windows opens the device, not a file)
+      const std::string st = files::lower(std::filesystem::path(name).stem().string());
+      const std::string base = st.substr(0, st.find('.'));
+      if (base == "con" || base == "prn" || base == "aux" || base == "nul" ||
+          ((base.rfind("com", 0) == 0 || base.rfind("lpt", 0) == 0) && base.size() == 4 && isdigit((unsigned char)base[3])))
+        name = "ocr " + name;
+    }
+    return name;
+  }
+  // ocr_save's folder (default: the chat's folder, else `fallback`, the folder of the file read); false after an error
+  // was sent
+  // A project's chat (project_id): by default the project's "ocr" folder, no copy in the chat's files (every chat of
+  // the project and any model reads it there: "project:<id>/ocr/NAME"); a folder named inside the project's folder
+  // likewise.
+  bool ocr_dirs(const HttpRequest& rq, const Json& body, const std::filesystem::path& fallback, OcrDirs& d, HttpResponse& rs) {
+    const std::string folder = body["ocr_save"]["folder"].str(), chat = body["chat_id"].str();
+    std::filesystem::path chat_dir;
+    // (the asking chat's folder: the file's copy found may be another chat's)
+    if (files::valid_id(chat)) chat_dir = std::filesystem::path(files::store().chat_dir_make(chat));
+    std::error_code ec;
+    proj::Project p;
+    const std::filesystem::path pdir = ocr_project_dir(rq, body, p, folder.empty());
+    if (!folder.empty()) {
+      // (this computer, and not a page another local program serves, see ocr_own_page)
+      if (!ocr_own_page(rq)) {
+        rs.send(403, "application/json", "{\"error\":{\"message\":\"ocr_save.folder: from this server's own page or a client on this computer only\"}}");
+        return false;
+      }
+      d.dir = std::filesystem::path(folder);
+      if (!d.dir.is_absolute() || !std::filesystem::is_directory(d.dir, ec)) {
+        rs.send(400, "application/json", "{\"error\":{\"message\":" + Json("no such folder: " + folder).dump() + "}}");
+        return false;
+      }
+      std::string rel;
+      if (std::filesystem::equivalent(d.dir, chat_dir, ec)) {  // (the chat's own folder named: as an empty folder)
+        d.in_chat = true;
+      } else if (!pdir.empty() && ocr_in_project(p, d.dir, rel)) {  // (in the project: its chats read it there)
+        d.proj_id = p.id;
+        d.proj_rel = rel;
+      } else {
+        // a folder of the user's: a copy in the chat's files as well, under the same name, which a chat model reads
+        // later (read_file NAME; it reads no folder of this computer)
+        d.chat = chat_dir;
+      }
+    } else if (!pdir.empty() && std::filesystem::is_directory(pdir, ec)) {
+      d.dir = pdir;
+      d.proj_id = p.id;
+      d.proj_rel = "ocr";
+    } else {
+      d.dir = chat_dir.empty() ? fallback : chat_dir;
+      d.in_chat = true;
+    }
+    return true;
+  }
+  // dir inside the project's folder (or the folder itself): its path there with "/" ("" for the folder itself)
+  static bool ocr_in_project(const proj::Project& p, const std::filesystem::path& dir, std::string& rel) {
+    std::error_code ec;
+    const std::filesystem::path root = std::filesystem::weakly_canonical(std::filesystem::path(p.folder), ec),
+                                d = std::filesystem::weakly_canonical(dir, ec);
+    if (root.empty() || d.empty()) return false;
+    std::wstring r = root.wstring(), x = d.wstring();
+    for (wchar_t& c : r) c = (wchar_t)towlower(c);
+    for (wchar_t& c : x) c = (wchar_t)towlower(c);
+    while (!r.empty() && r.back() == L'\\') r.pop_back();
+    while (!x.empty() && x.back() == L'\\') x.pop_back();
+    if (x.compare(0, r.size(), r) != 0 || (x.size() > r.size() && x[r.size()] != L'\\')) return false;
+    rel = x.size() > r.size() ? d.lexically_relative(root).generic_string() : "";
+    return true;
+  }
+  // The .md `name` in d (and its copy): a new file starting with `head`, never in an existing one's place nor its
+  // copy's ("name (2).md" then); append: the named file goes on as it is. False after an error was sent (ocr_md_try:
+  // false with the HTTP status and why, for a stream that began already).
+  bool ocr_md_make(const OcrDirs& d, const std::string& name, bool append, const std::string& head, OcrMd& out, HttpResponse& rs) {
+    int code = 0;
+    std::string why;
+    if (ocr_md_try(d, name, append, head, out, code, why)) return true;
+    rs.send(code, "application/json", "{\"error\":{\"message\":" + Json(why).dump() + "}}");
+    return false;
+  }
+  bool ocr_md_try(const OcrDirs& d, std::string name, bool append, const std::string& head, OcrMd& out, int& code, std::string& why) {
+    std::error_code ec;
+    out.in_chat = d.in_chat;
+    out.md = d.dir / name;
+    out.md_chat = d.chat.empty() ? std::filesystem::path() : d.chat / name;
+    auto ref = [&] {
+      out.ref = d.proj_id.empty() ? "" : "project:" + d.proj_id + "/" + (d.proj_rel.empty() ? "" : d.proj_rel + "/") + out.md.filename().string();
+    };
+    ref();
+    if (append) return true;
+    const std::string stem = out.md.stem().string();
+    auto taken = [&] { return std::filesystem::exists(out.md, ec) || (!out.md_chat.empty() && std::filesystem::exists(out.md_chat, ec)); };
+    for (int k = 2; taken() && k < 1000; ++k) {
+      name = stem + " (" + std::to_string(k) + ").md";
+      out.md = d.dir / name;
+      if (!out.md_chat.empty()) out.md_chat = d.chat / name;
+    }
+    ref();
+    // (999 names taken: the loop ended on one that exists, which the write below would have replaced)
+    if (taken()) {
+      code = 409;
+      why = "every name from " + stem + ".md to " + stem + " (999).md is taken: choose another name";
+      return false;
+    }
+    for (const auto& f_path : {out.md, out.md_chat}) {
+      if (f_path.empty()) continue;
+      std::ofstream f(f_path, std::ios::binary | std::ios::trunc);
+      f << head;
+      if (!f.flush()) {  // (a read-only folder, a full disk: said now, not pages read into no file)
+        code = 400;
+        why = "cannot write " + name + " there";
+        return false;
+      }
+    }
+    return true;
+  }
+  static void ocr_md_add(const OcrMd& m, const std::string& piece) {
+    if (m.md.empty()) return;
+    std::ofstream(m.md, std::ios::binary | std::ios::app) << piece;
+    if (!m.md_chat.empty()) std::ofstream(m.md_chat, std::ios::binary | std::ios::app) << piece;
+    if (m.in_chat || !m.md_chat.empty()) files::store().refresh();  // (in the Files panel with its new size)
+  }
+  // the file named in an answer's note: its name in the chat's files, else its full path, with the copy's name after
+  // "; in this chat's files as"
+  static std::string ocr_md_where(const OcrMd& m) {
+    return m.md.empty() ? "" : m.in_chat ? m.md.filename().string()
+                         : m.md.string() + (!m.ref.empty() ? "; in the project as " + m.ref
+                                            : m.md_chat.empty() ? "" : "; in this chat's files as " + m.md_chat.filename().string());
+  }
+  // One image read by the model (url: a data URL or /files/<id>) with the task's words, through chat(): its text, or
+  // false and why. Its tokens and timings go into t.
+  bool ocr_image(const HttpRequest& rq, const std::string& image_url, const std::string& task, OcrTally& t, std::string& text) {
+    Json url = Json::object(), img = Json::object(), txt = Json::object(), content = Json::array(), msg = Json::object(),
+         one = Json::array(), req = Json::object();
+    url.set("url", image_url);
+    img.set("type", "image_url");
+    img.set("image_url", url);
+    txt.set("type", "text");
+    txt.set("text", task);
+    content.push(img);
+    content.push(txt);
+    msg.set("role", "user");
+    msg.set("content", content);
+    one.push(msg);
+    req.set("messages", one);
+    req.set("stream", false);
+    HttpRequest rq2 = rq;
+    rq2.body = req.dump();
+    HttpResponse r2(INVALID_SOCKET);
+    int st = 0;
+    std::string out;
+    r2.on_send = [&](int s, const std::string& b) { st = s; out = b; };
+    chat(rq2, r2);  // (an image now: ocr_request gives it the task prompt; its tables come back as Markdown)
+    Json j;
+    Json::try_parse(out, j);
+    t.ptok += j["usage"]["prompt_tokens"].as_int();
+    t.ctok += j["usage"]["completion_tokens"].as_int();
+    const Json& tm = j["timings"];
+    t.pn += tm["prompt_n"].as_number(0);
+    t.cn += tm["cache_n"].as_number(0);
+    t.pms += tm["prompt_ms"].as_number(0);
+    t.gn += tm["predicted_n"].as_number(0);
+    t.gms += tm["predicted_ms"].as_number(0);
+    if (st != 200) {
+      text = j["error"]["message"].str("HTTP " + std::to_string(st));
+      return false;
+    }
+    text = j["choices"][0]["message"]["content"].str();
+    return true;
+  }
+
+  // Several files at once (2026-11-08): a user turn that brought two or more images and PDFs (web UI file parts) has
+  // them read in their order, each under "# File K / F: NAME" (a PDF's pages under "## Page N / M" in it), with the
+  // turn's words as the task of every one. False when the conversation's latest turn with files has fewer than two.
+  //   pages: at most 50 a request over all the files (an image is one), from where the answers so far stopped: a turn
+  //   of words alone ("lanjut") goes on after the last file / page with text; an answer that leaves pages ends with
+  //   "[OCR: N more page(s) ...]", which the web UI answers with "lanjut" by itself. Page words ("halaman 7") are not
+  //   read here: they name no file.
+  //   "ocr_save" {name, folder, append, per_file}: as ocr_pdf's. per_file false: one .md (name, default "<the first
+  //   file's name> and N more.md"), each file under "# NAME" in it; true: one .md per file, "<its name>.md" (name not
+  //   read), and append goes on with the file in progress, the one the last "added to F" note named.
+  bool ocr_batch(const HttpRequest& rq, const Json& body, HttpResponse& rs) {
+    const Json& msgs = body["messages"];
+    int last = -1;
+    for (int i = 0; i < (int)msgs.size(); ++i)
+      if (msgs[i]["role"].str() == "user") last = i;
+    if (last < 0) return false;
+    int at = -1;  // (the latest user turn that brought anything but words)
+    for (int i = last; i >= 0 && at < 0; --i) {
+      if (msgs[i]["role"].str() != "user") continue;
+      for (const Json& p : msgs[i]["content"].items())
+        if (p["type"].str() != "text" && p["type"].str() != "input_text") at = i;
+    }
+    if (at < 0) return false;
+    struct Item {
+      files::Info info;
+      bool pdf = false;
+      pdfr::Pdf doc;
+      int pages = 1;
+      std::string err;  // (a PDF that cannot be read: one entry with why, the batch goes on)
+    };
+    std::vector<Item> items;
+    std::string refused;  // (a project's file this request may not read)
+    for (const Json& p : msgs[at]["content"].items()) {
+      Item it;
+      if (ocr_file(rq, body, p, it.info, refused) <= 0) continue;
+      const std::string ln = files::lower(it.info.name);
+      it.pdf = ln.size() > 4 && ln.rfind(".pdf") == ln.size() - 4;
+      if (!it.pdf && it.info.kind != "image") continue;  // (a file of another kind: not one this model reads)
+      items.push_back(std::move(it));
+    }
+    // (one file: ocr_pdf's or ocr_request's, but a project's image too here: it has no /files/ address for them)
+    const bool proj_image = items.size() == 1 && !items[0].pdf && items[0].info.id.rfind("project:", 0) == 0;
+    // (also a single file: said, not read as "a file that is no longer there"; only for the turn that brings it: a
+    //  later turn about something else is not refused for an old file of the chat)
+    if (!refused.empty()) {
+      if (at < last) return false;
+      rs.send(403, "application/json", "{\"error\":{\"message\":" + Json(refused).dump() + "}}");
+      return true;
+    }
+    if (items.size() < 2 && !proj_image) return false;
+    auto text_of = [](const Json& m) {
+      std::string w = m["content"].is_string() ? m["content"].str() : std::string();
+      for (const Json& p : m["content"].items())
+        if (p["type"].str() == "text" || p["type"].str() == "input_text") w += (w.empty() ? "" : "\n") + p["text"].str();
+      return w;
+    };
+    const std::string task = text_of(msgs[at]);
+    const int nf = (int)items.size();
+    for (Item& it : items) {
+      if (it.pdf) {
+        std::string bytes;
+        if (!files::Store::read(it.info.path, bytes) && !(files::store().get(it.info.id, it.info) && files::Store::read(it.info.path, bytes)))
+          it.err = "the file is gone";
+        else if (it.doc.open(bytes, it.err) && it.doc.pages() < 1) it.err = "no pages";
+        it.pages = it.err.empty() ? it.doc.pages() : 1;
+      }
+    }
+    // where to start: file fk (0-based), page fp
+    int fk = 0, fp = 1;
+    if (at < last) {
+      std::string s;
+      for (int i = at + 1; i < (int)msgs.size(); ++i)
+        if (msgs[i]["role"].str() == "assistant") s += "\n\n" + text_of(msgs[i]);
+      for (size_t a; (a = s.find("[OCR:")) != std::string::npos;) {  // (the notes are not a file's text)
+        const size_t b = s.find(']', a);
+        s.erase(a, b == std::string::npos ? std::string::npos : b - a + 1);
+      }
+      // (file number, its text up to the next file's heading). A heading is a whole line "# File K / F: " with F this
+      // batch's count: the model's own text ("## File menu", "# File 1 notes") is a file's text, not a heading
+      // (self audit 2026-11-08: such a line cut a file's pages short, and they were read again)
+      auto head_at = [&](size_t p, int& k) {
+        if (p != 0 && s[p - 1] != '\n') return false;
+        int f = 0, n = 0;
+        if (sscanf(s.c_str() + p, "# File %d / %d: %n", &k, &f, &n) != 2 || n == 0) return false;
+        return f == nf && k >= 1 && k <= nf;
+      };
+      auto next_head = [&](size_t from, int& k) {
+        for (size_t p = s.find("# File ", from); p != std::string::npos; p = s.find("# File ", p + 1))
+          if (head_at(p, k)) return p;
+        return std::string::npos;
+      };
+      std::vector<std::pair<int, std::string>> segs;
+      int hk = 0, hk2 = 0;
+      for (size_t p = next_head(0, hk); p != std::string::npos;) {
+        const size_t next = next_head(p + 7, hk2), eol = s.find('\n', p);
+        const size_t stop = next == std::string::npos ? s.size() : next;
+        segs.push_back({hk, eol == std::string::npos || eol > stop ? std::string() : s.substr(eol, stop - eol)});
+        p = next;
+        hk = hk2;
+      }
+      for (int i = (int)segs.size() - 1; i >= 0; --i) {
+        const auto& [k, body_] = segs[i];
+        if (k < 1 || k > nf || !ocr_has_text(body_)) continue;
+        const Item& it = items[k - 1];
+        const int done = it.pdf && it.err.empty() ? ocr_last_page(body_) : it.pages;
+        if (done >= it.pages) fk = k, fp = 1;
+        else fk = k - 1, fp = done + 1;
+        break;
+      }
+    }
+    const Json& sv = body["ocr_save"];
+    const bool saving = sv.as_bool(false) || sv.is_object(), per_file = sv["per_file"].as_bool(false);
+    OcrDirs dirs;
+    OcrMd md;  // (the .md written now: the merged one, or the file in progress's)
+    std::vector<std::string> made;  // (per file: the .md files this answer started)
+    if (saving) {
+      if (!ocr_dirs(rq, body, std::filesystem::path(items[0].info.path).parent_path(), dirs, rs)) return true;
+      if (!per_file) {
+        std::string name = sv["name"].str();
+        if (name.empty())
+          name = std::filesystem::path(items[0].info.name).stem().string() + " and " + std::to_string(nf - 1) + " more.md";
+        if (!ocr_md_make(dirs, ocr_md_name(name), sv["append"].as_bool(false), "", md, rs)) return true;
+      } else if (fk < nf) {
+        // the file in progress goes on in its .md: the name the last note gave, when it is that file's ("<its name>.md"
+        // or "<its name> (N).md"). An answer stopped by the user ends with no note, and the name the web UI still has
+        // is an earlier file's: then a new .md (self audit 2026-11-08: the pages went into the earlier file's .md)
+        const std::string want = files::lower(std::filesystem::path(items[fk].info.name).stem().string()),
+                          got = files::lower(ocr_md_name(sv["name"].str()));
+        bool its = got == want + ".md";
+        if (!its && got.size() > want.size() + 6 && got.compare(0, want.size() + 2, want + " (") == 0 && got.rfind(").md") == got.size() - 4) {
+          its = true;
+          for (size_t i = want.size() + 2; i < got.size() - 4; ++i) its = its && isdigit((unsigned char)got[i]);
+        }
+        const bool goes_on = fp > 1 && sv["append"].as_bool(false) && its;
+        // (begun here, before the stream: a folder that cannot be written is an HTTP error, not one inside the stream)
+        if (!ocr_md_make(dirs, goes_on ? ocr_md_name(sv["name"].str()) : ocr_md_name(std::filesystem::path(items[fk].info.name).stem().string() + ".md"),
+                         goes_on, goes_on ? "" : "# " + items[fk].info.name + "\n\n", md, rs))
+          return true;
+        if (!goes_on) made.push_back(md.md.filename().string());
+      }
+    }
+    const bool stream = body["stream"].as_bool(false);
+    const std::string id = "chatcmpl-arc" + std::to_string(++counter_);
+    const long long created = (long long)time(nullptr);
+    if (stream) rs.sse_begin();
+    std::string all;
+    bool gone = false;
+    auto emit = [&](const std::string& t) {
+      if (t.empty() || gone) return;
+      if (!stream) { all += t; return; }
+      Json d = Json::object();
+      d.set("content", t);
+      if (!rs.sse_event(chunk(id, created, d, Json()).dump())) gone = true;
+    };
+    fprintf(stderr, "OCR mode: %d files, from file %d page %d%s\n", nf, fk + 1, fp,
+            !saving ? "" : per_file ? ", one .md each" : (", saved to " + md.md.filename().string()).c_str());
+    OcrTally tally;
+    std::string failed;
+    int read = 0, k = fk, p = fp;  // (k, p: the next page to read)
+    bool any = false;              // (something emitted: the pieces after it start with a blank line)
+    if (fk >= nf) emit("[OCR: every file is read (" + std::to_string(nf) + ")]");
+    for (; k < nf && failed.empty() && !gone && !rs.client_gone(); ++k, p = 1) {
+      Item& it = items[k];
+      if (read >= kOcrMaxPages) break;
+      emit(std::string(any ? "\n\n" : "") + "# File " + std::to_string(k + 1) + " / " + std::to_string(nf) + ": " + it.info.name + "\n\n");
+      any = true;
+      if (saving && per_file && k > fk) {  // (each next file's .md; the first one's was made before the stream)
+        int code = 0;
+        std::string why;
+        if (!ocr_md_try(dirs, ocr_md_name(std::filesystem::path(it.info.name).stem().string() + ".md"), false,
+                        "# " + it.info.name + "\n\n", md, code, why)) {
+          md = OcrMd();  // (the note names no file that was not made)
+          failed = "file " + std::to_string(k + 1) + ": " + why;
+          emit("[" + failed + "]");
+          break;
+        }
+        made.push_back(md.md.filename().string());
+      } else if (saving && !per_file && p == 1) {
+        ocr_md_add(md, "# " + it.info.name + "\n\n");
+      }
+      if (!it.err.empty()) {
+        const std::string t = "[cannot read the PDF: " + it.err + "]";
+        emit(t);
+        ocr_md_add(md, t + "\n\n");
+        ++read;
+        continue;
+      }
+      for (; p <= it.pages && read < kOcrMaxPages && failed.empty() && !gone && !rs.client_gone(); ++p, ++read) {
+        std::string piece;
+        if (it.pdf) {
+          piece = std::string(p > (k == fk ? fp : 1) ? "\n\n" : "") + "## Page " + std::to_string(p) + " / " + std::to_string(it.pages) + "\n\n";
+          emit(piece);  // (the heading before the page is read: the web UI shows the page under way)
+        }
+        std::string text, err;
+        bool ok = false;
+        if (it.pdf) {
+          const std::string png = it.doc.render(p, 150, err);
+          if (png.empty()) text = "[the page could not be rendered: " + err + "]", ok = true;
+          else ok = ocr_image(rq, "data:image/png;base64," + apic::base64_encode(png), task, tally, text);
+        } else if (it.info.id.rfind("project:", 0) == 0) {  // (a project's file: its bytes, it has no /files/ address)
+          std::string bytes;
+          if (files::Store::read(it.info.path, bytes)) ok = ocr_image(rq, "data:image/png;base64," + apic::base64_encode(bytes), task, tally, text);
+          else text = "the file cannot be read";
+        } else {
+          ok = ocr_image(rq, "/files/" + it.info.id, task, tally, text);
+        }
+        if (!ok) {
+          failed = "file " + std::to_string(k + 1) + (it.pdf ? ", page " + std::to_string(p) : "") + ": " + text;
+          text = "[" + failed + "]";
+        }
+        emit(text);
+        ocr_md_add(md, (it.pdf ? "## Page " + std::to_string(p) + " / " + std::to_string(it.pages) + "\n\n" : "") + text + "\n\n");
+      }
+      if (p <= it.pages) break;  // (stopped inside this file: k, p is where the next turn starts)
+    }
+    if (gone) return true;
+    int left = 0, files_left = 0;  // (pages and files not read yet)
+    for (int i = k; i < nf; ++i) {
+      const int from = i == k ? p : 1;
+      if (from <= items[i].pages) left += items[i].pages - from + 1, ++files_left;
+    }
+    const std::string where = ocr_md_where(md);
+    std::string note;
+    if (!failed.empty()) {
+      note = "\n\n[OCR: stopped at " + failed + (where.empty() ? "" : "; the text before it is in " + where) + "]";
+    } else if (left > 0 && !rs.client_gone()) {
+      note = "\n\n[OCR: " + std::to_string(left) + " more page(s) in " + std::to_string(files_left) + " file(s); \"lanjut\" reads on from file " +
+             std::to_string(k + 1) + " / " + std::to_string(nf) + (items[k].pdf ? ", page " + std::to_string(p) : "") +
+             (where.empty() ? "" : ", added to " + where) + "]";
+    } else if (saving && fk < nf) {
+      if (!per_file) {
+        note = "\n\n[OCR: every file is read (" + std::to_string(nf) + "); saved to " + where + "]";
+      } else {
+        std::string names;
+        for (const std::string& m : made) names += (names.empty() ? "" : ", ") + m;
+        note = "\n\n[OCR: every file is read (" + std::to_string(nf) + "), each into a .md of its own; this answer's: " + names +
+               (dirs.in_chat ? " in this chat's files"
+                : " in " + dirs.dir.string() +
+                      (!dirs.proj_id.empty() ? " (in the project as project:" + dirs.proj_id + (dirs.proj_rel.empty() ? "" : "/" + dirs.proj_rel) + "/)"
+                       : dirs.chat.empty() ? "" : " and this chat's files")) + "]";
+      }
+    }
+    emit(note);
+    ocr_finish(rs, stream, id, created, all, tally);
     return true;
   }
   static bool ocr_model(const GgufFile& g, const std::string& id) {
@@ -358,16 +764,41 @@
   }
   // the highest "## Page N" an answer holds with its text after it (0: none). (A heading goes out before its page is
   // read: one stopped there has no text, and that page was skipped by the next "lanjut"; audit 2026-10-31)
+  // A heading is a whole line "## Page N / M" (the model's own "## Page 99" in a page's text is not one), and a page
+  // whose text is only the error it stopped at ("[page 7: ...]", "[file 2, page 7: ...]") is not read: the next
+  // "lanjut" reads it again (self audit 2026-11-08: both moved the start, pages were skipped)
   static int ocr_last_page(const std::string& s) {
+    auto head = [&](size_t p) {
+      int n = 0, m = 0;
+      return (p == 0 || s[p - 1] == '\n') && sscanf(s.c_str() + p, "## Page %d / %d", &n, &m) == 2 ? n : 0;
+    };
+    auto next_head = [&](size_t from) {
+      for (size_t p = s.find("## Page ", from); p != std::string::npos; p = s.find("## Page ", p + 1))
+        if (head(p) > 0) return p;
+      return std::string::npos;
+    };
     int best = 0;
-    for (size_t p = s.find("## Page "); p != std::string::npos; p = s.find("## Page ", p + 8)) {
-      const size_t eol = s.find('\n', p), next = s.find("## Page ", p + 8);
+    for (size_t p = next_head(0); p != std::string::npos;) {
+      const size_t eol = s.find('\n', p), next = next_head(p + 8);
       const size_t stop = next == std::string::npos || next < eol ? s.size() : next;  // (BUGS.md 11: no underflow)
       const std::string body = eol == std::string::npos ? std::string() : s.substr(eol, stop - eol);
-      if (body.find_first_not_of(" \r\n\t") != std::string::npos)  // (a kept note, see the web UI's ocrKept, counts)
-        best = std::max(best, atoi(s.c_str() + p + 8));
+      if (ocr_has_text(body)) best = std::max(best, head(p));  // (a kept note, see the web UI's ocrKept, counts)
+      p = next;
     }
     return best;
+  }
+  // text that is a page's or a file's: not blank, and not only the error the reading stopped at
+  static bool ocr_has_text(std::string body) {
+    for (size_t a; (a = body.find("[OCR:")) != std::string::npos;) {  // (the answer's own notes are no page's text)
+      const size_t b = body.find(']', a);
+      body.erase(a, b == std::string::npos ? std::string::npos : b - a + 1);
+    }
+    const size_t a = body.find_first_not_of(" \r\n\t");
+    if (a == std::string::npos) return false;
+    const size_t b = body.find_last_not_of(" \r\n\t");
+    const std::string t = body.substr(a, b - a + 1);
+    const bool error = t.back() == ']' && t.find('\n') == std::string::npos && (t.rfind("[page ", 0) == 0 || t.rfind("[file ", 0) == 0);
+    return !error;
   }
   // the model's task prompts (its README): name, prompt
   static const std::vector<std::pair<std::string, std::string>>& ocr_tasks() {

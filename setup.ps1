@@ -290,6 +290,16 @@ else {
   if ($code -ne 0) { $out | ForEach-Object { Write-Host "        $_" }; Bad "connecting Pi failed" }
   $out | Where-Object { $_.Trim() } | ForEach-Object { Ok $_ }
 }
+# arc-server without Pi: this folder's arc-server.cmd, on the user's PATH when they agree (Pi's own bin folder already
+# has an arc-server.cmd)
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$onPath = @("$userPath;$env:Path" -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ieq $root.TrimEnd('\') }).Count -gt 0
+if (-not ($hasPi -and -not $NoPi) -and -not $onPath -and (Test-Path (Join-Path $root "arc-server.cmd"))) {
+  if (Ask "Add $root to your PATH, so 'arc-server' works in every new terminal?") {
+    [Environment]::SetEnvironmentVariable("Path", $(if ($userPath) { $userPath.TrimEnd(';') + ";$root" } else { $root }), "User")
+    Ok "arc-server added to PATH (new terminals; remove it in Settings > System > About > Advanced > Environment Variables)"
+  } else { Ok "arc-server: run it as $root\arc-server.cmd" }
+} elseif ($onPath) { Ok "arc-server: $root is on PATH" }
 
 # ---------------------------------------------------------------- 6. regression tests
 Head 6 "Regression tests"

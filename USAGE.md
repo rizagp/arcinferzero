@@ -103,30 +103,60 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
 - the server option fields: the main ones are shown directly (context, MTP drafts, thinking budget, prompt cache,
   access from other computers); the rest (port, chunk, image tokens, W8 weights, cache folders and sizes,
   `--no-swap`, f32 attention) appear after ticking "Show advanced options";
-- monitoring of the running server: model, filled context, GPU memory per part (weights, context, MTP, buffers,
-  encoders), number of requests, the last prompt and answer speed, the percentage of MTP drafts accepted;
-- Start / Stop, refresh, the web UI and the log;
-- **Speech only**: the server with Qwen3-ASR and no chat model (`arc-server start -Model none`; Whisper too when
-  the Speech field says `auto`), for transcripts. Pick a model in the web UI later and the first chat loads it.
+- under the context field, **GPU memory**: whether the options as set fit (green) or may not (red): the model's
+  weights, buffers and encoders plus the context asked (per conversation slot) plus speech to text, against the GPU
+  memory less the driver's share. An estimate (the same as `arc-server start ... -DryRun`); with `auto` the server
+  makes it fit itself;
+- three tabs: **Running server** (model, filled context, a GPU memory bar and the memory per part, number of
+  requests, the last prompt and answer speed, the share of MTP drafts accepted, the `serverz.exe` command line),
+  **Selected model**, and **Log** (the server's log, live, with Copy);
+- Start / Stop, Get models and the web UI; the rest is in **More**: speech to text only, Copy the start command, Set as
+  default, Reset options, Refresh the model list, Record a meeting, the log and data folders, a doctor report, and
+  the update check;
+- **Speech to text only** (More): the server with Qwen3-ASR and no chat model (`arc-server start -Model none`;
+  Whisper too when the Speech field says `auto`), for transcripts. Pick a model in the web UI later and the first chat
+  loads it.
 
 All fields are filled in automatically with the best values for the selected model (what the server picks itself),
 so just choose a model and press Start. Fields you change turn yellow and only those are sent to the server. "Set
 as default" saves the changed fields (`%USERPROFILE%\.arcinferzero\launcher.json`) and makes the selected model the
 default one (also for `pi-arc` without a model name); "Reset options" goes back to the best values. The Start / Stop
-buttons use `arc-server`, so the server keeps running after the window is closed. "Copy command" puts the
+buttons use `arc-server`, so the server keeps running after the window is closed. "Copy the start command" puts the
 command that starts the server that way (the selected model, the options as set) on the clipboard, for a script
 or shortcut of your own (`powershell -NoProfile -ExecutionPolicy Bypass -File "...\scripts\arc-server.ps1" start
--Model ...`); the "Running server" panel and `arc-server status` show the `serverz.exe` command line it ran. (The window text is in English:
+-Model ...`); the "Running server" tab and `arc-server status` show the `serverz.exe` command line it ran. (The window text is in English:
 prompt cache = saved conversations, prefix cache = saved system prompt.) The same numbers come from
 `serverz.exe --list-models` ("memory", "defaults") and the server's `/props` ("memory", "stats").
+
+**Presets.** The Preset row at the top of the options keeps named sets: choose the model and the options, then "Save
+as...". Picking a preset selects its model and fills in its options; Delete removes it. They are files in
+`%USERPROFILE%\.arcinferzero\presets\<name>.json`, written with `arc-server`'s own option names (`{"Model": "35b",
+"Ctx": "65536", "Npu": "on"}`), so `arc-server start -Preset <name>` starts the same from a terminal or a script.
+
+**Messages, tray, updates.** Errors and notices appear in a bar under the title (with "Copy details" and, for a
+failed start, "Show log") instead of boxes that stop the window. Minimized, the window waits in the tray (right-click:
+Start the default model, Stop, the web UI). Once a day the window asks GitHub whether a newer package is out and then
+shows a link; nothing is downloaded by itself (More > "Check for updates when the window opens" turns it off). The
+window follows Windows' light or dark mode and accent colour (`-Theme light|dark` overrides it).
 
 The thinking budget in the launcher only applies to clients that do not send their own budget (web UI, other
 apps). Pi sends its own budget according to its `/thinking` level (section 2).
 
-**Through the terminal:**
+**Through the terminal:** `arc-server` is installed with Pi (`~\.pi\agent\bin`); without Pi it is `arc-server.cmd`
+in the arcinferzero folder, which setup offers to put on your PATH.
 
 ```powershell
+arc-server list                # the models on this PC: id, shortcut, size, auto context, MTP, images
+arc-server pull 4b             # download a model of the catalog (pull alone lists them: 4b 9b 35b 27b g12 g31 e4b asr whisper)
 arc-server status              # whether the server is running, which model is loaded, size of the conversation cache
+arc-server status -Json        # the same as JSON, for scripts (also list, presets, doctor, version)
+arc-server logs -Follow        # the server's log, new lines as they come (Ctrl+C ends it)
+arc-server doctor              # checks the exes, driver, GPU, NPU, disk, port and other GPU programs: paste it into an issue
+arc-server version -Check      # this package's version, and whether a newer one is out
+arc-server start -Model 27b -Ctx 65536 -DryRun   # check the options, print the serverz.exe command and the memory estimate
+arc-server save-preset -Preset long -Model 27b -Ctx 65536 -Npu on   # save options under a name
+arc-server start -Preset long  # start with them (an option given here wins over the preset's)
+arc-server start -Model 27b -Drafter off   # speculative decoding: auto, mtp, dflash, off, or a DFlash2 folder
 arc-server stop                # stop the server and free the GPU memory (12–16 GB depending on the model)
 arc-server clear-cache         # delete every saved conversation (session cache; on by default, turn off with pi-arc --session-cache 0)
 arc-server start -Model 9b     # start with a particular model without opening Pi
@@ -134,10 +164,12 @@ arc-server start -Model 27b -Ctx 32768 -NoMtp
 arc-server start -Model 27b -Ctx auto   # back to the automatic context (restarts a server with a fixed context)
 arc-server restart             # restart, for example after the GPU memory setting was changed
 arc-server start -Model 35b -MtpDrafts 2 -ThinkBudget 4096 -NoSwap   # other options (see arc-server help)
-arc-server help                # every option
+arc-server help                # the common commands and options; help options / writing / errors / all for the rest
 ```
 
-The server log is `%USERPROFILE%\.arcinferzero\server.log`. The server uses port 8090.
+The server log is `%USERPROFILE%\.arcinferzero\server.log`. The server uses port 8090. For scripts, `arc-server`'s
+exit code says what happened: 0 ok, 1 a wrong option or value, 2 the server stopped while loading, 3 not ready within
+10 minutes, 4 the port is used by another program.
 
 **Writing the options** (`arc-server help` and `pi-arc --help-all` have the full list, under WRITING OPTIONS and
 WHEN IT FAILS):
@@ -356,6 +388,24 @@ While the server is running:
   never written over (`name (2).md` then). Saved, the chat shows only a bar of the pages done and keeps a note of the
   file, not the pages; switch to a chat model in the same chat (Files on) and it reads the file with `read_file`. A
   folder of your own gets a copy in the chat's files too, for that. Not saved, the chat shows every page.
+
+  **Many files at once:** pick several images and PDFs (the paperclip button takes many, or drop them) and send
+  them in one message. They are read one after another, in the order attached, each under `# File K / F: name`
+  (a PDF's pages under `## Page N / M`), all with the task your words name. The web UI asks how to save them:
+  - **one merged Markdown** (the name you give; `<first file> and N more.md`): every file under its own `# name`
+    heading;
+  - **one Markdown per file**: `<file's name>.md` each, with `# name` on top;
+  - or **just show it**.
+
+  The rules of a single PDF hold: an existing file is never written over (`name (2).md`), at most 50 pages a turn
+  over all the files (an image counts as one), and "lanjut" goes on from the file and page where the last turn
+  stopped, by itself until the last file. Page words (`halaman 51-100`) are not read for several files.
+
+  **Files already in a project's folder:** in a project's chat with the OCR model loaded, the folder button next to
+  the paperclip lists the project's PDFs and images (subfolders too). Tick several, or **All**, and send: they are
+  read where they are, not uploaded again. The `.md` files go into the project's `ocr` folder by default (another
+  folder works too), so every chat of the project and any model finds them (`list_files` with scope `project`).
+  Only this computer and the server's own page can do this, and only with the chat's own project.
 
   The text keeps the image's language. For questions about a document, use Qwen3.5 4B / 9B or Gemma 4 instead
   ([tools/server_ocr.h](tools/server_ocr.h)).

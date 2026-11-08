@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-11-09: launcher and CLI, stages 0 and 1 of docs/launcher-research.md
+
+- **Launcher, look:** follows Windows' light / dark mode and accent colour; Segoe UI Variable; on Windows 11 a dark
+  or light title bar, rounded corners and Mica behind the title bar (`DwmSetWindowAttribute`); sharp at 125-200 %
+  scaling (DPI-aware, sizes scaled). Main actions in one row (Start, Stop, Get models), the rest under **More**; the
+  running server, the selected model and the **Log** (live) as tabs; a GPU memory bar.
+- **Launcher, behaviour:** the server state is read by a background runspace, so a busy or hung server no longer
+  freezes the window; errors and notices go to a bar under the title ("Copy details", "Show log") instead of boxes, and
+  an error in a WinForms event too (GitHub #5: boxes repeated under the ticking timer); a failed start says what its
+  exit code means.
+- **Launcher, new:** whether the options fit the GPU memory, under the context field; **presets** (save, pick, delete;
+  the same files `arc-server start -Preset` reads); a **tray icon** (on / off, Start the default model, Stop, web UI;
+  minimized, the window waits there); a **doctor report** with Copy; an **update check** once a day against the latest
+  GitHub release (a link only; off in More).
+- **No terminal window next to the launcher:** `arc-launcher.cmd` runs PowerShell in `conhost --headless`; with Windows
+  Terminal as the default terminal, `-WindowStyle Hidden` still opened one (GitHub #5).
+- **`arc-server`, new commands:** `list`, `logs [-Follow]`, `doctor`, `version [-Check]`, `pull <keys>`, `presets`,
+  `save-preset -Preset <name>`; `-Json` on `status`, `list`, `doctor`, `version`, `presets`.
+- **`arc-server start`, new options:** `-Preset <name>` (the command line wins), `-DryRun` (checks everything, prints
+  the `serverz.exe` command and a GPU memory estimate, starts nothing), `-Drafter auto|mtp|dflash|off|<folder>` (one
+  name for `-NoMtp`, `-DFlash` and the `-nodf` / `-df` ids). A start whose estimate does not fit prints a warning.
+- **Exit codes:** 1 a wrong option, 2 the server stopped while loading, 3 not ready within 10 minutes, 4 the port is
+  used by another program (checked before the server starts).
+- **`arc-server help`** is a short page now; `help options`, `help writing`, `help errors`, `help all` show the rest.
+- **`arc-server.cmd` in the package root**, so the command works without Pi; setup offers to put the folder on PATH
+  when Pi is not installed.
+- Checked: both scripts parse on PowerShell 5.1 and 7; every new command run on both (the dry runs, presets, `-Drafter`,
+  exit 4 with a port held by another program); the launcher's `-SelfTest` (opens, lists 26 models, loads a preset,
+  saves a picture, closes) on 5.1 and 7, light and dark. No server was started for these checks (other sessions'
+  servers were running).
+
 ## 2026-11-08: the launcher's start command (issue #6); self-audit of ARC_BATCH / ARC_XALL
 
 - **Launcher, "Copy command" (GitHub issue #6):** copies the command that starts the server the way Start would,
@@ -15,6 +46,38 @@
   it ends), counts the MTP layer (n_layer + 1 layers), and drops to the usual path after a shrink(); the recorded
   lists and their events live as long as the process (no growth on model switches); the server's engine lock keeps
   Whisper and the chat model from recording at the same time.
+
+## 2026-11-08: batch OCR: many images and PDFs into Markdown at once
+
+- **Several images and PDFs in one message** to an OCR model (Xiaomi-OCR-0) are read one after another, in their
+  order, each under `# File K / F: name`, a PDF's pages under `## Page N / M` (`ocr_batch`, `tools/server_ocr.h`).
+  Before, two images went into one prompt together, and of a PDF with other files only the PDF was read.
+- **Saving (`ocr_save` gets `per_file`):** one merged `.md` with every file under its own `# name` heading, or one
+  `.md` per file named after it. The web UI asks with a dialog when 2+ such files are sent: one Markdown per file,
+  one merged Markdown, or just show it, and a folder.
+- The single PDF's rules hold: no existing file is written over (`name (2).md`), 50 pages a request over all the
+  files (an image is one), and "lanjut" goes on from the last file and page with text. The bar shows the file and
+  page under way.
+- **OCR from a project's folder, no upload:** file parts `project:<id>/<path>` are read in place (`ocr_file`), with
+  read_file's rule: only the chat's own project (`project_id`, which the web UI now sends in OCR mode), from this
+  computer and the server's own page. A project's chat saves its `.md` into the project's `ocr` folder by default
+  (made when needed; the `name (2).md` rule holds), with no copy in the chat's files: every chat of the project lists
+  it. A folder named inside the project is treated the same. The web UI's new folder button next to the paperclip
+  (an OCR model in a project's chat) lists the project's PDFs and images, subfolders too, to tick several or all.
+  A chat model later in the same chat sees such a part as a pointer to `read_file`.
+- **Self audit fixes** (single PDF too, where the cause was older):
+  - A heading is a whole line `# File K / F: ` / `## Page N / M`. Before, the model's own "## File menu" or
+    "## Page 9" in a page's text moved the place "lanjut" starts from, so pages were read twice or skipped.
+  - A page or file that failed is read again by the next "lanjut". Before, its error counted as its text; the web
+    UI's kept note now names the page before it.
+  - Per-file saving makes the first `.md` before the stream begins, so a folder that cannot be written is an HTTP
+    error. A later file's error stops the answer with a note.
+  - "lanjut" after Stop appends only to a `.md` named after the file in progress, never into an earlier file's.
+  - A refused project file stops only its own turn, not every later turn of the chat.
+  - The project's `ocr` folder is made only when the `.md` goes there.
+- `ocr_pdf`'s file handling is now shared helpers (names, folder check, a new `.md`, appending, one image read);
+  its output is the same. A save error (bad folder, every name taken) now comes before the stream begins, as a
+  proper HTTP error.
 
 ## 2026-11-08: generation switches for the B60: recorded command lists (`ARC_BATCH`), MoE tokens without host waits (`ARC_XALL`)
 

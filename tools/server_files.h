@@ -1161,6 +1161,12 @@ inline Json expand_files(const Json& messages, bool tools = false, int ctx = 0) 
       Info i;
       std::string data;
       Json t = Json::object();
+      if (id.rfind("project:", 0) == 0) {  // (a project's file an OCR model read where it is: where it is, for read_file)
+        t.set("type", "text");
+        t.set("text", "[a file in the chat's project: " + id + " (read it with read_file {\"file_id\": \"" + id + "\"})]");
+        parts.push(t);
+        continue;
+      }
       if (is_virtual(id)) {  // (a chat or a transcript, attached with @: as a document)
         VirtualDoc v;
         t.set("type", "text");

@@ -57,15 +57,18 @@ function Show-GetModels([bool]$first) {
 
   $d = New-Object System.Windows.Forms.Form
   $d.Text = $(if ($first) { "Welcome to arcinferzero: get a model" } else { "Get models" })
-  $d.Size = New-Object System.Drawing.Size(760, 560)
+  $d.AutoScaleMode = "None"
+  $d.Size = New-Object System.Drawing.Size((S 760), (S 560))
   $d.StartPosition = "CenterParent"
   $d.Font = $form.Font
+  $d.BackColor = $Pal.bg; $d.ForeColor = $Pal.text
+  Set-WindowStyle $d  # (the launcher's Windows 11 title bar, corners and dark mode)
   $d.FormBorderStyle = "FixedDialog"; $d.MaximizeBox = $false; $d.MinimizeBox = $false
   $p = New-Object System.Windows.Forms.FlowLayoutPanel
   $p.Dock = "Fill"; $p.FlowDirection = "TopDown"; $p.WrapContents = $false; $p.AutoScroll = $true
   $p.Padding = New-Object System.Windows.Forms.Padding(14, 10, 14, 10)
   $intro = New-Object System.Windows.Forms.Label
-  $intro.AutoSize = $true; $intro.MaximumSize = New-Object System.Drawing.Size(700, 0)
+  $intro.AutoSize = $true; $intro.MaximumSize = New-Object System.Drawing.Size((S 700), 0)
   $intro.Text = $(if ($first) { "arcinferzero runs AI models on this laptop's own GPU: nothing goes to the internet. First it needs a model. " } else { "" }) +
     "This laptop has $ramGb GB of RAM; the model that suits it is ticked. Free disk space: " +
     $(if ($drive) { "{0:N0} GB" -f ($drive.Free / 1GB) } else { "?" }) + ". You can add more models later (Get models)."
@@ -74,7 +77,7 @@ function Show-GetModels([bool]$first) {
   foreach ($m in $chat) {
     $have = Test-ArcModel $m $hub
     $rb = New-Object System.Windows.Forms.RadioButton
-    $rb.AutoSize = $true; $rb.MaximumSize = New-Object System.Drawing.Size(700, 0)
+    $rb.AutoSize = $true; $rb.MaximumSize = New-Object System.Drawing.Size((S 700), 0)
     $rb.Margin = New-Object System.Windows.Forms.Padding(3, 8, 3, 0)
     $tooBig = $ramGb -lt $m.ram - 2
     $rb.Text = "{0}  ({1:N1} GB{2})`n      {3}{4}" -f ($m.name -replace ' \(.*$', ''), $m.gb, $(if ($have) { ", already here" } else { "" }), $m.plain,
@@ -85,7 +88,7 @@ function Show-GetModels([bool]$first) {
     $p.Controls.Add($rb); $radios += $rb
   }
   $sp = New-Object System.Windows.Forms.CheckBox
-  $sp.AutoSize = $true; $sp.MaximumSize = New-Object System.Drawing.Size(700, 0); $sp.Margin = New-Object System.Windows.Forms.Padding(3, 14, 3, 0)
+  $sp.AutoSize = $true; $sp.MaximumSize = New-Object System.Drawing.Size((S 700), 0); $sp.Margin = New-Object System.Windows.Forms.Padding(3, 14, 3, 0)
   $spGb = ($speech | Measure-Object gb -Sum).Sum
   $sp.Text = "Also speech to text ({0:N1} GB): transcripts of recordings and meetings, voice messages (Qwen3-ASR and Whisper)" -f $spGb
   $sp.Checked = -not $first -and $false
@@ -96,16 +99,15 @@ function Show-GetModels([bool]$first) {
   $sc.Visible = $sc.Checked
   $p.Controls.Add($sc)
   $bar = New-Object System.Windows.Forms.ProgressBar
-  $bar.Width = 700; $bar.Height = 18; $bar.Margin = New-Object System.Windows.Forms.Padding(3, 16, 3, 0); $bar.Visible = $false
+  $bar.Width = S 700; $bar.Height = S 18; $bar.Margin = New-Object System.Windows.Forms.Padding(3, 16, 3, 0); $bar.Visible = $false
   $p.Controls.Add($bar)
   $info = New-Object System.Windows.Forms.Label
-  $info.AutoSize = $true; $info.MaximumSize = New-Object System.Drawing.Size(700, 0); $info.ForeColor = [System.Drawing.Color]::DimGray
+  $info.AutoSize = $true; $info.MaximumSize = New-Object System.Drawing.Size((S 700), 0); $info.ForeColor = $Pal.sub
   $p.Controls.Add($info)
   $btns = New-Object System.Windows.Forms.FlowLayoutPanel
-  $btns.Dock = "Bottom"; $btns.Height = 44; $btns.FlowDirection = "RightToLeft"; $btns.Padding = New-Object System.Windows.Forms.Padding(8)
-  $go = New-Object System.Windows.Forms.Button; $go.Text = "Download and start"; $go.Width = 160
-  $go.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-  $close = New-Object System.Windows.Forms.Button; $close.Text = $(if ($first) { "Later" } else { "Close" }); $close.Width = 100
+  $btns.Dock = "Bottom"; $btns.Height = S 48; $btns.FlowDirection = "RightToLeft"; $btns.Padding = New-Object System.Windows.Forms.Padding(8)
+  $go = New-Button "Download and start" 160 -Primary
+  $close = New-Button $(if ($first) { "Later" } else { "Close" }) 100
   $btns.Controls.AddRange(@($go, $close))
   $d.Controls.Add($p); $d.Controls.Add($btns)
   $d.AcceptButton = $go
@@ -210,9 +212,8 @@ function After-List {
 
 # ---- buttons: Get models, and the web UI opened once a start ends well
 $getBtn = New-Button "Get models" 110
-$getBtn.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
 $buttons.Controls.Add($getBtn)
-$buttons.Controls.SetChildIndex($getBtn, 0)
+$buttons.Controls.SetChildIndex($getBtn, 2)  # (after Start and Stop)
 $getBtn.Add_Click({ Show-GetModels $false })
 $openWebChk = New-Check "Open the web UI when started"
 $openWebChk.Checked = $true

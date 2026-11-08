@@ -21,11 +21,18 @@
 #                                     record-status
 #   arc-server start -Whisper auto    also speech to text (Qwen3-ASR by default, Whisper, Gemma 4 E4B): the web UI's
 #                                     Transcripts / Meetings tabs, voice messages, /v1/audio/transcriptions
+#   arc-server start ... -DryRun      check the options, print the server's command line and a GPU memory estimate
+#   arc-server start -Preset work     the options saved with save-preset -Preset work (the command line wins)
+#   arc-server list | logs | doctor | version [-Check] | pull <keys> | presets | save-preset   (help: arc-server help)
+#
+# Exit codes: 0 ok, 1 a wrong option or value (the message says which), 2 the server stopped while loading,
+# 3 not ready within 10 minutes, 4 the port is used by another program.
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
 # Log: %USERPROFILE%\.arcinferzero\server.log
 param(
-  [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "help", "--help", "-h")] [string]$Action = "start",
+  [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
+    "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "help", "--help", "-h")] [string]$Action = "start",
   [string]$Model = "",
   [string]$Ctx = "",
   [int]$Chunk = 0,
@@ -62,7 +69,15 @@ param(
   [string]$App = "",
   [switch]$NoMic,
   [string]$Title = "",
-  [switch]$Quiet
+  [switch]$Quiet,
+  # (added last: the positions of the options above stay as they were)
+  [string]$Preset = "",   # start / restart: the options of a saved preset; save-preset: its name
+  [switch]$DryRun,        # start / restart: print the command and the memory estimate, start nothing
+  [switch]$Json,          # status, list, doctor, version, presets, -DryRun: JSON for scripts
+  [switch]$Follow,        # logs: keep printing new lines
+  [int]$Lines = 40,       # logs: how many lines
+  [switch]$Check,         # version: ask GitHub whether a newer package is out
+  [string]$Drafter = ""   # auto | mtp | dflash | off | <DFlash2 folder>
 )
 $ErrorActionPreference = "Stop"
 # (an option this script does not have went to $args and was ignored: "-Whispr on" started the server without
@@ -85,6 +100,48 @@ if ($args.Count) {
   $hint = if ($best -and (Edit-Distance $key ($best.ToLower() -replace '-', '')) -le 3) { ": did you mean -$($best)?" } else { "" }
   $what = if ($bad -like "-*") { "unknown option $bad" } else { "'$bad' is a value without an option before it (a path with spaces goes in quotes)" }
   throw "arc-server: $what$hint (arc-server help lists the options)"
+}
+$root = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot "app-dir.ps1")
+$stateDir = Get-AppDir  # (%USERPROFILE%\.arcinferzero; renamed from arcinfer once)
+New-Item -ItemType Directory -Force $stateDir | Out-Null
+
+# ---- presets: %USERPROFILE%\.arcinferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
+# arc-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;
+# an option given on the command line wins over the preset's.
+$presetDir = Join-Path $stateDir "presets"
+$presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Npu", "Precise",
+  "NoPrecise", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
+  "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
+function Preset-Path([string]$n) {
+  $n = "$n".Trim()
+  if ($n -notmatch '^[\w][\w .-]{0,63}$') { throw "-Preset: a name of letters, digits, spaces, dots and dashes (got '$n')" }
+  return Join-Path $presetDir "$n.json"
+}
+if ($Preset -and $Action -in "start", "restart") {
+  $pp = Preset-Path $Preset
+  if (-not (Test-Path -LiteralPath $pp)) { throw "-Preset: no preset '$Preset' ($pp); arc-server presets lists them" }
+  try { $po = Get-Content -LiteralPath $pp -Raw | ConvertFrom-Json } catch { throw "preset '$Preset' ($pp) is not valid JSON: $($_.Exception.Message)" }
+  foreach ($p in $po.PSObject.Properties) {
+    $k = @($presetKeys | Where-Object { $_ -eq $p.Name })[0]  # (the script's spelling: -eq ignores case)
+    if (-not $k) { throw "preset '$Preset': unknown option '$($p.Name)' ($pp)" }
+    if ($PSBoundParameters.ContainsKey($k)) { continue }  # (the command line wins)
+    $v = $p.Value
+    if ((Get-Variable $k).Value -is [switch]) { $v = [switch][bool]$v }
+    Set-Variable -Name $k -Value $v  # (the parameter's type converts it: "4096" for -Chunk becomes 4096)
+    $PSBoundParameters[$k] = $v      # (counts as given: a running server with other options is restarted)
+  }
+}
+# -Drafter auto|mtp|dflash|off|<folder>: one name for the drafters. off = -NoMtp, a folder = -DFlash <folder>; mtp /
+# dflash / auto pick the model's variant below (the -nodf / -df / plain ids)
+$drafterPick = ""
+if ($Drafter) {
+  $l = $Drafter.Trim().ToLower()
+  if ($l -in "off", "no", "none", "0", "false") { $NoMtp = [switch]$true }
+  elseif ($l -in "auto", "mtp", "dflash", "on") { $drafterPick = $(if ($l -eq "on") { "auto" } else { $l }) }
+  elseif (Test-Path -LiteralPath $Drafter.Trim().Trim('"') -PathType Container) { $DFlash = $Drafter.Trim().Trim('"'); $PSBoundParameters["DFlash"] = $DFlash }
+  else { throw "-Drafter: expected auto, mtp, dflash, off or a DFlash2 drafter's folder (got '$Drafter')" }
 }
 # on / off options: on, yes, true, 1 / off, no, false, 0 (any case); a wrong value says what is expected
 function Switch-Value([string]$name, [string]$v, [string[]]$more = @()) {
@@ -126,10 +183,6 @@ $Asr = Speech-Value "Asr" $Asr $false
 $Ctx = "$Ctx".Trim().ToLower()
 if ($Ctx -eq "0") { $Ctx = "" }
 if ($Ctx -and $Ctx -ne "auto" -and $Ctx -notmatch '^\d+$') { throw "-Ctx: a number of tokens or auto (got '$Ctx')" }
-$root = Split-Path $PSScriptRoot -Parent
-. (Join-Path $PSScriptRoot "app-dir.ps1")
-$stateDir = Get-AppDir  # (%USERPROFILE%\.arcinferzero; renamed from arcinfer once)
-New-Item -ItemType Directory -Force $stateDir | Out-Null
 # the engine: arcinferzero (Level Zero); -NoStream keeps every expert on the GPU
 $Engine = if ($NoStream) { "zero-nostream" } else { "zero" }
 # ($moe: the model has routed experts, from serverz --list-models; only those keep their experts on the SSD)
@@ -250,7 +303,34 @@ function Pick-Model($models, $runningPath, $runningAlias) {
 }
 
 if ($Action -in "help", "--help", "-h") {
-  Write-Host @"
+  $short = @"
+arc-server: the arcinferzero server in the background (port $Port), for Pi, the web UI and other OpenAI-compatible
+clients. Options take one dash or two, any case.
+
+  arc-server start [-Model <shortcut|id|file>] [options]   start, or switch the model; waits until ready
+  arc-server restart [options]     restart with other options          arc-server stop      stop, free the GPU memory
+  arc-server status [-Json]        what runs, its command line         arc-server list      the models on this PC
+  arc-server logs [-Follow]        the server's log                    arc-server doctor    a check to paste into a bug report
+  arc-server version [-Check]      this package, and whether a newer one is out
+  arc-server pull <keys>           download models: 4b 9b 35b 27b g12 g31 e4b asr whisper (pull alone lists them)
+  arc-server presets               the saved presets;  save-preset -Preset <name> [options] saves one
+  arc-server clear-cache           delete saved conversations;  record / record-stop / record-status: meetings
+
+Common options for start / restart:
+  -Model 27b | 35b | 9b | 4b | g12 | e4b | g26 | flash | none    (arc-server list: every id and shortcut)
+  -Ctx <N|auto>      context in tokens (auto: the largest that fits)
+  -Preset <name>     the options of a saved preset (an option on the command line wins)
+  -Drafter auto|mtp|dflash|off|<folder>    speculative decoding: which drafter, or none
+  -Vision on|off     images / audio input (off: more context)
+  -Npu on|off        part of each prompt on the NPU (27B, Gemma 4 12B)
+  -Whisper auto|off  speech to text (Transcripts / Meetings tabs)
+  -Slots <N>         conversations at once          -ListenHost 0.0.0.0   reachable from other computers
+  -DryRun            check the options, print the server's command line and a GPU memory estimate; start nothing
+
+More: arc-server help options (every option) | help writing (values, paths) | help errors (what a message means)
+      | help all. Exit codes: 0 ok, 1 wrong option, 2 the server stopped while loading, 3 timeout, 4 port in use.
+"@
+  $full = @"
 arc-server: the arcinferzero server in the background (port $Port), for Pi and other OpenAI-compatible clients.
 Options take one dash or two, any case (-Whisper auto, --whisper auto); WRITING OPTIONS below says how to write
 values and paths, WHEN IT FAILS what an error means.
@@ -272,7 +352,19 @@ values and paths, WHEN IT FAILS what an error means.
   arc-server record-stop         end it: the server transcribes it (Me / Others) in the Meetings tab, now or
                                  at its next start
   arc-server record-status       whether a recording runs, and where
-  arc-server help                this text (also --help, -h)
+  arc-server list [-Json]        the models serverz.exe finds: id, shortcut, size, auto context, MTP, images
+                                 (also ls; -Json: serverz --list-models as it is)
+  arc-server logs [-Lines N] [-Follow]   the last N lines of the server's log (default 40); -Follow keeps
+                                 printing new ones (Ctrl+C ends it)
+  arc-server doctor [-Json]      checks the exes, the GPU driver, the NPU, memory and disk, the server and its
+                                 port, other serverz / runz processes: a report to paste into a GitHub issue
+  arc-server version [-Check]    this package's version and commit; -Check asks GitHub for the latest release
+  arc-server pull <key,key>      download models of the catalog into the Hugging Face cache (no Python):
+                                 4b 9b 35b 27b g12 g31 e4b asr whisper; pull alone lists them (also get)
+  arc-server presets [-Json]     the saved presets (%USERPROFILE%\.arcinferzero\presets\<name>.json)
+  arc-server save-preset -Preset <name> [options]   save the options given (the model too) as a preset;
+                                 start -Preset <name> uses them. Delete one: delete its .json file.
+  arc-server help [options|writing|errors|all]   help (also --help, -h)
 
 Options for start / restart:
   -Model <shortcut|text|path>    27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26; a variant with -mtp (MTP, no images),
@@ -282,6 +374,12 @@ Options for start / restart:
                                  Transcripts tab; a chat model loads later when a chat picks one.
                                  -nodf / -df (models with a DFlash2 drafter): the MTP block only / DFlash2 only.
                                  Without it: a numbered list of the models in the Hugging Face cache.
+  -Preset <name>                 the options saved with save-preset (options on the command line win)
+  -Drafter auto|mtp|dflash|off|<folder>   which drafter speculative decoding uses: auto (the model's best), mtp
+                                 (the MTP block or Gemma drafter only = the -nodf id), dflash (DFlash2 only = -df),
+                                 off (= -NoMtp), or a DFlash2 drafter's folder (= -DFlash <folder>)
+  -DryRun                        check everything, print the serverz.exe command line and a GPU memory estimate
+                                 (with -Json as JSON), and start or stop nothing
   -Ctx <N|auto>                  context in tokens, or auto = the largest that fits the GPU memory currently
                                  set, less 0.5 GiB for the driver (computed on the first start
                                  of a model, remembered, recomputed when the GPU memory changes). Not given:
@@ -396,12 +494,242 @@ its other options (bin\serverz.exe --help) keep their defaults.
 Log: $log
 Everything (Pi launcher, server options, files): pi-arc --help
 "@
+  # help <topic>: a part of the full text (its sections start at these lines)
+  $topic = "$Model".Trim().ToLower()
+  # (a heading at the start of its line: the first lines name WRITING OPTIONS and WHEN IT FAILS too)
+  $at = { param($s) $mt = [regex]::Match($full, '(?m)^' + [regex]::Escape($s)); if ($mt.Success) { $mt.Index } else { $full.Length } }
+  $iOpt = & $at "Options for start / restart:"; $iWr = & $at "WRITING OPTIONS"; $iErr = & $at "WHEN IT FAILS"; $iEnd = & $at "A window for all of this"
+  switch ($topic) {
+    "" { Write-Host $short }
+    { $_ -in "options", "option", "opts" } { Write-Host $full.Substring($iOpt, $iWr - $iOpt).TrimEnd() }
+    { $_ -in "writing", "paths", "values" } { Write-Host $full.Substring($iWr, $iErr - $iWr).TrimEnd() }
+    { $_ -in "errors", "error", "fails" } { Write-Host $full.Substring($iErr, $iEnd - $iErr).TrimEnd() }
+    { $_ -in "all", "full" } { Write-Host $full }
+    default { throw "arc-server help: topics are options, writing, errors, all (got '$topic')" }
+  }
   return
+}
+
+# ---- the commands that start nothing: list, logs, doctor, version, pull, presets, save-preset
+function Out-Json($o) { ConvertTo-Json -InputObject $o -Depth 8 }
+function Get-ModelsListed { @(& $exe --list-models | ConvertFrom-Json | ForEach-Object { $_ }) }  # (with the auto context)
+function Get-Version {
+  $pb = Join-Path $root "bin\PREBUILT.txt"
+  $v = [ordered]@{ version = ""; commit = ""; built = ""; prebuilt = (Test-Path $pb); folder = $root }
+  if ($v.prebuilt) {
+    $l = (Get-Content $pb -TotalCount 1).Trim()
+    if ($l -match '^arcinferzero (\S+) \(built ([^,]+), commit (\w+)\)') { $v.version = $Matches[1]; $v.built = $Matches[2]; $v.commit = $Matches[3] }
+  } else {
+    try {
+      $c = (& git -C $root rev-parse --short HEAD 2>$null)
+      if ($c) { $v.commit = "$c".Trim(); $v.version = "git " + $v.commit; $v.built = "built from source" }
+    } catch {}
+    if (-not $v.version) { $v.version = "unknown (no bin\PREBUILT.txt, no git)" }
+  }
+  $e = Join-Path $root "bin\serverz.exe"
+  $v.serverz = if (Test-Path $e) { (Get-Item $e).LastWriteTime.ToString("yyyy-MM-dd HH:mm") } else { "missing" }
+  return $v
+}
+# the latest release on GitHub against this package: up to date when its zip is this commit (or, in a git clone, an
+# ancestor of HEAD), newer when it came out after this package was built
+function Get-UpdateInfo($v) {
+  $r = Invoke-RestMethod "https://api.github.com/repos/rizagp/arcinferzero/releases/latest" -TimeoutSec 10 -Headers @{ "User-Agent" = "arcinferzero-arc-server" }
+  $names = @($r.assets | ForEach-Object { $_.name })
+  $relCommit = ""
+  foreach ($n in $names) { if ($n -match '-([0-9a-f]{7,})-win64\.zip$') { $relCommit = $Matches[1] } }
+  $newer = $true
+  if ($v.commit -and $relCommit -and ($relCommit.StartsWith($v.commit) -or $v.commit.StartsWith($relCommit))) { $newer = $false }
+  elseif (-not $v.prebuilt -and $relCommit) {
+    & git -C $root merge-base --is-ancestor $relCommit HEAD 2>$null
+    if ($LASTEXITCODE -eq 0) { $newer = $false }
+  } elseif ($v.built -match '^\d{4}-\d\d-\d\d') {
+    try { $newer = [datetime]$r.published_at -gt [datetime]$v.built.Substring(0, 10) } catch {}
+  }
+  return [ordered]@{ latest = $r.tag_name; published = $r.published_at; url = $r.html_url; commit = $relCommit; newer = $newer }
+}
+switch ($Action) {
+  { $_ -in "list", "ls" } {
+    if (-not (Test-Path $exe)) { throw "$exe not found: unpack the ready package from https://github.com/rizagp/arcinferzero/releases (or build it: setup.cmd)" }
+    $all = Get-ModelsListed
+    if ($Json) { Out-Json $all; return }
+    $run = Get-Running
+    $ok = @($all | Where-Object { $_.supported })
+    Write-Host ("{0,-38} {1,-12} {2,8} {3,12}  {4,-4} {5,-6} {6}" -f "id", "shortcut", "file", "auto ctx", "MTP", "images", "")
+    foreach ($m in $ok) {
+      Write-Host ("{0,-38} {1,-12} {2,8} {3,12}  {4,-4} {5,-6} {6}" -f $m.alias, $(if ($m.short) { $m.short } else { "-" }), ("{0:N1} GB" -f ($m.bytes / 1e9)),
+        $(if ($m.ctx) { "{0:N0}" -f $m.ctx } else { "-" }), $(if ($m.mtp) { "yes" } else { "-" }), $(if ($m.vision) { "yes" } else { "-" }),
+        $(if ($run -and $m.alias -eq $run) { "<- running" } else { "" }))
+    }
+    $skip = @($all | Where-Object { -not $_.supported })
+    if ($skip.Count) { Write-Host ("not supported: " + (($skip | ForEach-Object { "$($_.file) [$($_.arch)]" }) -join ", ")) }
+    Write-Host "$($ok.Count) models / variants. Start one: arc-server start -Model <id or shortcut>"
+    return
+  }
+  { $_ -in "logs", "log" } {
+    if (-not (Test-Path $log)) { Say "No log yet ($log): the server has not been started."; return }
+    if ($Follow) { Get-Content -LiteralPath $log -Tail ([math]::Max(1, $Lines)) -Wait }
+    else { Get-Content -LiteralPath $log -Tail ([math]::Max(1, $Lines)) }
+    return
+  }
+  { $_ -in "version", "--version" } {
+    $v = Get-Version
+    if ($Check) { try { $v.update = Get-UpdateInfo $v } catch { $v.update = [ordered]@{ error = $_.Exception.Message } } }
+    if ($Json) { Out-Json $v; return }
+    Write-Host "arcinferzero $($v.version)$(if ($v.commit -and $v.version -notmatch $v.commit) { ", commit $($v.commit)" })$(if ($v.built) { " ($($v.built))" })"
+    Write-Host "  folder: $($v.folder)   bin\serverz.exe: $($v.serverz)"
+    if ($v.update) {
+      if ($v.update.error) { Write-Host "  could not ask GitHub: $($v.update.error)" }
+      elseif ($v.update.newer) { Write-Host "  a newer package is out: $($v.update.latest) ($($v.update.published)): $($v.update.url)" -ForegroundColor Yellow }
+      else { Write-Host "  up to date (latest release $($v.update.latest))" }
+    }
+    return
+  }
+  { $_ -in "pull", "get" } {
+    . (Join-Path $PSScriptRoot "model-catalog.ps1")
+    $keys = @("$Model" -split '[\s,;]+' | Where-Object { $_ })
+    if (-not $keys.Count) {
+      $hub = Get-HfHub
+      Write-Host ("{0,-8} {1,7}  {2,-6} {3}" -f "key", "size", "", "model")
+      foreach ($m in $ArcModels) { Write-Host ("{0,-8} {1,7}  {2,-6} {3}" -f $m.key, ("{0:N1} GB" -f $m.gb), $(if (Test-ArcModel $m $hub) { "have" } else { "" }), $m.name) }
+      Write-Host "Download: arc-server pull <key> (several: pull 4b,asr). A cut download goes on where it stopped."
+      return
+    }
+    $bad = @($keys | Where-Object { $k = $_.ToLower(); -not ($ArcModels | Where-Object { $_.key -eq $k }) })
+    if ($bad.Count) { throw "pull: unknown model $($bad -join ', ') (the keys: $(($ArcModels | ForEach-Object { $_.key }) -join ', '))" }
+    & (Join-Path $PSScriptRoot "get-models.ps1") @keys
+    $rc = $LASTEXITCODE
+    if ($rc -ne 0) { Write-Host "pull: $rc model(s) not finished; run it again to go on where it stopped." -ForegroundColor Red; exit 1 }
+    Write-Host "Done. Start it: arc-server start -Model $($keys[0])"
+    return
+  }
+  "presets" {
+    $ps = @(Get-ChildItem -LiteralPath $presetDir -Filter *.json -ErrorAction SilentlyContinue | Sort-Object Name)
+    $out = [ordered]@{}
+    foreach ($f in $ps) { try { $out[$f.BaseName] = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { $out[$f.BaseName] = "not valid JSON" } }
+    if ($Json) { Out-Json $out; return }
+    if (-not $ps.Count) { Write-Host "No presets yet. Save one: arc-server save-preset -Preset <name> -Model 35b -Ctx 65536 ..."; return }
+    foreach ($k in $out.Keys) {
+      $o = $out[$k]
+      $t = if ($o -is [string]) { $o } else { ($o.PSObject.Properties | ForEach-Object { if ($_.Value -is [bool]) { if ($_.Value) { "-$($_.Name)" } } else { "-$($_.Name) $($_.Value)" } }) -join " " }
+      Write-Host ("  {0,-20} {1}" -f $k, $t)
+    }
+    Write-Host "Use one: arc-server start -Preset <name>   (folder: $presetDir)"
+    return
+  }
+  "save-preset" {
+    if (-not $Preset) { throw "save-preset: give its name: arc-server save-preset -Preset <name> -Model ... [options]" }
+    $pp = Preset-Path $Preset
+    $o = [ordered]@{}
+    foreach ($k in $presetKeys) {
+      if (-not $PSBoundParameters.ContainsKey($k)) { continue }
+      $v = $PSBoundParameters[$k]
+      if ($v -is [switch]) { $v = [bool]$v }
+      $o[$k] = $v
+    }
+    if (-not $o.Count) { throw "save-preset: no options given to save (e.g. -Model 35b -Ctx 65536 -Npu on)" }
+    New-Item -ItemType Directory -Force $presetDir | Out-Null
+    $existed = Test-Path -LiteralPath $pp
+    [IO.File]::WriteAllText($pp, (Out-Json $o))
+    Say "Preset '$Preset' $(if ($existed) { 'replaced' } else { 'saved' }): $pp"
+    Say "  start it: arc-server start -Preset `"$Preset`""
+    return
+  }
+  "doctor" {
+    $rep = New-Object System.Collections.Generic.List[object]
+    function Add-Check([string]$what, [string]$state, [string]$text) { $rep.Add([pscustomobject]@{ check = $what; state = $state; text = $text }) }
+    $v = Get-Version
+    Add-Check "package" "ok" "arcinferzero $($v.version)$(if ($v.commit) { ", commit $($v.commit)" }), folder $root"
+    try { $os = Get-CimInstance Win32_OperatingSystem; Add-Check "windows" "ok" "$($os.Caption) build $($os.BuildNumber), $([math]::Round($os.TotalVisibleMemorySize / 1MB)) GB RAM ($([math]::Round($os.FreePhysicalMemory / 1MB, 1)) GB free)" } catch {}
+    Add-Check "powershell" "ok" "$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+    foreach ($n in "serverz", "runz", "transcribez", "arc_recorder", "clinfo") {
+      $p = Join-Path $root "bin\$n.exe"
+      if (Test-Path $p) {
+        $blocked = $false
+        try { $blocked = [bool](Get-Item -LiteralPath $p -Stream Zone.Identifier -ErrorAction Stop) } catch {}
+        Add-Check "bin\$n.exe" $(if ($blocked) { "warn" } else { "ok" }) ("{0:yyyy-MM-dd HH:mm}" -f (Get-Item $p).LastWriteTime + $(if ($blocked) { " (marked as downloaded: run arc-launcher.cmd once, or Unblock-File)" } else { "" }))
+      } elseif ($n -in "serverz", "clinfo") {
+        Add-Check "bin\$n.exe" "FAIL" "missing: a copy from git has no exes; take the package from https://github.com/rizagp/arcinferzero/releases or run setup.cmd"
+      }
+    }
+    try {
+      $gpus = @(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "Intel" })
+      foreach ($g in $gpus) { Add-Check "gpu" "ok" "$($g.Name), driver $($g.DriverVersion) ($("{0:yyyy-MM-dd}" -f $g.DriverDate))" }
+      if (-not $gpus.Count) { Add-Check "gpu" "FAIL" "no Intel GPU in Windows' list of display adapters" }
+    } catch {}
+    $ci = Join-Path $root "bin\clinfo.exe"
+    if (Test-Path $ci) {
+      $co = @(& $ci 2>&1 | ForEach-Object { "$_" })
+      $devs = @($co | Where-Object { $_ -match '^\s+device: ' } | ForEach-Object { ($_ -replace '^\s+device: ', '').Trim() })
+      if ($LASTEXITCODE -eq 0 -and $devs.Count) {
+        $mem = @($co | Where-Object { $_ -match 'global mem: ([\d.]+ GiB)' } | ForEach-Object { $Matches[1] })
+        $xmx = @($co | Where-Object { $_ -match 'cl_intel_subgroup_matrix_multiply_accumulate\s+(\S+)' } | ForEach-Object { $Matches[1] })
+        $sg = @($co | Where-Object { $_ -match 'sub-group sizes: (.*)$' } | ForEach-Object { $Matches[1].Trim() })
+        for ($i = 0; $i -lt $devs.Count; $i++) {
+          Add-Check "opencl" "ok" ("{0}: GPU memory {1}, sub-groups {2}, XMX (DPAS) {3}" -f $devs[$i], $(if ($i -lt $mem.Count) { $mem[$i] } else { "?" }), $(if ($i -lt $sg.Count) { $sg[$i] } else { "?" }), $(if ($i -lt $xmx.Count -and $xmx[$i] -eq "yes") { "yes" } else { "no" }))
+        }
+      } else { Add-Check "opencl" "FAIL" "the GPU driver offers no OpenCL device: install Intel's graphics driver and restart" }
+    }
+    try {
+      # ("NPU" as a whole word: "Microsoft Input Configuration Device" holds it too)
+      # (not $npu: that is -Npu, a string, case-insensitively)
+      $npuDevs = @(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object { $_.Class -eq "ComputeAccelerator" -or "$($_.FriendlyName)" -match 'AI Boost|\bNPU\b' })
+      if ($npuDevs.Count) { foreach ($dev in $npuDevs) { Add-Check "npu" $(if ("$($dev.Status)" -eq "OK") { "ok" } else { "warn" }) "$($dev.FriendlyName): $($dev.Status)" } }
+      else { Add-Check "npu" "info" "none found (only -Npu on needs one)" }
+    } catch {}
+    try {
+      . (Join-Path $PSScriptRoot "model-catalog.ps1")
+      $hub = Get-HfHub
+      foreach ($dir in @($hub, $stateDir) | Select-Object -Unique) {
+        $q = (Split-Path $dir -Qualifier)
+        $dr = Get-PSDrive $q.TrimEnd(":") -ErrorAction SilentlyContinue
+        if ($dr) { Add-Check "disk" $(if ($dr.Free -lt 20GB) { "warn" } else { "ok" }) ("{0} ({1}): {2:N0} GB free" -f $dir, $q, ($dr.Free / 1GB)) }
+      }
+    } catch {}
+    try { $t = Join-Path $stateDir "doctor.tmp"; Set-Content $t "x"; Remove-Item $t; Add-Check "data folder" "ok" "$stateDir (writable)" } catch { Add-Check "data folder" "FAIL" "$stateDir is not writable: $($_.Exception.Message)" }
+    $run = Get-Running
+    if ($run) {
+      $pr = $null; try { $pr = Invoke-RestMethod "$base/props" -TimeoutSec 3 } catch {}
+      $mt = if ($pr -and $pr.memory) { ", GPU memory {0:N1} of {1:N1} GiB" -f ($pr.memory.total / 1GB), ($pr.memory.device / 1GB) } else { "" }
+      Add-Check "server" "ok" "running on $base, model $run$(if ($pr) { ", context $($pr.n_ctx)" })$mt"
+    } else {
+      Add-Check "server" "info" "not running on port $Port"
+      try {
+        $lis = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+        foreach ($c in $lis) { $pn = (Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue).ProcessName; Add-Check "port" "FAIL" "port $Port is used by $pn (pid $($c.OwningProcess)): stop it, or -Port <another>" }
+      } catch {}
+    }
+    $procs = @(Get-CimInstance Win32_Process -Filter "Name = 'serverz.exe' OR Name = 'runz.exe' OR Name = 'llama-server.exe' OR Name = 'ollama.exe'" -ErrorAction SilentlyContinue)
+    foreach ($p in $procs) { Add-Check "process" $(if ($p.Name -eq "serverz.exe") { "info" } else { "warn" }) "$($p.Name) pid $($p.ProcessId): $($p.CommandLine)" }
+    if ($procs.Count -gt 1) { Add-Check "process" "warn" "$($procs.Count) GPU programs run at once: they share the GPU memory (a cause of device-lost errors)" }
+    $onPath = [bool](Get-Command arc-server -ErrorAction SilentlyContinue)
+    Add-Check "commands" $(if ($onPath) { "ok" } else { "info" }) $(if ($onPath) { "arc-server is on PATH" } else { "arc-server is not on PATH: run it as $root\arc-server.cmd (setup offers to add the folder)" })
+    if (Test-Path $log) {
+      $errs = @(Get-Content -LiteralPath $log -Tail 400 -ErrorAction SilentlyContinue | Where-Object { $_ -match '(?i)error|device lost|failed|out of memory' } | Select-Object -Last 5)
+      foreach ($e in $errs) { Add-Check "log" "warn" $e }
+    }
+    if ($Json) { Out-Json $rep.ToArray(); return }  # (@($rep) on a List: "Argument types do not match" in PowerShell 5.1)
+    Write-Host "arcinferzero doctor ($(Get-Date -Format 'yyyy-MM-dd HH:mm')): paste this into a GitHub issue"
+    foreach ($r in $rep) {
+      $c = switch ($r.state) { "FAIL" { "Red" } "warn" { "Yellow" } default { "Gray" } }
+      Write-Host ("  {0,-5} {1,-14} {2}" -f $r.state, $r.check, $r.text) -ForegroundColor $c
+    }
+    if (@($rep | Where-Object { $_.state -eq "FAIL" }).Count) { exit 1 }
+    return
+  }
 }
 
 switch ($Action) {
   "status" {
     $id = Get-Running
+    if ($Json) {
+      $o = [ordered]@{ running = [bool]$id; base = $base; port = $Port; model = $id; props = $null; state = $null }
+      if ($id) { try { $o.props = Invoke-RestMethod "$base/props" -TimeoutSec 2 } catch {} }
+      if ($id -and (Test-Path $stateFile)) { try { $o.state = Get-Content $stateFile -Raw | ConvertFrom-Json } catch {} }
+      $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
+      $o.saved_conversations = [ordered]@{ count = $files.Count; bytes = [double](($files | Measure-Object Length -Sum).Sum); folder = $sessDir }
+      Out-Json $o
+      return
+    }
     if ($id) {
       $p = Invoke-RestMethod "$base/props" -TimeoutSec 2
       Say "arcinferzero server running on $base : model $id"
@@ -508,6 +836,13 @@ if (($Vision -eq "off" -and $m.vision) -or ($NoMtp -and $m.mtp) -or ($Vision -eq
   $v = $models | Where-Object { $_.supported -and (Same-Path $_.path $m.path) -and [bool]$_.vision -eq $wantVision -and [bool]$_.mtp -eq $wantMtp } | Select-Object -First 1
   if ($v) { $m = $v }
 }
+# -Drafter mtp / dflash / auto: the variant of the same file (and the same images / MTP choice) with that drafter
+if ($drafterPick -and $m -ne $none -and $m.mtp) {
+  $v = $models | Where-Object { $_.supported -and (Same-Path $_.path $m.path) -and [bool]$_.vision -eq [bool]$m.vision -and $_.mtp -and "$($_.draft)" -eq $drafterPick } | Select-Object -First 1
+  if ($v) { $m = $v }
+  elseif ($drafterPick -eq "dflash") { throw "-Drafter dflash: no DFlash2 drafter was found for $($m.alias); give its folder: -Drafter <folder>" }
+  # (mtp / auto on a model without a DFlash2 drafter: its MTP block or Gemma drafter is the only one, as it is)
+}
 # a restart (another model, other options) keeps the running server's slots unless -Slots is given: pi-arc on
 # another model dropped them (and the second Pi / client then waited for the only slot)
 if (-not $PSBoundParameters.ContainsKey("Slots") -and $st -and "$($st.extra)" -match "--slots (\d+)") { $Slots = [int]$Matches[1] }
@@ -582,6 +917,57 @@ $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ct
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and
   (-not $extraGiven -or ($st -and "$(if ($st.extra) { $st.extra } else { '|think 8192' })" -eq $extraKey)) -and
   (-not $st -or "$(if ($st.engine) { $st.engine } else { 'opencl' })" -eq $Engine)
+$useMtp = [bool]$m.mtp  # (the variant's setting; -NoMtp picked the variant without it)
+$srvArgs = @("-m", "`"$($m.path)`"", "--port", $Port, "--ctx", $ctxArg, "--alias", $m.alias, "--think-budget", $ThinkBudget) + $extra
+if ($useMtp) { $srvArgs += "--mtp" }
+if ($useMtp -and $m.draft -and $m.draft -ne "auto") { $srvArgs += @("--draft", $m.draft) }  # (-nodf: MTP block only, -df: DFlash2 only)
+if ($Chunk -gt 0) { $srvArgs += @("--chunk", $Chunk) }
+if ($SessionCacheGb -gt 0) { $srvArgs += @("--session-cache-gb", $SessionCacheGb) }  # saved conversations on disk (default 8 GB, 0 = off)
+if ($novision -eq "1") { $srvArgs += "--no-mmproj" }
+$srvCmd = "`"$exe`" " + ($srvArgs -join " ")  # (issue #6: the server's own command line, also in server.json)
+
+# A GPU memory estimate from the model's --list-models numbers (how --ctx auto counted): the fixed parts (weights,
+# MTP block / drafter, working buffers at the default chunk, snapshots, encoders) + the KV cache for the context
+# asked (per slot) + speech to text (~8 GiB with Whisper, ~3.7 GiB Qwen3-ASR alone; docs/qwen3-asr.md), against the
+# GPU memory less the driver's share. With -Ctx auto the server makes it fit itself. An estimate: another chunk or
+# -BudgetGb moves it.
+function Get-Estimate {
+  $mm = $m.memory
+  if (-not $mm -or -not $mm.device) { return $null }
+  $keep = if ($DriverReserveGb -ge 0) { $DriverReserveGb * 1GB } else { [double]$mm.keep_free }
+  $freeGpu = [double]$mm.device - $keep
+  $fixed = [double]$mm.weights + $mm.mtp + $mm.buffers + $mm.snapshots + $mm.encoders
+  $speech = if ($Whisper -and $Whisper -ne "off") { 8GB } elseif ($Asr -and $Asr -ne "off") { 3.7GB } else { 0 }
+  $o = [ordered]@{ device = [double]$mm.device; driver_reserve = $keep; fixed = $fixed; speech = $speech; ctx = $ctxArg; slots = [math]::Max(1, $Slots) }
+  if ($ctxArg -eq "auto") {
+    $o.context = [double]$mm.context; $o.need = $fixed + $mm.context; $o.fits = $true
+    $o.note = "auto: the server picks the largest context that fits$(if ($speech) { ' (smaller with speech to text on)' })"
+  } else {
+    $o.context = [double]$ctxArg / 1000 * $mm.context_per_1k * $o.slots
+    $o.need = $fixed + $o.context + $speech
+    $o.fits = $o.need -le $freeGpu
+    $o.note = if ($o.fits) { "fits" } else { "may not fit: a smaller -Ctx, -Vision off or -Ctx auto" }
+  }
+  $o.free = $freeGpu
+  return $o
+}
+$est = if ($m -ne $none) { Get-Estimate } else { $null }
+function Est-Text($e) {
+  if (-not $e) { return "no memory estimate for this model" }
+  "GPU memory estimate: {0:N1} of {1:N1} GiB (weights and buffers {2:N1}, context {3:N1}{4}){5}: {6}" -f ($e.need / 1GB), ($e.free / 1GB),
+  ($e.fixed / 1GB), ($e.context / 1GB), $(if ($e.speech) { ", speech {0:N1}" -f ($e.speech / 1GB) } else { "" }), $(if ($e.slots -gt 1) { ", $($e.slots) slots" } else { "" }), $e.note
+}
+if ($DryRun) {
+  $what = if ($Action -eq "start" -and $same) { "keep the running server" } elseif ($running) { "switch the running server ($running)" } else { "start the server" }
+  if ($Json) {
+    Out-Json ([ordered]@{ action = $what; model = $m.alias; file = $m.path; port = $Port; ctx = $ctxArg; command = $srvCmd; estimate = $est })
+    return
+  }
+  Say "Dry run: would $what with $($m.alias), context $ctxArg, port $Port"
+  Say "  command: $srvCmd"
+  Say "  $(Est-Text $est)"
+  return
+}
 if ($Action -eq "start" -and $same) {
   Say "Server already running: $running on $base"
   Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
@@ -596,21 +982,26 @@ if ($running) {
 }
 elseif ($Action -eq "restart") { Stop-Arc | Out-Null }
 
-$useMtp = [bool]$m.mtp  # (the variant's setting; -NoMtp picked the variant without it)
-$srvArgs = @("-m", "`"$($m.path)`"", "--port", $Port, "--ctx", $ctxArg, "--alias", $m.alias, "--think-budget", $ThinkBudget) + $extra
-if ($useMtp) { $srvArgs += "--mtp" }
-if ($useMtp -and $m.draft -and $m.draft -ne "auto") { $srvArgs += @("--draft", $m.draft) }  # (-nodf: MTP block only, -df: DFlash2 only)
-if ($Chunk -gt 0) { $srvArgs += @("--chunk", $Chunk) }
-if ($SessionCacheGb -gt 0) { $srvArgs += @("--session-cache-gb", $SessionCacheGb) }  # saved conversations on disk (default 8 GB, 0 = off)
-if ($novision -eq "1") { $srvArgs += "--no-mmproj" }
 Say "Starting $(if ($NoStream) { 'arcinferzero (no SSD cache)' } else { 'arcinferzero' }): $($m.name) as $($m.alias), context $ctxArg, port $Port$(if ($useMtp) { ', speculative decoding' })"
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
 if (-not $NoStream) {
   Say "  (MoE models: the first start writes the expert file to $stateDir\zero, 35B: 16 GB / ~2.5 min, Flash Next: 56 GB / ~9.5 min, once)"
 }
 Say "  (loading takes 5-40 s; log: $log)"
-$srvCmd = "`"$exe`" " + ($srvArgs -join " ")  # (issue #6: the server's own command line, also in server.json)
 Say "  command: $srvCmd"
+if ($est) {
+  if ($est.fits) { Say "  $(Est-Text $est)" }
+  elseif (-not $Quiet) { Write-Host "  $(Est-Text $est)" -ForegroundColor Yellow }
+}
+# (exit 4: another program listens on the port, so the new server could not; ours was stopped above)
+try {
+  $lis = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop)
+  if ($lis.Count) {
+    $pn = (Get-Process -Id $lis[0].OwningProcess -ErrorAction SilentlyContinue).ProcessName
+    Write-Host "Port $Port is used by $pn (pid $($lis[0].OwningProcess)): stop it, or start with -Port <another>." -ForegroundColor Red
+    exit 4
+  }
+} catch {}
 $p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
   -RedirectStandardError $log -RedirectStandardOutput (Join-Path $stateDir "server.out.log")
 if ($m -ne $none) { Set-Content $lastFile $m.path -Encoding utf8 }  # (none: the chat model used last stays the default)
@@ -643,10 +1034,14 @@ while ($true) {
     Write-Host "The server stopped while loading. Last log lines:" -ForegroundColor Red
     Get-Content $log -Tail 60 | Where-Object { $_ -notmatch '^progress: ' } | Select-Object -Last 15 | ForEach-Object { Write-Host "  $_" }
     Remove-Item $stateFile -Force -ErrorAction SilentlyContinue
-    exit 1
+    exit 2
   }
   try { if ((Invoke-RestMethod "$base/health" -TimeoutSec 2).status -eq "ok") { break } } catch {}
-  if (((Get-Date) - $t0).TotalSeconds -gt 600) { Write-Progress -Activity $barActivity -Completed; throw "The server did not become ready within 10 minutes; see $log" }
+  if (((Get-Date) - $t0).TotalSeconds -gt 600) {
+    Write-Progress -Activity $barActivity -Completed
+    Write-Host "The server did not become ready within 10 minutes; see $log" -ForegroundColor Red
+    exit 3
+  }
 }
 Write-Progress -Activity $barActivity -Completed
 $nctx = (Invoke-RestMethod "$base/props" -TimeoutSec 5).n_ctx

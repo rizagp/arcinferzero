@@ -83,6 +83,12 @@ as tables; `tabel`, `rumus`, `json: tanggal, total`).
   page (a 450-page manual in 9 turns).
 - **Saved to a .md** (asked with each PDF): each page is appended as it is read, the chat shows a progress bar, and
   a chat model switched to later reads the file. A folder of your own works too (a copy stays in the chat's files).
+- **Many files at once:** several images and PDFs sent in one message are read one after another, each under its
+  own heading, into one merged .md or one .md per file. The 50-page limit counts over all of them, and the web UI
+  goes on by itself to the last file.
+- **From a project's folder:** a project's chat picks PDFs and images from the project's folder (several, or all)
+  and reads them where they are; the .md files go into the project's `ocr` folder, which every chat of the project
+  sees.
 - ~1.4 s to encode a 2,000-token page image, 69-73 tok/s for its text.
 
 ## 8. Tool calls that stay well formed

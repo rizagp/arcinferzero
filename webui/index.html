@@ -662,6 +662,7 @@ details[open].think > div { animation: fade-up .2s var(--ease-out); }
       <div id="vstat" hidden></div>
       <div class="composer">
         <button class="iconbtn" id="attach" title="Attach images (Qwen3.5 / 3.8, Gemma 4), audio (Gemma 4 E4B / 12B) or text files" aria-label="Attach"><svg viewBox="0 0 24 24"><path d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6h-1.5z"/></svg></button>
+        <button class="iconbtn" id="projfiles" hidden title="OCR files from this chat's project folder (read where they are, not uploaded)" aria-label="Project files"><svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2zm2 5v3h3v2h-3v3h-2v-3H7v-2h3V9h2z"/></svg></button>
         <input type="file" id="file" accept="image/*,audio/*,text/*,.md,.json,.csv,.tsv,.docx,.pdf,.xlsx,.xlsm,.pptx,.py,.js,.ts,.html,.css,.c,.cpp,.h,.cs,.java,.go,.rs,.ps1,.sh,.yaml,.yml,.toml,.xml,.sql,.txt" multiple hidden>
         <div class="pill"><textarea id="input" rows="1" placeholder="Type a message (@ attaches a saved file)" aria-label="Message"></textarea></div>
         <div class="recbar" id="recbar" hidden><button class="iconbtn" id="reccancel" title="Discard the recording" aria-label="Discard the recording"><svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button><span class="dot"></span><span id="rectime">0:00</span><span class="grow"></span></div>
@@ -1155,6 +1156,7 @@ async function refreshModel() {
     +caps.sampling.top_p.toFixed(2) + ", top-k " + caps.sampling.top_k + ")" : "");
   if (!$("tempon").checked && t !== null) $("temp").value = +t.toFixed(2);
   showModel();
+  updateButtons();  // (an OCR model: the project files button)
   // (the transcript library: there while the server runs speech to text, loaded or unloaded in Settings)
   if (caps.stt) caps.lib = true;
   else try { caps.lib = (await fetch("/v1/transcripts")).ok; } catch (e) { caps.lib = false; }
@@ -1360,6 +1362,14 @@ const kb = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? 
 const EXT_KIND = { image: "png jpg jpeg gif webp bmp", audio: "wav mp3 m4a aac flac ogg opus wma", video: "mp4 mov mkv webm wmv avi" };
 const kindOf = (name) => { const e = (String(name).split(".").pop() || "").toLowerCase(); for (const [k, v] of Object.entries(EXT_KIND)) if (v.split(" ").includes(e)) return k; return "document"; };
 function mediaEl(m, alt) {
+  if (String(m.id || "").startsWith("project:")) {  // (a project's file, read where it is: a chip with its path)
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.innerHTML = "<b></b><small>PROJECT</small>";
+    c.querySelector("b").textContent = m.name || m.id.replace(/^project:[^/]*\//, "");
+    c.title = m.id.replace(/^project:[^/]*\//, "") + " (in the project's folder)";
+    return c;
+  }
   if (m.kind === "audio") { const a = document.createElement("audio"); a.controls = true; a.src = m.url; return a; }
   if (m.kind === "image") { const im = document.createElement("img"); im.src = m.url; im.alt = alt; return im; }
   const c = document.createElement("a");  // (documents and videos: a chip that opens the saved file)
@@ -1513,6 +1523,7 @@ function updateButtons() {
   $("rec").hidden = !!controller || has || rec.on;
   $("recbar").hidden = !rec.on;
   $("attach").hidden = rec.on;
+  $("projfiles").hidden = rec.on || !caps.ocr || !projectOf(convId);  // (an OCR model in a project's chat: ocrProjectPick)
   document.querySelector(".pill").hidden = rec.on;
   $("talk").classList.toggle("on", voice.on);
   const how = sttOn() ? "written by " + sttEngine().name + ", for every model" : "Gemma 4 E4B / 12B, which hear audio";
@@ -2553,7 +2564,9 @@ async function streamTurn(el, st, onOverflow, job) {
     if (caps.stt) body.speech = sttOn(job.model) ? "whisper" : "model";
     {  // (an OCR model's PDF saved to a .md, see ocrView: a new file with the PDF's turn, the same one after it)
       const sv = caps.ocr && ocrSaveFor.get(job.id);
-      if (sv) { body.ocr_save = { name: sv.name, folder: sv.folder, append: !job.ocrFresh }; body.chat_id = job.id; }
+      if (sv) { body.ocr_save = { name: sv.name, folder: sv.folder, append: !job.ocrFresh, per_file: !!sv.perFile }; body.chat_id = job.id; }
+      // (a project's chat: its files can be read where they are, and the .md goes into the project's "ocr" folder)
+      if (caps.ocr && projectOf(job.id)) body.project_id = projectOf(job.id);
     }
     if (toolsOn(job.id)) body.tools = [...($("web").checked ? WEB_TOOLS : []), ...($("ftools").checked ? FILE_TOOLS : []), ...(termOffered(job.id) ? TERM_TOOLS : []),
       ...(memIn(job.id) ? MEM_TOOLS : []), ...mcpCached(job.id).tools];
@@ -2596,7 +2609,7 @@ async function streamTurn(el, st, onOverflow, job) {
       }
     }
     if (all || st.answer !== shown) {
-      content.innerHTML = caps.ocr && ocrSaveFor.has(job.id) && /## Page \d+ \/ \d+/.test(st.answer) ? ocrView(st.answer, ocrSaveFor.get(job.id))
+      content.innerHTML = caps.ocr && ocrSaveFor.has(job.id) && OCR_HEAD.test(st.answer) ? ocrView(st.answer, ocrSaveFor.get(job.id))
         : markdown(st.answer);
       shown = st.answer;
     }
@@ -2660,7 +2673,7 @@ function turnStats(el, st, job) {
   stats.textContent = "prompt " + (n("prompt_n") + n("cache_n")) + " tok (" + n("cache_n") + " cached) in " + (n("prompt_ms") / 1000).toFixed(1) +
     " s · " + n("prompt_per_second").toFixed(1) + " t/s · generated " + n("predicted_n") + " tok at " + n("predicted_per_second").toFixed(2) + " t/s";
   // (not an OCR model's PDF: its timings add up its pages, each read in a context of its own)
-  if (!(caps.ocr && /## Page \d+ \/ \d+/.test(st.answer))) job.used = n("prompt_n") + n("cache_n") + n("predicted_n");
+  if (!(caps.ocr && OCR_HEAD.test(st.answer))) job.used = n("prompt_n") + n("cache_n") + n("predicted_n");
   if (onScreen(job)) { used = job.used; showUse(); }
 }
 
@@ -2722,33 +2735,69 @@ function estTokens(h) {
 // chat keeps them all (the server reads only the last turn of an OCR model, so they are not compacted while it reads).
 const ocrSaveFor = new Map();  // chat id -> {name, folder} of the .md its PDF's text goes into (asked with each PDF), or null
 const OCR_MORE = /\[OCR: \d+ more page/;
+// (an OCR answer: a PDF's pages, or several files, each under "# File K / F: NAME", tools/server_ocr.h ocr_batch)
+const OCR_HEAD = /## Page \d+ \/ \d+|^# File \d+ \/ \d+: /m;
 function ocrView(a, saving) {
-  const heads = [...a.matchAll(/## Page (\d+) \/ (\d+)/g)], h = heads[heads.length - 1];
+  const files = [...a.matchAll(/^# File (\d+) \/ (\d+): ([^\n]*)/gm)], f = files[files.length - 1];
+  const inFile = f ? a.slice(f.index + f[0].length) : a;  // (the file under way: its pages)
+  const heads = [...inFile.matchAll(/## Page (\d+) \/ (\d+)/g)], h = heads[heads.length - 1];
   const note = (a.match(/\[OCR:[^\]]*\]/) || [""])[0];
   const page = a.replace(/\[OCR:[^\]]*\]/, "").trim();
   const n = h ? +h[1] : 0, total = h ? +h[2] : 0;
   // (the server sends a page's heading before it reads it: the page under way counts once its text is in; saved,
   //  the text itself only in the file)
-  const busy = !!h && !note && !a.slice(h.index + h[0].length).trim();
+  const busy = !note && !(h ? inFile.slice(h.index + h[0].length) : inFile).trim();
   const done = busy ? n - 1 : n;
-  return (total ? '<div class="ocrbar"><div style="width:' + (100 * done / total).toFixed(1) + '%"></div></div><div class="ocrlab">' +
-    (busy ? "reading page " + n + " / " + total + "…" : "page " + n + " / " + total + " read") +
-    (saving ? " · the text goes into " + esc(saving.folder ? saving.folder + "\\" + saving.name : saving.name) + (saving.folder ? "" : " in this chat's files") : "") +
-    "</div>" : "") +
-    (saving ? "" : markdown(page)) + (note ? '<div class="ocrnote">' + esc(note) + "</div>" : "");
+  const here = saving && saving.inProject ? " in the project's ocr folder" : " in this chat's files";
+  const into = !saving ? "" : saving.perFile ? " · each file into a .md of its own" + (saving.folder ? " in " + esc(saving.folder) : here)
+    : " · the text goes into " + esc(saving.folder ? saving.folder + "\\" + saving.name : saving.name) + (saving.folder ? "" : here);
+  let bar = "";
+  if (f) {  // (files: the bar over the files, a PDF's pages as a part of its file)
+    const k = +f[1], nf = +f[2], part = total ? done / total : busy ? 0 : 1;
+    bar = '<div class="ocrbar"><div style="width:' + (100 * (k - 1 + part) / nf).toFixed(1) + '%"></div></div><div class="ocrlab">' +
+      "file " + k + " / " + nf + ": " + esc(f[3]) + (total ? (busy ? " · reading page " + n + " / " + total + "…" : " · page " + n + " / " + total + " read")
+      : busy ? " · reading…" : " · read") + into + "</div>";
+  } else if (total) {
+    bar = '<div class="ocrbar"><div style="width:' + (100 * done / total).toFixed(1) + '%"></div></div><div class="ocrlab">' +
+      (busy ? "reading page " + n + " / " + total + "…" : "page " + n + " / " + total + " read") + into + "</div>";
+  }
+  return bar + (saving ? "" : markdown(page)) + (note ? '<div class="ocrnote">' + esc(note) + "</div>" : "");
 }
-// What the chat keeps of a saved turn: the last page's heading (the server goes on after it) and where the text is
+// What the chat keeps of a saved turn: the last page's heading (the server goes on after it) and where the text is;
+// several files: the last file's heading too
+// (an answer that stopped at an error: the headings kept are those of the last page / file read, so the next "lanjut"
+//  reads the failed one again; self audit 2026-11-08)
 function ocrKept(a, sv) {
+  const files = [...a.matchAll(/^# File (\d+) \/ (\d+): ([^\n]*)/gm)];
+  const stop = a.match(/\[OCR: stopped at (?:file (\d+)(?:, page (\d+))?|page (\d+))/);
+  if (files.length && sv) {
+    const f0 = files[0], note = (a.match(/\[OCR:[^\]]*\]/) || [""])[0];
+    let fl = files[files.length - 1], pg = [...a.slice(fl.index).matchAll(/^## Page (\d+) \/ (\d+)/gm)].pop(), head;
+    if (stop && stop[2]) {  // (a PDF's page failed: the page before it)
+      head = fl[0] + "\n\n" + (+stop[2] > 1 ? "## Page " + (stop[2] - 1) + " / " + (pg ? pg[2] : "?") + "\n\n" : "");
+    } else if (stop && stop[1]) {  // (a file failed: the file before it, else no heading, the earlier answers say)
+      fl = files.length > 1 ? files[files.length - 2] : null;
+      pg = fl ? [...a.slice(fl.index, files[files.length - 1].index).matchAll(/^## Page (\d+) \/ (\d+)/gm)].pop() : null;
+      head = fl ? fl[0] + "\n\n" + (pg ? pg[0] + "\n\n" : "") : "";
+    } else head = fl[0] + "\n\n" + (pg ? pg[0] + "\n\n" : "");
+    fl = fl || files[files.length - 1];
+    return head + "The text of " + (fl[1] !== f0[1] ? "files " + f0[1] + "-" + fl[1] : "file " + f0[1]) + " of " + fl[2] +
+      (sv.perFile ? " is saved in a Markdown file per file" : " is saved in the file \"" + (sv.ref || sv.name) + "\"") +
+      (sv.ref || sv.inProject ? " in the project's folder (list_files with scope \"project\", then read_file)"
+        : " in this chat's files (read_file it to read the text)") + ", not in this message." + (note ? "\n\n" + note : "");
+  }
   const heads = [...a.matchAll(/## Page (\d+) \/ (\d+)/g)];
   if (!heads.length || !sv) return a;
   const f = heads[0], l = heads[heads.length - 1], note = (a.match(/\[OCR:[^\]]*\]/) || [""])[0];
-  return "## Page " + l[1] + " / " + l[2] + "\n\nThe text of pages " + f[1] + (l[1] !== f[1] ? "-" + l[1] : "") + " of " + l[2] +
-    " is saved in the file \"" + sv.name + "\" in this chat's files (read_file it to read the text), not in this message." +
+  const lastRead = stop && stop[3] ? +stop[3] - 1 : +l[1];  // (stopped at a page: the one before it)
+  return (lastRead >= 1 ? "## Page " + lastRead + " / " + l[2] + "\n\n" : "") + "The text of pages " + f[1] + (l[1] !== f[1] ? "-" + l[1] : "") + " of " + l[2] +
+    " is saved in the file \"" + (sv.ref || sv.name) + "\"" + (sv.ref ? " in the project's folder" : " in this chat's files") +
+    " (read_file it to read the text), not in this message." +
     (note ? "\n\n" + note : "");
 }
 // The save question of a PDF: the file's name and folder (empty: this chat's files); {name, folder}, or null for
 // "Just show it" / Esc
-function ocrSaveAsk(pdf) {
+function ocrSaveAsk(pdf, inProject) {
   return new Promise((done) => {
     const d = document.createElement("dialog");
     d.className = "ask";
@@ -2762,11 +2811,12 @@ function ocrSaveAsk(pdf) {
       '<div class="row"><button>Just show it</button><button class="yes">Save to .md</button></div>';
     d.querySelector(".name").textContent = pdf;
     const [nameIn, folderIn] = d.querySelectorAll(".in");
-    nameIn.value = pdf.replace(/\.pdf$/i, "") + ".md";
+    nameIn.value = pdf.split(/[\\/]/).pop().replace(/\.pdf$/i, "") + ".md";
+    if (inProject) folderIn.placeholder = "empty: the project's ocr folder";
     const finish = (v) => { d.close(); d.remove(); done(v); };
     const [no, yes] = d.querySelectorAll("button");
     no.addEventListener("click", () => finish(null));
-    yes.addEventListener("click", () => finish({ name: nameIn.value.trim() || nameIn.placeholder, folder: folderIn.value.trim().replace(/^"|"$/g, "") }));
+    yes.addEventListener("click", () => finish({ name: nameIn.value.trim() || nameIn.placeholder, folder: folderIn.value.trim().replace(/^"|"$/g, ""), inProject }));
     for (const i of [nameIn, folderIn]) i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); yes.click(); } });
     d.addEventListener("cancel", (e) => { e.preventDefault(); finish(null); });  // (Esc)
     document.body.appendChild(d);
@@ -2774,12 +2824,108 @@ function ocrSaveAsk(pdf) {
     yes.focus();
   });
 }
+// The question for several images / PDFs sent at once: one Markdown file per file, or all of them in one (its name),
+// and the folder (empty: this chat's files); {name, folder, perFile}, or null for "Just show it" / Esc
+function ocrBatchAsk(names, inProject) {
+  return new Promise((done) => {
+    const d = document.createElement("dialog");
+    d.className = "ask";
+    d.innerHTML = '<h3>Read ' + names.length + " files into Markdown?</h3><p>The files are read one after another, in this order: " +
+      '<span class="name"></span>. Each file\'s text comes under a heading of its own, a PDF\'s pages under "Page N / M".</p>' +
+      '<label class="lab"><input type="radio" name="ocrmode" value="merged" checked> One merged Markdown file, every file under its own heading</label>' +
+      '<label class="lab"><input type="radio" name="ocrmode" value="per"> One Markdown file per file (named after it)</label>' +
+      '<label class="lab" data-k="namebox">File name<input class="in" data-k="name"></label>' +
+      '<label class="lab">Folder<input class="in" data-k="folder" placeholder="empty: this chat\'s files (the Files panel)"></label>' +
+      "<p>An existing file is never written over: a new name is taken then. At most 50 pages are read a turn; the next " +
+      "ones are read by themselves until the last file (Stop ends it).</p>" +
+      '<div class="row"><button>Just show it</button><button class="yes">Save to .md</button></div>';
+    d.querySelector(".name").textContent = names.join(", ");
+    const nameIn = d.querySelector('[data-k="name"]'), folderIn = d.querySelector('[data-k="folder"]'), nameBox = d.querySelector('[data-k="namebox"]');
+    // (a project's file is named with its path there: the .md's name is its file name only)
+    nameIn.value = names[0].split(/[\\/]/).pop().replace(/\.[^.]*$/, "") + " and " + (names.length - 1) + " more.md";
+    if (inProject) folderIn.placeholder = "empty: the project's ocr folder";
+    const per = () => d.querySelector('input[name="ocrmode"]:checked').value === "per";
+    for (const r of d.querySelectorAll('input[name="ocrmode"]')) r.addEventListener("change", () => { nameBox.hidden = per(); });
+    const finish = (v) => { d.close(); d.remove(); done(v); };
+    const [no, yes] = d.querySelectorAll("button");
+    no.addEventListener("click", () => finish(null));
+    yes.addEventListener("click", () => finish({ name: per() ? "" : nameIn.value.trim() || nameIn.value, perFile: per(),
+      folder: folderIn.value.trim().replace(/^"|"$/g, ""), inProject }));
+    for (const i of [nameIn, folderIn]) i.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); yes.click(); } });
+    d.addEventListener("cancel", (e) => { e.preventDefault(); finish(null); });  // (Esc)
+    document.body.appendChild(d);
+    d.showModal();
+    yes.focus();
+  });
+}
+// The project's images and PDFs to pick for OCR (several at once): they go into the message as "project:<id>/<path>"
+// file parts, read by the server where they are (tools/server_ocr.h ocr_file), not uploaded again
+async function ocrProjectPick() {
+  const pid = projectOf(convId);
+  if (!pid) return note("this chat is not in a project");
+  let list;
+  try {
+    // (PDFs and images asked for apart: 300 files of every kind may be a project's code alone)
+    const get = async (a) => {
+      const res = await fetch("/v1/tools/list_files", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "project", project_id: pid, limit: 300, ...a }) });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error?.message || "HTTP " + res.status);
+      return j.files || [];
+    };
+    list = [...(await get({ name_contains: ".pdf" })).filter((f) => /\.pdf$/i.test(f.path || "")), ...(await get({ kind: "image" }))];
+  } catch (e) { return note("the project's files could not be listed: " + (e.message || e)); }
+  if (!list.length) return note("no images or PDFs in the project's folder");
+  const d = document.createElement("dialog");
+  d.className = "ask";
+  d.innerHTML = "<h3>OCR files from the project</h3><p>Images and PDFs in the project's folder, newest first. They are read " +
+    "where they are (subfolders too), in the order you tick them.</p>" + '<input class="in" data-k="q" placeholder="filter by name">' +
+    '<label class="lab" style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-k="all"> All (those the filter shows)</label>' +
+    '<div class="pick" style="max-height:50vh;overflow:auto;margin-top:6px"></div>' +
+    '<div class="row"><button>Cancel</button><button class="yes">Add</button></div>';
+  const box = d.querySelector(".pick"), q = d.querySelector('[data-k="q"]'), order = [];
+  for (const f of list) {
+    const l = document.createElement("label");
+    l.className = "lab";
+    l.style.cssText = "display:flex;gap:6px;align-items:center;color:var(--text)";
+    l.innerHTML = '<input type="checkbox"><span></span>';
+    l.querySelector("span").textContent = f.path + (f.bytes ? " · " + kb(f.bytes) : "");
+    const cb = l.querySelector("input");
+    cb.addEventListener("change", () => { const k = order.indexOf(f); if (cb.checked && k < 0) order.push(f); else if (!cb.checked && k >= 0) order.splice(k, 1); });
+    l._path = f.path.toLowerCase();
+    box.appendChild(l);
+  }
+  q.addEventListener("input", () => { for (const l of box.children) l.hidden = !l._path.includes(q.value.trim().toLowerCase()); });
+  d.querySelector('[data-k="all"]').addEventListener("change", (e) => {  // (every file shown, in the list's order)
+    for (const l of box.children) {
+      const cb = l.querySelector("input");
+      if (!l.hidden && cb.checked !== e.target.checked) { cb.checked = e.target.checked; cb.dispatchEvent(new Event("change")); }
+    }
+  });
+  const [no, yes] = d.querySelectorAll("button");
+  const finish = () => { d.close(); d.remove(); };
+  no.addEventListener("click", finish);
+  d.addEventListener("cancel", (e) => { e.preventDefault(); finish(); });
+  yes.addEventListener("click", () => {
+    ensureConv();
+    for (const f of order)
+      if (!pending.some((p) => p.id === f.file_id)) pending.push({ kind: f.kind === "image" ? "image" : "document", id: f.file_id, name: f.path, bytes: f.bytes });
+    finish();
+    renderAtts();
+    input.focus();
+  });
+  document.body.appendChild(d);
+  d.showModal();
+  q.focus();
+}
 // the file an answer says it went to ("added to F]" / "saved to F]"): F a name in the chat's files or a full path
 // (then "PATH; in this chat's files as NAME": its copy there has the same name)
 function ocrSavedTo(a, sv) {
   const m = a.match(/(?:added|saved) to ([^\]]+)\]/);
   if (!m || !sv) return;
-  const f = m[1].split("; in this chat's files as ")[0].trim(), cut = Math.max(f.lastIndexOf("\\"), f.lastIndexOf("/"));
+  const ref = m[1].match(/; in the project as (project:.+?)\s*$/);  // (in a project's folder: its file id there; names have spaces)
+  sv.ref = ref ? ref[1] : "";
+  const f = m[1].split(/; in (?:this chat's files|the project) as /)[0].trim(), cut = Math.max(f.lastIndexOf("\\"), f.lastIndexOf("/"));
   if (cut > 0) { sv.folder = f.slice(0, cut); sv.name = f.slice(cut + 1); } else sv.name = f;
 }
 
@@ -2820,8 +2966,12 @@ async function send() {
   //  sees this chat busy instead of sending a second job with the same id)
   jobs.set(job.id, job);
   controller = job.controller;
-  if (caps.ocr && sent.some((m) => /\.pdf$/i.test(m.name || ""))) {  // (each PDF sent: asked again, a new file)
-    ocrSaveFor.set(job.id, await ocrSaveAsk(sent.find((m) => /\.pdf$/i.test(m.name || "")).name));
+  const ocrFiles = caps.ocr ? sent.filter((m) => m.id && (m.kind === "image" || /\.pdf$/i.test(m.name || ""))) : [];
+  if (ocrFiles.length >= 2) {  // (several images / PDFs: read file by file, see ocrBatchAsk)
+    ocrSaveFor.set(job.id, await ocrBatchAsk(ocrFiles.map((m) => m.name || "image"), !!projectOf(job.id)));
+    job.ocrFresh = true;
+  } else if (caps.ocr && sent.some((m) => /\.pdf$/i.test(m.name || ""))) {  // (each PDF sent: asked again, a new file)
+    ocrSaveFor.set(job.id, await ocrSaveAsk(sent.find((m) => /\.pdf$/i.test(m.name || "")).name, !!projectOf(job.id)));
     job.ocrFresh = true;
   }
   const signal = job.controller.signal;
@@ -2957,7 +3107,7 @@ async function send() {
   if (!inHistory) {
     if (caps.ocr) ocrSavedTo(st.answer, ocrSaveFor.get(job.id));  // (the name the server took: the next turns go on with it)
     // (stopped while a page was read: its heading came first, without its text; kept, the page counted as read)
-    if (caps.ocr) st.answer = st.answer.replace(/\n*## Page \d+ \/ \d+\s*$/, "");
+    if (caps.ocr) st.answer = st.answer.replace(/\n*## Page \d+ \/ \d+\s*$/, "").replace(/\n*# File \d+ \/ \d+: [^\n]*\s*$/, "");
     // (saved: the chat keeps where the text is, not the pages; see ocrKept)
     const reply = { role: "assistant", content: caps.ocr && ocrSaveFor.get(job.id) ? ocrKept(st.answer, ocrSaveFor.get(job.id)) : st.answer, reasoning_content: st.reasoning, at: Date.now() };
     job.history.push(reply);
@@ -3132,7 +3282,7 @@ function partsMedia(m) {
     for (const p of m.content) {
       if (p.type === "file") {
         const name = p.file?.filename || "file", id = String(p.file?.file_id || "").replace(/^file-/, "");
-        const virt = /^(chat|transcript):/.test(id);  // (another chat or a recording: no file to open)
+        const virt = /^(chat|transcript|project):/.test(id);  // (another chat, a recording, a project's file: no /files/ address)
         out.push({ kind: virt ? "document" : kindOf(name), url: virt ? "" : "/files/" + id, id, name });
       } else if (p.type === "image_url") out.push({ kind: "image", url: p.image_url?.url || "" });
       else if (p.type === "input_audio") out.push({ kind: "audio", url: "data:audio/wav;base64," + (p.input_audio?.data || "") });
@@ -3966,6 +4116,7 @@ const chatEl = $("chat");
 ["dragleave", "drop"].forEach((t) => chatEl.addEventListener(t, (e) => { e.preventDefault(); if (t === "drop" || !chatEl.contains(e.relatedTarget)) chatEl.classList.remove("drop"); }));
 chatEl.addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
 $("attach").addEventListener("click", () => $("file").click());
+$("projfiles").addEventListener("click", () => ocrProjectPick());
 $("file").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
 input.addEventListener("paste", (e) => {
   const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
