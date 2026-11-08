@@ -88,7 +88,7 @@ struct EngineOptions {
   bool dry = false;  // only add up the GPU memory a load takes (no allocations, uploads or kernels): --ctx auto
   // arcinferzero expert streaming (standard-type MoE GGUFs): routed experts read from the SSD into an LRU cache on
   // the GPU. Cache size: expert_cache_gb when > 0, else expert_cache_pct (0..100) of all experts when > 0, else
-  // automatic: what is left after the rest of the model within the GPU's memory share less kDriverSlack.
+  // automatic: what is left after the rest of the model within the GPU's memory share less driver_slack().
   bool stream_experts = true;
   double expert_cache_gb = 0, expert_cache_pct = 0;
   // RAM tier between the expert cache and the SSD (zero/expert_store.h set_ram), GiB: < 0 automatic (a GPU with
@@ -245,7 +245,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     max_chunk = o.chunk > 0 ? o.chunk : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
-    p140_ = !opt.dry && p140_wanted();  // (the Arc 140T preset, zero/xe2/engine_xe2.h: it needs H8)
+    // (also in a dry run, --ctx auto's memory plan: H8's buffers and the float copy in aq_ are counted then; self audit
+    //  2026-11-08, ~0.35 GB on the 27B)
+    p140_ = p140_wanted();  // (the Arc 140T preset, zero/xe2/engine_xe2.h: it needs H8)
+    h8_auto_ = !p140_ && h8_auto_wanted();  // (H8 by default on discrete cards: zero/xe2/engine_xe2.h)
     h8_init();  // (H8 prompt GEMMs, ARC_H8=1: zero/engine_h8.h; after q2_init, before alloc_buffers)
     p140_ = p140_ && h8_;
     if (!opt.dry) build_kernels();
@@ -292,8 +295,30 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       // (XMX slower than DP4a in the speed check of an iGPU: the GPU's own defaults, as on one without XMX)
       if (slow_known) xe2_ = false;
     }
+    // (the H8 kernels this engine runs, checked against DP4a apart from the rest of XMX and kept per kind of check, not
+    //  once per process: a server that loads the 35B (no H8) and then the 27B (H8 + 4 column groups) checks those then;
+    //  a failing H8 kernel turns H8 off, not XMX. Self audit 2026-11-08)
+    if (!opt.dry && xmx_ && h8_) {
+      static std::mutex h8_mu;
+      static std::map<std::string, bool> h8_known;
+      const std::string key = std::to_string(h8_qtype()) + "|cg" + std::to_string(h8_cg_for(64)) + (p140_ ? "|140t" : "") +
+                              (h8_env() ? "|env" : "") + (x2d_ ? "|2d" : "");
+      std::lock_guard<std::mutex> g(h8_mu);
+      auto it = h8_known.find(key);
+      if (it == h8_known.end()) it = h8_known.emplace(key, xmx_check(1)).first;
+      if (!it->second) {
+        fprintf(stderr, "arcinferzero: the H8 XMX kernels differ from DP4a or do not build: H8 off, XMX kept (please report)\n");
+        p140_ = false;
+        h8_auto_ = false;
+        h8_ = false;
+      }
+    }
     if (p140_ && !xmx_) {  // (its kernels did not build or differ: the plain DP4a path, and H8 only if asked for)
       p140_ = false;
+      if (!h8_env()) h8_ = false;
+    }
+    if (h8_auto_ && !xmx_) {  // (the discrete default needs XMX: H8 on DP4a is not what was measured)
+      h8_auto_ = false;
       if (!h8_env()) h8_ = false;
     }
     if (p140_) {
@@ -336,7 +361,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  18 Oct (docs/speed-progress.md): 35B UD-IQ4_XS at 131K keeps 81 % of the experts and answers as fast as at
     //  64K; Flash Next loses 2-6 % from 32K to 131K.)
     if (stream_ && opt.dry) {
-      const double left = (double)device_mem() - kDriverSlack - (double)gpu_bytes + (double)ctx_bytes(ctx) -
+      const double left = (double)device_mem() - driver_slack() - (double)gpu_bytes + (double)ctx_bytes(ctx) -
                           (double)snapshot_bytes() - (double)opt.stream_reserve;
       // (--slots N: 128K of context in all, each slot 128K / N; the floor of 3/4 only as far as it leaves every slot
       //  32K: with a plain floor Gemma 4 26B-A4B kept 8,192 tokens per slot, its sliding-window rings ~1.4 GB each.

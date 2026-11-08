@@ -55,7 +55,8 @@
   void h8_init() {
     // (never with the NPU: its shares copy a weight (N.gate = L.gate) over the same buffers, so the in-place conversion
     //  ran twice on the shared rows, and the NPU read its own rows as W8 after they had become H8; kernel audit 2026-11-03)
-    h8_ = (h8_env() || p140_) && !q2mm_ && !npu_wanted();  // (p140_: the Arc 140T preset, zero/xe2/engine_xe2.h)
+    // (p140_: the Arc 140T preset; h8_auto_: the default on discrete cards for Qwen dense models; zero/xe2/engine_xe2.h)
+    h8_ = (h8_env() || p140_ || h8_auto_) && !q2mm_ && !npu_wanted();
     if (h8_ && h8_float()) {
       h8f_off_ = (size_t)max_chunk * aq_max_k();
       h8f_defs_ = " -DH8F=" + std::to_string(h8f_off_);
@@ -216,10 +217,11 @@
     }
     wq = stage_q_[w.role];
     hh = stage_hh_[w.role];
-    if (stage_owner_[w.role] != &w) {
+    if (stage_owner_[w.role] != &w || !stage_h8_[w.role]) {
       decode_w8(w, wq, stage_h_[w.role]);
       h8_weights(w, wq, stage_h_[w.role], hh);
       stage_owner_[w.role] = &w;
+      stage_h8_[w.role] = true;
     }
   }
   // the GEMM (matmul1's prompt path) in H8: the same grid, split-K and epilogues as the W8 GEMM
@@ -229,7 +231,7 @@
     h8_act(Mp, w.K, act32);
     // (the 140T preset: 32 tokens, 2 column groups, 128 registers on XMX)
     const bool pt = p140_take(w, Mp) && !h8_env();
-    const int cg = pt ? 2 : xe2_cg_for(w.N);
+    const int cg = pt ? 2 : h8_cg_for(w.N);
     cl_kernel k = pt ? gemm_kernel(h8_qtype(), false, 1, 2, 32, 1) : gemm_kernel(h8_qtype(), false, -1, cg);
     int M = Mp, N = w.N, K = w.K;
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;

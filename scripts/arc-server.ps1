@@ -45,6 +45,8 @@ param(
   [int]$AsrSlots = 0,
   # the other server options (0 / empty / off = the server's default)
   [int]$MtpDrafts = 0,
+  [string]$DFlash = "",
+  [double]$DriverReserveGb = -1,
   [int]$ThinkBudget = 8192,
   [int]$ImageMinTokens = 0,
   [int]$ImageMaxTokens = 0,
@@ -147,7 +149,7 @@ $sessDir = if ($SessionDir) { $SessionDir } else { Join-Path $stateDir "zero\ses
 
 # The models come from `serverz.exe --list-models` (Hugging Face cache + %USERPROFILE%\.arcinferzero\models): name, file,
 # alias (= the model id of the API and Pi), shortcut, the context --ctx auto chose for the current GPU memory. The
-# context is auto unless -Ctx is given: the largest that fits the GPU memory currently set less 1.2 GiB for the
+# context is auto unless -Ctx is given: the largest that fits the GPU memory currently set less 0.5 GiB for the
 # driver, at most the trained one (Intel Graphics Software can change the GPU memory; it is then
 # computed again). Smaller prompt chunks (-Chunk 1024) free ~1.1 GiB on the 27B for more context.
 $lastFile = Join-Path $stateDir "last-model.txt"  # the model started last (pi-arc starts it again by default)
@@ -281,7 +283,7 @@ Options for start / restart:
                                  -nodf / -df (models with a DFlash2 drafter): the MTP block only / DFlash2 only.
                                  Without it: a numbered list of the models in the Hugging Face cache.
   -Ctx <N|auto>                  context in tokens, or auto = the largest that fits the GPU memory currently
-                                 set, less 1.2 GiB for the driver (computed on the first start
+                                 set, less 0.5 GiB for the driver (computed on the first start
                                  of a model, remembered, recomputed when the GPU memory changes). Not given:
                                  a running server keeps its context, a new one starts with auto. -Ctx auto
                                  also restarts a server that runs a fixed context.
@@ -325,6 +327,11 @@ Options for start / restart:
   -Port <N>                      port (default 8090; also for status / stop)
   -MtpDrafts <1..7>              drafts per step (default: 7 for Qwen 27B-class and with DFlash2, 5
                                  for Qwen MoE, 3 for 4B and Gemma 4 26B, 2 otherwise)
+  -DriverReserveGb <N>           GPU memory left to the driver, GiB (default 0.5; 0 to 8)
+  -DFlash <folder>|off           a DFlash2 drafter of your own: its snapshot folder (with config.json and
+                                 model.safetensors), e.g. for a fine-tuned variant the model list does not
+                                 pair with one; off: no drafter. It stays with the server: a model
+                                 picked inside it (Pi's /model) uses it too, until the next start
   -ThinkBudget <N>               default reasoning budget in tokens (default 8192; requests can override it)
   -ImageMinTokens / -ImageMaxTokens <N>  tokens per image (defaults: Qwen 256..2048, Gemma 4 12B 1120..2048)
   -BudgetGb <GB>                 keep decoded weights resident up to GB (default: chosen with the context)
@@ -526,6 +533,22 @@ $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
 # the other options, as server arguments (also kept in the state file: a change restarts the server)
 $extra = @()
 if ($MtpDrafts -gt 0) { $extra += @("--mtp-drafts", $MtpDrafts) }
+# -DFlash <folder>: a DFlash2 drafter of your own (the folder with config.json and model.safetensors), e.g. for a
+# fine-tuned variant the model list does not pair with one; -DFlash off: no drafter
+if ($DFlash -eq "off") { $extra += "--no-dflash" }
+elseif ($DFlash) {
+  # (an absolute path: the server starts in the arcinferzero folder, where a relative one would point elsewhere; and not
+  #  with -NoMtp, since a drafter turns speculative decoding on. Self audit 2026-11-08)
+  if ($NoMtp) { throw "-DFlash with -NoMtp: a drafter means speculative decoding (use -DFlash off for none)" }
+  if (-not (Test-Path -LiteralPath (Join-Path $DFlash "config.json"))) { throw "-DFlash: no config.json in $DFlash (give the drafter's snapshot folder)" }
+  $DFlash = (Resolve-Path -LiteralPath $DFlash).Path
+  $extra += @("--dflash", "`"$($DFlash.TrimEnd('\'))`"")
+}
+# -DriverReserveGb N: GPU memory left to the driver (default 0.5 GiB; kept with the server like the others)
+if ($DriverReserveGb -ge 0) {
+  if ($DriverReserveGb -gt 8) { throw "-DriverReserveGb: 0 to 8 GiB (got $DriverReserveGb)" }
+  $extra += @("--driver-reserve-gb", $DriverReserveGb.ToString([Globalization.CultureInfo]::InvariantCulture))
+}
 if ($Slots -gt 1) { $extra += @("--slots", $Slots) }
 if ($Npu -eq "on") { $extra += @("--npu", "on") }
 if ($Precise) { $extra += "--precise" }
@@ -551,7 +574,7 @@ if ($SessionDir) { $extra += @("--session-dir", "`"$SessionDir`"") }
 if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with the SSD cache is restarted without it)
 $extraKey = "$($extra -join ' ')|think $ThinkBudget"
 # (compared with the running server's only when given: pi-arc's plain start keeps a server started with other options)
-$extraGiven = @("MtpDrafts", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
+$extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
   "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and

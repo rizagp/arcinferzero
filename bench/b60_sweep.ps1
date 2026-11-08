@@ -37,7 +37,7 @@ function Env-Of([hashtable]$set) {
   foreach ($k in $set.Keys) {
     $v = "$($set[$k])"
     switch ($k) {
-      "H8" { if ($v -eq "on") { $e.ARC_H8 = "1" } }
+      "H8" { $e.ARC_H8 = $(if ($v -eq "on") { "1" } else { "0" }) }  # (off: ARC_H8=0, since H8 is on by default for Qwen dense models)
       "TM" { $e.ARC_GEMM_TM = $v }
       "WGY" { $e.ARC_GEMM_WGY = $v }
       "RG" { $e.ARC_GEMM_RG = $v }
@@ -103,18 +103,20 @@ $defaults = @{ TM = 16; WGY = 8; RG = 4; CG = 1; GRF = 128; SPLIT = 17; X2D = "p
 "model: " + (Split-Path $Model -Leaf) + "; phase A prompt: $Tokens tokens; tok/s = best of 3 passes"
 $null = Invoke-Bench $Model @{} 512  # (warm-up: the first run after a start is slower)
 $together = @{}
-foreach ($base in @(@{ name = "default (no H8)"; set = @{} }, @{ name = "H8"; set = @{ H8 = "on" } })) {
+foreach ($base in @(@{ name = "default (no H8)"; set = @{ H8 = "off" } }, @{ name = "H8"; set = @{ H8 = "on" } })) {
   ""
   "=== A. $($base.name): one setting at a time"
   $b = Invoke-Bench $Model $base.set $Tokens
   Line "base" $b
+  # (H8 runs at 4 column groups by default since 2026-11-08: its base is CG 4, so CG 1 and 2 are the changes)
+  $bdef = $defaults.Clone(); if ($base.set["H8"] -eq "on") { $bdef.CG = 4 }
   $bestSet = $base.set.Clone()
   $single = $base.set.Clone(); $singleT = $b.tps
   foreach ($p in $grid.Keys) {
-    if ($p -eq "FUSE" -and -not $base.set.ContainsKey("H8")) { continue }  # (H8's switch: nothing to measure without it)
-    $bv = $defaults[$p]; $bt = $b.tps
+    if ($p -eq "FUSE" -and $base.set["H8"] -ne "on") { continue }  # (H8's switch: nothing to measure without it)
+    $bv = $bdef[$p]; $bt = $b.tps
     foreach ($v in $grid[$p]) {
-      if ("$v" -eq "$($defaults[$p])") { continue }  # (the base: measured above)
+      if ("$v" -eq "$($bdef[$p])") { continue }  # (the base: measured above)
       $s = $base.set.Clone(); $s[$p] = $v
       $r = Invoke-Bench $Model $s $Tokens
       Line "$p=$v" $r
@@ -122,7 +124,7 @@ foreach ($base in @(@{ name = "default (no H8)"; set = @{} }, @{ name = "H8"; se
       if ($r.tps -gt $bt * 1.03 -and $r.tps -gt $b.tps * 1.03) { $bt = $r.tps; $bv = $v }
       if ($r.tps -gt $singleT -and $r.tps -gt $b.tps * 1.03) { $singleT = $r.tps; $single = $s.Clone() }
     }
-    if ("$bv" -ne "$($defaults[$p])") { $bestSet[$p] = $bv }
+    if ("$bv" -ne "$($bdef[$p])") { $bestSet[$p] = $bv }
   }
   # (winners alone do not always add up: settings of the same work-group can work against each other, so the single
   #  best change is kept too, and whichever of the two is faster is "best")
@@ -137,7 +139,7 @@ foreach ($base in @(@{ name = "default (no H8)"; set = @{} }, @{ name = "H8"; se
 
 ""
 "=== B. prompt sizes of real use (default chunks unless noted)"
-$sets = [ordered]@{ "default" = @{}; "H8" = @{ H8 = "on" }; "best without H8" = $together["default (no H8)"]; "best with H8" = $together["H8"] }
+$sets = [ordered]@{ "default" = @{}; "no H8" = @{ H8 = "off" }; "H8" = @{ H8 = "on" }; "best without H8" = $together["default (no H8)"]; "best with H8" = $together["H8"] }
 $sizes = @(@(512, 0, "512 (a chat turn)"), @(4096, 0, "4096 (a document)"), @(16384, 0, "16384 (a long prompt)"), @(16384, 4096, "16384 in 4096-token chunks"))
 if ($Quick) { $sizes = $sizes[0..1] }
 foreach ($z in $sizes) {
@@ -145,12 +147,12 @@ foreach ($z in $sizes) {
 }
 
 ""
-"=== C. accuracy against the default: KL over 4 perplexity chunks of USAGE.md"
+"=== C. accuracy against the plain path (no H8): KL over 4 perplexity chunks of USAGE.md"
 $kl = Join-Path $env:TEMP "b60_sweep_base.kl"
 $text = Join-Path $root "USAGE.md"
-$o = Invoke-Runz @{} @($Model, "--perplexity", $text, "--ppl-chunks", 4, "--ppl-kl-save", $kl)
-($o -split "`n" | Where-Object { $_ -match "^Final|perplexity|PPL" } | Select-Object -Last 1) | ForEach-Object { "default: " + $_.Trim() }
-foreach ($n in @("H8", "best without H8", "best with H8")) {
+$o = Invoke-Runz @{ H8 = "off" } @($Model, "--perplexity", $text, "--ppl-chunks", 4, "--ppl-kl-save", $kl)  # (the plain path, as before H8 was a default)
+($o -split "`n" | Where-Object { $_ -match "^Final|perplexity|PPL" } | Select-Object -Last 1) | ForEach-Object { "no H8: " + $_.Trim() }
+foreach ($n in @("default", "H8", "best without H8", "best with H8")) {
   $o = Invoke-Runz $sets[$n] @($Model, "--perplexity", $text, "--ppl-chunks", 4, "--ppl-kl", $kl)
   $line = ($o -split "`n" | Where-Object { $_ -match "KL vs base" } | Select-Object -Last 1)
   $ppl = [regex]::Match($o, "perplexity: ([\d.]+)")

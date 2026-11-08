@@ -281,6 +281,7 @@ static int run_main(int argc, char** argv) {
             "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any)\n"
             "profiling:\n"
             "  --prof                time to first token and per-kernel profile of the prompt\n"
+            "  --driver-reserve-gb N GPU memory left to the driver, GiB (default 0.5; ARC_DRIVER_RESERVE_GB too)\n"
             "  --prof-gen            per-kernel profile of generation (ARC_PROF_LAYERS=8: per group of 8 layers); with\n"
             "                        --bench-batch: each kernel's GPU time of a step alone and batched, side by side\n"
             "accuracy:\n"
@@ -346,6 +347,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--show") show = true;
     else if (a == "--dump-logits") dump_logits = next();
     else if (a == "--prof-gen") prof_gen = true;
+    else if (a == "--driver-reserve-gb" && i + 1 < argc) _putenv_s("ARC_DRIVER_RESERVE_GB", argv[++i]);  // (Engine::driver_slack)
     else if (a == "--act256") eo.act32_all = false;
     else if (a == "--attn-f32") eo.attn_int8 = false;
     else if (a == "--npu") {  // the NPU next to the GPU for prompt chunks (zero/npu): on, off, force

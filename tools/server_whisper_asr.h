@@ -25,7 +25,7 @@
   std::string asr_id;  // "qwen3-asr-1.7b"; empty: not loaded
   int asr_parts() const { return asr_eng_ ? q3asr::batch_parts(*asr_eng_) : 0; }
   // slots: parts decoded together (1-kAsrSlots; 0: up to kAsrSlots while the slots past the first take at most 15 % of
-  // the GPU share less Engine::kDriverSlack, the rest is the chat model's)
+  // the GPU share less Engine::driver_slack(), the rest is the chat model's)
   void load_asr(const std::string& gguf, const std::string& kernel_dir, int slots = 0) {
     if (q3asr::find_mmproj(gguf).empty()) throw std::runtime_error("no Qwen3-ASR mmproj (projector qwen3a) next to " + gguf);
     EngineOptions eo;
@@ -40,7 +40,7 @@
     if (!eng->hp.qwen3) throw std::runtime_error(gguf + ": not a Qwen3-ASR text model");
     int ns = slots > 0 ? std::min(slots, kAsrSlots) : kAsrSlots;
     if (slots <= 0) {
-      const double share = (double)eng->device_mem() - Engine::kDriverSlack;
+      const double share = (double)eng->device_mem() - Engine::driver_slack();
       const double per = (double)(eng->slot_bytes(eng->ctx) - eng->snapshot_bytes());
       while (ns > 1 && (ns - 1) * per > 0.15 * share) --ns;
     }

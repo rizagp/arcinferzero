@@ -493,7 +493,7 @@
     const bool tied = !f_.find("output.weight");
     for (const GgufTensor& t : f_.tensors)
       if (!(t.name == "token_embd.weight" && !tied) && t.name != "per_layer_token_embd.weight") total += (double)t.nbytes;
-    const double budget = (double)device_mem() - kDriverSlack, GiB = 1073741824.0;
+    const double budget = (double)device_mem() - driver_slack(), GiB = 1073741824.0;
     tight_ = zrt::integrated() && total > 0.85 * budget;
     double want = opt.host_weights_gb >= 0 ? opt.host_weights_gb * GiB : 0;
     if (opt.host_weights_gb < 0 && tight_) {

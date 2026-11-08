@@ -213,11 +213,11 @@ class Service {
       }
       const size_t need = last + ((size_t)128 << 20);
       uint64_t b = 0, u = 0;
-      if (last && zrt::video_budget(b, u) && (double)u + need + Engine::kDriverSlack > (double)b) {
+      if (last && zrt::video_budget(b, u) && (double)u + need + Engine::driver_slack() > (double)b) {
         char m[200];
         snprintf(m, sizeof m, "not enough free GPU memory: it needs %.1f GiB, %.1f GiB are free. Unload the chat model "
                               "first (it loads again with less context)", need / 1073741824.0,
-                 std::max(0.0, ((double)b - (double)u - Engine::kDriverSlack) / 1073741824.0));
+                 std::max(0.0, ((double)b - (double)u - Engine::driver_slack()) / 1073741824.0));
         bad = m;
         return false;
       }

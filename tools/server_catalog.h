@@ -568,7 +568,7 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
     Engine probe(model, e2);
     res = probe.w8_resident;
     const double gib = 1073741824.0,
-                 budget = probe.device_mem() - Engine::kDriverSlack - probe.snapshot_bytes() - (double)reserve;
+                 budget = probe.device_mem() - Engine::driver_slack() - probe.snapshot_bytes() - (double)reserve;
     const double base = (double)probe.gpu_bytes - (double)probe.ctx_bytes(e2.ctx);
     // (--slots N: N - 1 more KV caches, states and snapshots of the same context)
     auto need = [&](int c) { return base + probe.ctx_bytes(c) + (double)(std::max(eo.slots, 1) - 1) * probe.slot_bytes(c); };

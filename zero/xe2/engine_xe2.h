@@ -19,11 +19,28 @@
   bool p140_take(const GpuWeight& w, int Mp) const {
     return p140_ && !w.wq && w.gemm_qtype >= 100 && w.gemm_qtype <= 103 && Mp >= kP140Min && Mp % 32 == 0 && w.N % 32 == 0;
   }
+  // ---- H8 + 4 column groups by default on discrete cards with 16-lane XMX, for the Qwen dense models (issue #4,
+  // 2026-11-08, a Pro B60, 27B, package d980970: 512 tokens 615 -> 677 tok/s, 4K 766 -> 1,024, 16K 706 -> 937; KL
+  // against the default path 0.00154, max 0.064). Not for MoE models (the 35B: H8 -1 %), Gemma or Flash Next (never
+  // measured with H8 on a B60), nor two-pass models. Off again if XMX does not pass its check. ARC_H8=0: off
+  bool h8_auto_ = false;
+  bool h8_auto_wanted() const {
+    if (getenv("ARC_H8") && atoi(getenv("ARC_H8")) == 0) return false;
+    return cl_.xmx && !cl_.sg8 && !zrt::integrated() && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3;
+  }
+  // the H8 GEMM's column groups: 4 with h8_auto_ (unless ARC_GEMM_CG is set), else xe2_cg_for
+  int h8_cg_for(int N) const {
+    static const bool cg_env = getenv("ARC_GEMM_CG") != nullptr;
+    return h8_auto_ && !cg_env && (N / 16) % 4 == 0 ? 4 : xe2_cg_for(N);
+  }
   bool p140_wanted() const {  // (w8_resident: the weights resident in W8, a member of Engine)
     const char* e = getenv("ARC_140T");
     if (e && atoi(e) == 0) return false;
     const bool test = e && atoi(e) == 1 && getenv("ARC_XMX_TRY");
-    return (cl_.xmx || test) && cl_.sg8 && zrt::integrated() && !w8_resident;
+    // (the models it was measured on: Qwen dense, as h8_auto_; not MoE, Gemma, Flash Next or Qwen3 dense, and not with
+    //  ARC_H8_SB=1, whose staged form it does not track. Self audit 2026-11-08)
+    return (cl_.xmx || test) && cl_.sg8 && zrt::integrated() && !w8_resident && !hp.moe && !hp.gemma && !hp.hc && !hp.qwen3 &&
+           h8_row();
   }
   // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows
   //  the XMX GEMM spilling with 128)
@@ -77,9 +94,12 @@
   }
   // ARC_GEMV_PF=1: the single-token GEMV (gemv, codebook / K types) issues every row's reads of a step before decoding
   // the first (GROWS x more loads in flight: a B60's GEMV reached ~55 % of its bandwidth; QUEUE F31.4). Bit-identical
+  // On by default on discrete cards since 2026-11-08: a Pro B60's 27B 22.39 -> 23.11 and 22.33 -> 23.08 tok/s in two
+  // runs (issue #4), the 35B 84.3 -> 84.8. iGPUs keep it off (the 125H 8 % slower, a 140T 1-2 %). ARC_GEMV_PF=0 / 1
   std::string xe2_gemv_pf() const {
-    static const bool pf = getenv("ARC_GEMV_PF") && atoi(getenv("ARC_GEMV_PF")) != 0;
-    return pf ? std::string(" -DGEMV_PF") : std::string();
+    static const int pf = getenv("ARC_GEMV_PF") ? (atoi(getenv("ARC_GEMV_PF")) != 0 ? 1 : 0) : -1;
+    const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;
+    return on ? std::string(" -DGEMV_PF") : std::string();
   }
   // the 2-8 token GEMV (gemv_mt / gemv_mt_v: MTP and DFlash2 verification, batched slots) with the default register
   // file (128) on discrete cards: a Pro B60's 27B MTP went 43.3 -> 47.1 tok/s (issue #4, 2026-11-02); ARC_GEMV_MT_GRF=256

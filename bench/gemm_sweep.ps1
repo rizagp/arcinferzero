@@ -61,7 +61,7 @@ function Invoke-Run([string]$model, [hashtable]$set) {
       "X16TM" { $env:ARC_X16 = "1"; $env:ARC_X16_TM = "$($set[$k])" }
       "X16GRF" { $env:ARC_X16 = "1"; $env:ARC_X16_GRF = "$($set[$k])" }
       "X16CG" { $env:ARC_X16 = "1"; $env:ARC_X16_CG = "$($set[$k])" }
-      "H8" { if ($set[$k] -eq "on") { $env:ARC_H8 = "1" } }
+      "H8" { $env:ARC_H8 = $(if ($set[$k] -eq "on") { "1" } else { "0" }) }  # (off: ARC_H8=0, H8 being the default for Qwen dense models on discrete cards)
       "X2D" { $env:ARC_GEMM_2D = $(if ($set[$k] -eq "off") { "0" } else { "1" }); $env:ARC_GEMM_2D_PF = $(if ($set[$k] -eq "pf") { "1" } else { "0" }) }
     }
   }
@@ -110,7 +110,7 @@ $grid = [ordered]@{
   H8    = @("off", "on")
   X2D   = @("pf", "on", "off")
 }
-$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; MOECG = 1; MOEWY = 1; CG = 1; ACT = 32; X16 = "off"; H8 = "off"; X2D = "pf" }
+$defaults = @{ XMX = "on"; TM = 16; RG = 4; WGY = 8; SPLIT = 17; GRF = 128; MOEGRF = 256; MOECG = 1; MOEWY = 1; ACT = 32; X16 = "off"; X2D = "pf" }  # (no H8: on by default for Qwen dense models on discrete cards, off otherwise, so both are measured)
 
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function Line([string]$what, $r) { [string]::Format($inv, "{0,-28} {1,10:F1} tok/s  {2}", $what, $r.tps, $r.path) }

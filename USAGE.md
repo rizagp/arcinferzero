@@ -97,7 +97,7 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
 **Through the window:** double-click `arc-launcher.cmd` in the project folder. The window shows:
 - every model and its variants in the Hugging Face cache (MTP, images, auto context, GPU memory at that context,
   file size, its id for Pi's `/model`, compatible or not); the running one is green;
-- for the selected model: what it supports and how the auto context is counted (GPU memory minus 1.2 GiB for the
+- for the selected model: what it supports and how the auto context is counted (GPU memory minus 0.5 GiB for the
   driver, snapshots, encoders, weights, MTP block and buffers, then the rest divided by the memory needed per 1,000
   tokens, at most the model's max context length);
 - the server option fields: the main ones are shown directly (context, MTP drafts, thinking budget, prompt cache,
@@ -164,7 +164,7 @@ pi-arc 35b --no-stream               # without the SSD cache: every expert on th
 On first use, arcinferzero writes the expert file once (35B UD-IQ4_XS: 16 GB, about 2.5 minutes; Flash Next: 56 GB, about 9.5 minutes) to
 `%USERPROFILE%\.arcinferzero\zero\`. This file can be deleted at any time; when it is missing, it is written again
 automatically. The cache size is set automatically: arcinferzero uses the GPU memory Windows reports for the iGPU (your
-shared-memory setting) less 1.2 GB for the driver, and the cache takes what the rest of the model leaves (it can be
+shared-memory setting) less 0.5 GiB for the driver (`-DriverReserveGb N` on `arc-server`, `--driver-reserve-gb N` on serverz / runz, or `ARC_DRIVER_RESERVE_GB`, changes it), and the cache takes what the rest of the model leaves (it can be
 changed: server options `--expert-cache-gb`, `--expert-cache-pct`). If GPU memory suddenly runs short because of other apps (e.g.
 Chrome), the cache shrinks itself by 1 GB per step instead of crashing.
 
@@ -528,7 +528,7 @@ print(r.choices[0].message.content)
 ## 5. Context size, and when a conversation gets long
 
 Each model uses the largest context that fits the GPU memory currently available (set in Intel Graphics Software,
-a 20.4 GiB GPU share on this laptop now; the amount the driver offers changes with what other apps run), minus 1.2 GiB
+a 20.4 GiB GPU share on this laptop now; the amount the driver offers changes with what other apps run), minus 0.5 GiB
 for the driver, or the model's training limit. The context adjusts itself when that setting is changed (run
 `arc-server restart` afterwards). The launcher window shows the current numbers. Examples:
 
@@ -546,7 +546,7 @@ for the driver, or the model's training limit. The context adjusts itself when t
 fixed context). `--chunk 1024` frees 1.1 GiB on the 27B for more context (118,784 at 18.3 GiB; prompts of ~11K
 tokens ~4 % slower, from ~34K on no difference).
 
-arcinferzero uses the whole GPU share you set except 1.2 GiB for the driver, so the share decides how much RAM is left
+arcinferzero uses the whole GPU share you set except 0.5 GiB for the driver, so the share decides how much RAM is left
 for Windows: if the laptop becomes slow or stops responding while a model runs, lower the GPU memory setting.
 
 The output limit (`maxTokens` in Pi) equals the context size: Pi itself clamps each request to the room left

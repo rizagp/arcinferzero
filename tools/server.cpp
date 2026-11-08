@@ -962,7 +962,7 @@ int main(int argc, char** argv) {
   static const std::vector<std::pair<std::string, std::string>> kOpts = {
       {"--model", "a .gguf file, e.g. -m \"C:\\models\\Qwen3.5-4B-UD-Q4_K_XL.gguf\", or none"}, {"--host", "an address, e.g. 0.0.0.0"},
       {"--port", "a port, 1..65535"}, {"--ctx", "a number of tokens, or auto"}, {"--chunk", "a number of tokens, 0 = auto"},
-      {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--expert-ram-gb", "GiB, e.g. 200"},{"--no-stream", ""},
+      {"--expert-cache-gb", "GiB, e.g. 6"}, {"--expert-cache-pct", "a percentage, e.g. 40"}, {"--expert-ram-gb", "GiB, e.g. 200"}, {"--driver-reserve-gb", "GiB, 0 to 8, e.g. 0.5"},{"--no-stream", ""},
       {"--pack", "a MoE .gguf file (its -00001-of- part when split)"}, {"--alias", "a model id"},
       {"--webui", "a folder with index.html"}, {"--budget", "GiB"}, {"--attn-f32", ""}, {"--act256", ""}, {"--precise", ""}, {"--npu", "on, off or force"},
       {"--mtp", ""}, {"--dflash", "a DFlash2 drafter folder (with model.safetensors)"}, {"--no-dflash", ""},
@@ -1005,6 +1005,11 @@ int main(int argc, char** argv) {
     else if (a == "--expert-cache-gb") so.eo.expert_cache_gb = to_double(a, next());
     else if (a == "--expert-cache-pct") so.eo.expert_cache_pct = to_double(a, next());
     else if (a == "--expert-ram-gb") so.eo.expert_ram_gb = to_double(a, next());
+    else if (a == "--driver-reserve-gb") {  // (Engine::driver_slack reads it, once, before any engine exists)
+      const double g = to_double(a, next());
+      if (!(g >= 0.0 && g <= 8.0)) { fprintf(stderr, "arcinferzero-server: --driver-reserve-gb: 0 to 8 GiB\n"); return 1; }
+      _putenv_s("ARC_DRIVER_RESERVE_GB", std::to_string(g).c_str());
+    }
     else if (a == "--no-stream") so.eo.stream_experts = false;
     else if (a == "--pack") {  // make an arcinferzero package of a MoE GGUF, then exit
       const std::string src = next();
@@ -1175,7 +1180,7 @@ int main(int argc, char** argv) {
             "                        tools, files, chats, transcripts, live recording, slots or sessions\n"
             "  --alias NAME          model id in the API (default: the file name)\n"
             "  -c, --ctx N|auto      context in tokens (default 40960); auto: the largest that fits the GPU memory with\n"
-            "                        1.2 GiB left for the driver, at most the trained context (remembered in\n"
+            "                        0.5 GiB left for the driver, at most the trained context (remembered in\n"
             "                        " ARC_DATA_HELP "ctx-auto.txt)\n"
             "  --chunk N             prompt tokens per step (default 4096; MoE with experts on the SSD 8192, Flash\n"
             "                        Next 2048; MoE with --no-stream 2048; 512 when decoded weights stay resident;\n"
@@ -1217,8 +1222,9 @@ int main(int argc, char** argv) {
             "MoE models (experts read from the SSD into a GPU cache; expert file in\n"
             "%%USERPROFILE%%\\.arcinferzero\\zero, made on the first start, safe to delete):\n"
             "  --expert-cache-gb N   expert cache size in GiB (default: automatic: the GPU share Windows reports, your\n"
-            "                        setting, less 1.2 GB for the driver, less the rest of the model)\n"
+            "                        setting, less 0.5 GiB for the driver, less the rest of the model)\n"
             "  --expert-cache-pct P  expert cache as a percentage of all experts\n"
+            "  --driver-reserve-gb N GPU memory left to the driver, GiB (default 0.5; ARC_DRIVER_RESERVE_GB does the same)\n"
             "  --expert-ram-gb N     experts read from the SSD also kept in RAM, up to N GiB, and read from there again\n"
             "                        (default: a GPU with memory of its own: the free RAM less 16 GiB; an iGPU: 0)\n"
             "  --pack FILE.gguf      make a package of a MoE model (its first part when split): the non-expert\n"

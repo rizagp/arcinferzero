@@ -115,7 +115,7 @@ LAUNCHER OPTIONS
   --no-mtp, -NoMtp               no speculative decoding (default: on when the model has an MTP block or a
                                  Gemma drafter; same output, faster generation)
   --ctx <N|auto>, -Ctx           context size in tokens, or auto = the largest that fits the GPU memory
-                                 currently set (bin\clinfo.exe, "global mem") less 1.2 GiB for the driver,
+                                 currently set (bin\clinfo.exe, "global mem") less 0.5 GiB for the driver,
                                  at most the model's max context length. Computed for every model in
                                  a few seconds (a dry load that only adds up the memory), remembered in
                                  %USERPROFILE%\.arcinferzero\zero\ctx-auto.txt, recomputed when the GPU memory changes.

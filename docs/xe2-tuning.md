@@ -19,6 +19,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_H8_FUSE=0` | on | H8's weight rotation after `decode_w8` again, instead of in one pass with the decode (`decode.cl h8r_decode`); the same values | 8 |
 | `ARC_XMX_SPEED=1` | off | the start-time speed check (a model-sized GEMM, XMX against DP4a) on discrete cards too, and under `ARC_XMX_TRY` (tests); iGPUs with XMX always run it | 8 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
+| `ARC_H8=0` | on for Qwen dense models on discrete cards with 16-lane XMX (with `ARC_GEMM_CG=4`), and in the 140T preset | H8 off (2026-11-08: B60 27B 512 / 4K / 16K 615 / 766 / 706 -> 677 / 1,024 / 937 tok/s with it) | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
@@ -26,7 +27,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_MOE_GR_GU` / `ARC_MOE_GR_DN` | 1 / 4 | rows per sub-group of the experts' gate / up and down GEMVs for one token (`bench\decode_try.ps1` rows for MoE models) | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
-| `ARC_GEMV_PF=1` | off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
+| `ARC_GEMV_PF=1` | on on discrete cards since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s), off on iGPUs; `=0` off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
 

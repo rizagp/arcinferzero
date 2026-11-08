@@ -372,7 +372,10 @@
   //  must fail)
   bool xmx_ = false;
   bool xmx_slow_ = false;  // (the check failed on speed, the results being right: no retry without 2D loads)
-  bool xmx_check() {
+  // mode 0: the plain XMX kernels and the MoE tiles; mode 1: the H8 kernels this engine runs (its column groups) and the
+  // 140T preset's, checked apart and kept per kind by the caller (zero/engine.h): a failing H8 kernel then turns H8
+  // off, not XMX (self audit 2026-11-08)
+  bool xmx_check(int mode = 0) {
     // (M: 4 tiles of tm tokens, so every work-group shape below covers at least one; 64 with the default tm 16)
     // (N: 4 column groups, so ARC_GEMM_CG up to 4 is checked too)
     const int M = 4 * gemm_tm(), N = 64, K = 1024, nsb = K / 256, ng = 2 * N / 16;  // (weights for 2 * N rows: two experts)
@@ -428,10 +431,10 @@
       for (int q : {101, 100, 103, 102, 8, 12, 13, 14, 110, 111})  // (110, 111: H8, zero/engine_h8.h, never per-32 activations)
         for (int a32 = q >= 110 ? 0 : 1; a32 >= 0; --a32) {
           // (only when asked for: an H8 kernel that fails its check must not take XMX away from everything else)
-          if (q >= 110 && !(h8_env() && q == h8_qtype())) continue;
+          if (mode == 0 ? q >= 110 : (q < 110 || !(h8_ && (!p140_ || h8_env()) && q == h8_qtype()))) continue;  // (H8: mode 1 only)
           if (cl_.sg8 && q < 100) continue;  // (the native types stay on DP4a on 8-lane GPUs: nothing to compare)
           const std::string nm = std::to_string(q) + (a32 ? "/act32" : "");
-          const int cg = xe2_cg_for(N);
+          const int cg = q >= 110 ? h8_cg_for(N) : xe2_cg_for(N);  // (H8: its default column groups, 4 on discrete cards)
           auto make = [&](int x) { return gemm_kernel(q, a32 != 0, x, cg); };
           // (wgy rows of tm tokens per work-group, rg row groups; split: superblocks per piece, 0 = one piece)
           auto dense = [&](int acc, int wgy, int rg, int split) {
@@ -453,7 +456,7 @@
         }
       for (int q : {100, 101})  // (the tile kernel has no layouts with mins)
         for (int acc : {0, 2}) {
-          if (cl_.sg8) continue;  // (DP4a on 8-lane GPUs: moe_gemm_kernel)
+          if (cl_.sg8 || mode != 0) continue;  // (DP4a on 8-lane GPUs: moe_gemm_kernel)
           auto make = [&](int x) { return moe_gemm_kernel(q, x); };
           check(std::to_string(q) + "/moe" + (acc ? "/swiglu" : ""), make, [&](cl_kernel k) {
             int MM = M, NN = N, KK = K, ldc = N, ac = acc, e0 = 0, e1 = 2, um = acc ? 1 : 0, us = acc ? 0 : 1;
@@ -471,21 +474,25 @@
         }
       // (the Arc 140T preset, zero/xe2/engine_xe2.h p140_: its own kernels, XMX at 32 tokens, 2 column groups and 128
       //  registers, against the DP4a default (16 tokens, 256 registers) bit for bit: the W8 layouts with and without
-      //  per-32 activation scales and H8R, stored and with the fused SwiGLU)
-      if (p140_ && bad.empty()) {
+      //  per-32 activation scales and H8R, stored, in two split-K pieces and with the fused SwiGLU)
+      if (mode == 1 && p140_ && bad.empty()) {
         const int wgy = 2;
         for (int q : {101, 100, 103, 102, 111})
           for (int a32 = q >= 110 ? 0 : 1; a32 >= 0; --a32)
-            for (int acc : {0, 2}) {
+            for (int mode2 = 0; mode2 < 3; ++mode2) {  // (store; split-K: a second piece accumulating; the fused SwiGLU)
+              const int acc = mode2 == 2 ? 2 : 0, pieces = mode2 == 1 ? 2 : 1;
               std::vector<float> out[2];
               for (int x = 0; x < 2; ++x) {
                 const int tmx = x ? 32 : 16, cgx = x ? 2 : 1;
                 cl_kernel k = x ? gemm_kernel(q, a32 != 0, 1, 2, 32, 1) : gemm_kernel(q, a32 != 0, 0, 1, 16, 0);
                 CL_CHECK(clEnqueueWriteBuffer(cl_.queue, bc, CL_TRUE, 0, c0.size() * 4, c0.data(), 0, nullptr, nullptr));
-                int MM = M, NN = N, KK = K, ldc = N, coff = 0, ac = acc, rg = 4, s0 = 0, s1 = nsb;
-                set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
                 size_t gws[2] = {(size_t)N * (M / tmx / wgy), (size_t)wgy}, lws[2] = {16 * (size_t)cgx, (size_t)wgy};
-                run("xmx_check", k, 2, gws, lws);
+                for (int sp = 0; sp < pieces; ++sp) {
+                  int MM = M, NN = N, KK = K, ldc = N, coff = 0, ac = sp == 0 ? acc : 1, rg = 4, s0 = nsb * sp / pieces,
+                      s1 = nsb * (sp + 1) / pieces;
+                  set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
+                  run("xmx_check", k, 2, gws, lws);
+                }
                 out[x].resize(c0.size());
                 CL_CHECK(clEnqueueReadBuffer(cl_.queue, bc, CL_TRUE, 0, out[x].size() * 4, out[x].data(), 0, nullptr, nullptr));
               }
@@ -495,7 +502,7 @@
                 sane = sane || out[0][i] != c0[i];
               }
               if (!sane || memcmp(out[0].data(), out[1].data(), out[0].size() * 4))
-                bad += " 140T/" + std::to_string(q) + (a32 ? "/act32" : "") + (acc ? "/swiglu" : "");
+                bad += " 140T/" + std::to_string(q) + (a32 ? "/act32" : "") + (mode2 == 1 ? "/split" : mode2 == 2 ? "/swiglu" : "");
             }
       }
       // (a GPU with 8-lane sub-groups, Arrow Lake H, comes here only with ARC_XMX_FORCE=1 (zero/engine.h). The speed
@@ -508,7 +515,7 @@
       const bool spd_env = getenv("ARC_XMX_SPEED") && atoi(getenv("ARC_XMX_SPEED")) != 0;
       const bool force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
       // (also discrete cards with 8-lane DPAS, the Alchemist A-series: gemm_x8 lost 1.6x on a 140T and is unmeasured there)
-      if (bad.empty() && !force && !p140_ && (spd_env || ((zrt::integrated() || cl_.sg8) && !getenv("ARC_XMX_TRY")))) {
+      if (mode == 0 && bad.empty() && !force && !p140_ && (spd_env || ((zrt::integrated() || cl_.sg8) && !getenv("ARC_XMX_TRY")))) {
         const int SM = 512, SN = 17408, SK = 5120, sng = SN / 16, snsb = SK / 256;
         std::vector<uint32_t> sw((size_t)sng * snsb * 4 * 16 * 16), sh((size_t)sng * snsb * 10 * 16);
         for (auto& v : sw) v = rnd();
@@ -564,7 +571,7 @@
       fprintf(stderr, "arcinferzero: XMX kernels do not build here (%s): DP4a\n", e.what());
       return false;
     }
-    if (!bad.empty()) fprintf(stderr, "arcinferzero: XMX results differ from DP4a (%s ): DP4a (please report)\n", bad.c_str());
+    if (!bad.empty()) fprintf(stderr, "arcinferzero: %s results differ from DP4a (%s ): %s (please report)\n", mode ? "H8 XMX" : "XMX", bad.c_str(), mode ? "H8 off" : "DP4a");
     return bad.empty();
   }
 

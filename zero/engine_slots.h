@@ -138,7 +138,21 @@
   int bound_slot() const { return slot_; }
   static constexpr int kMaxSlots = 8;
   static constexpr int kSlotCtxFloor = 32768;
-  static constexpr double kDriverSlack = 1.2 * 1073741824.0;  // (GPU share bytes left to the driver; the user's choice)  // (--ctx auto, slots of streamed MoE models: context kept per slot)
+  // GPU share bytes left to the driver (the user's choice): 0.5 GiB by default on iGPUs and discrete cards alike (1.2 GiB
+  // until 2026-11-08); ARC_DRIVER_RESERVE_GB=N, or serverz / runz --driver-reserve-gb N (arc-server -DriverReserveGb N),
+  // sets it, 0 to 8 GiB. Read once per process
+  static double driver_slack() {
+    static const double v = [] {
+      const char* e = getenv("ARC_DRIVER_RESERVE_GB");
+      double g = e ? atof(e) : 0.5;
+      if (!(g >= 0.0 && g <= 8.0)) {
+        fprintf(stderr, "arcinferzero: ARC_DRIVER_RESERVE_GB=%s not in 0..8: 0.5\n", e);
+        g = 0.5;
+      }
+      return g * 1073741824.0;
+    }();
+    return v;
+  }
   void add_slots(int n) {
     if (n > kMaxSlots) throw std::out_of_range("add_slots: at most " + std::to_string(kMaxSlots) + " slots");
     if (n <= 1 || !slot_ptrs_.empty() || opt.dry) return;

@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-11-08: B60 defaults: H8 + 4 column groups for Qwen dense models, GEMV prefetch; arc-server -DFlash
+
+- **H8 + `ARC_GEMM_CG=4` by default** on discrete cards with 16-lane XMX, for the Qwen dense models. A Pro B60
+  (issue #4, package d980970) measured the 27B at 512 tokens 615 -> 677 tok/s, 4K 766 -> 1,024 and 16K 706 -> 937.
+  The fused H8 decode made H8 win at short prompts too. KL against the plain path 0.00154 (max 0.064).
+  - Not for MoE models (the 35B: H8 -1 %), Gemma, Flash Next or two-pass models.
+  - Off again if XMX does not pass its start-time check, which now runs the H8 kernel with 4 column groups.
+  - `ARC_H8=0` turns it off.
+- **`ARC_GEMV_PF=1` by default on discrete cards** (bit-identical). The B60's 27B generated 22.33 -> 23.08 tok/s, as
+  in an earlier run (22.39 -> 23.11). iGPUs keep it off. `ARC_GEMV_PF=0` turns it off.
+- **`scripts\arc-server.ps1 -DFlash <folder>|off`:** a DFlash2 drafter of your own, e.g. for a fine-tuned variant the
+  model list does not pair with one (asked for on issue #5).
+- **`bench\b60_sweep.ps1` / `gemm_sweep.ps1`:** their "no H8" rows set `ARC_H8=0`; the KL base is the plain path.
+- **Also measured on the B60:** `ARC_GEMM_WPF=2` +3.6 % without H8 (794 tok/s) but slower with it; f16 XMX 400-550,
+  so f16 is out on the B60 too. Two cards with H8: 1,292 tok/s at 4K, four cards 1,624. MTP 47.7 tok/s.
+- The laptop's iGPU path is unchanged: logits bit-identical (4B, ~6,000-token prompt in 1,024-token chunks).
+- **The GPU memory left to the driver is 0.5 GiB instead of 1.2**, on iGPUs and discrete cards alike (the user's
+  choice). On four B60s that frees 2.8 GiB for context and the expert cache. The auto context and the expert cache use
+  the share less 0.5 GiB. It is a setting, not fixed: `arc-server -DriverReserveGb N`, `serverz` / `runz
+  --driver-reserve-gb N`, or `ARC_DRIVER_RESERVE_GB=N` (0 to 8 GiB). The laptop: the 35B's expert cache 83 % of its
+  experts.
+- **Self audit of these changes:**
+  - The `--ctx auto` estimate now counts H8's buffers (~0.35 GB on the 27B).
+  - The H8 kernels are checked apart from the rest of XMX, and per kind of check, not once per process. A failing H8
+    kernel turns H8 off, not XMX.
+  - The 140T check covers split-K.
+  - The 140T preset keeps to Qwen dense models and stays off with `ARC_H8_SB=1`.
+  - The per-256 H8 path tracks its staged form.
+  - `-DFlash` takes an absolute path and refuses `-NoMtp`.
+  - The B60 sweep's FUSE rows and its CG labels for H8 (4 column groups now by default).
+
 ## 2026-11-08: web UI: bold that holds italic
 
 - `**not *clean* yet**` was shown with its asterisks: the bold pattern allowed no `*` inside, so italic inside bold, as

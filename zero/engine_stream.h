@@ -50,10 +50,10 @@
       want = (uint64_t)(all * std::min(opt.expert_cache_pct, 100.0) / 100);
     } else {
       // the whole process (weights, buffers, transient area, cache) within the GPU share Windows gives the iGPU, less
-      // kDriverSlack for the driver: the share is the user's setting, the rest of the RAM what they leave to Windows
+      // driver_slack() for the driver: the share is the user's setting, the rest of the RAM what they leave to Windows
       // (the user's rule since 2026-10-22; before: also RAM - a 14 GB Windows reserve, which held a 20.4 GiB share to
       // 17.7). (With 1.13 GiB left a kernel launch once failed with out of device memory, 35B at 262K.)
-      const uint64_t share = zrt::D().global_mem, slack = (uint64_t)kDriverSlack;
+      const uint64_t share = zrt::D().global_mem, slack = (uint64_t)driver_slack();
       uint64_t limit = share > slack ? share - slack : 0;
       // (ARC_TP_SIM: every shard on GPU 0, each with its part of the memory)
       if (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0) limit /= opt.tp_size;
@@ -61,7 +61,7 @@
       const uint64_t used = gpu_bytes + xc_->stage_bytes + (uint64_t)(0.1 * GiB) + snapshot_bytes() * std::max(opt.slots, 1) + opt.stream_reserve;
       want = limit > used ? limit - used : 0;
       fprintf(stderr, "arcinferzero: memory limit %.2f GiB (GPU share %.2f - %.1f for the driver), model + buffers %.2f GiB\n",
-              limit / GiB, share / GiB, kDriverSlack / GiB, used / GiB);
+              limit / GiB, share / GiB, driver_slack() / GiB, used / GiB);
     }
     want = std::min(want, all);
     // at least one layer's worth of slots per pool (the experts of a few verification tokens must fit)
