@@ -29,10 +29,12 @@ foreach ($src in $Sources) {
   #  doubled backslash keeps the closing quote a quote.
   #  /guard:cf: Control Flow Guard, as the server parses pages, PDFs, Office files and images from the internet
   #  (web_fetch, web_view): an indirect call can only reach a function's start. No change to the arithmetic: logits
-  #  bit-identical (Gemma 4 E4B, 2026-11-03). /GS, /DYNAMICBASE, /NXCOMPAT and /HIGHENTROPYVA are MSVC's x64 defaults)
+  #  bit-identical (Gemma 4 E4B, 2026-11-03). /GS, /DYNAMICBASE, /NXCOMPAT and /HIGHENTROPYVA are MSVC's x64 defaults.
+  #  /CETCOMPAT (linker only): the exes may run with the CPU's shadow stack (Intel CET, Core Ultra has it), so an
+  #  overwritten return address ends the process instead of running code; the code itself is the same (2026-11-09))
   $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 $fp /EHsc /bigobj /MT /W4 /permissive- /Zc:__cplusplus /guard:cf /d1trimfile:`"$root\\`" /external:I`"$root\third_party`" /external:W0 /openmp /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
          "/Fe`"$out\$name.exe`" /Fo`"$out\\`" `"$full`" " +
-         "/link /guard:cf /MANIFEST:EMBED /MANIFESTINPUT:`"$root\tools\utf8.manifest`""  # (UTF-8 code page: paths with any characters)
+         "/link /guard:cf /CETCOMPAT /MANIFEST:EMBED /MANIFESTINPUT:`"$root\tools\utf8.manifest`""  # (UTF-8 code page: paths with any characters)
   cmd /c $cmd
   if ($LASTEXITCODE -ne 0) { throw "build failed: $src" }
 }

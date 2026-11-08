@@ -41,6 +41,11 @@ class HttpResponse {
   std::function<bool(const std::string& data)> on_event;
   // further header lines for send() (each ending in \r\n), e.g. Content-Disposition for a download
   std::string extra;
+  // every reply: the browser takes Content-Type as given (a JSON or text reply is never run as a script or page);
+  // not twice when `extra` has it already (/files/<id>)
+  std::string nosniff() const {
+    return extra.find("X-Content-Type-Options") == std::string::npos ? "X-Content-Type-Options: nosniff\r\n" : "";
+  }
   // A stream of another kind (application/x-ndjson, or named server-sent events): headers, then write().
   void begin_stream(const std::string& content_type) {
     std::string h = "HTTP/1.1 200 OK\r\nContent-Type: " + content_type + "\r\nCache-Control: no-cache\r\n";
@@ -61,6 +66,7 @@ class HttpResponse {
     h += "Content-Type: " + content_type + "\r\n";
     h += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     h += cors();
+    h += nosniff();
     h += extra;
     h += close_after ? "Connection: close\r\n\r\n" : "Connection: keep-alive\r\n\r\n";
     raw(h);
@@ -117,6 +123,7 @@ class HttpResponse {
     h += "Content-Length: " + std::to_string(b - a) + "\r\nAccept-Ranges: bytes\r\n";
     if (part) h += "Content-Range: bytes " + std::to_string(a) + "-" + std::to_string(b - 1) + "/" + std::to_string(size) + "\r\n";
     h += cors();
+    h += nosniff();
     h += extra;
     h += "Connection: keep-alive\r\n\r\n";
     raw(h);
@@ -147,6 +154,8 @@ class HttpResponse {
   bool sse_comment(const std::string& text) { return on_event ? ok_ : raw(": " + text + "\n\n"); }
   void sse_end() { done_ = true; }
   bool streaming() const { return streaming_; }
+  // a response with no socket of its own (an inner request, e.g. one OCR page): asked whether the outer client left
+  std::function<bool()> gone_hook;
   bool done() const { return done_; }
   bool alive() const { return ok_; }
   // The client closed the connection (or it broke) while the response is being prepared, e.g. Pi's Esc: the request
@@ -154,6 +163,8 @@ class HttpResponse {
   // without blocking or writing anything (microseconds).
   bool client_gone() {
     if (!ok_) return true;
+    if (gone_hook && gone_hook()) return !(ok_ = false);
+    if (s_ == INVALID_SOCKET) return false;
     WSAPOLLFD p{s_, POLLRDNORM, 0};
     if (WSAPoll(&p, 1, 0) <= 0) return false;
     char c;

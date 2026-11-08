@@ -80,6 +80,12 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-09, exes linked with `/CETCOMPAT`** (CPU shadow stack allowed; build.ps1), plus load-time checks of
+  tensor shapes and a GGUF's array counts (`zero/engine_load.h`, `zero/engine_setup.h`, `src/gguf.h`). Meant to be
+  bit-identical: `runz --dump-logits`, 24 tokens, the build before (8b975c4) against the build after: Qwen3.5 4B
+  Q4_K_XL identical, Gemma 4 E4B Q4_0 identical; Qwen3.6 35B-A3B package (experts streamed), 12 tokens: identical.
+  Speed: 4B 16.13 -> 17.43 tok/s, E4B 18.72 -> 18.33 (one run each, the laptop's usual spread).
+
 - **2026-11-03, every exe built with Control Flow Guard** (`/guard:cf`, compiler and linker; build.ps1). Gemma 4
   E4B, `runz --bench-pp 1024 --n 64`, best of 2 per build, builds alternated: without 14.06 tok/s generation / 691.6
   prompt, then 15.00 / 737.1; with 13.46 / 701.9, 13.56 / 704.5, then 15.28 / 743.9: no difference beyond the laptop's

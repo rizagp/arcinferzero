@@ -49,8 +49,9 @@ A new message processes only itself:
   change before the tool results, and the snapshots keep a copy of the sliding-window rings, so the cache goes back
   further than the rings reach. After a 20K-token tool result, a one-line follow-up on Gemma 4 E4B took 0.8 s
   (38.4 s before).
-- **Session cache**: other conversations are saved to disk and loaded when they come back; **system prompts** are
-  kept on disk per project (Pi).
+- **Session cache**: other conversations are saved to disk and loaded when they come back (8 GB for all models
+  together by default, set in the launcher or with `-SessionCacheGb`; other models' oldest go first); **system
+  prompts** are kept on disk per project (Pi).
 - **Two conversations at once** (`--slots 2`): their next tokens run in one engine pass (27B prose 7.3 -> 10.5 tok/s
   together, Gemma 4 26B 19.8 -> 26.2).
 

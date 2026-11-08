@@ -11,6 +11,9 @@
     swa_cap_ = std::min(ctx, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256);
     if (hp.n_ple) {
       ple_tok_embd_ = &f_.get("per_layer_token_embd.weight");
+      if (ple_tok_embd_->dims.size() < 2 || ple_tok_embd_->dims[0] != (uint64_t)hp.n_ple * hp.n_layer ||
+          ple_tok_embd_->dims[1] < (uint64_t)hp.n_vocab)  // (a row: n_ple values for every layer, read for each token)
+        throw std::runtime_error("per_layer_token_embd.weight has an unexpected shape in the GGUF");
       ple_model_proj_ = load_w("per_layer_model_proj.weight");
       ple_proj_norm_ = load_f32("per_layer_proj_norm.weight");
     }

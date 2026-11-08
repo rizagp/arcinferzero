@@ -77,6 +77,11 @@
   - the file tools take `project:<id>/<path>` together with `"project_id": "<id>"` (the chat's project: another
     project's files are refused), and `list_files` takes `{"scope": "project", "project_id"}`;
   - `run_command` takes `project_id`, so a project chat's terminal starts in its folder.
+- Every reply carries `X-Content-Type-Options: nosniff` (a JSON or text reply is never run as a script or page).
+  The web UI page also sends `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none';
+  object-src 'none'; base-uri 'none'`: no other site can show it in a frame and trick a click on it (delete chats,
+  approve a command). OCR saves (`ocr_save`, into the chat's folder too) are refused with 403 from a page another
+  local program serves; a client that sends no Origin, the server's own page and a remote session's page may save.
 - Llama.cpp clients such as Unsloth Studio connect as to a llama-server: they read the context size and the token
   statistics from the fields above.
 - Sampling and output (chat): `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `frequency_penalty`,
@@ -135,8 +140,9 @@
   one), the server saves the conversation it holds to disk (KV cache, DeltaNet states; `%USERPROFILE%\.arcinferzero\zero\sessions`)
   and loads a saved one that matches the request, instead of processing its whole prompt again. New conversations
   resume after the system prompt they share (Qwen: a recurrent-state snapshot there, kept in host memory). Saving
-  and loading take about a second; outputs are identical to never switching. `--session-cache-gb N` (the server's default 0 = off; arc-server / pi-arc start it with 8 GB, `pi-arc --session-cache 0` = off;
-  the least recently used conversations go first); `arc-server clear-cache` deletes them all. `arc-server stop` /
+  and loading take about a second; outputs are identical to never switching. `--session-cache-gb N` (the server's default 0 = off; arc-server / pi-arc and the launcher start it with 8 GB,
+  `pi-arc --session-cache 0` = off). The size holds for all models together: when a save goes over it, other models'
+  saved conversations go first (oldest first), then this model's least recently used ones; `arc-server clear-cache` deletes them all. `arc-server stop` /
   `restart` and a model switch save the conversation the server holds first (`POST /sessions/save`), so it is
   loaded afterwards instead of processed again; only a server that is killed loses it.
 - Qwen turn snapshot (arcinferzero): the Qwen templates drop the reasoning of earlier turns as soon as the user

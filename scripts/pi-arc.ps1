@@ -132,7 +132,7 @@ LAUNCHER OPTIONS
                                  prompts ~4 % slower, long prompts the same speed.
   --session-cache <GB>           keep conversations on disk (%USERPROFILE%\.arcinferzero\zero\sessions) when you switch
   (also -SessionCache)           Pi sessions: going back to one loads it in seconds instead of processing its
-                                 whole prompt again (default: 8 GB; 0 = off). New sessions always reuse the
+                                 whole prompt again (default: 8 GB, all models together; 0 = off). New sessions always reuse the
                                  system prompt (in memory; from disk after a restart or a model switch).
   --slots <N>, -Slots            the server holds N conversations at once (default 1): start the first Pi with
                                  --slots 2, a second Pi (another terminal, plain pi-arc) shares the server; each

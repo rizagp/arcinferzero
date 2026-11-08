@@ -214,8 +214,11 @@ class GgufFile {
     const auto* types = get_ints("arcinferzero.virtual.types");
     const auto* dims = get_ints("arcinferzero.virtual.dims");  // 4 per tensor (unused trailing dims = 0)
     if (!names || !types || !dims || types->size() != names->size() || dims->size() != names->size() * 4) return;
+    // (only a package's experts, which the expert file holds: any other tensor without data would be read at
+    //  address 0 by a loader that expects bytes)
+    if (!has("arcinferzero.package")) return;
     for (size_t i = 0; i < names->size(); ++i) {
-      if (tensor_index.count((*names)[i])) continue;
+      if (tensor_index.count((*names)[i]) || (*names)[i].find("_exps.weight") == std::string::npos) continue;
       GgufTensor t;
       t.name = (*names)[i];
       t.type = (uint32_t)(*types)[i];
@@ -262,7 +265,10 @@ class GgufFile {
       case 9: {
         uint32_t et = rd<uint32_t>();
         uint64_t n = rd<uint64_t>();
-        if (n > size_ - pos_) throw std::runtime_error("gguf: truncated array");  // (every element takes a byte or more)
+        // (every element takes its width in the file, a string at least its 8-byte length: a count past what is left is
+        //  a damaged file, not a vector of gigabytes in memory)
+        const uint64_t w = et == 8 ? 8 : et == 0 || et == 1 || et == 7 ? 1 : et == 2 || et == 3 ? 2 : et == 10 || et == 11 || et == 12 ? 8 : 4;
+        if (n > (size_ - pos_) / w) throw std::runtime_error("gguf: truncated array");
         if (et == 8) { std::vector<std::string> v(n); for (auto& s : v) s = rd_str(); return v; }
         if (et == 6 || et == 12) { std::vector<double> v(n); for (auto& x : v) x = et == 6 ? rd<float>() : rd<double>(); return v; }
         std::vector<int64_t> v(n);

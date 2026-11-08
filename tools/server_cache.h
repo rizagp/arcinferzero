@@ -310,11 +310,66 @@
     for (auto& s : saved_) s.used = ++use_clock_;
     uint64_t total = 0;
     for (auto& s : saved_) total += s.bytes;
-    fprintf(stderr, "session cache: %s, %zu saved conversations (%.1f of %.1f GiB)\n", dir.c_str(), saved_.size(),
-            total / 1073741824.0, cap_gb);
+    const uint64_t others = prune_other_sessions(sess_dir_, total, sess_cap_);
+    fprintf(stderr, "session cache: %s, %zu saved conversations (%.1f GiB; all models %.1f of %.1f GiB)\n", dir.c_str(),
+            saved_.size(), total / 1073741824.0, (total + others) / 1073741824.0, cap_gb);
   }
 
  private:
+  // --session-cache-gb holds for all models together: each model file has a folder of its own next to this one
+  // (<sessions>/<model>-<size>[-layout]), and their saved conversations go first, oldest first, until this model's
+  // `mine` bytes and theirs fit under `cap` (this model's own are trimmed after, least recently used first). Only
+  // finished ".arcs" files are removed. Another server running with another model at the same time finds a removed
+  // file unreadable and forgets it (its prompt is processed again). Returns the other models' bytes left.
+  static uint64_t prune_other_sessions(const std::string& dir, uint64_t mine, uint64_t cap) {
+    namespace fs = std::filesystem;
+    if (!cap || dir.empty()) return 0;
+    std::error_code e, ei;
+    const fs::path self = fs::path(dir).lexically_normal();
+    std::vector<std::tuple<fs::file_time_type, fs::path, uint64_t>> all;
+    uint64_t total = 0;
+    // (this model's folder: by file identity, not by name; NTFS ignores case, a model renamed in case only reuses it)
+    auto is_self = [&](const fs::path& p) {
+      std::error_code q;
+      const bool same = fs::equivalent(p, self, q);
+      return q ? p.lexically_normal() == self : same;
+    };
+    // (a saved conversation of this server's: its first 4 bytes are "ARSV"; another program's .arcs is left alone,
+    //  for a --session-dir set to a folder with other things next to it)
+    auto is_conv = [](const fs::path& p) {
+      FILE* f = _wfopen(p.c_str(), L"rb");
+      if (!f) return false;
+      int32_t m = 0;
+      const bool ok = fread(&m, 4, 1, f) == 1 && m == kConvMagic;
+      fclose(f);
+      return ok;
+    };
+    for (fs::directory_iterator d(self.parent_path(), ei), end; !ei && d != end; d.increment(ei)) {
+      if (!d->is_directory(e) || is_self(d->path())) continue;
+      std::error_code ej;
+      for (fs::directory_iterator it(d->path(), ej), end2; !ej && it != end2; it.increment(ej))
+        if (it->path().extension() == ".arcs") {
+          const uint64_t sz = it->file_size(e);
+          if (e || !is_conv(it->path())) continue;
+          total += sz;
+          all.push_back({it->last_write_time(e), it->path(), sz});
+        }
+    }
+    std::sort(all.begin(), all.end(), [](auto& a, auto& b) { return std::get<0>(a) < std::get<0>(b); });
+    size_t n = 0;
+    uint64_t freed = 0;
+    for (auto& [t, p, sz] : all) {
+      if (mine + total <= cap) break;
+      if (!fs::remove(p, e) || e) continue;
+      total -= sz;
+      freed += sz;
+      ++n;
+    }
+    if (n)
+      fprintf(stderr, "session cache: removed %zu saved conversations of other models (%.1f GiB) to stay under %.1f GiB\n",
+              n, freed / 1073741824.0, cap / 1073741824.0);
+    return total;
+  }
   static constexpr int32_t kConvMagic = 0x56535241;  // "ARSV"
   // (positions checked against this context: resume points -1 (none) to ctx, gen_cut / floor 0 to ctx; a damaged
   //  file is left out rather than steering prepare_prefix to a wrong snapshot)
@@ -400,6 +455,11 @@
     saved_.push_back(SavedConv{file, cached_, res, last_gen_cut_, floor, bytes, use_clock_, writer, failed});
     uint64_t total = 0;
     for (auto& c : saved_) total += c.bytes;
+    try {  // the other models' first (a file system error leaves them)
+      prune_other_sessions(sess_dir_, total, sess_cap_);
+    } catch (const std::exception& x) {
+      fprintf(stderr, "session cache: pruning other models: %s\n", x.what());
+    }
     while (total > sess_cap_ && saved_.size() > 1) {  // least recently used first (never the one just saved)
       auto lru = std::min_element(saved_.begin(), saved_.end() - 1, [](auto& a, auto& b) { return a.used < b.used; });
       total -= lru->bytes;

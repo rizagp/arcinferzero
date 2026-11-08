@@ -776,6 +776,10 @@ class Server {
     // (asked again each time: an updated page shows at once; a cached one kept the old code, a new error box was not
     //  there until the user reloaded, 2026-11-04)
     rs.extra = "Cache-Control: no-cache\r\n";
+    // not inside another site's frame (a click there would act on this page: delete chats, approve a command); no
+    // plugins, no <base> that moves the page's links (inline scripts stay allowed: the page is one file)
+    rs.extra += "X-Frame-Options: DENY\r\n"
+                "Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'none'\r\n";
     rs.send(200, "text/html; charset=utf-8", ss.str());
   }
 
@@ -1240,8 +1244,9 @@ int main(int argc, char** argv) {
             "  GPU: picked at start: Xe2 / Xe3 GPUs (no 8-lane sub-groups) get 16-lane kernels, and XMX for the prompt\n"
             "  GEMMs when their results match the DP4a kernels' on a test (ARC_NO_XMX=1: DP4a; ARC_NO_SG8=1: 16 lanes)\n"
             "  --kernels DIR         kernel folder (default zero\\kernels);  --webui DIR  web UI folder\n"
-            "  --session-cache-gb N  disk space for saved conversations (default 0 = off): switching between\n"
-            "                        conversations loads the other one's state instead of processing its prompt again\n"
+            "  --session-cache-gb N  disk space for saved conversations, all models together (default 0 = off; arc-server\n"
+            "                        and the launcher: 8): switching between conversations loads the other one's state\n"
+            "                        instead of processing its prompt again (other models' go first, oldest first)\n"
             "  --session-dir DIR     where they are kept (default " ARC_DATA_HELP "sessions)\n"
             "  --no-prefix-cache     do not keep system prompts on disk (default: kept in " ARC_DATA_HELP "prefix,\n"
             "                        per project folder for Pi (its 2 latest versions), the 8 latest for other clients;\n"

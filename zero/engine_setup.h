@@ -102,6 +102,8 @@
     if (tok_embd_->dims.size() < 2 || tok_embd_->dims[1] <= 0 || hp.n_head <= 0 || hp.n_head_kv <= 0 ||
         hp.full_attn_interval <= 0 || hp.n_layer <= 0)
       throw std::runtime_error("invalid model dimensions in the GGUF");
+    if (tok_embd_->dims[0] != (uint64_t)hp.n_embd)  // (embed() reads n_embd values a row: a narrower table is read past)
+      throw std::runtime_error("token_embd.weight is not n_embd wide in the GGUF");
     hp.n_vocab = (int)tok_embd_->dims[1];
     // (n_rot exactly 64: attn_prep pairs RoPE elements across lanes 16 apart, right for 64 only)
     if (hp.head_dim != 256 || hp.ssm_d_state != 128 || hp.conv_k != 4 || hp.n_rot != 64 || hp.n_embd % 256 ||
@@ -144,6 +146,8 @@
     tok_embd_ = &f_.get("token_embd.weight");
     if (tok_embd_->dims.size() < 2 || tok_embd_->dims[1] <= 0 || hp.n_head <= 0 || hp.n_head_kv <= 0)
       throw std::runtime_error("invalid model dimensions in the GGUF");
+    if (tok_embd_->dims[0] != (uint64_t)hp.n_embd)  // (embed() reads n_embd values a row: a narrower table is read past)
+      throw std::runtime_error("token_embd.weight is not n_embd wide in the GGUF");
     hp.n_vocab = (int)tok_embd_->dims[1];
     if (hp.head_dim != 128 || hp.n_rot != hp.head_dim || I("attention.value_length", 128) != 128 || hp.n_embd % 256 ||
         hp.n_ff % 256 || hp.n_head % hp.n_head_kv || (hp.n_head * hp.head_dim) % 256 ||
@@ -192,6 +196,8 @@
       throw std::runtime_error("invalid Gemma 4 shape in the GGUF");
     tok_embd_ = &f_.get("token_embd.weight");
     if (tok_embd_->dims.size() < 2 || tok_embd_->dims[1] <= 0) throw std::runtime_error("invalid Gemma 4 shape in the GGUF");
+    if (tok_embd_->dims[0] != (uint64_t)hp.n_embd)  // (embed() reads n_embd values a row: a narrower table is read past)
+      throw std::runtime_error("token_embd.weight is not n_embd wide in the GGUF");
     hp.n_vocab = (int)tok_embd_->dims[1];
     for (int il = 0; il < hp.n_layer; ++il) {
       const int hd = hp.swa[il] ? hp.hd_swa : hp.hd_full;

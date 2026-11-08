@@ -71,8 +71,12 @@ inline std::string Pdf::render(int page, int dpi, std::string& err) const {
     Data::Pdf::PdfPage pg = doc.GetPage((uint32_t)(page - 1));
     Data::Pdf::PdfPageRenderOptions opt;
     const auto sz = pg.Size();  // (device-independent pixels, 96 per inch)
-    opt.DestinationWidth((uint32_t)(std::max)(1.0, sz.Width * dpi / 96.0));
-    opt.DestinationHeight((uint32_t)(std::max)(1.0, sz.Height * dpi / 96.0));
+    double w = (std::max)(1.0, sz.Width * dpi / 96.0), h = (std::max)(1.0, sz.Height * dpi / 96.0);
+    // (a page of a poster's or a drawing's size: its long side at most 4000 px, not a bitmap of gigabytes; an A4 page at
+    //  150 dpi is 1240 x 1754, unchanged)
+    const double scale = (std::min)(1.0, 4000.0 / (std::max)(w, h));
+    opt.DestinationWidth((uint32_t)(std::max)(1.0, w * scale));
+    opt.DestinationHeight((uint32_t)(std::max)(1.0, h * scale));
     // (the image: PNG, the renderer's default)
     Storage::Streams::InMemoryRandomAccessStream st;
     pg.RenderToStreamAsync(st, opt).get();

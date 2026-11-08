@@ -313,7 +313,7 @@ Update-Api
 [void](Add-Opt "API address" $apiPanel "for other apps; API key: anything; model: the id in the list")
 [void](Add-Opt "MTP drafts per step" $draftBox)
 [void](Add-Opt "Thinking budget (tokens)" $thinkBox)
-[void](Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; 0 = off")
+[void](Add-Opt "Session cache (GB on disk)" $sessBox "whole conversations, kept when switching sessions; all models together (default 8); 0 = off")
 [void](Add-Opt "NPU" $npuBox "part of each prompt chunk on the NPU (27B, Gemma 12B); kept on a restart")
 [void](Add-Opt "Accuracy" $preciseChk)
 [void](Add-Opt "" $netChk)

@@ -81,7 +81,8 @@ struct cl_buffer_region { size_t origin, size; };
     cl_int _e = (expr);                                                                      \
     if (_e != CL_SUCCESS) {                                                                  \
       fprintf(stderr, "arcinferzero error %d at %s:%d: %s\n", _e, __FILE__, __LINE__, #expr); \
-      exit(1);                                                                               \
+      fflush(stderr);                                                                        \
+      _Exit(1); /* (as ZE_CHECK: exit() runs destructors under running threads) */            \
     }                                                                                        \
   } while (0)
 
@@ -385,7 +386,8 @@ inline void* device_alloc(size_t n) {
              D().index, r, D().device_bytes / 1073741824.0);
     if (oom_throws) throw std::runtime_error(msg);
     fprintf(stderr, "arcinferzero: %s\n", msg);
-    exit(1);
+    fflush(stderr);
+    _Exit(1);
   }
   D().device_bytes += n;
   return p;
@@ -1030,10 +1032,12 @@ struct ClRt {
       zeModuleBuildLogGetString(log, &ln, nullptr);
       std::string s(ln, 0);
       zeModuleBuildLogGetString(log, &ln, s.data());
+      if (log) zeModuleBuildLogDestroy(log);  // (before the throw: it was left behind on a soft failure)
       delete p;
       if (soft_fail) throw std::runtime_error("zeModuleCreate failed: " + s.substr(0, 200));
       fprintf(stderr, "zeModuleCreate failed 0x%x: %s\n", r, s.c_str());
-      exit(1);
+      fflush(stderr);
+      _Exit(1);
     }
     if (log) zeModuleBuildLogDestroy(log);
     return p;

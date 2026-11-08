@@ -170,8 +170,16 @@
       if (name.find(roles[r]) != std::string::npos) return r;
     return kRoles - 1;
   }
+  // a matrix the loaders read as rows: two dimensions or more, sizes an int holds, bytes present (a damaged or hostile
+  // GGUF: an error here, not a read past the tensor or at address 0)
+  static const GgufTensor& mat(const GgufTensor& t) {
+    if (t.dims.size() < 2 || t.dims[0] == 0 || t.dims[1] == 0 || t.dims[0] > (uint64_t)INT32_MAX ||
+        t.dims[1] > (uint64_t)INT32_MAX || t.dims[0] * t.dims[1] > (uint64_t)INT32_MAX || (!t.data && t.nbytes))
+      throw std::runtime_error("unexpected tensor shape: " + t.name);
+    return t;
+  }
   GpuWeight load_w(const std::string& name) {
-    const GgufTensor& t = T(name);
+    const GgufTensor& t = mat(T(name));
     const int K = (int)t.dims[0], N = (int)t.dims[1];
     if (t.type == GGML_F32 || t.type == GGML_F16 || t.type == GGML_BF16) {
       std::vector<float> v((size_t)N * K);
@@ -187,6 +195,7 @@
   static bool float_type(uint32_t t) { return t == GGML_F32 || t == GGML_F16 || t == GGML_BF16; }
   // a float matrix as the Q8_0 rows load_w would make of it (kept in `keep`), so that it can be stacked with others
   const GgufTensor& as_q8(const GgufTensor& t, GgufTensor& out, std::vector<uint8_t>& keep) {
+    mat(t);
     std::vector<float> v((size_t)t.dims[0] * t.dims[1]);
     dequant_row(t.type, t.data, (int)v.size(), v.data());
     keep = quantize_rows_q8_0(v.data(), (int)t.dims[1], (int)t.dims[0]);
@@ -219,6 +228,8 @@
     std::vector<uint8_t> ab;
     {
       const GgufTensor &ta = T(p + "ssm_alpha.weight"), &tb = T(p + "ssm_beta.weight");
+      if (mat(ta).nelements() < (uint64_t)nab / 2 * E || mat(tb).nelements() < (uint64_t)nab / 2 * E)
+        throw std::runtime_error("unexpected tensor shape: " + ta.name);
       std::vector<float> v((size_t)tp_rows(nab) * E, 0.0f);  // (a split model: padded rows of zeros, see gdn_ab)
       dequant_row(ta.type, ta.data, (int64_t)nab / 2 * E, v.data());
       dequant_row(tb.type, tb.data, (int64_t)nab / 2 * E, v.data() + (size_t)nab / 2 * E);
@@ -286,7 +297,8 @@
     return make_weight(t0.type, cat.data(), cat.size(), N, K, weight_role(*names.begin()));
   }
   GpuWeight load_q8_concat(const std::string& a, const std::string& b) {
-    const GgufTensor &ta = T(a), &tb = T(b);
+    const GgufTensor &ta = mat(T(a)), &tb = mat(T(b));
+    if (tb.dims[0] != ta.dims[0]) throw std::runtime_error("unexpected tensor shape: " + b);
     const int K = (int)ta.dims[0], Na = (int)ta.dims[1], Nb = (int)tb.dims[1], Np = tp_rows(Na + Nb);
     std::vector<float> v((size_t)Np * K, 0.0f);  // (a split model: rows of zeros up to the GEMM's 16, see gdn_ab)
     dequant_row(ta.type, ta.data, Na * K, v.data());
@@ -296,6 +308,7 @@
   }
   cl_mem load_f32(const std::string& name) {
     const GgufTensor& t = T(name);
+    if ((!t.data && t.nbytes) || t.nelements() > (uint64_t)INT32_MAX) throw std::runtime_error("unexpected tensor shape: " + name);
     std::vector<float> v(t.nelements());
     dequant_row(t.type, t.data, (int)v.size(), v.data());
     return buf(v.size() * 4, v.data());
@@ -303,7 +316,7 @@
   // A matrix with its rows padded to Np rows of zeros and, for a type of small blocks (32 / 64: Q8_0, IQ4_NL, Q2_0)
   // whose K is not whole superblocks, its columns to padded_k(K) (zero blocks): Flash Next's 640-wide shared expert as 768 (the extra outputs are 0).
   GpuWeight load_w_pad(const std::string& name, int Np) {
-    const GgufTensor& t = f_.get(name);
+    const GgufTensor& t = mat(f_.get(name));
     const int K = (int)t.dims[0], N = (int)t.dims[1];
     if (K % 256 == 0 && N == Np) return load_w(name);
     int blk = 0, bytes = 0;

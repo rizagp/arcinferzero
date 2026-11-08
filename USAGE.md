@@ -88,7 +88,7 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
 | open a new session (`pi-arc`, `/new`) in a project used before | only your message: the project's ~4K-token system prompt comes from memory or disk (~4–5 s instead of ~40 s), also after a server restart or a model switch |
 | open the first session in a new project folder | its system prompt once (~40 s); it is then kept for that folder (`%USERPROFILE%\.arcinferzero\zero\prefix`, its 2 latest versions, all models together at most 8 GB: `--prefix-cache-gb`) |
 | continue a session (`pi-arc -c`, `pi-arc -r`, `/resume`) right after closing it | only your new message (the server still holds that conversation) |
-| ... after another session or project used the server | only the new message: the session cache (on by default, 8 GB; `pi-arc --session-cache 0` turns it off) loads it from disk in seconds |
+| ... after another session or project used the server | only the new message: the session cache (on by default, 8 GB for all models together: the launcher's "Session cache" field or `-SessionCacheGb N`; `pi-arc --session-cache 0` turns it off) loads it from disk in seconds |
 | ... after `arc-server restart` / `stop` or a model switch | only the new message: the held conversation is saved first and loaded from disk (lost only if the server process is killed) |
 | press Esc | nothing more: the server stops within ~1 s while reading the prompt, before the next token while writing; your next message only processes what is new |
 
@@ -400,6 +400,10 @@ While the server is running:
   The rules of a single PDF hold: an existing file is never written over (`name (2).md`), at most 50 pages a turn
   over all the files (an image counts as one), and "lanjut" goes on from the file and page where the last turn
   stopped, by itself until the last file. Page words (`halaman 51-100`) are not read for several files.
+
+  Stop ends the page being read at once (the pages before it stay in the `.md`). If the `.md` cannot be written
+  (a full disk, the folder removed), the reading stops there and the answer says so. A page larger than a poster is
+  read at 4000 pixels on its long side; an image from a project's folder may be up to 64 MB.
 
   **Files already in a project's folder:** in a project's chat with the OCR model loaded, the folder button next to
   the paperclip lists the project's PDFs and images (subfolders too). Tick several, or **All**, and send: they are

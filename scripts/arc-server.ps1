@@ -6,7 +6,7 @@
 #   arc-server start -Model 27b       the same without asking: a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26,
 #                                     with -mtp / -vision / -std / -nodf / -df for a variant), a model id, part of a model's
 #                                     name (e.g. swift) or a path to a .gguf file
-#        [-SessionCacheGb N]          save conversations to disk when switching (N GB; default 8, 0 = off)
+#        [-SessionCacheGb N]          save conversations to disk when switching (N GB, all models together; default 8, 0 = off)
 #        [-Vision on|off]             image / audio encoders (default on; off: no mmproj, more context)
 #        [-Ctx N|auto] [-Chunk N] [-NoMtp]  context (default: auto, the largest that fits the GPU memory),
 #                                     prompt chunk size, no speculative decoding
@@ -388,7 +388,7 @@ Options for start / restart:
   -Chunk <N>                     prompt chunk size (default per model: 27B 4096; 35B 8192; Gemma 4 26B and Flash
                                  Next 2048; 4B / 9B / E4B 512; Gemma with images at least 2048); smaller = less
                                  GPU memory, more context
-  -SessionCacheGb <N>            save conversations to disk when switching sessions (default 8 GB, 0 = off)
+  -SessionCacheGb <N>            save conversations to disk when switching sessions (GB, all models together; default 8, 0 = off)
   -NoMtp                         no speculative decoding
   -Slots <N>                     hold N conversations at once (default 1): two Pi sessions each keep their own
                                  KV cache and states and take turns step by step (a prompt piece, a token), so

@@ -360,3 +360,41 @@ Every finding was checked in the code before it was changed; all eleven were rea
 | appendix | partly | `npu_rt.h`: the loader's module handle checked before `GetProcAddress`; `pdf_images.h`: `int v[4] = {}`. Left as they are: the `/analyze` notes on `expert_store.h` (the member is initialized), `api_compat.h` (no call site passes a null `Call*`), `server_cache.h` / `doc_writer.h` (style), `WSAStartup` (a later call reports it), the stack frames | - |
 
 Build: serverz, runz, transcribez; `test_api_compat` all passed, `tool_stream_test` all OK.
+
+## Audit 2026-11-09 (server, web UI, engine, build)
+
+Three read-only reviews (the HTTP server and OCR, the web UI and its HTTP surface, the engine and build flags), each
+finding checked in the code before it was changed.
+
+| Area | Finding | Status |
+|---|---|---|
+| web UI | no `X-Frame-Options` / `frame-ancestors`: a local page could be framed by another site (clickjacking) | fixed: DENY + CSP `frame-ancestors 'none'; object-src 'none'; base-uri 'none'` on the page |
+| HTTP | `nosniff` only on `/files/<id>` | fixed: on every reply (`src/http.h`) |
+| web UI | a saved chat's file link could be a `javascript:` URL | fixed: only this server's own, `data:` and `blob:` links (`safeUrl`) |
+| web UI | a summary / compaction answer with `content` null threw a TypeError | fixed: a clear "empty answer" error |
+| web UI | a stream's `{"error": ...}` event was skipped: the answer just stopped | fixed: shown as the error |
+| web UI | a damaged saved tool call broke opening the chat; a minutes answer `null` threw | fixed |
+| OCR | Stop reached only the next page; the page under way ran to 4096 tokens | fixed: the inner request asks the outer client (`gone_hook`) |
+| OCR | a write to the `.md` that failed (disk full) was not noticed | fixed: the reading stops, the answer says "could not write" |
+| OCR | `ocr_save` into the chat's folder had no Origin check (only `ocr_save.folder` had) | fixed: 403 from another local program's page |
+| OCR | a file name with bad UTF-8 made `std::filesystem::path` throw | fixed: such a name is cleaned |
+| OCR | a project image: no size limit, always sent as PNG | fixed: 64 MB, its type from its extension |
+| OCR | a PDF page of poster size rendered at full size (gigabytes) | fixed: at most 4000 px on the long side |
+| sessions | the cache's size held per model folder: 49 GB on disk | fixed: all models together; own folder found by file identity; only files with the "ARSV" header removed |
+| engine | `token_embd` / `per_layer_token_embd` width never compared with `n_embd` / `n_ple x n_layer`; matrices taken as 2-D without a check | fixed: an error at load (`mat()`), no read past a tensor |
+| engine | virtual tensors (no data) added for any GGUF that lists them | fixed: only a package's `_exps.weight` tensors |
+| engine | a GGUF array's count checked against bytes left, not against the element's width (huge allocations) | fixed |
+| engine | `arcinferzero.experts_file` could be a path | fixed: a file name next to the package only |
+| engine | `CL_CHECK`, a failed device allocation and `zeModuleCreate` called `exit(1)` (destructors under running threads) | fixed: `_Exit(1)` as `ZE_CHECK`; the build log is destroyed before a soft failure's throw |
+| build | no `/CETCOMPAT` | fixed (linker only; logits bit-identical) |
+
+Left as they are, with reasons:
+- `--host` (the network mode) has no password: by design for a home network; the remote access (tunnel) has one.
+  Tools, MCP, slots, model loading and remote settings are refused to network peers already.
+- Pages the model writes (sandboxed, no same-origin) may still reach https hosts: CDNs are what they use.
+- A batch opens all its PDFs at once and the OCR history parsing is quadratic in a very long answer: bounded by 50
+  pages and the 256 MB request limit; to change when a batch grows.
+- A device out-of-memory error during a model switch ends the server (`oom_throws` is on only for multi-GPU and
+  speech): turning it on needs every allocation's caller to clean up after a throw.
+- `/WX`, `_MSVC_STL_HARDENING`, symbols: not now (`/WX` would stop a build on a new warning; the hardening's speed
+  cost on the host loops is not measured).

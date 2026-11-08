@@ -86,7 +86,12 @@ struct ExpertStore {
     path = dir + "\\" + name + "-" + std::string(hex).substr(0, 8) + ".experts";
     const std::string def_path = path;  // (where the engine keeps this GGUF's expert file)
     if (!fixed_path.empty()) path = fixed_path;
-    if (package) path = (fs::path(gguf_path).parent_path() / f.get_str("arcinferzero.experts_file")).string();
+    if (package) {  // (a file name next to the package, never a path the GGUF chooses)
+      const std::string xf = f.get_str("arcinferzero.experts_file");
+      if (xf.empty() || xf.find_first_of("/\\:") != std::string::npos || xf == "." || xf == "..")
+        throw std::runtime_error("package: arcinferzero.experts_file must be a file name next to the GGUF");
+      path = (fs::path(gguf_path).parent_path() / xf).string();
+    }
 
     // layout
     layers.assign(prefixes.size(), LayerInfo{});

@@ -1,5 +1,44 @@
 # Changelog
 
+## 2026-11-09: self-audit: web UI headers, OCR Stop and saves, model file checks, CET
+
+- **Web UI page:** `X-Frame-Options: DENY` and a CSP (`frame-ancestors 'none'; object-src 'none'; base-uri 'none'`):
+  no other site can frame it and trick a click. **Every reply:** `X-Content-Type-Options: nosniff`.
+- **Web UI:** a chat file's link only to this server's files, `data:` or `blob:`; a stream's error event is shown
+  (it was skipped: the answer just stopped); a summary answer with no text, a damaged saved tool call and a minutes
+  answer that is not an object give a clear error instead of a TypeError.
+- **OCR:** Stop ends the page being read (it ran to the end of the page); a `.md` that cannot be written stops the
+  reading with "could not write ... (is the disk full?)"; saving into the chat's folder is refused (403) from a page
+  another local program serves, as a folder of one's own was; a file name with bad UTF-8 is cleaned (it threw); a
+  project's image up to 64 MB and sent with its own type; a PDF page at most 4000 px on its long side.
+- **Model files:** the embedding tables' width is checked against `n_embd` (and Gemma's per-layer table against
+  `n_ple x n_layer`), every matrix is checked to be 2-D with int-sized dimensions and bytes, a GGUF's array counts
+  against their element width, tensors without data only for a package's experts, and the package's expert file
+  name must be a plain name. A damaged or hostile GGUF now stops with an error at load instead of reading past a
+  tensor.
+- **Fatal errors:** `CL_CHECK`, a failed device allocation and a failed kernel module end the process with
+  `_Exit(1)` like `ZE_CHECK` (no destructors run under the server's threads); a module build log is no longer left
+  behind on a soft failure.
+- **Build:** linked with `/CETCOMPAT` (the CPU's shadow stack may be used).
+- Checked: `runz --dump-logits` bit-identical before / after for Qwen3.5 4B, Gemma 4 E4B and the Qwen3.6 35B-A3B
+  package; serverz headers read back; Xiaomi-OCR-0: two images into one `both.md`, the same request with a foreign
+  Origin 403, a bad UTF-8 name answered; `node --check` of the web UI's script. Stop during a page was not tried
+  by hand. Findings left as they are, and why: BUGS.md "Audit 2026-11-09".
+
+## 2026-11-09: the session cache's size holds for all models together
+
+- **`--session-cache-gb` (default 8 GB in arc-server, pi-arc and the launcher) is one limit for every model now.**
+  Before, each model file (and each layout of it: `-std`, `-nomtp`, `-q2`) had its own 8 GB folder, so trying many
+  models filled the disk: 49 GB of saved conversations on the laptop, 20 folders, most of models no longer there.
+  When the server starts and after each save, other models' saved conversations go first, oldest first, until all
+  of them fit; then this model's least recently used ones, as before (`prune_other_sessions`, `tools/server_cache.h`).
+  Only finished `.arcs` files are removed (a `.tmp` being written is left). The size is set in the launcher's
+  "Session cache (GB on disk)" field ("Set as default" keeps it), `arc-server start -SessionCacheGb N`, a preset, or
+  `serverz --session-cache-gb N`; 0 turns it off.
+- Checked: a sessions folder with another model's five 3 MB files and a 10 MB limit: the server removed the two
+  oldest at start (9 MB left), left the `.tmp` and its own folder alone. Its own folder is found by file identity
+  (a model renamed only in case), and only files that start with the conversation header are removed.
+
 ## 2026-11-09: launcher and CLI, stages 0 and 1 of docs/launcher-research.md
 
 - **Launcher, look:** follows Windows' light / dark mode and accent colour; Segoe UI Variable; on Windows 11 a dark

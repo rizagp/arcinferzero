@@ -11,7 +11,8 @@
 
  private:
   bool ocr_ = false;
-  static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; more: a note at the end)
+  static constexpr uint64_t kOcrMaxImageBytes = 64ull << 20;  // (a project's image read for OCR; it is copied ~5 times)
+static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; more: a note at the end)
   struct OcrTally {  // (tokens and timings of the pages read, added up)
     int64_t ptok = 0, ctok = 0;
     double pn = 0, cn = 0, pms = 0, gn = 0, gms = 0;
@@ -129,7 +130,7 @@
     }
     // (begun after the file checks: an error said before them went out as an event, not as the error it is)
     if (stream) rs.sse_begin();
-    auto save = [&](const std::string& piece) { ocr_md_add(md, piece); };
+    auto save = [&](const std::string& piece) { return ocr_md_add(md, piece); };
     // (the file named at the end of each answer: its name in the chat's files, else its full path; with the copy's
     //  name after "; in this chat's files as")
     const std::string where = ocr_md_where(md);
@@ -162,14 +163,15 @@
         piece += "[the page could not be rendered: " + err + "]";
       } else {
         std::string text;
-        if (ocr_image(rq, "data:image/png;base64," + apic::base64_encode(png), task, tally, text)) {
+        if (ocr_image(rq, rs, "data:image/png;base64," + apic::base64_encode(png), task, tally, text)) {
           piece += text;
         } else {
           failed = "page " + std::to_string(p) + ": " + text;
           piece += "[" + failed + "]";
         }
       }
-      save((p > 1 && p == first ? "\n\n" : "") + piece);
+      if (!save((p > 1 && p == first ? "\n\n" : "") + piece) && failed.empty())
+        failed = "page " + std::to_string(p) + ": could not write " + md.md.filename().string() + " (is the disk full?)";
       if (stream) {
         Json d = Json::object();
         d.set("content", piece.substr(sent));
@@ -247,6 +249,13 @@
   // local program serves: such a page may call the chat API, and the connection is local for it too, so local_peer
   // alone let it write a .md into any folder; BUGS.md 1, 2026-10-31). A remote session with full access: its page is
   // https, through the tunnel.
+  // no Origin (a program, not a page) or this server's own page (http here, https through the tunnel)
+  static bool ocr_from_page_ok(const HttpRequest& rq) {
+    std::string origin = rq.header("origin"), own = (rq.remote ? "https://" : "http://") + rq.header("host");
+    for (std::string* x : {&origin, &own})
+      for (char& c : *x) c = (char)tolower((unsigned char)c);
+    return origin.empty() || origin == own;
+  }
   static bool ocr_own_page(const HttpRequest& rq) {
     std::string origin = rq.header("origin"), own = (rq.remote ? "https://" : "http://") + rq.header("host");
     for (std::string* x : {&origin, &own})
@@ -284,7 +293,7 @@
     if (fid.rfind("file-", 0) == 0) fid = fid.substr(5);
     if (!files::store().get(fid, out)) return 0;
     // (the name the chat gave it: one file in several chats is one entry under whichever name came first)
-    if (!given.empty()) out.name = given;
+    if (!given.empty()) out.name = ocr_utf8_ok(given) ? given : files::safe_name(given);
     return 1;
   }
   // the folder a project's chat saves its OCR text into by default: "ocr" in the project's folder (made when needed),
@@ -299,6 +308,20 @@
     const std::filesystem::path d = root / "ocr";
     if (make) std::filesystem::create_directories(d, ec);  // (only when the .md goes there, not for another folder)
     return d;
+  }
+  // well-formed UTF-8 (a name from the request; std::filesystem::path throws on bad bytes)
+  static bool ocr_utf8_ok(const std::string& s) {
+    for (size_t i = 0; i < s.size();) {
+      const unsigned char c = (unsigned char)s[i];
+      const int n = c < 0x80 ? 0 : (c >> 5) == 6 ? 1 : (c >> 4) == 14 ? 2 : (c >> 3) == 30 ? 3 : -1;
+      if (n < 0 || c == 0xC0 || c == 0xC1 || c > 0xF4 || i + n >= s.size() + (n ? 0 : 1)) return false;
+      for (int k = 1; k <= n; ++k)
+        if (((unsigned char)s[i + k] >> 6) != 2) return false;
+      const unsigned char d = n ? (unsigned char)s[i + 1] : 0;  // (overlong forms, UTF-16 surrogates, past U+10FFFF)
+      if ((c == 0xE0 && d < 0xA0) || (c == 0xED && d >= 0xA0) || (c == 0xF0 && d < 0x90) || (c == 0xF4 && d >= 0x90)) return false;
+      i += n + 1;
+    }
+    return true;
   }
   // a file name for a .md: a name, never a path; no character Windows refuses, no device's name, ending in .md
   static std::string ocr_md_name(std::string name) {
@@ -323,6 +346,12 @@
   // likewise.
   bool ocr_dirs(const HttpRequest& rq, const Json& body, const std::filesystem::path& fallback, OcrDirs& d, HttpResponse& rs) {
     const std::string folder = body["ocr_save"]["folder"].str(), chat = body["chat_id"].str();
+    // (a page another local program serves: no .md anywhere, the chat's folder neither; a client with no Origin,
+    //  the server's own page and a remote session's page may)
+    if (!ocr_from_page_ok(rq)) {
+      rs.send(403, "application/json", "{\"error\":{\"message\":\"ocr_save: from this server's own page or a client on this computer only\"}}");
+      return false;
+    }
     std::filesystem::path chat_dir;
     // (the asking chat's folder: the file's copy found may be another chat's)
     if (files::valid_id(chat)) chat_dir = std::filesystem::path(files::store().chat_dir_make(chat));
@@ -422,11 +451,30 @@
     }
     return true;
   }
-  static void ocr_md_add(const OcrMd& m, const std::string& piece) {
-    if (m.md.empty()) return;
-    std::ofstream(m.md, std::ios::binary | std::ios::app) << piece;
-    if (!m.md_chat.empty()) std::ofstream(m.md_chat, std::ios::binary | std::ios::app) << piece;
+  // false: the text could not be added (a full disk, the folder removed): the caller stops, saying so
+  static bool ocr_md_add(const OcrMd& m, const std::string& piece) {
+    if (m.md.empty()) return true;
+    bool ok;
+    {
+      std::ofstream f(m.md, std::ios::binary | std::ios::app);
+      ok = (bool)(f << piece).flush();
+    }
+    if (ok && !m.md_chat.empty()) {
+      std::ofstream f(m.md_chat, std::ios::binary | std::ios::app);
+      ok = (bool)(f << piece).flush();
+    }
+    if (!ok) fprintf(stderr, "OCR: could not write %s\n", m.md.filename().string().c_str());
     if (m.in_chat || !m.md_chat.empty()) files::store().refresh();  // (in the Files panel with its new size)
+    return ok;
+  }
+  // a project image's type for its data URL (the model's decoder reads the bytes; the name says what they are)
+  static std::string ocr_image_mime(const std::string& name) {
+    std::string e = files::lower(std::filesystem::path(name).extension().string());
+    if (e == ".jpg" || e == ".jpeg") return "image/jpeg";
+    if (e == ".webp") return "image/webp";
+    if (e == ".gif") return "image/gif";
+    if (e == ".bmp") return "image/bmp";
+    return "image/png";
   }
   // the file named in an answer's note: its name in the chat's files, else its full path, with the copy's name after
   // "; in this chat's files as"
@@ -437,7 +485,7 @@
   }
   // One image read by the model (url: a data URL or /files/<id>) with the task's words, through chat(): its text, or
   // false and why. Its tokens and timings go into t.
-  bool ocr_image(const HttpRequest& rq, const std::string& image_url, const std::string& task, OcrTally& t, std::string& text) {
+  bool ocr_image(const HttpRequest& rq, HttpResponse& outer, const std::string& image_url, const std::string& task, OcrTally& t, std::string& text) {
     Json url = Json::object(), img = Json::object(), txt = Json::object(), content = Json::array(), msg = Json::object(),
          one = Json::array(), req = Json::object();
     url.set("url", image_url);
@@ -458,6 +506,7 @@
     int st = 0;
     std::string out;
     r2.on_send = [&](int s, const std::string& b) { st = s; out = b; };
+    r2.gone_hook = [&outer] { return outer.client_gone(); };  // (Stop ends the page under way, not only the next one)
     chat(rq2, r2);  // (an image now: ocr_request gives it the task prompt; its tables come back as Markdown)
     Json j;
     Json::try_parse(out, j);
@@ -655,12 +704,20 @@
         }
         made.push_back(md.md.filename().string());
       } else if (saving && !per_file && p == 1) {
-        ocr_md_add(md, "# " + it.info.name + "\n\n");
+        if (!ocr_md_add(md, "# " + it.info.name + "\n\n")) {
+          failed = "file " + std::to_string(k + 1) + ": could not write " + md.md.filename().string() + " (is the disk full?)";
+          emit("[" + failed + "]");
+          break;
+        }
       }
       if (!it.err.empty()) {
         const std::string t = "[cannot read the PDF: " + it.err + "]";
         emit(t);
-        ocr_md_add(md, t + "\n\n");
+        if (!ocr_md_add(md, t + "\n\n")) {
+          failed = "file " + std::to_string(k + 1) + ": could not write " + md.md.filename().string() + " (is the disk full?)";
+          emit("[" + failed + "]");
+          break;
+        }
         ++read;
         continue;
       }
@@ -675,20 +732,26 @@
         if (it.pdf) {
           const std::string png = it.doc.render(p, 150, err);
           if (png.empty()) text = "[the page could not be rendered: " + err + "]", ok = true;
-          else ok = ocr_image(rq, "data:image/png;base64," + apic::base64_encode(png), task, tally, text);
+          else ok = ocr_image(rq, rs, "data:image/png;base64," + apic::base64_encode(png), task, tally, text);
         } else if (it.info.id.rfind("project:", 0) == 0) {  // (a project's file: its bytes, it has no /files/ address)
           std::string bytes;
-          if (files::Store::read(it.info.path, bytes)) ok = ocr_image(rq, "data:image/png;base64," + apic::base64_encode(bytes), task, tally, text);
+          std::error_code ec;
+          if (std::filesystem::file_size(std::filesystem::path(it.info.path), ec) > kOcrMaxImageBytes || ec) text = "the image is larger than 64 MB";
+          else if (files::Store::read(it.info.path, bytes)) ok = ocr_image(rq, rs, "data:" + ocr_image_mime(it.info.name) + ";base64," + apic::base64_encode(bytes), task, tally, text);
           else text = "the file cannot be read";
         } else {
-          ok = ocr_image(rq, "/files/" + it.info.id, task, tally, text);
+          ok = ocr_image(rq, rs, "/files/" + it.info.id, task, tally, text);
         }
         if (!ok) {
           failed = "file " + std::to_string(k + 1) + (it.pdf ? ", page " + std::to_string(p) : "") + ": " + text;
           text = "[" + failed + "]";
         }
         emit(text);
-        ocr_md_add(md, (it.pdf ? "## Page " + std::to_string(p) + " / " + std::to_string(it.pages) + "\n\n" : "") + text + "\n\n");
+        if (!ocr_md_add(md, (it.pdf ? "## Page " + std::to_string(p) + " / " + std::to_string(it.pages) + "\n\n" : "") + text + "\n\n") &&
+            failed.empty()) {
+          failed = "file " + std::to_string(k + 1) + ": could not write " + md.md.filename().string() + " (is the disk full?)";
+          emit("[" + failed + "]");
+        }
       }
       if (p <= it.pages) break;  // (stopped inside this file: k, p is where the next turn starts)
     }
