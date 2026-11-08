@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-08: the Arc 140T preset (XMX + H8 for long prompt chunks), on by default
+
+- **Measured on a 140T** (issue #5, package 65e9e81, 27B, two runs): XMX + H8 + 32 tokens per sub-group + 2 column
+  groups + 128 registers, against DP4a: 512 tokens 154-159 / 154 tok/s, 2K 221 / 180-181, 8K 230-232 / 184-186.
+  The fused H8 decode is part of the gain: without it 123 / 201 / 226. KL against DP4a 0.00154.
+- **On iGPUs with 8-lane DPAS and weights decoded just in time, it is now the default, per GEMM.** Chunks of 512+
+  tokens take XMX + H8 with those tiles; shorter chunks and resident weights keep the DP4a default (16 tokens, 256
+  registers). TM 32 needs a multiple of 32 tokens, and DP4a spills with 128 registers.
+- `gemm_kernel` takes its tokens per sub-group and register file per call. The staging buffer remembers whether it
+  holds the W8 or the rotated H8 form. The start-time check runs the preset's kernels against DP4a bit for bit.
+  `ARC_140T=0` turns it off.
+- **Laptop 125H, the preset forced with DP4a standing in for DPAS** (`ARC_140T=1 ARC_XMX_TRY=2`, 27B):
+  - a short prompt is bit-identical to the default;
+  - 2,048 tokens in 1,024-token chunks are bit-identical to H8;
+  - 2,148 tokens (H8, H8, then a W8 chunk) run with the same greedy text as the default.
+
 ## 2026-11-08: generation switches on every GPU (for the 140T)
 
 - `ARC_GEMV_GRF`, `ARC_GEMV_PF` and `ARC_GEMV_MT_GRF=128` now act on any GPU when set. They had needed the xe2

@@ -8,6 +8,23 @@
 // tests of the switches themselves.
 
   bool xe2_ = false;  // (set before the XMX check: the GPU offers XMX, or ARC_XMX_TRY)
+  // ---- the Arc 140T preset (iGPUs with 8-lane DPAS, weights decoded just in time; issue #5, 2026-11-08). A 140T's 27B
+  // prompt with XMX + H8 + 32 tokens per sub-group + 2 column groups + the default register file, against DP4a:
+  // 512 tokens 154-159 / 154, 2K 221 / 180, 8K 230-232 / 184-186 tok/s; KL against DP4a 0.00154. Per GEMM: chunks
+  // of 512+ tokens (a multiple of 32) on weights decoded just in time take it; shorter chunks and resident weights the
+  // DP4a default (256 registers: DP4a spills with 128). The start-time check runs its kernels too. ARC_140T=0: off;
+  // ARC_140T=1 with ARC_XMX_TRY=2: on the 125H with DP4a standing in for DPAS (tests)
+  bool p140_ = false;
+  static constexpr int kP140Min = 512;
+  bool p140_take(const GpuWeight& w, int Mp) const {
+    return p140_ && !w.wq && w.gemm_qtype >= 100 && w.gemm_qtype <= 103 && Mp >= kP140Min && Mp % 32 == 0 && w.N % 32 == 0;
+  }
+  bool p140_wanted() const {  // (w8_resident: the weights resident in W8, a member of Engine)
+    const char* e = getenv("ARC_140T");
+    if (e && atoi(e) == 0) return false;
+    const bool test = e && atoi(e) == 1 && getenv("ARC_XMX_TRY");
+    return (cl_.xmx || test) && cl_.sg8 && zrt::integrated() && !w8_resident;
+  }
   // (128 registers only where a register is 64 bytes: on a GPU with 8-lane sub-groups, 32-byte registers, ocloc shows
   //  the XMX GEMM spilling with 128)
   bool xe2_grf128() const { return xe2_ && (!cl_.sg8 || getenv("ARC_XMX_TRY")); }

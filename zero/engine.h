@@ -245,7 +245,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     max_chunk = o.chunk > 0 ? o.chunk : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
+    p140_ = !opt.dry && p140_wanted();  // (the Arc 140T preset, zero/xe2/engine_xe2.h: it needs H8)
     h8_init();  // (H8 prompt GEMMs, ARC_H8=1: zero/engine_h8.h; after q2_init, before alloc_buffers)
+    p140_ = p140_ && h8_;
     if (!opt.dry) build_kernels();
     // (8-lane GPUs, Arrow Lake H / Arc 140T: XMX only with ARC_XMX_FORCE=1. A 140T, issue #5, 2026-11-07: gemm_x8 right
     //  bit for bit on real DPAS, but the 27B's 2K prompt 114-120 tok/s against 180 on DP4a, GEMMs 1.6x slower, while
@@ -254,12 +256,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  xmx_check as an iGPU is; no one has measured gemm_x8 on one. Self audit 2026-11-08: the gate had caught them too)
     const bool xmx_force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
     const bool sg8_igpu = cl_.sg8 && zrt::integrated();
-    if (!opt.dry && cl_.xmx && sg8_igpu && !xmx_force && !getenv("ARC_XMX_TRY")) {
+    if (!opt.dry && cl_.xmx && sg8_igpu && !xmx_force && !p140_ && !getenv("ARC_XMX_TRY")) {
       static bool said = false;
       if (!said) fprintf(stderr, "arcinferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
       said = true;
     }
-    if (!opt.dry && ((cl_.xmx && (!sg8_igpu || xmx_force)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
+    if (!opt.dry && ((cl_.xmx && (!sg8_igpu || xmx_force || p140_)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
       // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: every GPU that offers XMX, discrete
       // or integrated; a GPU without it, as the 125H, never comes here)
       xe2_ = true;
@@ -289,6 +291,16 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       x2d_ = x2d_known == 1;
       // (XMX slower than DP4a in the speed check of an iGPU: the GPU's own defaults, as on one without XMX)
       if (slow_known) xe2_ = false;
+    }
+    if (p140_ && !xmx_) {  // (its kernels did not build or differ: the plain DP4a path, and H8 only if asked for)
+      p140_ = false;
+      if (!h8_env()) h8_ = false;
+    }
+    if (p140_) {
+      static std::once_flag said;
+      std::call_once(said, [] {
+        fprintf(stderr, "arcinferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, DP4a below (ARC_140T=0: off)\n", kP140Min);
+      });
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
     {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
@@ -1018,25 +1030,32 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       run(name, k, 1, &g1, &l1);
       return;
     }
-    if (h8_ok(w)) return h8_matmul(name, w, Mp, C, ldc, c_off, a, act32);  // (ARC_H8=1: zero/engine_h8.h)
+    // (ARC_H8=1, zero/engine_h8.h; the 140T preset: H8 only where it takes the GEMM, p140_take)
+    const bool pt = p140_take(w, Mp);
+    if (h8_ok(w) && (!p140_ || h8_env() || pt)) return h8_matmul(name, w, Mp, C, ldc, c_off, a, act32);
     cl_mem wq = w.wq, wh = w.wh;
     if (!wq) {
       wq = stage_q_[w.role];
       wh = stage_h_[w.role];
-      if (stage_owner_[w.role] != &w) {  // still decoded from the previous chunk otherwise
+      // (still decoded from the previous chunk otherwise; the 140T preset's H8 chunks leave the rotated form there)
+      if (stage_owner_[w.role] != &w || stage_h8_[w.role]) {
         decode_w8(w, wq, wh);
         stage_owner_[w.role] = &w;
+        stage_h8_[w.role] = false;
       }
     }
     if (x16_ && x16_matmul(name, w, wq, wh, Mp, C, ldc, c_off, a, act32)) return;  // (zero/xe2/engine_xe2.h)
-    const int cg = xe2_cg_for(w.N);
-    cl_kernel k = gemm_kernel(w.gemm_qtype, act32, -1, cg);
+    // (the 140T preset: XMX with 32 tokens, 2 column groups and 128 registers where it takes the GEMM, else the DP4a
+    //  default: 16 tokens, 256 registers, one column group)
+    const int cg = pt ? 2 : p140_ ? 1 : xe2_cg_for(w.N);
+    cl_kernel k = pt ? gemm_kernel(w.gemm_qtype, act32, 1, 2, 32, 1)
+                     : p140_ ? gemm_kernel(w.gemm_qtype, act32, 0, 1, 16, 0) : gemm_kernel(w.gemm_qtype, act32, -1, cg);
     int M = Mp, N = w.N, K = w.K;
     // Long reductions are split into ~17-superblock pieces (the activation slab of a token-row group then stays in
     // L3); later pieces accumulate into C. Token rows are swept together per weight slice (rgroup).
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
-    const int tm = gemm_tm();
+    const int tm = pt ? 32 : p140_ ? 16 : gemm_tm();
     // (the grid covers whole 16-column groups and tm-token tiles: other shapes would leave rows or columns out)
     if (Mp % tm || N % 16 || K % 256)
       throw std::runtime_error(std::string("gemm ") + name + ": shape " + std::to_string(Mp) + " x " + std::to_string(N) + " x " +

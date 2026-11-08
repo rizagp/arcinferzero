@@ -333,21 +333,25 @@
     return t == 2 ? " -DTP=8" : t == 3 ? " -DTP=8 -DDBG_NOBCAST" : " -DXMX -DTP=8";
   }
   // (xe2_gemm_grf / moe_grf / cg: zero/xe2/engine_xe2.h, the defaults on GPUs without XMX)
-  cl_kernel gemm_kernel(int qtype, bool act32, int xmx = -1, int cg = 1) {
+  // tm: tokens per sub-group (0: gemm_tm()); g128: 1 the default register file, 0 256 registers, -1 xe2_gemm_grf()
+  // (the 140T preset, zero/xe2/engine_xe2.h p140_, picks both per GEMM)
+  cl_kernel gemm_kernel(int qtype, bool act32, int xmx = -1, int cg = 1, int tm = 0, int g128 = -1) {
+    const int tmv = tm ? tm : gemm_tm();
+    const std::string grf = g128 < 0 ? xe2_gemm_grf() : g128 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
     // (a GPU with 8-lane sub-groups, Arrow Lake H: its DPAS needs a kernel of its own, for the W8 and H8 layouts; the
     //  native types stay on DP4a there. ARC_XMX_TRY=2 / 3: the same kernel with DP4a for DPAS, right and wrong)
     if (cl_.sg8) {
       if ((xmx < 0 ? xmx_ : xmx != 0) && qtype >= 100) {
         static const int t = getenv("ARC_XMX_TRY") ? atoi(getenv("ARC_XMX_TRY")) : 0;
-        return kernel("x8", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
-                                (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) + xe2_cg_defs(cg) +
+        return kernel("x8", grf + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
+                                (tmv != 16 ? " -DTM=" + std::to_string(tmv) : std::string()) + xe2_cg_defs(cg) +
                                 x8_defs() + (t == 2 ? " -DX8_EMU" : t == 3 ? " -DX8_EMU -DDBG_NOBCAST" : ""),
                       "gemm_x8");
       }
       xmx = 0;
     }
-    return kernel("gemm", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
-                              (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) +
+    return kernel("gemm", grf + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
+                              (tmv != 16 ? " -DTM=" + std::to_string(tmv) : std::string()) +
                               xe2_cg_defs(cg) + gemm_extra() +
                               ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() + xe2_x2d() + xe2_wpf() : std::string()),
                   "gemm");
@@ -465,6 +469,35 @@
             run("xmx_check", k, 2, gws, lws);
           });
         }
+      // (the Arc 140T preset, zero/xe2/engine_xe2.h p140_: its own kernels, XMX at 32 tokens, 2 column groups and 128
+      //  registers, against the DP4a default (16 tokens, 256 registers) bit for bit: the W8 layouts with and without
+      //  per-32 activation scales and H8R, stored and with the fused SwiGLU)
+      if (p140_ && bad.empty()) {
+        const int wgy = 2;
+        for (int q : {101, 100, 103, 102, 111})
+          for (int a32 = q >= 110 ? 0 : 1; a32 >= 0; --a32)
+            for (int acc : {0, 2}) {
+              std::vector<float> out[2];
+              for (int x = 0; x < 2; ++x) {
+                const int tmx = x ? 32 : 16, cgx = x ? 2 : 1;
+                cl_kernel k = x ? gemm_kernel(q, a32 != 0, 1, 2, 32, 1) : gemm_kernel(q, a32 != 0, 0, 1, 16, 0);
+                CL_CHECK(clEnqueueWriteBuffer(cl_.queue, bc, CL_TRUE, 0, c0.size() * 4, c0.data(), 0, nullptr, nullptr));
+                int MM = M, NN = N, KK = K, ldc = N, coff = 0, ac = acc, rg = 4, s0 = 0, s1 = nsb;
+                set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ldc, coff, ac, rg, s0, s1);
+                size_t gws[2] = {(size_t)N * (M / tmx / wgy), (size_t)wgy}, lws[2] = {16 * (size_t)cgx, (size_t)wgy};
+                run("xmx_check", k, 2, gws, lws);
+                out[x].resize(c0.size());
+                CL_CHECK(clEnqueueReadBuffer(cl_.queue, bc, CL_TRUE, 0, out[x].size() * 4, out[x].data(), 0, nullptr, nullptr));
+              }
+              bool sane = false;
+              for (size_t i = 0; i < out[0].size(); ++i) {
+                if (!std::isfinite(out[0][i])) { sane = false; break; }
+                sane = sane || out[0][i] != c0[i];
+              }
+              if (!sane || memcmp(out[0].data(), out[1].data(), out[0].size() * 4))
+                bad += " 140T/" + std::to_string(q) + (a32 ? "/act32" : "") + (acc ? "/swiglu" : "");
+            }
+      }
       // (a GPU with 8-lane sub-groups, Arrow Lake H, comes here only with ARC_XMX_FORCE=1 (zero/engine.h). The speed
       //  check that stood here timed a 64 x 64 x 1024 GEMM: on a 140T it found XMX 17 % faster while the 27B's real
       //  GEMMs were 1.6x slower, so it was removed, 2026-11-07)
@@ -475,7 +508,7 @@
       const bool spd_env = getenv("ARC_XMX_SPEED") && atoi(getenv("ARC_XMX_SPEED")) != 0;
       const bool force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
       // (also discrete cards with 8-lane DPAS, the Alchemist A-series: gemm_x8 lost 1.6x on a 140T and is unmeasured there)
-      if (bad.empty() && !force && (spd_env || ((zrt::integrated() || cl_.sg8) && !getenv("ARC_XMX_TRY")))) {
+      if (bad.empty() && !force && !p140_ && (spd_env || ((zrt::integrated() || cl_.sg8) && !getenv("ARC_XMX_TRY")))) {
         const int SM = 512, SN = 17408, SK = 5120, sng = SN / 16, snsb = SK / 256;
         std::vector<uint32_t> sw((size_t)sng * snsb * 4 * 16 * 16), sh((size_t)sng * snsb * 10 * 16);
         for (auto& v : sw) v = rnd();

@@ -27,6 +27,7 @@
   std::string h8_src_, x8_src_;
   cl_mem h8_aq_ = nullptr, h8_asc_ = nullptr;   // (one GEMM input rotated: int8 [M][K], per-256 scales [K / 256][M])
   cl_mem stage_hh_[kRoles] = {};                // (the H8 scales of the weight staged per role)
+  bool stage_h8_[kRoles] = {};                  // (the staged weight is in its rotated H8 form, not W8: the 140T preset mixes both)
   size_t stage_hh_bytes_[kRoles] = {};
   std::map<const GpuWeight*, cl_mem> h8_res_;   // (a resident weight converted in place: its H8 scales)
 
@@ -54,7 +55,7 @@
   void h8_init() {
     // (never with the NPU: its shares copy a weight (N.gate = L.gate) over the same buffers, so the in-place conversion
     //  ran twice on the shared rows, and the NPU read its own rows as W8 after they had become H8; kernel audit 2026-11-03)
-    h8_ = h8_env() && !q2mm_ && !npu_wanted();
+    h8_ = (h8_env() || p140_) && !q2mm_ && !npu_wanted();  // (p140_: the Arc 140T preset, zero/xe2/engine_xe2.h)
     if (h8_ && h8_float()) {
       h8f_off_ = (size_t)max_chunk * aq_max_k();
       h8f_defs_ = " -DH8F=" + std::to_string(h8f_off_);
@@ -182,7 +183,7 @@
     }
     if (h8_row()) {
       wq = stage_q_[w.role];
-      if (stage_owner_[w.role] != &w) {
+      if (stage_owner_[w.role] != &w || !stage_h8_[w.role]) {
         auto it = h8_col_.find(&w);
         if (it != h8_col_.end() && h8_dec_ok(w)) {
           h8r_decode(w, wq, it->second);  // (decode + rotation in one pass, bit-identical)
@@ -192,6 +193,7 @@
           hh = h8r_weights(w, wq, stage_h_[w.role]);
         }
         stage_owner_[w.role] = &w;
+        stage_h8_[w.role] = true;
       } else {
         hh = h8_col_.at(&w);
       }
@@ -225,13 +227,15 @@
     cl_mem wq = nullptr, hh = nullptr;
     h8_prepare(w, wq, hh);
     h8_act(Mp, w.K, act32);
-    const int cg = xe2_cg_for(w.N);
-    cl_kernel k = gemm_kernel(h8_qtype(), false, -1, cg);
+    // (the 140T preset: 32 tokens, 2 column groups, 128 registers on XMX)
+    const bool pt = p140_take(w, Mp) && !h8_env();
+    const int cg = pt ? 2 : xe2_cg_for(w.N);
+    cl_kernel k = pt ? gemm_kernel(h8_qtype(), false, 1, 2, 32, 1) : gemm_kernel(h8_qtype(), false, -1, cg);
     int M = Mp, N = w.N, K = w.K;
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
     static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
-    const int tm = gemm_tm();
+    const int tm = pt ? 32 : gemm_tm();
     if (Mp % tm || N % 16 || K % 256)
       throw std::runtime_error(std::string("gemm ") + name + ": shape not a multiple of " + std::to_string(tm) + " x 16 x 256");
     const int nsb = K / 256, splits = a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
