@@ -961,7 +961,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (cur_T_ == 1) {
       // rows per sub-group: enough sub-groups for small N; very tall matrices (an lm_head of short rows) do better
       // with more sub-groups again
-      const bool vk = gemv_v_ok(w);
+      // (ARC_GV_IQ3S=1, zero/xe2: IQ3_S through gemv_v too, its weights straight into registers instead of gemv's local
+      //  window with two barriers a step; bit-identical. Slower on the 125H's iGPU (bench/gemv_bench), unmeasured on a
+      //  B60, whose 27B GEMV reads ~55 % of its bandwidth)
+      static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
+      const bool vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S);
       // (Qwen3-ASR's Q8_0 matrices, 2026-10-28: 1 / 2 / 4 / 8 rows for the stacked gate + up (12,288 rows), qkv
       //  (4,096), o / down (2,048) and the head all within 1 % in the model: the rule kept)
       const int grows = vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2;

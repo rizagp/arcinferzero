@@ -21,6 +21,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
+| `ARC_GV_IQ3S=1` | off | single-token IQ3_S weights through `gemv_v` (straight into registers) instead of `gemv`'s local window; bit-identical; the 125H 6 % slower (27B step 210 -> 223 ms), a B60 to measure (2026-11-08) | 2 |
+| `ARC_MOE_GR_GU` / `ARC_MOE_GR_DN` | 1 / 4 | rows per sub-group of the experts' gate / up and down GEMVs for one token (`bench\decode_try.ps1` rows for MoE models) | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
 | `ARC_GEMV_PF=1` | off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
@@ -364,6 +366,23 @@ If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D
   6.2951. CG 4 gives the same numbers.
 - **35B:** `ARC_MOE_WY=4` 3,221 against 3,172 (+1.5 %; WY 2 and 8 alike), bit-identical. `ARC_MOE_CG`, H8 and f16
   XMX: no gain. Chunk 8192 stays best (4096: 2,966; 2048: 2,624).
+
+**Generation (2026-11-08).** One B60, from issue #4's logs:
+- **The 27B** generates 22.4 tok/s (44.6 ms a step) and reads 11.3 GB a token, about 57 % of the measured 429
+  GB/s; at full bandwidth a step would be ~26 ms (~38 tok/s). With MTP it reaches 47 tok/s.
+- **The 35B** generates 84 tok/s and reads 2.4 GB a token (42 %).
+- **The laptop's `--prof-gen` of the 27B:** the GEMVs take ~92 % of a step (gate / up / down alone 59 %), the small
+  kernels under 10 %.
+
+The levers, largest first:
+- **Command-list replay.** `replay_probe` on a B60 measured 2.56 us per kernel on the engine's immediate list
+  against 0.66 us replayed. With 632 kernels a token that is ~1.2 ms of the 35B's 12 ms (~10 %), and ~1.8 ms of the
+  27B's 44.6 (~4 %). It needs the per-token values (position, context length, KV offsets) in GPU memory, or mutable
+  command lists, so the list is recorded once. Not built yet.
+- **The IQ3_S GEMV.** It goes through a local window with two barriers a step: `ARC_GV_IQ3S=1` (gemv_v) to measure.
+  `ARC_GEMV_PF=1` gave +3 % (22.39 -> 23.11).
+- **The MoE per-tile GEMVs:** their rows per sub-group (`ARC_MOE_GR_GU` / `_DN`), unmeasured on a B60.
+- `bench\decode_try.ps1` now ends with a `--prof-gen` table per model, the first such profile from a B60.
 
 **Towards 1,200 tok/s on the 27B (2026-11-08).** At 4K the H8 path with CG 4 takes ~4.2 s of GPU time; 1,200 tok/s
 is 3.4 s.

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-08: generation switches for the B60, and a generation profile in decode_try
+
+- `ARC_GV_IQ3S=1`: single-token IQ3_S weights (the 27B) through `gemv_v`, loaded straight into registers, instead of
+  `gemv`'s local window with two barriers a step. Bit-identical (27B logits). The 125H's iGPU is 6 % slower with it
+  (27B step 210 -> 223 ms), so it is off until a B60 measures it.
+- `bench\decode_try.ps1`: rows for it (with 2 and 4 rows per sub-group) and, for MoE models, the experts' GEMV rows per
+  sub-group (`ARC_MOE_GR_GU` / `ARC_MOE_GR_DN`). It ends with a `--prof-gen` table per model.
+- Docs: where a B60's generation time goes, and command-list replay as the largest lever left (35B ~10 %, from
+  `replay_probe`: 2.56 against 0.66 us a kernel).
+
 ## 2026-11-08: H8's weight rotation in the decode pass; a weight prefetch switch for the B60
 
 - H8 with weights decoded just in time (the 27B on a B60): `decode.cl h8r_decode` decodes the raw rows and rotates
