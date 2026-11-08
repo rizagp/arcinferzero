@@ -1211,7 +1211,8 @@ function inline(s) {
     const end = u.match(/[.,;:!?]+$/), url = end ? u.slice(0, -end[0].length) : u;  // (a sentence's full stop is not the URL's)
     return pre + link(url, url) + (end ? end[0] : "");
   });
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+  // (bold may hold italic: "**not *clean* yet**", single asterisks inside, a model's usual nesting; [^*]+ left it raw)
+  s = s.replace(/\*\*(?!\*)((?:[^*]|\*(?!\*))+?)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
     .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
   for (let k = 0; k < 3 && s.includes("\u0000"); k++) s = s.replace(/\u0000(\d+)\u0000/g, (m, i) => keep[+i]);  // (a link's text may hold a code span)
   return s;

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-08: web UI: bold that holds italic
+
+- `**not *clean* yet**` was shown with its asterisks: the bold pattern allowed no `*` inside, so italic inside bold, as
+  models often write it, broke the whole pair. Bold may now hold single asterisks, and the italic inside it is
+  formatted too. `***both***` stays `<em><strong>`. Checked with the web UI's own functions on the answer where it
+  showed (22 bold pairs, none left raw) and on edge cases (two bolds on a line, an unclosed `**`).
+
 ## 2026-11-08: the Arc 140T preset (XMX + H8 for long prompt chunks), on by default
 
 - **Measured on a 140T** (issue #5, package 65e9e81, 27B, two runs): XMX + H8 + 32 tokens per sub-group + 2 column
