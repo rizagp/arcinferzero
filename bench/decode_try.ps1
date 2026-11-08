@@ -10,6 +10,7 @@
 #   GEMV_GRF=256   plain, the single-token GEMV with 256 registers per thread (ARC_GEMV_GRF=256)
 #   GVROWS=1/2/4   plain, rows per sub-group of the codebook GEMV (ARC_GVROWS; default: by matrix size)
 #   mtp MT_GRF=256 mtp, the 2-8 token GEMV of the verification with 256 registers, as before 2026-11-03 (ARC_GEMV_MT_GRF=256)
+#   mtp MT_GRF=128 the same with 128 registers (the discrete cards' default; iGPUs default to 256)
 #   GEMV_PF=1      plain, the single-token GEMV issuing all its rows' reads of a step first (ARC_GEMV_PF=1)
 #   GV_IQ3S=1      plain, IQ3_S weights through gemv_v (straight into registers) instead of gemv's local window
 #                  (ARC_GV_IQ3S=1); also with GVROWS=2 / 4 (ARC_GVROWS: its rows per sub-group)
@@ -77,6 +78,7 @@ foreach ($model in $Models) {
   Line "GEMV_GRF=256" (Invoke-Run $model @() @{ ARC_GEMV_GRF = "256" })
   foreach ($g in 1, 2, 4) { Line "GVROWS=$g" (Invoke-Run $model @() @{ ARC_GVROWS = "$g" }) }
   Line "mtp MT_GRF=256" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "256" })
+  Line "mtp MT_GRF=128" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "128" })
   Line "GEMV_PF=1" (Invoke-Run $model @() @{ ARC_GEMV_PF = "1" })
   Line "GV_IQ3S=1" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1" })
   foreach ($g in 2, 4) { Line "GV_IQ3S=1 GVROWS=$g" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1"; ARC_GVROWS = "$g" }) }

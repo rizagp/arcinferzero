@@ -460,6 +460,14 @@ DP4a GEMM 4.7x slower in this check, 47 ms against 10). If XMX loses, those swit
   (128 registers: twice the threads) more than by its loads, which X8W cut. Chunk sizes (1K / 2K / 4K for an 8K prompt)
   change nothing. Generation: the GEMV switches within noise (second run 5.89-6.09 tok/s; the first run's low values
   were a stall in the first steps, its median steps 162-168 ms as the second's).
+- **Generation on the 140T (2026-11-08):** the 27B makes 6.0 tok/s (~165 ms a token), reading 11.3 GB a token at
+  ~85 % of its ~79 GB/s. The bandwidth bound is ~143 ms (~7 tok/s), so the GEMVs have at most ~15 % left.
+  - **The lever is drafting:** MTP (the `-mtp` GGUF's own block) and DFlash2 read the weights once for several
+    tokens. That took a B60 from 22 to 47 tok/s and the 125H from 4.9 to 18.1; not measured on a 140T yet.
+  - **The GEMV switches now act wherever they are set** (`ARC_GEMV_GRF`, `ARC_GEMV_PF`, and `ARC_GEMV_MT_GRF=128`).
+    Before, they needed the xe2 switches on, which the 140T no longer has with DP4a prompts, so they were ignored
+    there.
+  - `bench\decode_try.ps1` covers all of it, with `-DFlash <drafter folder>`.
 - **The 140T's `igpu_grf_sweep` (2026-11-08, package 4aae0c5, two runs): XMX wins for the first time, with H8.**
   - **The best set:** XMX + `ARC_GEMM_GRF=128` + `ARC_H8=1` + `ARC_GEMM_TM=32` + `ARC_GEMM_CG=2`, 200.5-200.6 tok/s on
     the 27B's 2K prompt against DP4a's 173-182 (+10 %). KL against DP4a 0.00154 (max 0.064).

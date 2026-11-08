@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-08: generation switches on every GPU (for the 140T)
+
+- `ARC_GEMV_GRF`, `ARC_GEMV_PF` and `ARC_GEMV_MT_GRF=128` now act on any GPU when set. They had needed the xe2
+  switches, which the 140T no longer has since it keeps DP4a for prompts, so its generation runs ignored them.
+  Unset, nothing changes.
+- `bench\decode_try.ps1`: a row for MTP with 128 registers (iGPUs default to 256).
+- Docs: the 140T's generation is within ~15 % of its bandwidth bound; MTP / DFlash2 drafting is the lever.
+
 ## 2026-11-08: generation switches for the B60, and a generation profile in decode_try
 
 - `ARC_GV_IQ3S=1`: single-token IQ3_S weights (the 27B) through `gemv_v`, loaded straight into registers, instead of

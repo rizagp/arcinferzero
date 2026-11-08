@@ -52,22 +52,25 @@
   }
   static std::string xe2_cg_defs(int cg) { return cg != 1 ? " -DCG=" + std::to_string(cg) : std::string(); }
   // ARC_GEMV_GRF=256: the single-token GEMV with the large register file
+  // (2026-11-08: the GEMV switches act wherever they are set, not only with xe2_ on: the 140T keeps DP4a for prompts,
+  //  so xe2_ is off there, and its owner's generation runs had them silently ignored. Unset, nothing changes)
   std::string xe2_gemv_grf() const {
     static const std::string g = grf_env("ARC_GEMV_GRF");
-    return xe2_ ? g : std::string();
+    return g;
   }
   // ARC_GEMV_PF=1: the single-token GEMV (gemv, codebook / K types) issues every row's reads of a step before decoding
   // the first (GROWS x more loads in flight: a B60's GEMV reached ~55 % of its bandwidth; QUEUE F31.4). Bit-identical
   std::string xe2_gemv_pf() const {
     static const bool pf = getenv("ARC_GEMV_PF") && atoi(getenv("ARC_GEMV_PF")) != 0;
-    return xe2_ && pf ? std::string(" -DGEMV_PF") : std::string();
+    return pf ? std::string(" -DGEMV_PF") : std::string();
   }
   // the 2-8 token GEMV (gemv_mt / gemv_mt_v: MTP and DFlash2 verification, batched slots) with the default register
   // file (128) on discrete cards: a Pro B60's 27B MTP went 43.3 -> 47.1 tok/s (issue #4, 2026-11-02); ARC_GEMV_MT_GRF=256
   // as before. The iGPUs keep 256 (the 125H forced to 128: 27B MTP 11.78 -> 9.57 tok/s, 2026-11-03)
   std::string xe2_gemv_mt_grf() const {
-    static const bool g256 = getenv("ARC_GEMV_MT_GRF") && std::string(getenv("ARC_GEMV_MT_GRF")) == "256";
-    return xe2_grf128() && !g256 ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
+    static const std::string e = getenv("ARC_GEMV_MT_GRF") ? getenv("ARC_GEMV_MT_GRF") : "";
+    if (e == "128") return std::string();  // (asked for: any GPU, for its owner's sweep)
+    return xe2_grf128() && e != "256" ? std::string() : std::string("-cl-intel-256-GRF-per-thread ");
   }
 
   // QUEUE 31.8: the XMX prompt GEMM's activations with 2D block loads (cl_intel_subgroup_2d_block_io, gemm.cl -DX2D): a
