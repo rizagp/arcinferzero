@@ -413,6 +413,7 @@ switch ($Action) {
       if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--precise") {
         Say "  precise mode: on (-Precise; Flash Next; kept like -Npu, -NoPrecise turns it off)"
       }
+      if ((Test-Path $stateFile) -and ($c = (Get-Content $stateFile -Raw | ConvertFrom-Json).cmd)) { Say "  command: $c" }
     } else { Say "arcinferzero server is not running." }
     $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
     Say ("Saved conversations: {0} ({1:N1} GiB) in {2}" -f $files.Count, (($files | Measure-Object Length -Sum).Sum / 1GB), $sessDir)
@@ -608,10 +609,12 @@ if (-not $NoStream) {
   Say "  (MoE models: the first start writes the expert file to $stateDir\zero, 35B: 16 GB / ~2.5 min, Flash Next: 56 GB / ~9.5 min, once)"
 }
 Say "  (loading takes 5-40 s; log: $log)"
+$srvCmd = "`"$exe`" " + ($srvArgs -join " ")  # (issue #6: the server's own command line, also in server.json)
+Say "  command: $srvCmd"
 $p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
   -RedirectStandardError $log -RedirectStandardOutput (Join-Path $stateDir "server.out.log")
 if ($m -ne $none) { Set-Content $lastFile $m.path -Encoding utf8 }  # (none: the chat model used last stays the default)
-@{ pid = $p.Id; engine = $Engine; model = $m.name; path = $m.path; alias = $m.alias; ctx = $ctxArg; chunk = $(if ($Chunk -gt 0) { "$Chunk" } else { "default" }); sess = "$SessionCacheGb"; novision = $novision; extra = $extraKey; port = $Port; started = (Get-Date).ToString("s") } |
+@{ pid = $p.Id; engine = $Engine; model = $m.name; path = $m.path; alias = $m.alias; ctx = $ctxArg; chunk = $(if ($Chunk -gt 0) { "$Chunk" } else { "default" }); sess = "$SessionCacheGb"; novision = $novision; extra = $extraKey; port = $Port; cmd = $srvCmd; started = (Get-Date).ToString("s") } |
   ConvertTo-Json | Set-Content $stateFile -Encoding utf8
 
 $t0 = Get-Date

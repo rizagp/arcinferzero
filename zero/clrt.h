@@ -207,6 +207,7 @@ inline ze_command_list_handle_t imm(Dev& d) { flush(d); return d.cl; }
 inline ze_command_list_handle_t imm() { return imm(D()); }
 // the list to record d's next kernel into: a free one of the pool (64 lists; one whose earlier recording has not run
 // yet is waited for, which only happens when the GPU is 64 lists behind)
+inline void sync();
 inline ze_command_list_handle_t rec_list(Dev& d) {
   if (d.rec) return d.rec;
   const int kPool = 64;
@@ -233,7 +234,10 @@ inline ze_command_list_handle_t rec_list(Dev& d) {
   d.rec_next = (d.rec_next + 1) % kPool;
   Dev::RecList& r = d.rec_pool[d.rec_cur];
   if (r.used) {
-    ZE_CHECK(zeEventHostSynchronize(r.done, UINT64_MAX));
+    // (a split model's shard: through sync(), whose wait has the time limit and the abort of the other GPUs; it waits
+    //  for the whole list, which holds this one's earlier recording. d is D() here: the only caller passes it)
+    if (tp_guarded) sync();
+    else ZE_CHECK(zeEventHostSynchronize(r.done, UINT64_MAX));
     ZE_CHECK(zeEventHostReset(r.done));
     ZE_CHECK(batch_fns().reset(r.l));
     r.used = false;

@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-08: the launcher's start command (issue #6); self-audit of ARC_BATCH / ARC_XALL
+
+- **Launcher, "Copy command" (GitHub issue #6):** copies the command that starts the server the way Start would,
+  with the selected model and the options as set, for a script or shortcut of one's own:
+  `powershell -NoProfile -ExecutionPolicy Bypass -File "...\scripts\arc-server.ps1" start -Model <id> ... -Port N`
+  (also shown as `arc-server ...` when Pi's commands are installed).
+- **`arc-server` prints the server's own command line** (`bin\serverz.exe -m ... --ctx ...`) when it starts one and
+  in `arc-server status`; it is kept in `server.json`, and the launcher's "Running server" panel shows it.
+- **Self-audit fix, ARC_BATCH on a split model:** a recorded list that had to wait for an earlier one (64 lists
+  behind) waited without the multi-GPU time limit and abort; it now waits through the guarded wait. One GPU and
+  ARC_BATCH off: unchanged. Checked: 4B tokens the same plain / ARC_BATCH=32 / 2 GPUs simulated / both.
+- Audit notes, no change needed: ARC_XALL refuses while an expert prefetch thread exists (its copies finish before
+  it ends), counts the MTP layer (n_layer + 1 layers), and drops to the usual path after a shrink(); the recorded
+  lists and their events live as long as the process (no growth on model switches); the server's engine lock keeps
+  Whisper and the chat model from recording at the same time.
+
 ## 2026-11-08: generation switches for the B60: recorded command lists (`ARC_BATCH`), MoE tokens without host waits (`ARC_XALL`)
 
 Both are off by default and bit-identical; they wait for a Pro B60's numbers (issue #4).

@@ -306,9 +306,10 @@ $stopBtn = New-Button "Stop server" 120
 $refreshBtn = New-Button "Refresh list" 120
 $defBtn = New-Button "Set as default" 120
 $resetBtn = New-Button "Reset options" 110
+$cmdBtn = New-Button "Copy command" 120
 $webBtn = New-Button "Open web UI"
 $logBtn = New-Button "Open log"
-$buttons.Controls.AddRange(@($startBtn, $speechBtn, $stopBtn, $defBtn, $resetBtn, $refreshBtn, $webBtn, $logBtn))
+$buttons.Controls.AddRange(@($startBtn, $speechBtn, $stopBtn, $defBtn, $resetBtn, $cmdBtn, $refreshBtn, $webBtn, $logBtn))
 # meeting recording (arc-server record / record-stop; only with bin\arc_recorder.exe): App = the meeting app whose
 # sound is "Others" (empty: everything the speakers play)
 $recAppLbl = New-Label "App:"
@@ -426,6 +427,7 @@ function Update-Status {
       if ($t.draft_n) { $L.Add(("  MTP     {0}/{1} drafts accepted ({2:N0}%)" -f $t.draft_n_accepted, $t.draft_n, (100 * $t.draft_n_accepted / [math]::Max(1, $t.draft_n)))) }
     }
     if ($st) { $L.Add(""); $L.Add("started with: ctx $($st.ctx), chunk $($st.chunk), $(if ($st.extra) { $st.extra } else { 'default options' })") }
+    if ($st -and $st.cmd) { $L.Add(""); $L.Add("server command line:"); $L.Add($st.cmd) }
     $monitor.Text = $L -join "`r`n"
   } elseif (-not $id) {
     $monitor.Text = "The server is not running."
@@ -522,14 +524,15 @@ function Start-Rec([string[]]$argList) {
     -RedirectStandardOutput $script:recOut -RedirectStandardError $script:recErr
   $null = $script:recProc.Handle  # (as in Start-Action)
 }
-function Start-Selected([switch]$Speech) {
+# arc-server's arguments for the selected model and the options as set (without -Port; $null when an option is wrong)
+function Get-StartArgs([switch]$Speech) {
   if ($Speech) {
     $m = [pscustomobject]@{ alias = "none" }  # (no model's own options apply)
   } else {
-    if ($grid.SelectedRows.Count -eq 0) { return }
+    if ($grid.SelectedRows.Count -eq 0) { return $null }
     $m = $grid.SelectedRows[0].Tag
     if (-not $m.supported) {
-      [void][System.Windows.Forms.MessageBox]::Show("arcinferzero does not support this model yet (architecture $($m.arch)).", "arcinferzero"); return
+      [void][System.Windows.Forms.MessageBox]::Show("arcinferzero does not support this model yet (architecture $($m.arch)).", "arcinferzero"); return $null
     }
   }
   $a = @("start", "-Model", $m.alias)
@@ -538,7 +541,7 @@ function Start-Selected([switch]$Speech) {
     switch ($k) {
       "ctx" {
         if ($v -and $v -ne "auto") {
-          if ($v -notmatch '^\d+$') { [void][System.Windows.Forms.MessageBox]::Show("Context: a number of tokens, or auto.", "arcinferzero"); return }
+          if ($v -notmatch '^\d+$') { [void][System.Windows.Forms.MessageBox]::Show("Context: a number of tokens, or auto.", "arcinferzero"); return $null }
           $a += @("-Ctx", $v)
         } elseif ($v -eq "auto") { $a += @("-Ctx", "auto") }
       }
@@ -568,9 +571,28 @@ function Start-Selected([switch]$Speech) {
       "whisper_max" { $a += @("-WhisperMaxMinutes", [int]$v) }
     }
   }
+  , $a
+}
+function Start-Selected([switch]$Speech) {
+  $a = Get-StartArgs -Speech:$Speech
+  if ($null -eq $a) { return }
   $wh = if ((Get-Field "whisper") -notin "", "off") { " and Whisper" } else { "" }
-  $msg.Text = if ($Speech) { "Starting speech to text only (Qwen3-ASR$wh)..." } else { "Starting $($m.alias)... (loading takes 5-40 s; 35B up to 1-3 min)" }
+  $msg.Text = if ($Speech) { "Starting speech to text only (Qwen3-ASR$wh)..." } else { "Starting $($a[2])... (loading takes 5-40 s; 35B up to 1-3 min)" }
   Start-Action $a
+}
+# issue #6: the command line that starts the server the way Start would (selected model, options as set), copied to
+# the clipboard, for a script or shortcut of one's own. It works from cmd and PowerShell alike, wherever it is run.
+function Copy-StartCommand {
+  $a = Get-StartArgs
+  if ($null -eq $a) { if ($grid.SelectedRows.Count -eq 0) { $msg.Text = "Select a model first." }; return }
+  $a += @("-Port", [int]$portBox.Value)
+  $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$arcServer`" " + ($a -join " ")
+  try { [System.Windows.Forms.Clipboard]::SetText($cmd) } catch {}
+  $t = "Copied to the clipboard. This command starts the server like Start does, with the options as they are set now:`n`n$cmd"
+  if (Test-Path (Join-Path $env:USERPROFILE ".pi\agent\bin\arc-server.cmd")) { $t += "`n`nWith Pi installed, the same is: arc-server " + ($a -join " ") }
+  $t += "`n`narc-server help lists every option. The command line of the running bin\serverz.exe is in the Running server panel."
+  [void][System.Windows.Forms.MessageBox]::Show($t, "arcinferzero: start command")
+  $msg.Text = "Start command copied to the clipboard."
 }
 
 # ---- defaults: Set as default keeps the overridden fields (launcher.json, applied whenever the window opens) and
@@ -612,6 +634,7 @@ $stopBtn.Add_Click({
     }
   })
 $refreshBtn.Add_Click({ Start-List })
+$cmdBtn.Add_Click({ Copy-StartCommand })
 $webBtn.Add_Click({ Start-Process "$(Base)/" })
 $logBtn.Add_Click({ if (Test-Path $serverLog) { Start-Process notepad.exe -ArgumentList "`"$serverLog`"" } })
 $recBtn.Add_Click({

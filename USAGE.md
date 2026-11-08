@@ -113,7 +113,10 @@ All fields are filled in automatically with the best values for the selected mod
 so just choose a model and press Start. Fields you change turn yellow and only those are sent to the server. "Set
 as default" saves the changed fields (`%USERPROFILE%\.arcinferzero\launcher.json`) and makes the selected model the
 default one (also for `pi-arc` without a model name); "Reset options" goes back to the best values. The Start / Stop
-buttons use `arc-server`, so the server keeps running after the window is closed. (The window text is in English:
+buttons use `arc-server`, so the server keeps running after the window is closed. "Copy command" puts the
+command that starts the server that way (the selected model, the options as set) on the clipboard, for a script
+or shortcut of your own (`powershell -NoProfile -ExecutionPolicy Bypass -File "...\scripts\arc-server.ps1" start
+-Model ...`); the "Running server" panel and `arc-server status` show the `serverz.exe` command line it ran. (The window text is in English:
 prompt cache = saved conversations, prefix cache = saved system prompt.) The same numbers come from
 `serverz.exe --list-models` ("memory", "defaults") and the server's `/props` ("memory", "stats").
 
