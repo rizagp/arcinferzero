@@ -539,6 +539,142 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
 #endif
 #endif  // requantized types
 }
+
+#ifdef H8RDEC
+// ---- H8R straight from the raw rows (zero/engine_h8.h, ARC_H8=1; -DH8RDEC -DHB=<block> -DSRC=<W8 layout 100..103>):
+// decode_w8_sb + h8.cl h8r_weights in one pass, without writing and reading back the W8 copy. A lane decodes its two
+// 32-blocks with decode32 and forms each value as h8r_load forms it from that W8 copy (d * (float)sc, minus dmin * mn,
+// the scale and min bytes as stored there), so the rotated weights are those of the two kernels bit for bit. Types
+// that decode_w8 requantizes (Q2_K / Q4_K / Q5_K) or stores with per-32 floats (Q8_0, Q4_0, IQ4_NL, Q2_0) keep the
+// two passes. The column scales (col) come from the first decode's h8r_colmax.
+// grid (N / 16 * 256, K / HB), local (256, 1): sub-group c = row (column) c of the group, lane l = values 64 l .. + 63
+// of the rotation block (HB 1024: two 32-blocks of one superblock; HB 512: one).
+#if QT == Q2_K || QT == Q4_K || QT == Q5_K || PER32
+#error "H8RDEC: types decoded to W8 without requantizing, with per-16 / per-32 int8 scales"
+#endif
+#define H8NV (HB / 16)  // values per lane: 64 (HB 1024) or 32 (512), whole 32-blocks
+#if H8NV % 32
+#error "H8RDEC: HB 512 or 1024"
+#endif
+#define H8WPL (HB / 64)
+#define H8TP (HB / 4 + 1)
+inline float h8d_signed(float v, uint i) {
+#ifdef H8_D
+  uint x = i * 0x9E3779B1u;
+  x ^= x >> 15;
+  x *= 0x85EBCA77u;
+  return as_float(as_uint(v) ^ (x & 0x80000000u));
+#else
+  return v;
+#endif
+}
+inline void h8d_fwht_regs(float* v) {  // (h8.cl h8_fwht_regs)
+  const uint l = get_sub_group_local_id();
+#pragma unroll
+  for (uint h = 1; h < H8NV; h <<= 1)
+#pragma unroll
+    for (uint j = 0; j < H8NV; ++j)
+      if ((j & h) == 0) {
+        const float a = v[j], b = v[j + h];
+        v[j] = a + b;
+        v[j + h] = a - b;
+      }
+#pragma unroll
+  for (uint h = 1; h < 16; h <<= 1)
+#pragma unroll
+    for (uint j = 0; j < H8NV; ++j) {
+      const float o = intel_sub_group_shuffle_xor(v[j], h);
+      v[j] = (l & h) ? (o - v[j]) : (v[j] + o);
+    }
+}
+inline uint h8d_pack_q(const float v[4], float inv) {  // (h8.cl pack_q)
+  uint w = 0;
+#pragma unroll
+  for (int i = 0; i < 4; ++i) {
+    const int q = clamp((int)rint(v[i] * inv), -127, 127);
+    w |= ((uint)(q & 0xFF)) << (8 * i);
+  }
+  return w;
+}
+__attribute__((intel_reqd_sub_group_size(16)))
+__kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const uint* tabs, __global uint* wq,
+                         __global const float* restrict col) {
+#ifdef GRID_OFF
+  __local uint lgrid[GRID_N];
+  for (int i = get_local_id(0); i < GRID_N; i += get_local_size(0)) lgrid[i] = tabs[GRID_OFF + i];
+  const uint* grid = lgrid;
+#else
+  const uint* grid = tabs;
+#endif
+#ifdef AUX_OFF
+  __local uint laux[AUX_N];
+  for (int i = get_local_id(0); i < AUX_N; i += get_local_size(0)) laux[i] = tabs[AUX_OFF + i];
+  const uint* aux = laux;
+#else
+  const uint* aux = tabs;
+#endif
+  __local uint tout[16 * H8TP];
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const int c = get_sub_group_id(), l = get_sub_group_local_id();
+  const int g = get_group_id(0), blk = get_group_id(1), nsb = K / 256;
+  const int n = g * 16 + c, e0 = blk * HB + H8NV * l, s = e0 / 256, ib0 = (e0 % 256) / 32;
+  uint sbu[BBP / 4];
+  {
+    __global const uint* src = (__global const uint*)(raw + ((size_t)n * nsb + s) * BBP);
+#pragma unroll
+    for (int i = 0; i < BBP / 8; ++i) {
+      const uint2 u = vload2(i, src);
+      sbu[2 * i] = u.x;
+      sbu[2 * i + 1] = u.y;
+    }
+  }
+  const uchar* p = (const uchar*)sbu;
+  float v[H8NV];
+#pragma unroll
+  for (int h = 0; h < H8NV / 32; ++h) {
+    uint w[8];
+    int sc0, sc1, mn0, mn1;
+    float d, dmin;
+    decode32(p, ib0 + h, grid, aux, w, &sc0, &sc1, &mn0, &mn1, &d, &dmin);
+#pragma unroll
+    for (int k = 0; k < 8; ++k) {
+      // (the W8 header's bytes as h8r_load reads them: per-32 layouts the first 16-block's scale, per-16 each half's)
+#if SRC & 1
+      const int sc = (int)(char)(uchar)(char)sc0;
+#else
+      const int sc = (int)(char)(uchar)(char)(k < 4 ? sc0 : sc1);
+#endif
+#if SRC >= 102
+      const float mn = (float)(uchar)(k < 4 ? mn0 : mn1);
+#else
+      const float mn = 0.0f;
+#endif
+      const float dq = d * (float)sc, off = dmin * mn;
+#pragma unroll
+      for (int b = 0; b < 4; ++b) {
+        const float x = dq * (float)(char)(w[k] >> (8 * b)) - off;
+        v[32 * h + 4 * k + b] = h8d_signed(x, H8NV * l + 32 * h + 4 * k + b);
+      }
+    }
+  }
+  h8d_fwht_regs(v);
+  const float cs = col[g * 16 + c];
+  const float iv = cs > 0.0f ? 1.0f / (cs * sqrt((float)HB)) : 0.0f;
+#pragma unroll
+  for (int i = 0; i < H8WPL; ++i) {
+    const float q[4] = {v[4 * i], v[4 * i + 1], v[4 * i + 2], v[4 * i + 3]};
+    tout[c * H8TP + H8WPL * l + i] = h8d_pack_q(q, iv);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const int lid = get_local_id(0);
+#pragma unroll
+  for (int i = 0; i < H8WPL; ++i) {
+    const int t = lid + 256 * i, row = t / 16, cl = t % 16, e = blk * HB + 4 * row;
+    wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * 16 + cl] = tout[cl * H8TP + row];
+  }
+}
+#endif  // H8RDEC
+
 // Same conversion for 16 rows of SL_NSB superblocks (the whole rows: K = 256 * SL_NSB) per work-group of
 // 16 * SL_NSB: the rows' bytes (contiguous) are first copied to local memory with coalesced loads, then each
 // work-item decodes one superblock from there (lane = row, so the W8 stores of a sub-group are contiguous).

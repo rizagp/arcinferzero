@@ -260,6 +260,14 @@ __kernel void gemm(__global const uint* restrict wq, __global const uint* restri
 #else
       const uint8 r0 = intel_sub_group_block_read8(dp), r1 = intel_sub_group_block_read8(dp + 8 * SG);
 #endif
+#if defined(WPF) && defined(XMX)
+      // (ARC_GEMM_WPF=n, zero/xe2/engine_xe2.h: the weights n 64-value chunks ahead into the cache, within this column
+      //  group's own superblocks [.., s_end); the loads above unchanged, so the results too)
+      if (s * 4 + j + WPF < s_end * 4) {
+        intel_sub_group_block_prefetch_ui8(dp + WPF * DPJ * SG);
+        intel_sub_group_block_prefetch_ui8(dp + WPF * DPJ * SG + 8 * SG);
+      }
+#endif
       lo[0] = r0.s0; lo[1] = r0.s1; lo[2] = r0.s2; lo[3] = r0.s3; lo[4] = r0.s4; lo[5] = r0.s5; lo[6] = r0.s6; lo[7] = r0.s7;
       hi[0] = r1.s0; hi[1] = r1.s1; hi[2] = r1.s2; hi[3] = r1.s3; hi[4] = r1.s4; hi[5] = r1.s5; hi[6] = r1.s6; hi[7] = r1.s7;
 #else

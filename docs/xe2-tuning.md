@@ -14,6 +14,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_X8_W=1` | off | 8-lane GPUs with `ARC_XMX_FORCE=1`: gemm_x8 with one sub-group for both 8-column halves of a 16-column group, the activations loaded once (ocloc `arl-h`: 28 % fewer memory messages and 17 % fewer instructions per DPAS, no spills at 256 registers and 16 tokens); bit-identical | 8 |
 | `ARC_GEMM_GRF=128` on 8-lane GPUs | 256 there | the default register file for gemm_x8 too (no spills at 16 tokens without `ARC_X8_W`; spills with it or with 32 tokens, except H8). Since 2026-11-08 also the DP4a GEMM of iGPUs (it spills there: 6x slower on the 125H) | 8 |
 | `ARC_GEMM_CG` on iGPUs | 1 | since 2026-11-08 also the DP4a GEMM of iGPUs without XMX switches, when set (bit-identical) | 8 |
+| `ARC_GEMM_WPF=n` | off | the XMX prompt GEMM prefetches its weights n 64-value chunks ahead (4: the next superblock), within its column group; bit-identical (2026-11-08) | 8 |
+| `ARC_H8_FUSE=0` | on | H8's weight rotation after `decode_w8` again, instead of in one pass with the decode (`decode.cl h8r_decode`); the same values | 8 |
 | `ARC_XMX_SPEED=1` | off | the start-time speed check (a model-sized GEMM, XMX against DP4a) on discrete cards too, and under `ARC_XMX_TRY` (tests); iGPUs with XMX always run it | 8 |
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
@@ -362,6 +364,21 @@ If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D
   6.2951. CG 4 gives the same numbers.
 - **35B:** `ARC_MOE_WY=4` 3,221 against 3,172 (+1.5 %; WY 2 and 8 alike), bit-identical. `ARC_MOE_CG`, H8 and f16
   XMX: no gain. Chunk 8192 stays best (4096: 2,966; 2048: 2,624).
+
+**Towards 1,200 tok/s on the 27B (2026-11-08).** At 4K the H8 path with CG 4 takes ~4.2 s of GPU time; 1,200 tok/s
+is 3.4 s.
+- **Done: the weight rotation in the decode pass** (`h8r_decode`), bit-identical. The B60 spent 561 ms in
+  decode_w8 + h8_weights per 4K prompt. On the laptop the fused kernel took a third of the two passes' time, so
+  roughly 0.35 s might be saved on a B60 (an estimate).
+- **Done: `ARC_GEMM_WPF`**, a weight prefetch switch to measure.
+- **Not done: the activation rotation in the norm / SwiGLU kernels** (`h8_act`, 183 ms). The four kernels would need
+  a sub-group per rotation block and a row-wide maximum, and the sums would come in another order (not
+  bit-identical) for ~4 %.
+- **Not done: the SwiGLU / norm quantization in the GEMM epilogue.** It needs each row's largest value over all
+  columns, which are spread over many work-groups; the SwiGLU product itself is already fused into the up GEMM.
+- **Not done: a wider XMX tile (32 x 64 per sub-group, as sycl-tla and urakozz).** The GEMMs run at roughly 80 TOPS
+  of int8 (the B60's peak is around 197, from memory). This is the largest lever left, and a rewrite of the XMX
+  kernel.
 
 **The B60 sweep run before that (2026-11-07): `bench\b60_sweep.ps1`.** From each of the two best paths, the default (2D loads with
 the prefetch, 764 tok/s) and H8 (918), it changes one setting at a time (TM, WGY, RG, CG, registers, split-K, 2D loads;

@@ -5,18 +5,21 @@
 # default by KL. With -MoeModel also the 35B-A3B's expert GEMM shapes (ARC_MOE_CG / ARC_MOE_WY) and H8 there.
 # Paste the whole output into the GitHub issue.
 #   .\bench\b60_sweep.ps1 -Model C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf [-MoeModel C:\hf\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf]
-#   [-Tokens 4096]  phase A's prompt length   [-Quick]  fewer values, no 16K row
+#   [-Tokens 4096]  phase A's prompt length   [-Quick]  fewer values, no 16K row   [-Gpus 2,4]  phase E's GPU counts
 # A setting wins only 3 % ahead of its base; "best" is the faster of all winners together and the single best change.
 # Settings (defaults on discrete cards in brackets):
 #   TM      ARC_GEMM_TM, tokens per sub-group [16]      WGY    ARC_GEMM_WGY, sub-groups per work-group [8]
 #   RG      ARC_GEMM_RG, rows per weight slice [4]       CG     ARC_GEMM_CG, column groups per work-group [1]
 #   GRF     ARC_GEMM_GRF, registers per thread [128]     SPLIT  ARC_GEMM_SPLIT, superblocks per split-K piece [17]
 #   X2D     2D loads: pf (with the prefetch) / on / off [pf]
+#   WPF     ARC_GEMM_WPF, the weights prefetched n 64-value chunks ahead, 0 = off [0]
+#   FUSE    ARC_H8_FUSE, H8's weight rotation in the decode pass (1) or after it (0) [1]; H8 only, bit-identical
 #   MOECG / MOEWY  ARC_MOE_CG / ARC_MOE_WY, sub-groups per work-group of the expert GEMM [1 / 1] (35B only)
 param(
   [Parameter(Mandatory = $true)][string]$Model,
   [string]$MoeModel = "",
   [int]$Tokens = 4096,
+  [int[]]$Gpus = @(2, 4),
   [switch]$Quick
 )
 $ErrorActionPreference = "Stop"
@@ -25,7 +28,7 @@ $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
 if (-not (Test-Path $Model)) { throw "model not found: $Model" }
 $vars = @("ARC_H8", "ARC_GEMM_TM", "ARC_GEMM_WGY", "ARC_GEMM_RG", "ARC_GEMM_CG", "ARC_GEMM_GRF", "ARC_GEMM_SPLIT", "ARC_GEMM_2D",
-          "ARC_GEMM_2D_PF", "ARC_MOE_CG", "ARC_MOE_WY")
+          "ARC_GEMM_2D_PF", "ARC_MOE_CG", "ARC_MOE_WY", "ARC_GEMM_WPF", "ARC_H8_FUSE")
 $inv = [Globalization.CultureInfo]::InvariantCulture
 
 # the environment of a setting set (name -> value as in the table above)
@@ -42,6 +45,8 @@ function Env-Of([hashtable]$set) {
       "GRF" { $e.ARC_GEMM_GRF = $v }
       "SPLIT" { $e.ARC_GEMM_SPLIT = $v }
       "X2D" { $e.ARC_GEMM_2D = $(if ($v -eq "off") { "0" } else { "1" }); $e.ARC_GEMM_2D_PF = $(if ($v -eq "pf") { "1" } else { "0" }) }
+      "WPF" { $e.ARC_GEMM_WPF = $v }
+      "FUSE" { $e.ARC_H8_FUSE = $v }
       "MOECG" { $e.ARC_MOE_CG = $v }
       "MOEWY" { $e.ARC_MOE_WY = $v }
     }
@@ -63,9 +68,10 @@ function Invoke-Runz([hashtable]$set, [string[]]$a) {
   }
 }
 # a prompt benchmark: best of 3 passes, and the path the engine took
-function Invoke-Bench([string]$model, [hashtable]$set, [int]$pp, [int]$chunk = 0) {
+function Invoke-Bench([string]$model, [hashtable]$set, [int]$pp, [int]$chunk = 0, [int]$gpus = 1) {
   $a = @($model, "--bench-pp", $pp, "--n", 1)
   if ($chunk -gt 0) { $a += @("--chunk", $chunk) }
+  if ($gpus -gt 1) { $a += @("--gpus", $gpus) }
   $o = Invoke-Runz $set $a
   $tps = [regex]::Matches($o, "pp\d+ run \d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s") | ForEach-Object { [double]$_.Groups[1].Value }
   $path = if ($o -match "XMX on for the prompt GEMMs") { "XMX" } elseif ($o -match "XMX results differ") { "DP4a (XMX differed!)" } else { "DP4a" }
@@ -88,8 +94,10 @@ $grid = [ordered]@{
   GRF   = @(128, 256)
   SPLIT = if ($Quick) { @(0, 17) } else { @(0, 9, 17, 34) }
   X2D   = @("pf", "on", "off")
+  WPF   = if ($Quick) { @(0, 4) } else { @(0, 2, 4, 8) }
+  FUSE  = @(1, 0)
 }
-$defaults = @{ TM = 16; WGY = 8; RG = 4; CG = 1; GRF = 128; SPLIT = 17; X2D = "pf" }
+$defaults = @{ TM = 16; WGY = 8; RG = 4; CG = 1; GRF = 128; SPLIT = 17; X2D = "pf"; WPF = 0; FUSE = 1 }
 
 & (Join-Path $root "bin\mgpu_probe.exe") 2>&1 | Select-String -Pattern "^\s+GPU \d+:" | ForEach-Object { $_.Line.Trim() }
 "model: " + (Split-Path $Model -Leaf) + "; phase A prompt: $Tokens tokens; tok/s = best of 3 passes"
@@ -103,6 +111,7 @@ foreach ($base in @(@{ name = "default (no H8)"; set = @{} }, @{ name = "H8"; se
   $bestSet = $base.set.Clone()
   $single = $base.set.Clone(); $singleT = $b.tps
   foreach ($p in $grid.Keys) {
+    if ($p -eq "FUSE" -and -not $base.set.ContainsKey("H8")) { continue }  # (H8's switch: nothing to measure without it)
     $bv = $defaults[$p]; $bt = $b.tps
     foreach ($v in $grid[$p]) {
       if ("$v" -eq "$($defaults[$p])") { continue }  # (the base: measured above)
@@ -163,5 +172,19 @@ if ($MoeModel -ne "") {
     }
     foreach ($n in $moe.Keys) { Line $n (Invoke-Bench $MoeModel $moe[$n] 16384) }
     Line "defaults again (drift)" (Invoke-Bench $MoeModel @{} 16384)
+  }
+}
+
+""
+"=== E. several GPUs (--gpus), the 27B at 4096 and 16384 tokens" + $(if ($MoeModel -ne "") { ", the 35B at 16384" } else { "" })
+$ngpu = @(& (Join-Path $root "bin\mgpu_probe.exe") 2>&1 | Select-String -Pattern "^\s+GPU \d+:").Count
+foreach ($g in $Gpus) {
+  if ($g -gt $ngpu) { "skipped --gpus $g ($ngpu GPUs found)"; continue }
+  foreach ($n in @("default", "best with H8")) {
+    foreach ($pp in @(4096, 16384)) { Line ("--gpus {0} 27B {1,-14} {2,5}" -f $g, $n, $pp) (Invoke-Bench $Model $sets[$n] $pp 0 $g) }
+  }
+  if ($MoeModel -ne "" -and (Test-Path $MoeModel)) {
+    Line ("--gpus {0} 35B default        16384" -f $g) (Invoke-Bench $MoeModel @{} 16384 0 $g)
+    Line ("--gpus {0} 35B MOEWY=4        16384" -f $g) (Invoke-Bench $MoeModel @{ MOEWY = 4 } 16384 0 $g)
   }
 }

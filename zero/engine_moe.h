@@ -422,8 +422,9 @@
       // tile work-groups per launch: about the average tile count of a group (more loop over the tiles)
       // (ARC_MOE_CG / ARC_MOE_WY: sub-groups per work-group along the columns / the tiles, default 1 x 1; the same
       //  sums in the same order whatever the shape)
-      static const int mcg = getenv("ARC_MOE_CG") ? std::max(1, atoi(getenv("ARC_MOE_CG"))) : 1,
-                       mwy = getenv("ARC_MOE_WY") ? std::max(1, atoi(getenv("ARC_MOE_WY"))) : 1;
+      // (at most 32 sub-groups per work-group: CG 1 / 2 / 4, WY up to 32 / CG; self audit 2026-11-08)
+      static const int mcg = getenv("ARC_MOE_CG") ? std::clamp(atoi(getenv("ARC_MOE_CG")), 1, 4) : 1,
+                       mwy = getenv("ARC_MOE_WY") ? std::clamp(atoi(getenv("ARC_MOE_WY")), 1, 32 / (mcg == 3 ? 2 : mcg)) : 1;
       const int cg = N % (16 * mcg) == 0 ? mcg : 1;
       const size_t ny = (std::max<size_t>(64, (size_t)cur_T_ * hp.n_expert_used / 16 / (NE / G) + G) + mwy - 1) / mwy * mwy;
       for (int e0 = 0; e0 < NE; e0 += G) {

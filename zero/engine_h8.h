@@ -125,6 +125,26 @@
     run("h8_weights", k, 2, gws, lws);
     return it->second;
   }
+  // H8R straight from a staged weight's raw rows (kernels/decode.cl h8r_decode): decode_w8 + h8r_weights in one pass,
+  // the W8 copy neither written nor read again (a B60's 27B 4K prompt: decode_w8 189 ms + h8_weights 372 ms). The
+  // same values bit for bit; for the types decode_w8 stores without requantizing and with int8 scales, rotation
+  // blocks of 512 / 1024, once the column scales are known (the first decode keeps the two passes). ARC_H8_FUSE=0: off.
+  bool h8_dec_ok(const GpuWeight& w) const {
+    static const bool on = !getenv("ARC_H8_FUSE") || atoi(getenv("ARC_H8_FUSE")) != 0;
+    return on && w.raw && w.gemm_qtype >= 100 && w.gemm_qtype <= 103 && !w8_requant(w.type) && w8_variant(w.type) != 4 &&
+           w.type != GGML_IQ1_M && w.type != GGML_IQ1_S && h8_block(w.K) >= 512 && w.N % 16 == 0;
+  }
+  void h8r_decode(const GpuWeight& w, cl_mem wq, cl_mem col) {
+    static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
+    const int hb = h8_block(w.K);
+    cl_kernel k = kernel("decode", std::string("-cl-intel-256-GRF-per-thread -DH8RDEC") + (d ? " -DH8_D" : "") + " -DQT=" +
+                                       std::to_string(w.type) + " -DHB=" + std::to_string(hb) + " -DSRC=" +
+                                       std::to_string(w.gemm_qtype), "h8r_decode");
+    int N = w.N, K = w.K;
+    set_args(k, 0, w.raw, N, K, tabs_, wq, col);
+    size_t gws[2] = {(size_t)N / 16 * 256, (size_t)(K / hb)}, lws[2] = {256, 1};
+    run("h8_decode", k, 2, gws, lws);
+  }
   // W8 / Q8_0 weights (wq, wh) into H8 in place, their scales into hh
   void h8_weights(const GpuWeight& w, cl_mem wq, cl_mem wh, cl_mem hh) {
     const int hb = h8_block(w.K);
@@ -163,8 +183,14 @@
     if (h8_row()) {
       wq = stage_q_[w.role];
       if (stage_owner_[w.role] != &w) {
-        decode_w8(w, wq, stage_h_[w.role]);
-        hh = h8r_weights(w, wq, stage_h_[w.role]);
+        auto it = h8_col_.find(&w);
+        if (it != h8_col_.end() && h8_dec_ok(w)) {
+          h8r_decode(w, wq, it->second);  // (decode + rotation in one pass, bit-identical)
+          hh = it->second;
+        } else {
+          decode_w8(w, wq, stage_h_[w.role]);
+          hh = h8r_weights(w, wq, stage_h_[w.role]);
+        }
         stage_owner_[w.role] = &w;
       } else {
         hh = h8_col_.at(&w);

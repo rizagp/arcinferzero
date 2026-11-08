@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-08: H8's weight rotation in the decode pass; a weight prefetch switch for the B60
+
+- H8 with weights decoded just in time (the 27B on a B60): `decode.cl h8r_decode` decodes the raw rows and rotates
+  them in one pass. Before, `decode_w8` wrote a W8 copy and `h8r_weights` read it back. It runs from a weight's second
+  decode on, once its column scales are known. Q2_K / Q4_K / Q5_K and the per-32-float types keep the two passes.
+  `ARC_H8_FUSE=0` turns it off.
+- Laptop 125H, 27B, 2K prompt in 1K chunks, H8: logits bit-identical; decode + rotation 4,569 -> 1,566 ms of GPU time;
+  101.5 -> 114.3 tok/s. A B60 spent 561 ms there per 4K prompt.
+- `ARC_GEMM_WPF=n`: the XMX prompt GEMM prefetches its weights n 64-value chunks ahead. Off by default, a B60 to
+  measure; bit-identical.
+- `bench\b60_sweep.ps1`: rows WPF and FUSE, and a phase E over several GPUs (`-Gpus 2,4`).
+- Self audit (`docs/self-audit-2026-11-08.md`):
+  - XMX is off again only on iGPUs with 8-lane DPAS. Discrete Alchemist cards had been caught too; they now go
+    through the model-sized speed check.
+  - The sweeps' FUSE rows and f16 labels fixed.
+  - `ARC_MOE_CG` x `ARC_MOE_WY` bounded.
+
 ## 2026-11-08: f16 XMX at 8 lanes for the Arc 140T (opt-in)
 
 - `ARC_X16=1` now also works on iGPUs with 8-lane DPAS (`gemm_x16.cl -DX16_SG8`). The weights and activations are f16,

@@ -46,8 +46,8 @@ function Env-Of([hashtable]$base, [hashtable]$tiles) {
 function Invoke-Bench([hashtable]$envs) {
   $o = Invoke-Runz $envs @($Model, "--bench-pp", $Tokens, "--n", 1)
   $tps = [regex]::Matches($o, "pp\d+ run \d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s") | ForEach-Object { [double]$_.Groups[1].Value }
-  $path = if ($o -match "XMX on for the prompt GEMMs") { "XMX" } elseif ($o -match "XMX results differ") { "DP4a (XMX differed!)" }
-          elseif ($o -match "XMX kernels do not build") { "DP4a (XMX did not build!)" } else { "DP4a" }
+  $path = if ($o -match "XMX on for the prompt GEMMs") { "XMX" } elseif ($o -match "(?<!f16 )XMX results differ") { "DP4a (XMX differed!)" }
+          elseif ($o -match "(?<!f16 )XMX kernels do not build") { "DP4a (XMX did not build!)" } else { "DP4a" }
   if ($o -match "H8 on for the prompt GEMMs") { $path += " + H8" }
   if ($o -match "f16 XMX on for the W8") { $path += " + f16 XMX" }
   elseif ($o -match "f16 XMX results differ") { $path += " (f16 XMX differed!)" }

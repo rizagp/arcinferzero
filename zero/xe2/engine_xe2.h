@@ -86,6 +86,12 @@
     return x2d_ ? std::string(pf ? " -DX2D -DX2D_PF" : " -DX2D") : std::string();
   }
   bool x2d_wanted() const { return xe2_ && cl_.block2d && x2d_switch("ARC_GEMM_2D"); }
+  // ARC_GEMM_WPF=n (1..16): the XMX prompt GEMM prefetches its weights n 64-value chunks ahead (4: the next
+  // superblock); off by default, a B60 to measure. Bit-identical
+  std::string xe2_wpf() const {
+    static const int n = getenv("ARC_GEMM_WPF") ? atoi(getenv("ARC_GEMM_WPF")) : 0;
+    return xe2_ && !cl_.sg8 && n >= 1 && n <= 16 ? " -DWPF=" + std::to_string(n) : std::string();
+  }
 
   // ---- the f16 XMX prompt GEMM (kernels/gemm_x16.cl) for the W8 layouts (the 27B's IQ3_S, decoded just in time).
   // Off until measured on a B60: ARC_X16=1 on a discrete GPU with XMX. ARC_X16_TRY=1 anywhere, DPAS emulated where

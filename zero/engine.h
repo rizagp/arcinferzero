@@ -250,13 +250,16 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // (8-lane GPUs, Arrow Lake H / Arc 140T: XMX only with ARC_XMX_FORCE=1. A 140T, issue #5, 2026-11-07: gemm_x8 right
     //  bit for bit on real DPAS, but the 27B's 2K prompt 114-120 tok/s against 180 on DP4a, GEMMs 1.6x slower, while
     //  the start-time speed check on its small shape had picked XMX. Off, the GPU runs as with ARC_NO_XMX)
+    //  (discrete cards with 8-lane DPAS, the Alchemist A-series: XMX checked, then timed on a model-sized GEMM in
+    //  xmx_check as an iGPU is; no one has measured gemm_x8 on one. Self audit 2026-11-08: the gate had caught them too)
     const bool xmx_force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
-    if (!opt.dry && cl_.xmx && cl_.sg8 && !xmx_force && !getenv("ARC_XMX_TRY")) {
+    const bool sg8_igpu = cl_.sg8 && zrt::integrated();
+    if (!opt.dry && cl_.xmx && sg8_igpu && !xmx_force && !getenv("ARC_XMX_TRY")) {
       static bool said = false;
       if (!said) fprintf(stderr, "arcinferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
       said = true;
     }
-    if (!opt.dry && ((cl_.xmx && (!cl_.sg8 || xmx_force)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
+    if (!opt.dry && ((cl_.xmx && (!sg8_igpu || xmx_force)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
       // (the switches of zero/xe2/engine_xe2.h, before the check so it covers them: every GPU that offers XMX, discrete
       // or integrated; a GPU without it, as the 125H, never comes here)
       xe2_ = true;

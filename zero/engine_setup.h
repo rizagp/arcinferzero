@@ -349,7 +349,7 @@
     return kernel("gemm", xe2_gemm_grf() + "-DQTYPE=" + std::to_string(qtype) + (act32 ? " -DACT32" : "") +
                               (gemm_tm() != 16 ? " -DTM=" + std::to_string(gemm_tm()) : std::string()) +
                               xe2_cg_defs(cg) + gemm_extra() +
-                              ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() + xe2_x2d() : std::string()),
+                              ((xmx < 0 ? xmx_ : xmx != 0) ? xmx_defs() + xe2_x2d() + xe2_wpf() : std::string()),
                   "gemm");
   }
   // the mixture-of-experts prompt GEMM over slot tiles (gemm.cl MOE_TILES; W8 layouts 100..103, per-32 scales)
@@ -474,7 +474,8 @@
       // ARC_XMX_FORCE=1: no check; ARC_XMX_SPEED=1: the check also under ARC_XMX_TRY (tests) and on discrete cards
       const bool spd_env = getenv("ARC_XMX_SPEED") && atoi(getenv("ARC_XMX_SPEED")) != 0;
       const bool force = getenv("ARC_XMX_FORCE") && atoi(getenv("ARC_XMX_FORCE")) != 0;
-      if (bad.empty() && !force && (spd_env || (zrt::integrated() && !getenv("ARC_XMX_TRY")))) {
+      // (also discrete cards with 8-lane DPAS, the Alchemist A-series: gemm_x8 lost 1.6x on a 140T and is unmeasured there)
+      if (bad.empty() && !force && (spd_env || ((zrt::integrated() || cl_.sg8) && !getenv("ARC_XMX_TRY")))) {
         const int SM = 512, SN = 17408, SK = 5120, sng = SN / 16, snsb = SK / 256;
         std::vector<uint32_t> sw((size_t)sng * snsb * 4 * 16 * 16), sh((size_t)sng * snsb * 10 * 16);
         for (auto& v : sw) v = rnd();
