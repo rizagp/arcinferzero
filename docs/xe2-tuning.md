@@ -460,6 +460,16 @@ DP4a GEMM 4.7x slower in this check, 47 ms against 10). If XMX loses, those swit
   (128 registers: twice the threads) more than by its loads, which X8W cut. Chunk sizes (1K / 2K / 4K for an 8K prompt)
   change nothing. Generation: the GEMV switches within noise (second run 5.89-6.09 tok/s; the first run's low values
   were a stall in the first steps, its median steps 162-168 ms as the second's).
+- **The 140T's `igpu_grf_sweep` (2026-11-08, package 4aae0c5, two runs): XMX wins for the first time, with H8.**
+  - **The best set:** XMX + `ARC_GEMM_GRF=128` + `ARC_H8=1` + `ARC_GEMM_TM=32` + `ARC_GEMM_CG=2`, 200.5-200.6 tok/s on
+    the 27B's 2K prompt against DP4a's 173-182 (+10 %). KL against DP4a 0.00154 (max 0.064).
+  - **Without H8**, XMX with 128 registers and CG 4 only matches DP4a (183).
+  - **DP4a has no setting that gains.**
+  - **f16 XMX is out on this GPU:** 42-75 tok/s.
+  - **That package predates the fused H8 decode (685ff57).** The 140T's 27B weights are decoded just in time, as the
+    laptop's, where fusing gave H8 +13 %.
+  - **Not yet measured:** short prompts (on a B60, H8 lost at 512 tokens) and the newer package; both are asked for
+    before any default changes.
 - **f16 XMX at 8 lanes for the 140T (2026-11-08): `ARC_X16=1`, `gemm_x16.cl -DX16_SG8`.**
   - **Why:** the 140T's int8 XMX kernel lost to DP4a mostly in the vector work between DPAS (the per-32 rescaling). In
     f16 the weights are decoded with their scales, and one DPAS accumulator sums the whole row. Strata made the same
