@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-11-08: generation switches for the B60: recorded command lists (`ARC_BATCH`), MoE tokens without host waits (`ARC_XALL`)
+
+Both are off by default and bit-identical; they wait for a Pro B60's numbers (issue #4).
+
+- **`ARC_BATCH=n`:** kernels are recorded into regular in-order command lists of up to n kernels. Each list is
+  appended to the immediate list when full (`zeCommandListImmediateAppendCommandListsExp`, Level Zero 1.9), instead
+  of every kernel being appended there on its own.
+  - On a B60, `replay_probe` measured 2.56 us a kernel appended one by one against 0.66 replayed. The 27B's
+    generation step has ~3 ms between kernels (46.6 ms against 43.6 of kernel time).
+  - The lists start at 4 kernels after every host wait and double up to n.
+  - Copies, fills, barriers and waits first append the list being recorded (`zrt::imm()`, `zrt::sync()`).
+  - Kernels with an event (profiling, `ARC_ZE_WATCH`) and `ARC_ZE_SYNC_EACH` go to the immediate list as before.
+  - A driver without the call says so and runs as before.
+- **`ARC_XALL=1`:** a MoE model whose experts are all in the GPU's expert cache (the 35B-A3B on a 24 GB card) no
+  longer reads each layer's expert ids on the host. That read is ~40 host waits a 35B token, and each one leaves the
+  GPU idle.
+  - The check runs once a token (`XCache::all_in`) and sets every expert's address, as `ensure()` does for its hits.
+  - It is cleared when a launch that ran out of memory takes slots away.
+  - Not used for multi-GPU or prompt chunks.
+- **`ARC_LAUNCH_STATS=1`** also prints the host waits per token.
+- **`bench\replay_probe.exe`** also times lists appended to the immediate list and lists recorded again each step
+  in chunks of 8 / 32 / 128 / all.
+- **`bench\decode_try.ps1`:**
+  - new rows `BATCH=16/32/128`, `mtp BATCH=32`, and for MoE models `XALL=1` and `XALL=1 BATCH=32`; these rows say
+    whether the tokens match plain;
+  - launches and host waits per token;
+  - the prefetch row is now `GEMV_PF=0`, since the prefetch is the default on discrete cards.
+- **Laptop (no gain expected there):**
+  - Logits bit-identical with `ARC_BATCH` 8 / 32 / 256 on the 4B and the 35B, with MTP, and over a 2,161-token
+    prompt.
+  - Speed: the 4B the same; the 35B -5 %. Its cache holds 83-87 % of the experts, so a token waits 43 times and the
+    lists stay short.
+- **Tried and removed: a dense prompt GEMM straight from the raw rows (DP4a)**, meant for short prompts.
+  - On the laptop `decode_w8` takes 1.1 s of a 4.6 s 512-token 27B prompt.
+  - The fused kernel was bit-identical but not faster (512 tokens 106-110 against 110 tok/s): the GEMM and the
+    decoding both run on the vector units.
+  - An XMX version could still pay on B-series cards; see `docs/before-after.md`.
+
 ## 2026-11-08: B60 defaults: H8 + 4 column groups for Qwen dense models, GEMV prefetch; arc-server -DFlash
 
 - **H8 + `ARC_GEMM_CG=4` by default** on discrete cards with 16-lane XMX, for the Qwen dense models. A Pro B60

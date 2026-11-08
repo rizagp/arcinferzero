@@ -842,7 +842,7 @@ static int run_main(int argc, char** argv) {
     int tok = 1000;
     const uint64_t b0 = eng.rd_bytes;
     std::vector<double> step_ms;
-    const uint64_t ln0 = zrt::launch_n, lt0 = zrt::launch_ns, sa0 = zrt::setarg_ns;
+    const uint64_t ln0 = zrt::launch_n, lt0 = zrt::launch_ns, sa0 = zrt::setarg_ns, sy0 = zrt::sync_n;
     auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < n_gen; ++i) {
       const auto ts = std::chrono::steady_clock::now();
@@ -853,8 +853,8 @@ static int run_main(int argc, char** argv) {
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     printf("tg%d: %.1f ms  ->  %.2f tokens/s\n", n_gen, ms, n_gen / ms * 1000.0);
     if (zrt::launch_stats && n_gen > 0)  // (ARC_LAUNCH_STATS: the host's share of a step)
-      printf("launches: %.0f per token; host %.2f ms appending + %.2f ms setting arguments per token (%.1f us per launch)\n",
-             (double)(zrt::launch_n - ln0) / n_gen, (zrt::launch_ns - lt0) / 1e6 / n_gen, (zrt::setarg_ns - sa0) / 1e6 / n_gen,
+      printf("launches: %.0f per token, host waits %.1f; host %.2f ms appending + %.2f ms setting arguments per token (%.1f us per launch)\n",
+             (double)(zrt::launch_n - ln0) / n_gen, (double)(zrt::sync_n - sy0) / n_gen, (zrt::launch_ns - lt0) / 1e6 / n_gen, (zrt::setarg_ns - sa0) / 1e6 / n_gen,
              (zrt::launch_ns - lt0 + zrt::setarg_ns - sa0) / 1e3 / std::max<uint64_t>(1, zrt::launch_n - ln0));
     {  // (a whole slow run or single slow steps)
       std::vector<double> st = step_ms;

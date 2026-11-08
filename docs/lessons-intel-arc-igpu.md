@@ -152,6 +152,7 @@ MoE expert kernels read small scattered blocks: the 35B's gate/up IQ3_XXS runs 5
 
 | Idea | Result |
 |---|---|
+| Dense prompt GEMM decoding the raw rows itself (no `decode_w8` pass), DP4a, 2026-11-08 | bit-identical but not faster: 27B 512 tokens 106-110 vs 110 tok/s; the GEMM is bound by the vector units and so is the decoding (codebook lookups), so fusing them saves nothing |
 | fp16 P·V accumulation in attention | no speed-up, worse error |
 | 7-bit P (signed DP4a) instead of 8-bit P (unsigned x signed) | same speed, 1.8x the error |
 | SIMD8 W8 GEMM (its DP4a microbenchmark peaks at 13.7 TOPS vs 13.2 for SIMD16) | 28 % slower: 27B ffn_gate 7.90 -> 5.69 TOPS, ffn_down 6.62 -> 4.74 (re-measured 16 Oct). The ALUs are 8 lanes wide, so SIMD16 loses almost nothing in pure arithmetic, while the GEMM is limited by the loads, lane broadcasts and scale math around the DP4a, which SIMD8 needs twice as many instructions for. A peak microbenchmark measures the part that is not the bottleneck |

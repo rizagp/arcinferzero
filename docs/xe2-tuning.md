@@ -141,6 +141,24 @@ experts change every token. Not measured in the engine, not built.
 Whatever is built for the B-series goes in `zero/xe2/` and kernels of its own, chosen on discrete GPUs only: the
 iGPU kernels stay as they are.
 
+**Built 2026-11-08, off by default: `ARC_BATCH=n`.** A step cannot be recorded once and replayed as it is, because its
+arguments (positions, lengths) change every token. So each step is recorded again, in regular in-order lists of up
+to n kernels. Each list is appended to the immediate list as soon as it is full
+(`zeCommandListImmediateAppendCommandListsExp`), so the GPU starts on the first list while the host records the next.
+The lists start at 4 kernels after each host wait and double up to n. The commands, their order and the list are the
+same as before, so the results are bit-identical.
+
+- **The laptop:** the call works. `replay_probe` shows no gain there (as before), and the engine's generation is the
+  same on the 4B.
+- **The 35B's catch: it waits on the host about 40 times a token**, because every MoE layer reads its experts' ids for
+  the expert cache (`ARC_LAUNCH_STATS=1` prints the waits). Between waits there are only ~15 kernels, so the lists
+  stay short; on the laptop that was -5 %.
+- **`ARC_XALL=1` (also off by default)** drops those reads when every expert is cached, as on a 24 GB card. The
+  kernels then read the same expert addresses with no waits between layers. On the laptop the cache never holds
+  every expert, so this path still has to be measured on a card that does.
+
+`bench\decode_try.ps1` has rows for both and checks that their tokens match plain.
+
 ## 6. The f16 XMX prompt GEMM (`ARC_X16=1`, 2026-11-02)
 
 The int8 XMX GEMM (`gemm.cl -DXMX`) was only ~10 % faster than DP4a on a B60 (27B: 450 vs 406 tok/s). Every 16- or

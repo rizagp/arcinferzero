@@ -112,6 +112,12 @@ struct Dev {
   std::atomic<uint64_t> sync_timeout_ns{UINT64_MAX};
   std::atomic<const std::atomic<bool>*> abort{nullptr};
   std::atomic<std::atomic<bool>*> fault{nullptr};  // (set when a wait gave up on its GPU: the split model is not trusted again)
+  // (ARC_BATCH, see zrt::batch_max: the regular lists kernels are recorded into, each appended to `cl` when full and
+  //  signalling `done` when it has run; `rec` the one being recorded, rec_n kernels in it, rec_cap its size)
+  struct RecList { ze_command_list_handle_t l = nullptr; ze_event_handle_t done = nullptr; bool used = false; };
+  std::vector<RecList> rec_pool;
+  int rec_next = 0, rec_cur = 0, rec_n = 0, rec_cap = 0;
+  ze_command_list_handle_t rec = nullptr;
 };
 // a wait that gave up (Dev::sync_timeout_ns / abort): the split model's shards are out of step afterwards
 struct GpuWaitError : std::runtime_error {
@@ -131,10 +137,123 @@ inline thread_local bool tp_guarded = false;
 inline thread_local bool oom_throws = false;
 inline thread_local bool oom_test = false;
 inline Dev& D() { return cur ? *cur : dev0; }
+// Called when the GPU runs out of memory (the share is shared with every other program: a browser or the desktop
+// taking more makes a launch or allocation fail): frees some memory (the engine shrinks its expert cache) and returns
+// true, or false when it cannot; the failed call is then retried.
+inline bool (*oom_hook)() = nullptr;
+
+// ---- ARC_BATCH=n (off by default): kernels recorded into regular in-order command lists of up to n kernels, each
+// appended to the immediate list when full (zeCommandListImmediateAppendCommandListsExp, Level Zero 1.9), instead of
+// each kernel appended there on its own. Same commands in the same order on the same list: the same results. What
+// changes is how the GPU gets them: on a Pro B60 (bench/replay_probe.cpp, 2026-11-06) 700 small kernels took 2.56 us
+// each appended one by one against 0.66 replayed from a recorded list, ~3 ms of a 27B token. The lists start at 4
+// kernels after every wait (an idle GPU gets work soon) and double up to n. Anything else that goes to the
+// immediate list (copies, fills, barriers, waits) first appends the list being recorded (imm(), sync()). Kernels
+// that signal an event (profiling, ARC_ZE_WATCH) and ARC_ZE_SYNC_EACH go to the immediate list as before.
+inline int batch_max() {
+  static const int n = getenv("ARC_BATCH") ? std::max(0, std::min(4096, atoi(getenv("ARC_BATCH")))) : 0;
+  return n;
+}
+struct BatchFns {
+  struct ListDesc { ze_structure_type_t stype; const void* pNext; uint32_t ordinal, flags; };
+  ze_result_t(__stdcall* create)(ze_context_handle_t, ze_device_handle_t, const ListDesc*, ze_command_list_handle_t*) = nullptr;
+  ze_result_t(__stdcall* close)(ze_command_list_handle_t) = nullptr;
+  ze_result_t(__stdcall* reset)(ze_command_list_handle_t) = nullptr;
+  ze_result_t(__stdcall* append)(ze_command_list_handle_t, uint32_t, ze_command_list_handle_t*, ze_event_handle_t, uint32_t,
+                                 ze_event_handle_t*) = nullptr;
+  bool ok = false;
+};
+inline BatchFns& batch_fns() {
+  static BatchFns f = [] {
+    BatchFns b;
+    HMODULE zl = GetModuleHandleA("ze_loader.dll");
+    if (!zl || !driver) return b;
+    b.create = (decltype(b.create))GetProcAddress(zl, "zeCommandListCreate");
+    b.close = (decltype(b.close))GetProcAddress(zl, "zeCommandListClose");
+    b.reset = (decltype(b.reset))GetProcAddress(zl, "zeCommandListReset");
+    b.append = (decltype(b.append))GetProcAddress(zl, "zeCommandListImmediateAppendCommandListsExp");
+    if (!b.append) {
+      typedef ze_result_t(__stdcall * PFN_ext)(ze_driver_handle_t, const char*, void**);
+      auto ext = (PFN_ext)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
+      void* p = nullptr;
+      if (ext && ext(driver, "zeCommandListImmediateAppendCommandListsExp", &p) == 0) b.append = (decltype(b.append))p;
+    }
+    b.ok = b.create && b.close && b.reset && b.append;
+    fprintf(stderr, b.ok ? "arcinferzero: ARC_BATCH=%d: kernels recorded in lists of up to %d\n"
+                         : "arcinferzero: ARC_BATCH=%d: this driver cannot append lists to an immediate list; off\n",
+            batch_max(), batch_max());
+    return b;
+  }();
+  return f;
+}
+inline bool batching() { return batch_max() > 0 && batch_fns().ok; }
+// the list being recorded appended to d's immediate list (no-op when none)
+inline void flush(Dev& d) {
+  if (!d.rec) return;
+  ze_command_list_handle_t l = d.rec;
+  d.rec = nullptr;  // (before anything that could wait: an oom_hook that synchronizes comes back here)
+  d.rec_n = 0;
+  d.rec_cap = std::min(d.rec_cap * 2, batch_max());
+  ZE_CHECK(batch_fns().close(l));
+  Dev::RecList& r = d.rec_pool[d.rec_cur];
+  ze_result_t e = batch_fns().append(d.cl, 1, &l, r.done, 0, nullptr);
+  for (int i = 0; e == (ze_result_t)0x70000003 && i < 8 && oom_hook && oom_hook(); ++i)  // (out of device memory)
+    e = batch_fns().append(d.cl, 1, &l, r.done, 0, nullptr);
+  ZE_CHECK(e);
+  r.used = true;
+}
+// d's immediate list, for a command that is not a kernel: what was recorded goes first
+inline ze_command_list_handle_t imm(Dev& d) { flush(d); return d.cl; }
+inline ze_command_list_handle_t imm() { return imm(D()); }
+// the list to record d's next kernel into: a free one of the pool (64 lists; one whose earlier recording has not run
+// yet is waited for, which only happens when the GPU is 64 lists behind)
+inline ze_command_list_handle_t rec_list(Dev& d) {
+  if (d.rec) return d.rec;
+  const int kPool = 64;
+  if (d.rec_pool.empty()) {
+    uint32_t ng = 0, ord = 0;
+    ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(d.dev, &ng, nullptr));
+    std::vector<ze_command_queue_group_properties_t> gp(ng);
+    for (auto& g : gp) g.stype = ZE_STYPE_COMMAND_QUEUE_GROUP_PROPERTIES;
+    ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(d.dev, &ng, gp.data()));
+    for (uint32_t i = 0; i < ng; ++i)
+      if (gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) { ord = i; break; }  // (the immediate list's group)
+    ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, (uint32_t)kPool};
+    ze_event_pool_handle_t pool = nullptr;
+    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &d.dev, &pool));
+    d.rec_pool.resize(kPool);
+    for (int i = 0; i < kPool; ++i) {
+      BatchFns::ListDesc ld{0xfu /* ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC */, nullptr, ord, 8 /* in order */};
+      ZE_CHECK(batch_fns().create(ctx, d.dev, &ld, &d.rec_pool[i].l));
+      ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, (uint32_t)i, 0x4 /* signal: host scope */, 0};
+      ZE_CHECK(zeEventCreate(pool, &ed, &d.rec_pool[i].done));
+    }
+  }
+  d.rec_cur = d.rec_next;
+  d.rec_next = (d.rec_next + 1) % kPool;
+  Dev::RecList& r = d.rec_pool[d.rec_cur];
+  if (r.used) {
+    ZE_CHECK(zeEventHostSynchronize(r.done, UINT64_MAX));
+    ZE_CHECK(zeEventHostReset(r.done));
+    ZE_CHECK(batch_fns().reset(r.l));
+    r.used = false;
+  }
+  if (d.rec_cap < 4) d.rec_cap = std::min(4, batch_max());
+  d.rec = r.l;
+  return r.l;
+}
+
 // (the driver's UINT64_MAX wait does not spin a core: measured 2026-11-04, QUEUE 31.11 (1); polling with sleeps
 //  instead gained nothing)
+inline std::atomic<uint64_t> sync_n{0};  // (host waits, counted with ARC_LAUNCH_STATS)
+inline bool launch_stats_on();
 inline void sync() {
   Dev& d = D();
+  if (launch_stats_on()) ++sync_n;
+  if (d.rec) {
+    flush(d);
+    d.rec_cap = 0;  // (the GPU will be idle: the next lists start small again)
+  }
   if (!tp_guarded || (d.sync_timeout_ns.load() == UINT64_MAX && !d.abort.load())) {
     ZE_CHECK(zeCommandListHostSynchronize(d.cl, UINT64_MAX));
     return;
@@ -248,10 +367,6 @@ inline char* staging(size_t n) {
   }
   return D().stage;
 }
-// Called when the GPU runs out of memory (the share is shared with every other program: a browser or the desktop
-// taking more makes a launch or allocation fail): frees some memory (the engine shrinks its expert cache) and returns
-// true, or false when it cannot; the failed call is then retried.
-inline bool (*oom_hook)() = nullptr;
 inline void* device_alloc(size_t n) {
   ze_device_mem_alloc_desc_t dd{ZE_STYPE_DEVICE_MEM_ALLOC_DESC, nullptr, 0, 0};
   void* p = nullptr;
@@ -383,7 +498,7 @@ inline cl_int clEnqueueCopyBuffer(cl_command_queue, cl_mem src, cl_mem dst, size
             n, so, n, src->size, doff, n, dst->size);
     return -30;
   }
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, dst->ptr + doff, src->ptr + so, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), dst->ptr + doff, src->ptr + so, n, nullptr, 0, nullptr));
   return CL_SUCCESS;
 }
 inline bool out_of_bounds(const char* what, cl_mem b, size_t off, size_t n) {
@@ -397,7 +512,7 @@ inline cl_int clEnqueueReadBuffer(cl_command_queue, cl_mem b, cl_bool, size_t of
   if (ev) *ev = nullptr;
   if (out_of_bounds("read", b, off, n)) return -30;
   char* s = zrt::staging(n);
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, s, b->ptr + off, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), s, b->ptr + off, n, nullptr, 0, nullptr));
   zrt::sync();
   memcpy(host, s, n);
   return CL_SUCCESS;
@@ -409,7 +524,7 @@ inline cl_int clEnqueueWriteBuffer(cl_command_queue, cl_mem b, cl_bool, size_t o
   char* s = zrt::staging(n);
   zrt::sync();  // (the bounce buffer may still be read by an earlier copy)
   memcpy(s, host, n);
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, b->ptr + off, s, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), b->ptr + off, s, n, nullptr, 0, nullptr));
   zrt::sync();
   return CL_SUCCESS;
 }
@@ -417,7 +532,7 @@ inline cl_int clEnqueueFillBuffer(cl_command_queue, cl_mem b, const void* patter
                                   cl_uint, const cl_event*, cl_event* ev) {
   if (ev) *ev = nullptr;
   if (out_of_bounds("fill", b, off, n)) return -30;
-  ZE_CHECK(zeCommandListAppendMemoryFill(zrt::D().cl, b->ptr + off, pattern, ps, n, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryFill(zrt::imm(), b->ptr + off, pattern, ps, n, nullptr, 0, nullptr));
   zrt::sync();  // (the pattern is the caller's)
   return CL_SUCCESS;
 }
@@ -426,7 +541,7 @@ inline void* clEnqueueMapBuffer(cl_command_queue, cl_mem b, cl_bool, cl_map_flag
   if (ev) *ev = nullptr;
   void* h = zrt::host_alloc(n);
   if (flags & CL_MAP_READ) {
-    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, h, b->ptr + off, n, nullptr, 0, nullptr));
+    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), h, b->ptr + off, n, nullptr, 0, nullptr));
     zrt::sync();
   }
   zrt::maps().push_back({b, off, n, h});
@@ -437,7 +552,7 @@ inline cl_int clEnqueueUnmapMemObject(cl_command_queue, cl_mem b, void* p, cl_ui
   if (ev) *ev = nullptr;
   for (size_t i = 0; i < zrt::maps().size(); ++i)
     if (zrt::maps()[i].host == p && zrt::maps()[i].m == b) {
-      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::D().cl, b->ptr + zrt::maps()[i].off, p, zrt::maps()[i].n, nullptr, 0, nullptr));
+      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), b->ptr + zrt::maps()[i].off, p, zrt::maps()[i].n, nullptr, 0, nullptr));
       zrt::sync();
       zeMemFree(zrt::ctx, p);
       zrt::maps().erase(zrt::maps().begin() + i);
@@ -466,7 +581,7 @@ inline cl_mem clCreateSubBuffer(cl_mem parent, cl_mem_flags, cl_buffer_create_ty
 inline cl_int clReleaseMemObject(cl_mem m) {
   if (!m) return CL_SUCCESS;
   zrt::Dev& d = m->d ? *m->d : zrt::D();
-  if (m->owner) { zeCommandListHostSynchronize(d.cl, UINT64_MAX); zeMemFree(zrt::ctx, m->ptr); d.device_bytes -= m->size; }
+  if (m->owner) { zeCommandListHostSynchronize(zrt::imm(d), UINT64_MAX); zeMemFree(zrt::ctx, m->ptr); d.device_bytes -= m->size; }
   d.mems.erase(m);
   delete m;
   return CL_SUCCESS;
@@ -476,6 +591,7 @@ inline cl_int clReleaseMemObject(cl_mem m) {
 // setting their arguments and appending them (the CPU's share of a step, against the GPU's)
 namespace zrt {
 inline const bool launch_stats = (getenv("ARC_LAUNCH_STATS") && atoi(getenv("ARC_LAUNCH_STATS")) != 0);
+inline bool launch_stats_on() { return launch_stats; }
 inline std::atomic<uint64_t> launch_n{0}, launch_ns{0}, setarg_ns{0};
 struct LaunchTimer {
   std::atomic<uint64_t>& acc;
@@ -640,7 +756,18 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   }
   ze_event_handle_t sig = ev || zrt::watch_ms > 0 ? zrt::ev_get() : nullptr;
   if (ev) *ev = (cl_event)sig;
-  ze_result_t r = zeCommandListAppendLaunchKernel(zrt::D().cl, k->k, &gc, sig, 0, nullptr);
+  // (ARC_BATCH: recorded, see zrt::batch_max; a kernel with an event, ARC_ZE_SYNC_EACH or ARC_FAKE_OOM: as before)
+  static const bool batch_ok = zrt::batching() && !(getenv("ARC_ZE_SYNC_EACH") && atoi(getenv("ARC_ZE_SYNC_EACH")) != 0) &&
+                               !getenv("ARC_FAKE_OOM");
+  if (batch_ok && !sig) {
+    zrt::Dev& d = zrt::D();
+    if (zeCommandListAppendLaunchKernel(zrt::rec_list(d), k->k, &gc, nullptr, 0, nullptr) == ZE_RESULT_SUCCESS) {
+      if (++d.rec_n >= d.rec_cap) zrt::flush(d);
+      return CL_SUCCESS;
+    }
+    // (a recording that failed: what the list holds goes now, and this kernel through the immediate list below)
+  }
+  ze_result_t r = zeCommandListAppendLaunchKernel(zrt::imm(), k->k, &gc, sig, 0, nullptr);
   static const long fake_oom = getenv("ARC_FAKE_OOM") ? atol(getenv("ARC_FAKE_OOM")) : 0;  // (test: launch N "fails")
   static long launches = 0;
   if (fake_oom && ++launches % fake_oom == 0 && r == ZE_RESULT_SUCCESS) {
@@ -649,7 +776,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
     if (zrt::oom_hook && zrt::oom_hook()) return CL_SUCCESS;
   }
   for (int i = 0; r == (ze_result_t)0x70000003 && i < 8 && zrt::oom_hook && zrt::oom_hook(); ++i)  // (out of device memory)
-    r = zeCommandListAppendLaunchKernel(zrt::D().cl, k->k, &gc, sig, 0, nullptr);
+    r = zeCommandListAppendLaunchKernel(zrt::imm(), k->k, &gc, sig, 0, nullptr);
   if (r != ZE_RESULT_SUCCESS) {
     fprintf(stderr, "Level Zero error 0x%x launching %s (global %u x %u x %u, local %u x %u x %u)\n", r, k->name.c_str(),
             gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);

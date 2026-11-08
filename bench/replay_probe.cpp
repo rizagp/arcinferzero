@@ -31,6 +31,12 @@ typedef ze_result_t(__stdcall* PFN_queueCreate)(ze_context_handle_t, ze_device_h
                                                ze_command_queue_handle_t*);
 typedef ze_result_t(__stdcall* PFN_queueExec)(ze_command_queue_handle_t, uint32_t, ze_command_list_handle_t*, ze_fence_handle_t);
 typedef ze_result_t(__stdcall* PFN_queueSync)(ze_command_queue_handle_t, uint64_t);
+typedef ze_result_t(__stdcall* PFN_listReset)(ze_command_list_handle_t);
+// (Level Zero 1.9, ZE_experimental_immediate_command_list_append: regular lists executed through the immediate list,
+//  in its order with everything else appended there)
+typedef ze_result_t(__stdcall* PFN_immAppend)(ze_command_list_handle_t, uint32_t, ze_command_list_handle_t*, ze_event_handle_t,
+                                             uint32_t, ze_event_handle_t*);
+typedef ze_result_t(__stdcall* PFN_extAddr)(ze_driver_handle_t, const char*, void**);
 
 static double median(std::vector<double> v) {
   std::sort(v.begin(), v.end());
@@ -113,6 +119,64 @@ int main(int argc, char** argv) {
   printf("%-40s %8.3f ms per step (%.2f us per kernel)\n", "immediate list (the engine now)", median(imm), median(imm) * 1000 / nk);
   replay(0, true, "replayed list, barrier after each kernel");
   replay(8, false, "replayed list, in-order flag");
+
+  // 3. the engine's way to a replay without recording a step once for all (its arguments change every token):
+  // each step recorded again into regular in-order lists of `chunk` kernels, each list appended to the immediate list
+  // as soon as it is full (zeCommandListImmediateAppendCommandListsExp), so the GPU starts on the first chunk while
+  // the host records the next. The recording's host time is counted. chunk = all: one list, recorded, then appended.
+  auto listReset = (PFN_listReset)GetProcAddress(zl, "zeCommandListReset");
+  auto immAppend = (PFN_immAppend)GetProcAddress(zl, "zeCommandListImmediateAppendCommandListsExp");
+  if (!immAppend) {
+    auto extAddr = (PFN_extAddr)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
+    void* f = nullptr;
+    if (extAddr && extAddr(zrt::driver, "zeCommandListImmediateAppendCommandListsExp", &f) == 0) immAppend = (PFN_immAppend)f;
+  }
+  if (!immAppend || !listReset) {
+    printf("%-40s not supported by this driver\n", "lists appended to the immediate list");
+    return 0;
+  }
+  {  // (a pre-recorded list appended: the same replay as 2., through the immediate list)
+    ze_command_list_desc_t ld{0xfu, nullptr, ord, 8};
+    ze_command_list_handle_t rl = nullptr;
+    ZE_CHECK(listCreate(zrt::ctx, zrt::D().dev, &ld, &rl));
+    for (int i = 0; i < nk; ++i) ZE_CHECK(zeCommandListAppendLaunchKernel(rl, k->k, &gc, nullptr, 0, nullptr));
+    ZE_CHECK(listClose(rl));
+    std::vector<double> t;
+    for (int r = 0; r < reps; ++r) {
+      const auto t0 = std::chrono::steady_clock::now();
+      ZE_CHECK(immAppend(zrt::D().cl, 1, &rl, nullptr, 0, nullptr));
+      zrt::sync();
+      t.push_back(ms_since(t0));
+    }
+    printf("%-40s %8.3f ms per step (%.2f us per kernel)\n", "replayed list, appended to the immediate", median(t),
+           median(t) * 1000 / nk);
+    zeCommandListDestroy(rl);
+  }
+  for (int chunk : {8, 32, 128, nk}) {
+    const int nl = (nk + chunk - 1) / chunk;
+    std::vector<ze_command_list_handle_t> ls(nl);
+    for (auto& l : ls) {
+      ze_command_list_desc_t ld{0xfu, nullptr, ord, 8};
+      ZE_CHECK(listCreate(zrt::ctx, zrt::D().dev, &ld, &l));
+    }
+    std::vector<double> t;
+    for (int r = 0; r < reps; ++r) {
+      const auto t0 = std::chrono::steady_clock::now();
+      for (int c = 0; c < nl; ++c) {
+        ZE_CHECK(listReset(ls[c]));  // (the previous step finished: sync below)
+        const int n = std::min(chunk, nk - c * chunk);
+        for (int i = 0; i < n; ++i) ZE_CHECK(zeCommandListAppendLaunchKernel(ls[c], k->k, &gc, nullptr, 0, nullptr));
+        ZE_CHECK(listClose(ls[c]));
+        ZE_CHECK(immAppend(zrt::D().cl, 1, &ls[c], nullptr, 0, nullptr));
+      }
+      zrt::sync();
+      t.push_back(ms_since(t0));
+    }
+    char what[64];
+    snprintf(what, sizeof what, "recorded each step, lists of %d", chunk);
+    printf("%-40s %8.3f ms per step (%.2f us per kernel)\n", what, median(t), median(t) * 1000 / nk);
+    for (auto l : ls) zeCommandListDestroy(l);
+  }
   // (laptop, Core Ultra 5 125H iGPU: 700 kernels of 4,096 floats 1.36 ms immediate, 1.07 replayed; of 65,536 floats
   //  1.95 against 2.01: a replay saves ~0.4 us a kernel at most there)
   return 0;

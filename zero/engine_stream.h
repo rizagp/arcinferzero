@@ -92,6 +92,7 @@
   double hst_sync_ms_ = 0, hst_ensure_ms_ = 0, hst_ple_ms_ = 0;
   int seg_n_ = 0;  // tokens of the layer-major segment being processed (0: none)
   std::vector<int> stream_ids_;  // (stream_layer's expert ids)
+  int xall_prev_il_ = 1 << 30;   // (ARC_XALL: the last MoE layer of one token; a lower one starts the next token)
   using hclk = std::chrono::steady_clock;
   static double hms(hclk::time_point a) { return std::chrono::duration<double, std::milli>(hclk::now() - a).count(); }
   void stream_layer(Layer& L, int T, bool gemm, const int* tl1 = nullptr) {

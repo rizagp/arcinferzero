@@ -150,6 +150,7 @@ That property is what every speed change is held to:
 
 | Date | Change | Before | After | Answers |
 |---|---|---|---|---|
+| 11-08 | **`ARC_BATCH=n` and `ARC_XALL=1`, both off by default, for the B60 to measure:** kernels recorded into command lists of up to n, each appended to the immediate list when full; MoE tokens without the per-layer expert-id read when every expert is cached. Laptop, `--bench-pp 128 --n 64`, off / 32 alternated, 3 rounds | 4B 20.07 / 20.35 / 20.30 tok/s; 35B 21.14 / 21.33 / 21.25 | `ARC_BATCH=32`: 4B 20.41 / 20.31 / 20.43 (same); 35B 20.05 / 20.37 / 20.09 (**-5 %**: on the laptop its cache holds 83-87 % of the experts, so each token waits on the host 43 times and the lists stay short; the 4B waits 3 times). `ARC_XALL=1`: no change on the laptop (never every expert cached) | Logits bit-identical with `ARC_BATCH` 8 / 32 / 256 (4B, 35B, 48 tokens), with MTP (4B) and over a 2,161-token prompt (4B, 35B); `ARC_XALL=1` + `ARC_BATCH=32` bit-identical (35B) |
 | 11-08 | **Pro B60 defaults (measured by the owner, package d980970, `b60_sweep.ps1`):** H8 + `ARC_GEMM_CG=4` for Qwen dense models on discrete cards; `ARC_GEMV_PF=1` on discrete cards | 27B prompt 512 / 4K / 16K: 615 / 766 / 706 tok/s; generation 22.33 | **677 / 1,024 / 937**; H8 without the fused decode 919 at 4K; generation with the prefetch 23.08; 2 cards 1,292, 4 cards 1,624 (4K, H8); 35B `ARC_MOE_WY=4` +1.6 %, H8 -0.8 % (left off for MoE) | H8 KL against the plain path 0.00154 (max 0.064), perplexity 6.2847 -> 6.2851; GEMV prefetch bit-identical; the laptop's default logits bit-identical |
 | 11-08 | **Arc 140T preset on by default** (XMX + H8 + TM 32 + CG 2 + 128 registers for chunks of 512+ tokens on weights decoded just in time; DP4a below; `ARC_140T=0` off). Measured by the 140T's owner, package 65e9e81, 27B, two runs | DP4a: 512 154 tok/s, 2K 180-181, 8K 184-186 | 512 154-159, **2K 221, 8K 230-232**; without the fused H8 decode 123 / 201 / 226 | KL against DP4a 0.00154 (max 0.064); laptop with DPAS emulated: short prompt bit-identical to the default, all-H8 chunks bit-identical to H8, mixed chunks the same greedy text |
 | 11-08 | **Arc 140T, `bench\igpu_grf_sweep.ps1` (package 4aae0c5, before the fused H8 decode; measured by the owner, two runs):** 27B IQ3_S, 2K prompt | DP4a default 173-182 tok/s; no DP4a setting gains (split-K 34: 182-183) | **XMX + 128 registers + H8 + `ARC_GEMM_TM=32` + `ARC_GEMM_CG=2`: 200.5-200.6 (+10 %)**; random signs 197; XMX + 128 registers + CG 4 without H8 183 (= DP4a); DP4a + H8 161-162; per-256 H8 94; f16 XMX at best 74.7 (128 registers), so no f16 on the 140T | KL against DP4a: XMX + H8 best 0.00154 (max 0.064, top token 98.0 %), perplexity 6.2847 -> 6.2851; XMX without H8 bit-identical; f16 0.00068 |
@@ -272,6 +273,18 @@ That property is what every speed change is held to:
 - 35B expert decoding once per layer across chunks: ~1 GB of extra buffers would come out of the expert cache;
   8192-token chunks give most of the gain.
 - Faster attention variants for Qwen prompts (`attn_ps`, other tilings): slower than `attn_q8` with 256 registers.
+- **Dense prompt GEMM straight from the raw rows, DP4a (2026-11-08):** `decode_w8` fused into the GEMM. Each
+  work-group decoded its 16 weight rows once per 512 tokens into local memory, then ran `gemm.cl`'s dot products on
+  them.
+  - The aim: on the 125H, `decode_w8` takes 1.1 s of a 4.6 s 512-token 27B prompt, a fixed cost per chunk.
+  - Bit-identical to decode + GEMM (2,161 tokens in 512-token chunks).
+  - Not faster: `--bench-pp 512` 106-110 against 110 tok/s, and 2,161 tokens in 512-token chunks 100.7 against 122.1.
+    `decode_w8` fell to 275 ms, but gate / up / down took 24-33 % longer.
+  - Why: the GEMM already runs at about half the iGPU's DP4a peak (gate: ~3.9 T int8 MAC/s), and `decode_w8` is
+    vector work too (codebook lookups), not memory traffic. Fused, the decoding takes the same vector units, so
+    nothing is saved. The 140T's DP4a chunks are in the same position.
+  - Where it could pay: an XMX version (`gemm.cl -DXMX`, with H8's rotation), where DPAS runs on the matrix engine
+    while the vector units decode. Not built; only a B-series card can measure it.
 - More in [lessons-intel-arc-igpu.md](lessons-intel-arc-igpu.md#5-tried-and-not-kept).
 
 ## Adding a row

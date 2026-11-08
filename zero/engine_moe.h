@@ -249,7 +249,19 @@
     // (multi-GPU: off. With experts missing, a split model's logits changed from run to run with it (35B over 2 GPUs,
     //  ARC_TP_SIM, 2 GiB caches: up to 1.1 apart from step 7 on), never without it or with ARC_XVERIFY's syncs; the
     //  cause is not found yet, QUEUE F30)
-    if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g && !tp_moe()) {
+    // (ARC_XALL=1: with every expert in the cache, XCache::all_in, checked at each token's first MoE layer, a token's
+    //  layers neither read their experts' ids nor call ensure(): ~40 host waits a 35B token fewer, the same kernels
+    //  reading the same addresses. Off by default until measured on a card that holds them all; not multi-GPU)
+    static const bool xall = getenv("ARC_XALL") && atoi(getenv("ARC_XALL")) != 0;
+    bool skip_x = false;
+    if (xall && xc_ && T == 1 && !use_gemm && hp.moe_std && !tp_moe()) {
+      if (L.il <= xall_prev_il_) xc_->all_in();
+      xall_prev_il_ = L.il;
+      skip_x = xc_->all_in_ok;
+      if (skip_x) xc_->skip_layer(L.il, NU);
+    }
+    if (skip_x) {
+    } else if (xc_ && T == 1 && !use_gemm && hp.moe_std && xsplit && !q2g && !tp_moe()) {
       tl1.resize(1 + 3 * (size_t)NU);
       CL_CHECK(clEnqueueReadBuffer(cl_.queue, mtiles_, CL_TRUE, 0, tl1.size() * 4, tl1.data(), 0, nullptr, nullptr));
       xt_hit_h_.assign(1, 0);
@@ -274,7 +286,7 @@
         tiles = xt_miss_;
       }
     }
-    if (xc_) stream_layer(L, T, use_gemm, tl1.empty() ? nullptr : tl1.data());
+    if (xc_ && !skip_x) stream_layer(L, T, use_gemm, tl1.empty() ? nullptr : tl1.data());
     if (use_rg) {
       moe_rg(L, 0, Mp, max_tiles);
     } else if (use_gemm) {
