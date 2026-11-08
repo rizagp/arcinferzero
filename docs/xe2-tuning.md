@@ -352,7 +352,18 @@ $env:ARC_GEMM_GRF=256; .\bin\runz.exe <27B gguf> --bench-pp 4096 --n 16 --prof; 
 
 If the GEMMs reach far more than the 1.33x, the next steps are the weights in 2D loads and urakozz's wider tile.
 
-**Next run on a B60 (2026-11-07): `bench\b60_sweep.ps1`.** From each of the two best paths, the default (2D loads with
+**The B60's sweep (2026-11-08, package 4aae0c5).**
+- **27B, default path:** 770 tok/s at 4K. No setting was 3 % ahead (column groups 4: 780, no split-K: 781); 256
+  registers 514, 32 tokens 679.
+- **27B, H8:** 924 tok/s at 4K, and **966 with `ARC_GEMM_CG=4`** (CG 2: 949). At 16K, 892 and 930.
+- **But at 512 tokens H8 loses:** 493-500 tok/s against 619 for the default. The rotations do not pay at short
+  prompts, so H8 as a default would need a chunk-size floor.
+- **Accuracy:** H8's KL against the default is 0.00136 (max 0.024, same top token 97.8 %), perplexity 6.2865 ->
+  6.2951. CG 4 gives the same numbers.
+- **35B:** `ARC_MOE_WY=4` 3,221 against 3,172 (+1.5 %; WY 2 and 8 alike), bit-identical. `ARC_MOE_CG`, H8 and f16
+  XMX: no gain. Chunk 8192 stays best (4096: 2,966; 2048: 2,624).
+
+**The B60 sweep run before that (2026-11-07): `bench\b60_sweep.ps1`.** From each of the two best paths, the default (2D loads with
 the prefetch, 764 tok/s) and H8 (918), it changes one setting at a time (TM, WGY, RG, CG, registers, split-K, 2D loads;
 a winner must be 3 % ahead), puts the winners together (or keeps the single best change if that is faster), then measures default, H8 and both "best" sets at 512, 4K and
 16K tokens (16K also in 4K chunks), checks their KL and perplexity against the default over 4 chunks of USAGE.md, and
