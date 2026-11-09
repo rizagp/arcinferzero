@@ -29,8 +29,8 @@
 # 3 not ready within 10 minutes, 4 the port is used by another program.
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
-# Log: %USERPROFILE%\.arcinferzero\server.log (written anew at each start; the previous ones in logs\server-<date>-<nn>.log,
-#      the newest 10)
+# Log: %USERPROFILE%\.arcinferzero\server.log (written anew at each start; the previous ones in
+#      logs\server_<date>_<time>.log, e.g. server_2026-11-09_14-13-48.log, the newest 10)
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
     "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "help", "--help", "-h")] [string]$Action = "start",
@@ -506,7 +506,7 @@ The server is started as bin\serverz.exe with --ctx, --mtp (when the model has
 an MTP block or a Gemma drafter), --draft for the -nodf / -df variants, --think-budget 8192 and the options above;
 its other options (bin\serverz.exe --help) keep their defaults.
 
-Log: $log (earlier starts': logs\server-<date>-<nn>.log next to it, the newest 10)
+Log: $log (earlier starts': logs\server_<date>_<time>.log next to it, the newest 10)
 Everything (Pi launcher, server options, files): pi-arc --help
 "@
   # help <topic>: a part of the full text (its sections start at these lines)
@@ -1017,22 +1017,20 @@ try {
     exit 4
   }
 } catch {}
-# the previous server's log kept in logs\server-<date>-<nn>.log (its last day written, numbered within the day), the
-# newest 10 kept: each start writes server.log anew, and what happened before a restart or a crash was lost with it.
-# (A log still open by a process that has not let go: left as it is; the new server's then fails to open and the
-# start says so below.)
+# the previous server's log kept in logs\server_<date>_<time>.log, the local date and time its last line was written
+# (server_2026-11-09_14-13-48.log: readable, no colons, which Windows names cannot hold; sorted by name = sorted by
+# time), the newest 10 kept: each start writes server.log anew, and what happened before a restart or a crash was
+# lost with it. (A log still open by a process that has not let go: left as it is; the new server's then fails to
+# open and the start says so below.)
 if (Test-Path -LiteralPath $log) {
   try {
     $logDir = Join-Path $stateDir "logs"
     New-Item -ItemType Directory -Force $logDir | Out-Null
-    $day = (Get-Item -LiteralPath $log).LastWriteTime.ToString("yyyy-MM-dd")
-    # (the day's highest number + 1: a number freed by the newest-10 rule is not taken again, so the order holds)
-    $nn = 1
-    foreach ($f in @(Get-ChildItem -LiteralPath $logDir -Filter "server-$day-*.log")) {
-      if ($f.BaseName -match '-(\d+)$' -and [int]$Matches[1] -ge $nn) { $nn = [int]$Matches[1] + 1 }
-    }
-    Move-Item -LiteralPath $log -Destination (Join-Path $logDir ("server-{0}-{1:D2}.log" -f $day, $nn)) -ErrorAction Stop
-    Get-ChildItem -LiteralPath $logDir -Filter "server-*.log" | Sort-Object LastWriteTime -Descending |
+    $stamp = (Get-Item -LiteralPath $log).LastWriteTime.ToString("yyyy-MM-dd_HH-mm-ss", [Globalization.CultureInfo]::InvariantCulture)
+    $dest = Join-Path $logDir "server_$stamp.log"
+    for ($k = 2; Test-Path -LiteralPath $dest; ++$k) { $dest = Join-Path $logDir "server_$stamp ($k).log" }  # (same second)
+    Move-Item -LiteralPath $log -Destination $dest -ErrorAction Stop
+    Get-ChildItem -LiteralPath $logDir -Filter "server_*.log" | Sort-Object LastWriteTime -Descending |
       Select-Object -Skip 10 | Remove-Item -Force -ErrorAction SilentlyContinue
   } catch {}
 }

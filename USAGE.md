@@ -168,8 +168,8 @@ arc-server help                # the common commands and options; help options /
 ```
 
 The server log is `%USERPROFILE%\.arcinferzero\server.log`. Each start writes it anew; the earlier servers' logs are
-kept in `logs\server-<date>-<nn>.log` next to it (the date it was last written, numbered within the day), the newest
-10. The server uses port 8090. For scripts, `arc-server`'s
+kept in `logs\` next to it, named by the local date and time of their last line
+(`server_2026-11-09_14-13-48.log`), the newest 10. The server uses port 8090. For scripts, `arc-server`'s
 exit code says what happened: 0 ok, 1 a wrong option or value, 2 the server stopped while loading, 3 not ready within
 10 minutes, 4 the port is used by another program.
 

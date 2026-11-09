@@ -3,10 +3,11 @@
 ## 2026-11-09: earlier server logs kept
 
 - `arc-server` (and so the launcher) wrote `server.log` anew at each start, so the log of the server before a restart
-  or a crash was lost. That log now moves to `%USERPROFILE%\.arcinferzero\logs\server-<date>-<nn>.log` (the day it
-  was last written, numbered within the day, the next number after the day's highest), and the newest 10 are kept.
-  `server.log` stays the running server's. Checked over 14 starts in a test folder: 10 files, numbers in order, one
-  from the day before removed as the oldest; a log still held open is left as it is without an error.
+  or a crash was lost. That log now moves to `%USERPROFILE%\.arcinferzero\logs\`, named by the local date and time
+  of its last line, `server_2026-11-09_14-13-48.log` (readable, sorted by name = by time; two in the same second:
+  `server_... (2).log`), and the newest 10 are kept. `server.log` stays the running server's. Checked over 14 starts
+  in a test folder: 10 files, one from the day before removed as the oldest, a same-second pair kept apart; a log
+  still held open is left as it is without an error.
 
 ## 2026-11-09: discrete cards, MoE generation defaults from a B60's run
 
