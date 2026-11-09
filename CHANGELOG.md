@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-09: chunked DeltaNet kernel, opt-in (QUEUE F33.1, step one)
+
+- `gdn_chunk` (zero/kernels/ops.cl): the gated delta rule of a prompt pass in chunks of 32 tokens. Per chunk the
+  tokens' deltas come from one forward substitution over a 32 x 32 matrix (A = beta exp(lg_l - lg_m) k_l.k_m), the
+  outputs from P = exp(lg_i - lg_l) q_i.k_l and the state at the chunk's start, and the state moves once per chunk.
+  Four work-items per state row (each a quarter of the 128 key dims, partial sums joined with sub-group shuffles):
+  4x the work-items of `gdn_recur`, whose nv*128 leave a large GPU mostly idle (a B60 at ~30 % with the 27B's 48
+  heads). This form is also the base of the XMX version (its parts are matrix products).
+- Off by default: `ARC_GDN_CHUNK=1` (local rows read element by element) or `=2` (16 floats at a time, fewer
+  messages; ocloc shows a few registers spilled on Xe-LPG, none on a B60). Prompt passes of 32+ tokens only; MTP /
+  DFlash2 verification keeps `gdn_recur`.
+- Checked without a GPU: the math in numpy against the sequential rule (f32: 1e-7 relative, chunks of 16 and 64,
+  decays down to 1e-6); the kernel on the CPU's OpenCL (oneAPI) against a double-precision reference, 100 tokens
+  (three chunks and a short one), gated and fused gates, both read forms: output 5.5e-7, state 8e-8 relative
+  (`gdn_recur` 1.4e-7 / 7e-8). ocloc for Meteor Lake and Battlemage: builds, `=1` without spills. Speed and KL on a
+  model: not measured yet (the GPU is not free).
+
 ## 2026-11-09: MoE expert files kept with their model
 
 - A MoE GGUF's expert file went loose into `%USERPROFILE%\.arcinferzero\zero\`, so a deleted GGUF left it there

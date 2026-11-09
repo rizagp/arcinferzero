@@ -52,7 +52,16 @@
           run("conv_state_update", k_conv_upd_, 1, &g1, &l1);
         }
       }
-      {
+      if (gdn_chunk_on() && !spec_ && Tq >= kGdnChunkMin) {
+        // (ARC_GDN_CHUNK=1, QUEUE F33.1: the chunked rule, 4 work-items per state row; a prompt only, a verification
+        //  pass keeps gdn_recur, whose S_next / replay it was made with)
+        static const std::string defs = std::string("-cl-intel-256-GRF-per-thread") + (gdn_chunk_mode() == 2 ? " -DGDN_VEC" : "");
+        cl_kernel k = kernel("ops", fuse ? defs + " -DFUSE_GATES" : defs, "gdn_chunk");
+        set_args(k, 0, cq, C, gq, nk, nv, L.S, Tq, oq, L.S);
+        if (fuse) set_args(k, 9, L.dt_bias, L.ssm_a);
+        size_t g1 = (size_t)nv * 2 * 256, l1 = 256;
+        run("gdn_chunk", k, 1, &g1, &l1);
+      } else {
         // (a T = 1 kernel with 4 lanes per state column and 128 GRF, bit-identical, was slower: 35B 248-341 vs 226-254
         //  ms per 96 tokens; removed 2026-10-22)
         cl_kernel k = fuse ? k_gdn_recur_g_ : k_gdn_recur_;

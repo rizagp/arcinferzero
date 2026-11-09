@@ -437,6 +437,15 @@
   //  token, gdn_recur computing the gates; not in verification passes, whose replay needs the separate results)
   cl_kernel k_gdn_conv1_ = nullptr, k_gdn_recur_g_ = nullptr;
   const bool gdn_fuse_ = !getenv("ARC_GDN_FUSE") || atoi(getenv("ARC_GDN_FUSE")) != 0;
+  // (ARC_GDN_CHUNK=1 / 2, QUEUE F33.1: the chunked DeltaNet kernel gdn_chunk for prompt passes of kGdnChunkMin+
+  //  tokens, 2 with its local rows read 16 floats at a time (-DGDN_VEC); off until measured: not bit-identical to
+  //  gdn_recur)
+  static constexpr int kGdnChunkMin = 32;
+  static int gdn_chunk_mode() {
+    static const int m = getenv("ARC_GDN_CHUNK") ? std::max(0, std::min(2, atoi(getenv("ARC_GDN_CHUNK")))) : 0;
+    return m;
+  }
+  static bool gdn_chunk_on() { return gdn_chunk_mode() != 0; }
   std::vector<Layer> layers_;
   cl_kernel k_add_norm_ = nullptr, k_ple_gate_ = nullptr, k_ple_comb_ = nullptr, k_add_nq_ = nullptr;
   cl_kernel k_rope_tab_ = nullptr;
