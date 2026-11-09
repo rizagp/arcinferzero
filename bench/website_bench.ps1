@@ -150,21 +150,21 @@ $md += "## Prompt processing (tok/s) and time to first token"
 $md += ""; $md += "| Model | " + (($Sizes | ForEach-Object { "$_" }) -join " | ") + " |"; $md += "|---|" + (($Sizes | ForEach-Object { "---" }) -join "|") + "|"
 foreach ($mn in ($rows | Select-Object -ExpandProperty model -Unique)) {
   $cells = foreach ($n in $Sizes) { $r = $rows | Where-Object { $_.model -eq $mn -and $_.test -eq "size" -and $_.tokens -eq $n } | Select-Object -First 1
-    if ($r -and $r.pp) { [string]::Format($inv, "{0:F0} ({1:F1} s)", $r.pp, $r.ttft_s) } else { "–" } }
+    if ($r -and $r.pp) { [string]::Format($inv, "{0:F0} ({1:F1} s)", $r.pp, $r.ttft_s) } else { "-" } }
   $md += "| $mn | " + ($cells -join " | ") + " |"
 }
 $md += ""; $md += "## Generation (tok/s) at that context depth, plain decoding"
 $md += ""; $md += "| Model | " + (($Sizes | ForEach-Object { "$_" }) -join " | ") + " |"; $md += "|---|" + (($Sizes | ForEach-Object { "---" }) -join "|") + "|"
 foreach ($mn in ($rows | Select-Object -ExpandProperty model -Unique)) {
   $cells = foreach ($n in $Sizes) { $r = $rows | Where-Object { $_.model -eq $mn -and $_.test -eq "size" -and $_.tokens -eq $n } | Select-Object -First 1
-    if ($r -and $r.tg) { [string]::Format($inv, "{0:F1}", $r.tg) } else { "–" } }
+    if ($r -and $r.tg) { [string]::Format($inv, "{0:F1}", $r.tg) } else { "-" } }
   $md += "| $mn | " + ($cells -join " | ") + " |"
 }
 $md += ""; $md += "## Generation modes (256-token coding answer, tok/s)"
 $md += ""; $md += "| Model | plain | MTP | DFlash2 | MTP + DFlash2 |"; $md += "|---|---|---|---|---|"
 foreach ($mn in ($rows | Select-Object -ExpandProperty model -Unique)) {
   $cells = foreach ($k in "plain", "mtp", "dflash", "mtp+dflash") { $r = $rows | Where-Object { $_.model -eq $mn -and $_.test -eq "mode" -and $_.mode -eq $k } | Select-Object -First 1
-    if ($r -and $r.tg) { [string]::Format($inv, "{0:F1}{1}", $r.tg, $(if ($r.accepted_pct) { " ($($r.accepted_pct) %)" } else { "" })) } else { "–" } }
+    if ($r -and $r.tg) { [string]::Format($inv, "{0:F1}{1}", $r.tg, $(if ($r.accepted_pct) { " ($($r.accepted_pct) %)" } else { "" })) } else { "-" } }
   $md += "| $mn | " + ($cells -join " | ") + " |"
 }
 $md += ""; $md += "## Accuracy: KL against an f32 reference (480 tokens of USAGE.md)"
