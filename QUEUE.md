@@ -11,6 +11,7 @@ Everything below this list is history plus the details of these items; a row not
 
 | Priority | Item | Section |
 |---|---|---|
+| 0 | **B60 speed, 2026-11-09 plan (work starts the night of 2026-11-09):** 27B prompt 1,018 -> 1,300 tok/s at 4K, the 35B's prompt higher, generation up (27B plain 23.2 -> ~30, 35B plain 88 -> 100+). In order: (1) chunked DeltaNet on XMX, (2) attention on XMX, (3) small kernels fused (h8_act, swiglu_quant), (4) the XMX FFN GEMM rewritten; next to them the fused gate + up GEMV and generation-path fusions. Each opt-in until a B60 run says it wins | [F33](#f33-b60-speed-plan-2026-11-09) |
 | 1 | serverz DEVICE_LOST (2026-11-04, 5 times, TDR): always while Qwen3-ASR decoded a ~160-s part; no thread race found (all speech GPU work under Service::turn_). Not the argument cache: a crash came with ARC_ARG_CACHE=0 too, so it stays on. The user set TdrDelay=10 (registry, restarted): no crash in ~1.5 hours of watching since. If it comes back: the crash sequence with ARC_ZE_WATCH=1 (slow-kernel log, last 64 launches) to name the kernel (laptop free: it can black the screen); then the Qwen3-ASR timeline cut back on | 31.13 |
 | 0 | Arc Pro B60 (issues #3 / #4): the f16 XMX GEMM's wider tiles, GPU-side sums, GEMV loads in flight, MTP / DFlash2 and q-head attention on a split model (researched 2026-11-02) | F31 |
 | 1 | Web UI Projects (as Claude's Projects): done 2026-11-02 / 11-04 (folders, AGENTS.md, memory, MCP servers per project, stdio). Left: MCP over HTTP, the user's own blender-mcp try | F32 |
@@ -606,3 +607,34 @@ Prompt order (the least changing first, so the disk prompt cache keeps the prefi
 | 32.4 | Project instructions and memory | ✅ 2026-11-02 | The project folder's AGENTS.md (or an instructions field) goes into the system prompt. The project's MEMORY.md is kept in the data folder (`projects\<folder>-<hash>\MEMORY.md`), not in the project folder, so the model's notes are never committed or shared with it. `remember` in a project chat writes there by default; "for every chat" writes to the global one |
 | 32.5 | MCP servers (the web UI as an MCP client) | ✅ 2026-11-04 night, stdio servers (docs/mcp.md, tools/server_mcp.h; 22 API checks with a test server). Left: HTTP (streamable) servers, a real blender-mcp run by the user | `%USERPROFILE%\.arcinferzero\mcp.json` in the usual `mcpServers` form (command, args, env; stdio first, HTTP later). The server runs them, lists their tools (`tools/list`), adds them to the tool list, routes calls (`tools/call`), and asks before a call that changes something. Enabled per project: every tool costs hundreds of prompt tokens, small models pick worse among many, and a changed tool list re-processes the prefix. Tool calls stay schema-constrained (`ARC_TOOL_CONSTRAINT`) |
 
+## F33: B60 speed plan (2026-11-09)
+
+From the owner's run of 2026-11-09 (issue #4, package 2c132a9, one Pro B60; docs/xe2-tuning.md has the numbers).
+The laptop has no XMX: each kernel is checked here (DPAS emulated with DP4a, `ARC_XMX_TRY`, KL / bit-identity
+against the current path), its speed only on a B60. Each goes in behind a switch, off until a B60 run says it wins;
+then on by default for discrete cards (zero/xe2/), the iGPU path bit-identical.
+
+**27B prompt, 4K: 3,942 ms of GPU time (1,018 tok/s); 1,300 tok/s is ~3,150 ms, so ~790 ms to find.**
+
+| # | Step | Now (4K) | Estimate | Notes |
+|---|---|---|---|---|
+| 33.1 | Chunked DeltaNet on XMX: the recurrence over blocks of 64 tokens as matrix products (WY form), DPAS | `gdn_recur` 290 ms | -190..-210 ms | also the 35B (30 of 40 layers DeltaNet); maybe the laptop too with DP4a / f32. Not bit-identical: KL check |
+| 33.2 | Attention on XMX (QUEUE 31.7): QK^T and P.V as int8 DPAS, 16 query rows per sub-group, 32-key tiles | `attention` 198 ms | -130..-150 ms | grows with the prompt; int8 DPAS sums equal DP4a's, so it can be bit-identical |
+| 33.3 | Small kernels fused: `h8_act` into the norm / SwiGLU kernels, `swiglu_quant` into the up GEMM's epilogue | ~340 ms | -150..-220 ms | `h8_act` fused is not bit-identical (sums in another order) |
+| 33.4 | The XMX FFN GEMM rewritten: wider tiles, weights through 2D block loads, double buffering (sycl-tla style) | gate / up / down 1,844 ms, ~33 of ~197 TOPS | -400..-600 ms | the largest and hardest; the sweeps found the present kernel at its best, so a rewrite |
+
+33.1-33.3 alone: ~1,150 tok/s; 1,300 needs 33.4. `h8_decode` (231 ms a prompt, 31 % at 512 tokens) stays: the
+27B's int8 weights (27 GB) do not fit beside it on a 24 GB card.
+
+**35B prompt:** 3,172-3,221 tok/s at 16K (2026-11-08). 33.1 and 33.2 apply; the MoE expert GEMM (1.55 s of 5.08 at
+16K, ~21 TOPS) on wider XMX tiles. Ask the owner for a current `--bench-pp 4096 / 16384 --prof` first.
+
+**Generation (one token):**
+
+| # | Step | Now | Target | Notes |
+|---|---|---|---|---|
+| 33.5 | Fused gate + up GEMV (the activation read once, half the FFN launches; F17.2, parked before) | 27B 23.2 tok/s, gate / up / down 59 % | ~30 (ceiling ~38 at 431 GB/s) | bit-identical possible |
+| 33.6 | Generation-path fusions for the 35B: norm into the GEMV, `gemm_qkvz` (21.5 %), `lm_head` (12.7 %), the MoE per-tile GEMVs; 632 kernels a token | 35B plain 88 (XALL), MTP 113.7 | plain 100+, ~120-140 with work (ceiling ~178) | the 35B reads 2.4 GB a token: launches, not bandwidth, are its limit |
+
+Order (the user, 2026-11-09): 33.1, 33.2, 33.3, 33.4; 33.5 / 33.6 alongside. A package per finished step, with
+`bench\decode_try.ps1` / `--prof` rows the owner can run.
