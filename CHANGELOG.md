@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-09: Qwen's reasoning, no stray "ctlsc"
+
+- The 35B sometimes ended its reasoning with a stray "ctlsc" (as in "Let's investigate.ctlsc") and then copied it
+  in later turns of the same chat. Cause: the presence penalty of 1.5 the server uses while a Qwen model thinks
+  also hit "\n" and "\n\n", which every reasoning uses, so the line break before `</think>` lost to the model's
+  4.4 % "ctl" (raised to ~17 %). Tokens of spaces and line breaks alone are now free of that penalty; words are
+  still penalized. A request's own presence_penalty and Gemma are unchanged. DFlash2 / MTP were not involved:
+  their drafts never change which token is drawn. A chat that already holds "ctlsc" may keep copying it: start a
+  new one.
+
 ## 2026-11-09: web UI, the time in an answer's bubble
 
 - The time under a model's answer sat on the bubble's bottom edge (0 px): the floated time fell below the answer's

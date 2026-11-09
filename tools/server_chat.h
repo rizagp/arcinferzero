@@ -639,7 +639,11 @@
     } gen_leave{*this};
     for (int i = 0; i < max_tokens; ++i) {
       int t;
-      sampler.set_presence_penalty(in_think ? think_pp : sp.presence_penalty);
+      // (the reasoning's own 1.5 spares tokens of spaces / line breaks alone: every reasoning uses "\n" and "\n\n",
+      //  and with them penalized the 35B ended a reasoning with a stray "ctlsc" (its 4.4% raised to ~17%) instead of
+      //  the line break before </think>)
+      const bool own_pp = in_think && !gemma_ && !body["presence_penalty"].is_number();
+      sampler.set_presence_penalty(in_think ? think_pp : sp.presence_penalty, own_pp ? &ws_tok_ : nullptr);
       if (!forced.empty()) {
         t = forced.front();
         forced.erase(forced.begin());

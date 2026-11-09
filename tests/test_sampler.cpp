@@ -234,6 +234,14 @@ int main() {
     p.presence_penalty = 0.5f;
     Sampler s4(p);
     expect(s4.sample_allowed(l, {0}, [](int) { return true; }) == 1, "greedy sample_allowed + presence_penalty");
+    // (exempt tokens: the server's line breaks in Qwen's reasoning)
+    std::vector<uint8_t> ex(100, 0);
+    ex[0] = 1;
+    s4.set_presence_penalty(0.5f, &ex);
+    expect(s4.sample(l, {0}) == 0, "greedy + presence_penalty: an exempt token keeps its logit");
+    expect(s4.sample(l, {0, 1}) == 0, "greedy + presence_penalty: the others are still penalized");
+    s4.set_presence_penalty(0.5f);
+    expect(s4.sample(l, {0}) == 1, "greedy + presence_penalty: no exemption once it is cleared");
   }
   // ---- logit_bias -100: banned
   {

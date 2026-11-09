@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-09, Qwen's reasoning: line breaks free of its presence penalty** (`tools/server_chat.h`,
+  `tools/sampler.h`). Sampling only, logits unchanged (no KL). Measured on the 35B chat where "ctlsc" appeared: the
+  exact prompt up to the stray token, the server's top-20 log-probabilities. Before: the penalty of 1.5 hit "\n\n"
+  (56.7 % -> 48.6 %) and "\n" (33.5 % -> 28.7 %), both used earlier in the reasoning, and raised "ctl" from 4.4 % to
+  ~17 %. After: the 422 tokens of spaces / line breaks alone (35B vocab) keep their logits, so "ctl" stays near the
+  model's own ~4 %; word tokens are still penalized. Only when the request sets no presence_penalty; Gemma
+  unchanged. `test_sampler`: ALL OK, with three new checks.
 - **2026-11-09, exes linked with `/CETCOMPAT`** (CPU shadow stack allowed; build.ps1), plus load-time checks of
   tensor shapes and a GGUF's array counts (`zero/engine_load.h`, `zero/engine_setup.h`, `src/gguf.h`). Meant to be
   bit-identical: `runz --dump-logits`, 24 tokens, the build before (8b975c4) against the build after: Qwen3.5 4B

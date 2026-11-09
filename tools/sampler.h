@@ -36,7 +36,12 @@ class Sampler {
   explicit Sampler(const SamplingParams& p) : p_(p), rng_(p.has_seed || p.seed ? p.seed : std::random_device{}()) {
     for (const auto& [t, b] : p_.logit_bias) bans_ = bans_ || b <= -100.0f;
   }
-  void set_presence_penalty(float v) { p_.presence_penalty = v; }  // (the server: Qwen's reasoning has its own)
+  // (the server: Qwen's reasoning has its own; `exempt`, when given, holds 1 for each token the presence penalty
+  //  leaves alone; it must outlive the calls that follow)
+  void set_presence_penalty(float v, const std::vector<uint8_t>* exempt = nullptr) {
+    p_.presence_penalty = v;
+    pp_exempt_ = exempt;
+  }
   int sample(const std::vector<float>& raw, const std::vector<int>& recent) {
     if (raw.empty()) throw std::runtime_error("sampler: no logits");  // (the candidates below would be empty)
     const std::vector<float>& logits = adjusted(raw, recent);
@@ -176,7 +181,8 @@ class Sampler {
     if (pp) {  // once per token in the text frequency_penalty counts (here, so that greedy decoding has it too)
       std::unordered_set<int> seen(recent.begin(), recent.end());
       for (int t : seen)
-        if (t >= 0 && t < V) adj_[t] -= p_.presence_penalty;
+        if (t >= 0 && t < V && !(pp_exempt_ && (size_t)t < pp_exempt_->size() && (*pp_exempt_)[(size_t)t]))
+          adj_[t] -= p_.presence_penalty;
     }
     for (const auto& [t, b] : p_.logit_bias)  // (last: no penalty lifts a banned token)
       if (t >= 0 && t < V && b <= -100.0f) adj_[t] = kBanned;
@@ -209,6 +215,7 @@ class Sampler {
   SamplingParams p_;
   std::mt19937_64 rng_;
   bool bans_ = false;
+  const std::vector<uint8_t>* pp_exempt_ = nullptr;  // (set_presence_penalty)
   std::vector<float> adj_;
   std::vector<int> heap_, idx_;               // sample_allowed: the most likely tokens; the rest, when needed
   std::vector<std::pair<int, int>> out_;      // (position, token) of each top the heap replaced
