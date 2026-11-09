@@ -106,6 +106,8 @@ chat's folder (each command allowed by the user), chats search.
   things up while it talks (Gemma 4 E4B / 12B hear the audio themselves; Qwen3-ASR writes it down for any model).
 - **Transcripts and Meetings**: audio and video files, recordings from the browser (microphone or a tab, mono or
   stereo, WAV, MP3 or M4A at a chosen bitrate) and meeting recordings, with speakers and times.
+- **Queue and Steer** (2026-11-09): messages typed while the model answers wait and go in order when it ends;
+  Steer puts one into the answer under way (before its next tool step, or the answer stops and it goes at once).
 - **Speech to text only**: `serverz -m none` runs Qwen3-ASR / Whisper without a chat model (a 2:43 voice message in
   25 s); a chat model loads later on request.
 - **From a phone, anywhere** (2026-11-05): through a Cloudflare Tunnel with a password, as an app on the home screen

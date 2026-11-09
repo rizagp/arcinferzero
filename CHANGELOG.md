@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-09: web UI, queue and steer messages while an answer runs
+
+- Send (or Enter) while the model answers no longer does nothing: the message goes into a queue above the message
+  box and is sent when the answer ends, the queue in order; the draft in the box is kept. A queue belongs to its chat
+  and goes on when the chat is opened again.
+- Each queued message has **Steer**, **Edit** (back into the box) and **×**. Steer puts it into the answer under
+  way: while tools run it is added to the conversation before the model's next round (the tools are not stopped);
+  while the model writes, the answer stops where it is (kept) and the message is sent at once.
+- Checked in the browser with the server's replies simulated in the page (no request reached the model, no chat
+  saved): two queued messages sent in order after the answer, the draft kept; Steer while writing stopped the answer
+  after 11 of 30 words and sent the message within 0.6 s; Steer while a 2.5 s web search ran left it running and the
+  next request held assistant (call), tool, user (the steered message).
+
 ## 2026-11-09: web UI, the menu button on your own messages visible
 
 - The ▾ button of a message (Edit, Copy, Delete) was drawn in muted grey on the user's green bubble, nearly

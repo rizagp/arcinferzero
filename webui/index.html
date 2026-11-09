@@ -287,6 +287,15 @@ details.think > div { margin-top: 4px; max-height: 40vh; overflow-y: auto; }
 
 /* composer */
 .foot { background: var(--head); padding: 8px 14px; position: relative; z-index: 3; }
+/* messages typed while an answer runs (renderQueue) */
+#queue { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 8px 50px; }
+#queue[hidden] { display: none; }
+.qitem { display: flex; align-items: center; gap: 8px; background: var(--side); border-radius: 8px; padding: 5px 6px 5px 10px; font-size: 13px; box-shadow: var(--shadow); }
+.qitem .qk { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.qitem .qk.on { color: var(--accent); }
+.qitem .qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.qitem button { padding: 3px 9px; border-radius: 5px; color: var(--muted); }
+.qitem button:hover { background: var(--hover); color: var(--text); }
 .attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 8px 50px; }
 .attachments:empty { display: none; }
 .att { position: relative; }
@@ -664,6 +673,7 @@ details[open].think > div { animation: fade-up .2s var(--ease-out); }
     <button id="latest" hidden title="Scroll to the newest output and keep following it" aria-label="Latest"><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></button>
     <footer class="foot">
       <div class="menu mention" id="mention" hidden role="listbox" aria-label="Files"></div>
+      <div id="queue" hidden aria-label="Queued messages"></div>
       <div class="attachments" id="atts"></div>
       <div id="vstat" hidden></div>
       <div class="composer">
@@ -1531,7 +1541,8 @@ latest.addEventListener("click", () => scroll(true));
 function updateButtons() {
   const has = input.value.trim() !== "" || pending.length > 0;
   $("stop").hidden = !controller;
-  $("send").hidden = !!controller || !(has || rec.on);
+  $("send").hidden = !(has || (rec.on && !controller));  // (while an answer runs: queues, see renderQueue)
+  $("send").title = controller ? "Queue: sent when the answer ends (Enter)" : "Send (Enter; Shift+Enter: new line)";
   $("rec").hidden = !!controller || has || rec.on;
   $("recbar").hidden = !rec.on;
   $("attach").hidden = rec.on;
@@ -2949,11 +2960,107 @@ function ocrSavedTo(a, sv) {
   if (cut > 0) { sv.folder = f.slice(0, cut); sv.name = f.slice(cut + 1); } else sv.name = f;
 }
 
+// ---- messages typed while an answer runs: queued per chat and sent in order when it ends. Steer puts one into the
+// answer under way: while tools run, it goes in before the next round (the model reads it before it goes on); while
+// the model writes, the answer stops where it is (kept) and the message goes at once.
+const queued = new Map();  // chat id -> [{ text, media, steer }]
+function renderQueue() {
+  const box = $("queue"), q = queued.get(convId) || [], job = jobs.get(convId);
+  box.replaceChildren();
+  box.hidden = !q.length;
+  q.forEach((it, i) => {
+    const d = document.createElement("div");
+    d.className = "qitem";
+    const k = document.createElement("span");
+    k.className = "qk" + (it.steer ? " on" : "");
+    k.textContent = it.steer ? "steer: after the tools" : i === 0 ? "queued: next" : "queued";
+    const t = document.createElement("span");
+    t.className = "qt";
+    t.textContent = it.text || it.media.map((m) => m.name || m.kind).join(", ");
+    t.title = it.text;
+    const btn = (label, title, fn) => { const b = document.createElement("button"); b.textContent = label; b.title = title; b.addEventListener("click", fn); return b; };
+    d.append(k, t);
+    if (!it.steer && job) d.append(btn("Steer", "Into the answer under way: after the tools it is running, or, while it writes, the answer stops here and this goes at once", () => steer(i)));
+    d.append(btn("Edit", "Back into the message box", () => unqueue(i, true)), btn("×", "Remove it from the queue", () => unqueue(i, false)));
+    box.appendChild(d);
+  });
+}
+function unqueue(i, edit) {
+  const q = queued.get(convId) || [], [it] = q.splice(i, 1);
+  if (!it) return;
+  if (edit) {
+    input.value = it.text + (input.value.trim() ? "\n\n" + input.value : "");
+    pending = [...it.media, ...pending];
+    renderAtts();
+    grow();
+    input.focus();
+  }
+  renderQueue();
+}
+function steer(i) {
+  const q = queued.get(convId) || [], job = jobs.get(convId), [it] = q.splice(i, 1);
+  if (!it) return;
+  it.steer = true;
+  const at = q.findIndex((x) => !x.steer);  // (after the ones steered before it)
+  q.splice(at < 0 ? q.length : at, 0, it);
+  renderQueue();
+  if (job && job.phase !== "tools") job.controller.abort();  // (writing: stopped here; drainQueue sends it first)
+}
+// the steered messages of a running answer: into its history before its next round, drawn as the user's
+function takeSteers(job) {
+  const q = queued.get(job.id) || [], s = q.filter((x) => x.steer);
+  if (!s.length) return;
+  queued.set(job.id, q.filter((x) => !x.steer));
+  for (const it of s) {
+    const at = Date.now(), m = userMessage(it.text, it.media, at), u = addUser(it.text, it.media, at);
+    u._h = m;
+    job.history.push(m);
+    job.nodes.push(u);
+    if (!onScreen(job)) u.remove();
+  }
+  if (onScreen(job)) renderQueue();
+}
+// the next queued message of the chat on screen, once nothing runs there (the box's own draft kept)
+function drainQueue() {
+  const q = queued.get(convId);
+  if (!q?.length || controller || jobs.has(convId) || rec.on || slotsFull()) return;
+  const it = q.shift(), draft = input.value, draftMedia = pending;
+  input.value = it.text;
+  pending = it.media;
+  send();  // (reads the box at once)
+  input.value = draft;
+  pending = draftMedia;
+  renderAtts();
+  grow();
+  renderQueue();
+}
+// a message of the user as the history keeps it: its files as parts, the text last
+function userMessage(text, media, at) {
+  const part = (m) => m.id ? { type: "file", file: { file_id: m.id, filename: m.name } }
+    : m.kind === "audio" ? { type: "input_audio", input_audio: { data: m.url.slice(m.url.indexOf(",") + 1), format: "wav" } }
+    : { type: "image_url", image_url: { url: m.url } };
+  const sent = media.filter((m) => !m.shown), shown = media.find((m) => m.shown && m.id);
+  const msg = { role: "user", content: sent.length ? [...sent.map(part), ...(text ? [{ type: "text", text }] : [])] : text, at };
+  if (shown) msg.voice = { id: shown.id, url: shown.url, name: shown.name, by: shown.by || sttEngine().name };  // (kept with the chat, not sent)
+  return msg;
+}
+
 let epoch = 0;  // (another chat on screen: an upload still running stays out of its message box)
 async function send() {
   if (rec.on && !controller) return sendVoice();
   const text = input.value.trim();
-  if ((!text && !pending.length) || controller) return;
+  if (!text && !pending.length) return;
+  if (controller) {  // an answer runs here: queued (renderQueue)
+    const id = ensureConv(), q = queued.get(id) || [];
+    q.push({ text, media: pending, steer: false });
+    queued.set(id, q);
+    input.value = "";
+    grow();
+    pending = [];
+    renderAtts();
+    renderQueue();
+    return;
+  }
   if (slotsFull()) {  // (every slot answers: no queue; the message stays in the box)
     note(busyNote());
     return;
@@ -2971,12 +3078,7 @@ async function send() {
     n.textContent = "voice message, written by " + (media.find((m) => m.shown)?.by || sttEngine().name);
     userEl.insertBefore(n, userEl.querySelector(".time"));
   }
-  const part = (m) => m.id ? { type: "file", file: { file_id: m.id, filename: m.name } }
-    : m.kind === "audio" ? { type: "input_audio", input_audio: { data: m.url.slice(m.url.indexOf(",") + 1), format: "wav" } }
-    : { type: "image_url", image_url: { url: m.url } };
-  const sent = media.filter((m) => !m.shown), shown = media.find((m) => m.shown && m.id);
-  const userMsg = { role: "user", content: sent.length ? [...sent.map(part), ...(text ? [{ type: "text", text }] : [])] : text, at };
-  if (shown) userMsg.voice = { id: shown.id, url: shown.url, name: shown.name, by: shown.by || sttEngine().name };  // (kept with the chat, not sent)
+  const sent = media.filter((m) => !m.shown), userMsg = userMessage(text, media, at);
   userEl._h = userMsg;
   const job = { id: ensureConv(), history, controller: new AbortController(), nodes: [userEl], user: userMsg, made: [],
                 used: used || estTokens(history), slot: false, waiting: false, model: modelId, voice: voice.on };  // (voice: asked in Talk)
@@ -3090,15 +3192,20 @@ async function send() {
         scroll();
         continue;
       }
-      const results = await Promise.all(calls.map((c) => {
-        const card = toolCard(el);
-        return runTool(c, card, signal, job).catch((e) => {
-          card.status.textContent = e.name === "AbortError" ? "· stopped" : "· failed: " + (e.message || e);
-          if (e.name === "AbortError") throw e;
-          return "error: " + (e.message || e);
-        });
-      }));
+      job.phase = "tools";  // (a Steer now waits for them: see steer)
+      let results;
+      try {
+        results = await Promise.all(calls.map((c) => {
+          const card = toolCard(el);
+          return runTool(c, card, signal, job).catch((e) => {
+            card.status.textContent = e.name === "AbortError" ? "· stopped" : "· failed: " + (e.message || e);
+            if (e.name === "AbortError") throw e;
+            return "error: " + (e.message || e);
+          });
+        }));
+      } finally { job.phase = "model"; }
       calls.forEach((c, i) => job.history.push({ role: "tool", tool_call_id: c.id, name: c.function.name, content: results[i] }));
+      takeSteers(job);  // (messages steered meanwhile: read by the model before its next round)
       if (job.seen?.length) {  // (images web_fetch saved: shown to the model as a message of their own, the files by id)
         job.history.push({ role: "user", fetched: true, content: [{ type: "text", text: "[the image" + (job.seen.length > 1 ? "s" : "") +
           " web_fetch opened: " + job.seen.map((s) => s.name + " (" + s.url + ")").join(", ") + "]" },
@@ -3147,6 +3254,7 @@ async function send() {
       if (!voice.talking && !voice.speaking) voice.status("listening…");
     }
     setTimeout(bgDeliver, 0);  // (background results that came while this answer ran)
+    setTimeout(drainQueue, 0);  // (messages queued meanwhile: the next one now)
     // an OCR model's PDF with pages left, not stopped by the user: the next pages (see ocrView)
     if (caps.ocr && OCR_MORE.test(st.answer) && !job.controller.signal.aborted)
       setTimeout(() => { if (!controller && !input.value.trim() && !pending.length && convId === job.id) { input.value = "lanjut"; send(); } }, 500);
@@ -3288,6 +3396,7 @@ function resetChat() {
 function newChat() {
   resetChat();
   convId = null;
+  renderQueue();
   renderTerm();
   showEmpty("New conversation");
   showUse();
@@ -3406,6 +3515,8 @@ async function openConv(id) {
   renderConvs();
   app.classList.add("chatting");
   scroll(true);
+  renderQueue();
+  if (!job) setTimeout(drainQueue, 0);  // (its answer ended while another chat was on screen: the queue goes on)
 }
 $("newchat").addEventListener("click", () => { if (slotsFull()) note(busyNote()); else newChat(); });
 $("backbtn").addEventListener("click", () => app.classList.remove("chatting"));

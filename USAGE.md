@@ -318,6 +318,12 @@ While the server is running:
     uses. Files put into a chat's folder by hand show up too.
   - A message's menu (the arrow on its bubble): **Edit** (correct it and send again) or **Delete** (the message with
     its answer, and its files when no other message uses them).
+  - **Messages while an answer runs** wait in a **queue** above the message box (Send or Enter while the model
+    answers) and go one by one, in order, when it ends; your draft in the box stays. Each has **Steer**, **Edit**
+    (back into the box) and **×**. **Steer** puts it into the answer under way: while the model runs tools (web
+    search, files) it goes in before its next step and the model reads it before going on; while the model writes, the
+    answer stops where it is (what it wrote is kept) and your message goes at once. A queue waits with its chat: open
+    another chat and it goes on when you come back.
   - The model knows when each message was sent (day, date, time and time zone go with every message).
   - **Answers go on in the background**: open another chat while one answers and it keeps going ("answering…" in the
     list); open it again to watch it or Stop it. **Conversations at once** in the settings sets how many chats answer
