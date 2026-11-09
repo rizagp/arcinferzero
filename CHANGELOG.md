@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-09: web UI, the time in an answer's bubble
+
+- The time under a model's answer sat on the bubble's bottom edge (0 px): the floated time fell below the answer's
+  blocks with the message bubble's -4 px offset. It is now its own right-aligned line with 8 px below it, as in the
+  user's bubble (checked: user, short and long answers all 8 px).
+
 ## 2026-11-09: self-audit: web UI headers, OCR Stop and saves, model file checks, CET
 
 - **Web UI page:** `X-Frame-Options: DENY` and a CSP (`frame-ancestors 'none'; object-src 'none'; base-uri 'none'`):
