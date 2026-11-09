@@ -12,6 +12,10 @@
   drive's GGUF is not "gone") and any expert file still loose in `zero\`. Nothing is deleted automatically.
 - Checked with a test in a temporary data folder (no model, no GPU): the outside and inside places, `source.txt`, an
   old file and its `.lru` moved, nothing moved while a package is made, and both log notes.
+- Self-audit the same day: a package made from a GGUF lands in that GGUF's folder, and the original GGUF is usually
+  deleted afterwards; the log then called the package's folder deletable. A folder holding `<folder>.gguf` (a
+  package) is never named now. A split GGUF's folder is named without its `-00001-of-N`, as its package would be,
+  and `source.txt` holds the GGUF's full path. Both cases added to the test.
 
 ## 2026-11-09: earlier server logs kept
 

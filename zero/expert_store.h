@@ -81,7 +81,11 @@ struct ExpertStore {
     std::error_code eg;
     const fs::path gdir = fs::weakly_canonical(fs::path(gguf_path), eg).parent_path();
     const bool inside = !eg && lower(gdir.string()).rfind(home, 0) == 0;
-    const fs::path own_dir = inside ? gdir : fs::path(app_dir()) / "zero" / "models" / name;
+    // (the folder named as zero/gguf_pack.h names a package of this GGUF: a split model's first part without its
+    //  "-00001-of-N", so a package made from it later lands in the same folder and takes the file over there)
+    std::string folder = name;
+    if (const size_t sp = folder.find("-00001-of-"); sp != std::string::npos) folder.resize(sp);
+    const fs::path own_dir = inside ? gdir : fs::path(app_dir()) / "zero" / "models" / folder;
     fs::create_directories(own_dir, ec);
     std::string path = (own_dir / file).string();
     if (!settle) return path;
@@ -96,9 +100,11 @@ struct ExpertStore {
         path = old_path;  // (could not move it: used where it is)
       }
     }
-    if (!inside) {  // (which GGUF this folder's expert file belongs to)
+    if (!inside) {  // (which GGUF this folder's expert file belongs to: a full path, so note_orphans can check it)
+      std::error_code e2;
+      const fs::path full = fs::absolute(fs::path(gguf_path), e2);
       std::ofstream src_txt(own_dir / "source.txt", std::ios::binary | std::ios::trunc);
-      src_txt << gguf_path << "\r\n";
+      src_txt << (e2 ? gguf_path : full.string()) << "\r\n";
     }
     note_orphans();
     return path;
@@ -107,13 +113,15 @@ struct ExpertStore {
   // A line in the log for each expert folder under zero\models whose GGUF is gone (its source.txt names a file that no
   // longer exists, on a drive that is there: a GGUF on an unplugged drive is not "gone"), and for expert files still
   // loose in zero\ (made before 2026-11-09; one moves to its folder when its model is loaded): what can be deleted.
-  // Nothing is deleted here.
+  // Nothing is deleted here. A folder that is a package (<folder>\<folder>.gguf) is never named: a package made from
+  // a GGUF lands in that GGUF's folder, and the original is usually deleted afterwards.
   static void note_orphans() {
     namespace fs = std::filesystem;
     std::error_code ec;
     for (const auto& d : fs::directory_iterator(fs::path(app_dir()) / "zero" / "models", ec)) {
       std::error_code e2;
       if (!d.is_directory(e2)) continue;
+      if (fs::exists(d.path() / (d.path().filename().string() + ".gguf"), e2)) continue;  // (a package)
       std::ifstream in(d.path() / "source.txt", std::ios::binary);
       std::string src;
       if (!in || !std::getline(in, src)) continue;
