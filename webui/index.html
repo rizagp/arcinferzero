@@ -3992,8 +3992,12 @@ function msgMenu(el, btn) {
   if (live) add(mine ? "Delete (and its files)" : "Delete", () => deleteMsg(el));
   const r = btn.getBoundingClientRect();
   menu.style.left = Math.max(8, Math.min(r.right - 160, window.innerWidth - 168)) + "px";
-  menu.style.top = Math.min(r.bottom + 4, window.innerHeight - 140) + "px";
+  // below the button, or above it when the space under it (above the message box) is too small: measured, not a
+  // fixed 140 px (the menu of a message of yours has three rows; near the bottom its Delete fell under the box)
+  menu.style.top = "0px";
   menu.hidden = false;
+  const h = menu.offsetHeight, floor = Math.min(window.innerHeight, document.querySelector("footer.foot")?.getBoundingClientRect().top || window.innerHeight) - 8;
+  menu.style.top = Math.max(8, r.bottom + 4 + h <= floor ? r.bottom + 4 : r.top - 4 - h) + "px";
 }
 document.addEventListener("click", (e) => { if (!e.target.closest("#msgmenu")) $("msgmenu").hidden = true; });
 // takes the turn out of the chat (history and screen); returns its messages

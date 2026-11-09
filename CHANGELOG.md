@@ -5,6 +5,10 @@
 - The ▾ button of a message (Edit, Copy, Delete) was drawn in muted grey on the user's green bubble, nearly
   invisible, so deleting one's own message looked impossible. It now takes the bubble's text colour. Checked: the
   user's menu holds Edit, Copy and "Delete (and its files)", an answer's Copy and Delete.
+- Near the bottom of the chat the menu opened under the message box (its place assumed a 140 px menu; yours has three
+  rows), so its Delete could not be clicked. It is now measured and opens above the button when there is no room
+  below. Checked at 1280x800: the last message's menu at y 518-636 above its button (647), every row clickable (it
+  was placed down to y 769, under the box at 742); the first message's still opens downwards.
 
 ## 2026-11-09: Qwen's reasoning: the line-break exemption undone
 
