@@ -273,7 +273,9 @@ FILES
     sessions                              saved conversations (--session-cache)
     prefix                                saved system prompts, per project folder (Pi's differs per
                                           project: it contains the folder and its AGENTS.md)
-    *.experts / *.lru                     MoE expert files (written once per model) and their cache state
+    models\<name>\*.experts / *.lru       MoE expert files (written once per model) and their cache state, for a
+                                          GGUF outside the data folder (source.txt names it); one inside it has its
+                                          expert file next to it. Loose *.experts here: from before 2026-11-09
   %USERPROFILE%\.arcinferzero\build.log      compiler output of the last setup.cmd build
 '@
     exit 0

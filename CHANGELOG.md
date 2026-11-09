@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-09: MoE expert files kept with their model
+
+- A MoE GGUF's expert file went loose into `%USERPROFILE%\.arcinferzero\zero\`, so a deleted GGUF left it there
+  unnoticed (a Gemma 4 26B's 12.3 GB, found and deleted by hand). It is now written next to the GGUF when the GGUF is
+  inside the data folder (`models\`, or a package in `zero\models\<name>\` as before), else into a folder of its
+  own, `zero\models\<model name>\`, with a `source.txt` naming the GGUF (`zero/expert_store.h`, `place`).
+- One written to `zero\` before moves to its place (a rename, with its `.lru` state) the next time its model is
+  loaded: not written again. A package made from a GGUF still takes that file over as before.
+- At each MoE load the log names an expert folder whose GGUF no longer exists (on a drive that is there: an unplugged
+  drive's GGUF is not "gone") and any expert file still loose in `zero\`. Nothing is deleted automatically.
+- Checked with a test in a temporary data folder (no model, no GPU): the outside and inside places, `source.txt`, an
+  old file and its `.lru` moved, nothing moved while a package is made, and both log notes.
+
 ## 2026-11-09: earlier server logs kept
 
 - `arc-server` (and so the launcher) wrote `server.log` anew at each start, so the log of the server before a restart

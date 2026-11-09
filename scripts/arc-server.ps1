@@ -1000,7 +1000,7 @@ elseif ($Action -eq "restart") { Stop-Arc | Out-Null }
 Say "Starting $(if ($NoStream) { 'arcinferzero (no SSD cache)' } else { 'arcinferzero' }): $($m.name) as $($m.alias), context $ctxArg, port $Port$(if ($useMtp) { ', speculative decoding' })"
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
 if (-not $NoStream) {
-  Say "  (MoE models: the first start writes the expert file to $stateDir\zero, 35B: 16 GB / ~2.5 min, Flash Next: 56 GB / ~9.5 min, once)"
+  Say "  (MoE models: the first start writes the expert file next to a GGUF inside $stateDir, else to $stateDir\zero\models\<name>, 35B: 16 GB / ~2.5 min, Flash Next: 56 GB / ~9.5 min, once)"
 }
 Say "  (loading takes 5-40 s; log: $log)"
 Say "  command: $srvCmd"

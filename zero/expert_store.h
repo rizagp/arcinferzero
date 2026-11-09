@@ -1,5 +1,6 @@
 // arcinferzero: the routed experts of a MoE GGUF in a file of their own on the SSD, laid out for streaming:
-//   %USERPROFILE%\.arcinferzero\zero\<gguf name>-<fingerprint>.experts
+//   <gguf name>-<fingerprint>.experts next to the GGUF when it is inside %USERPROFILE%\.arcinferzero, else in
+//   %USERPROFILE%\.arcinferzero\zero\models\<gguf name>\ (open_or_build; before 2026-11-09 all in ...\zero\)
 // Every (layer, expert) is one record: its gate, up and down rows one after the other in the GPU raw form arcinferzero
 // uploads (src/quants.h gpu_raw_sb: regrouped / padded superblocks), the record padded to a multiple of 4 KB, so one
 // unbuffered read (FILE_FLAG_NO_BUFFERING: no Windows file cache in RAM) brings a whole expert, ready for the GPU.
@@ -11,9 +12,11 @@
 #include "../src/gguf.h"
 #include "../src/load_progress.h"
 #include "../src/quants.h"
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -61,6 +64,79 @@ struct ExpertStore {
     if (ram_free) for (char* p : ram_pieces_) ram_free(p);
   }
 
+  // Where the engine keeps a GGUF's expert file `file` (2026-11-09; before, every one went loose into zero\, and a
+  // deleted GGUF's stayed there unnoticed: a Gemma 4 26B's 12.3 GB):
+  //   a GGUF inside the data folder (%USERPROFILE%\.arcinferzero\models, zero\models): next to it, so deleting the
+  //     model's file or folder is where its expert file is too;
+  //   a GGUF elsewhere (the Hugging Face cache, another drive, which the engine does not write into):
+  //     zero\models\<name>\, a folder of its own, with source.txt naming the GGUF (see note_orphans).
+  // settle (a GGUF loaded, not a package or one being made): one written to zero\ before moves to its place (a rename,
+  // the same drive) instead of being written again, source.txt is written, and note_orphans runs.
+  static std::string place(const std::string& gguf_path, const std::string& name, const std::string& file, bool settle) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const std::string old_path = app_dir() + "\\zero\\" + file;
+    auto lower = [](std::string s) { for (char& c : s) c = (char)std::tolower((unsigned char)c); return s; };
+    const std::string home = lower(fs::weakly_canonical(app_dir(), ec).string()) + "\\";
+    std::error_code eg;
+    const fs::path gdir = fs::weakly_canonical(fs::path(gguf_path), eg).parent_path();
+    const bool inside = !eg && lower(gdir.string()).rfind(home, 0) == 0;
+    const fs::path own_dir = inside ? gdir : fs::path(app_dir()) / "zero" / "models" / name;
+    fs::create_directories(own_dir, ec);
+    std::string path = (own_dir / file).string();
+    if (!settle) return path;
+    if (!fs::exists(path, ec) && fs::exists(old_path, ec)) {
+      std::error_code e2;
+      fs::rename(old_path, path, e2);
+      if (!e2) {
+        const std::string lru_old = old_path.substr(0, old_path.size() - 8) + ".lru";
+        if (fs::exists(lru_old, ec)) fs::rename(lru_old, path.substr(0, path.size() - 8) + ".lru", ec);
+        fprintf(stderr, "arcinferzero: the expert file %s moved to %s\n", old_path.c_str(), path.c_str());
+      } else {
+        path = old_path;  // (could not move it: used where it is)
+      }
+    }
+    if (!inside) {  // (which GGUF this folder's expert file belongs to)
+      std::ofstream src_txt(own_dir / "source.txt", std::ios::binary | std::ios::trunc);
+      src_txt << gguf_path << "\r\n";
+    }
+    note_orphans();
+    return path;
+  }
+
+  // A line in the log for each expert folder under zero\models whose GGUF is gone (its source.txt names a file that no
+  // longer exists, on a drive that is there: a GGUF on an unplugged drive is not "gone"), and for expert files still
+  // loose in zero\ (made before 2026-11-09; one moves to its folder when its model is loaded): what can be deleted.
+  // Nothing is deleted here.
+  static void note_orphans() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const auto& d : fs::directory_iterator(fs::path(app_dir()) / "zero" / "models", ec)) {
+      std::error_code e2;
+      if (!d.is_directory(e2)) continue;
+      std::ifstream in(d.path() / "source.txt", std::ios::binary);
+      std::string src;
+      if (!in || !std::getline(in, src)) continue;
+      while (!src.empty() && (src.back() == '\r' || src.back() == '\n')) src.pop_back();
+      const fs::path sp(src);
+      if (src.empty() || fs::exists(sp, e2) || !fs::exists(sp.root_path(), e2)) continue;
+      uint64_t bytes = 0;
+      for (const auto& f : fs::directory_iterator(d.path(), e2)) {
+        std::error_code e3;
+        if (f.is_regular_file(e3)) bytes += f.file_size(e3);
+      }
+      fprintf(stderr, "arcinferzero: %s (%.1f GB) holds the expert file of %s, which no longer exists: the folder can be deleted\n",
+              d.path().string().c_str(), bytes / 1e9, src.c_str());
+    }
+    for (const auto& f : fs::directory_iterator(fs::path(app_dir()) / "zero", ec)) {
+      std::error_code e2;
+      if (f.is_regular_file(e2) && f.path().extension() == ".experts")
+        fprintf(stderr, "arcinferzero: %s (%.1f GB): an expert file from before 2026-11-09; it moves next to its model when "
+                        "that is loaded, and can be deleted if that model is gone\n",
+                f.path().string().c_str(), f.file_size(e2) / 1e9);
+    }
+  }
+
   // prefixes[i]: the GGUF tensor prefix of layer i ("blk.7.") when it has routed experts, else "".
   // fixed_path: write / use the expert file there (a package being made). A package GGUF ("arcinferzero.package")
   // has no expert data: its expert file next to it is used as it is (never rebuilt).
@@ -81,10 +157,11 @@ struct ExpertStore {
     mix(&kVersion, 4);
     char hex[17];
     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)fp);
-    const std::string dir = app_dir() + "\\zero";
-    fs::create_directories(dir, ec);
-    path = dir + "\\" + name + "-" + std::string(hex).substr(0, 8) + ".experts";
-    const std::string def_path = path;  // (where the engine keeps this GGUF's expert file)
+    const std::string file = name + "-" + std::string(hex).substr(0, 8) + ".experts";
+    const std::string old_path = app_dir() + "\\zero\\" + file;
+    path = place(gguf_path, name, file, !package && fixed_path.empty());
+    // (where the engine keeps this GGUF's expert file; for a package being made, one still loose in zero\ counts too)
+    const std::string def_path = !fixed_path.empty() && !fs::exists(path, ec) && fs::exists(old_path, ec) ? old_path : path;
     if (!fixed_path.empty()) path = fixed_path;
     if (package) {  // (a file name next to the package, never a path the GGUF chooses)
       const std::string xf = f.get_str("arcinferzero.experts_file");

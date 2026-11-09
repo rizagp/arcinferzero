@@ -198,9 +198,13 @@ pi-arc 35b
 pi-arc 35b --no-stream               # without the SSD cache: every expert on the GPU (a smaller context)
 ```
 
-On first use, arcinferzero writes the expert file once (35B UD-IQ4_XS: 16 GB, about 2.5 minutes; Flash Next: 56 GB, about 9.5 minutes) to
-`%USERPROFILE%\.arcinferzero\zero\`. This file can be deleted at any time; when it is missing, it is written again
-automatically. The cache size is set automatically: arcinferzero uses the GPU memory Windows reports for the iGPU (your
+On first use, arcinferzero writes the expert file once (35B UD-IQ4_XS: 16 GB, about 2.5 minutes; Flash Next: 56 GB, about 9.5 minutes):
+next to the GGUF when the GGUF is inside `%USERPROFILE%\.arcinferzero` (its `models` folder, or a package in
+`zero\models\<name>\`), else in a folder of its own, `%USERPROFILE%\.arcinferzero\zero\models\<model name>\`, with a
+`source.txt` naming the GGUF. Delete a model and you know which expert file to delete with it; the server log also
+names a folder whose GGUF is gone (it deletes nothing itself). Expert files from before 2026-11-09 lie loose in
+`zero\` and move to their place the next time their model is loaded. An expert file can be deleted at any time; when
+it is missing, it is written again automatically. The cache size is set automatically: arcinferzero uses the GPU memory Windows reports for the iGPU (your
 shared-memory setting) less 0.5 GiB for the driver (`-DriverReserveGb N` on `arc-server`, `--driver-reserve-gb N` on serverz / runz, or `ARC_DRIVER_RESERVE_GB`, changes it), and the cache takes what the rest of the model leaves (it can be
 changed: server options `--expert-cache-gb`, `--expert-cache-pct`). If GPU memory suddenly runs short because of other apps (e.g.
 Chrome), the cache shrinks itself by 1 GB per step instead of crashing.
