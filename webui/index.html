@@ -240,7 +240,8 @@ main { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 6% 10px; }
 .codebar button:hover { background: var(--hover); }
 details.think { background: var(--think); border-left: 3px solid var(--accent); border-radius: 5px; padding: 5px 9px; margin: 2px 0 6px; color: var(--muted); font-size: 13px; }
 details.think summary { cursor: pointer; }
-details.think div { white-space: pre-wrap; margin-top: 4px; max-height: 40vh; overflow-y: auto; }
+/* (the reasoning rendered as Markdown, as the answer: its **bold** and <br> were shown as written) */
+details.think > div { margin-top: 4px; max-height: 40vh; overflow-y: auto; }
 .tool { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--think); border-radius: 5px; padding: 6px 8px; margin-top: 6px; white-space: pre-wrap; }
 .tool .st { color: var(--muted); }
 .answerfiles { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--think); border-radius: 5px; padding: 0 8px 6px; margin-top: 6px; }  /* (the answer's documents: as in the tool card) */
@@ -2618,7 +2619,7 @@ async function streamTurn(el, st, onOverflow, job) {
       thinkBox.hidden = false;
       if (thinkBox.open || all) {  // (its box follows the newest line, unless scrolled up to read)
         const atEnd = thinkText.scrollHeight - thinkText.scrollTop - thinkText.clientHeight < 24;
-        thinkText.textContent = st.reasoning;
+        thinkText.innerHTML = markdown(st.reasoning);
         if (atEnd) thinkText.scrollTop = thinkText.scrollHeight;
       }
     }
@@ -2630,7 +2631,7 @@ async function streamTurn(el, st, onOverflow, job) {
     scroll();
     gap = Math.min(2000, Math.max(120, 8 * (performance.now() - painted)));
   };
-  thinkBox.ontoggle = () => { if (thinkBox.open) { thinkText.textContent = st.reasoning; thinkText.scrollTop = thinkText.scrollHeight; } };
+  thinkBox.ontoggle = () => { if (thinkBox.open) { thinkText.innerHTML = markdown(st.reasoning); thinkText.scrollTop = thinkText.scrollHeight; } };
   const later = () => {
     // (a plain timer: an animation frame waits while the tab is hidden, and a frame that never came stopped all later ones)
     if (!frame) frame = setTimeout(paint, Math.max(0, gap - (performance.now() - painted)));
@@ -3366,7 +3367,7 @@ async function openConv(id) {
       el = addAssistant(m.at);
       el._h = m;
       el.querySelector(".progress")?.remove();
-      if (m.reasoning_content) { const t = el.querySelector(".think"); t.hidden = false; t.querySelector("div").textContent = m.reasoning_content; }
+      if (m.reasoning_content) { const t = el.querySelector(".think"); t.hidden = false; t.querySelector("div").innerHTML = markdown(m.reasoning_content); }
       el.querySelector(".content").innerHTML = markdown(String(m.content || ""));
       for (const tc of m.tool_calls || []) {
         const c = toolCard(el);

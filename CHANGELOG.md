@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-09: web UI, the thinking box rendered as Markdown
+
+- The thinking box showed the reasoning as plain text, so a model's `**bold**`, tables and `<br>` appeared as
+  written (the 35B uses them often). It is now rendered with the answer's Markdown renderer (HTML escaped as there;
+  `<br>` the only tag kept), while streaming, when the box is opened and in a reopened chat. Checked: bold, a table
+  with `<br>`, a list, and a `<script>` line shown as text.
+
 ## 2026-11-09: web UI, several files attached at once
 
 - Choosing several files with the attach button (or dropping them on the chat) attached only the first. The page
