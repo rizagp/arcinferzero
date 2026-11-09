@@ -263,7 +263,7 @@ WHEN IT FAILS
   arc-server help errors         the full list of server messages and what to do
 
 FILES
-  %USERPROFILE%\.arcinferzero\server.log     server log: load time, context, per-request prompt / generation speed,
+  %USERPROFILE%\.arcinferzero\server.log     server log (earlier starts': logs\server-<date>-<nn>.log, the newest 10): load time, context, per-request prompt / generation speed,
                                           system-prompt cache loads and saves
   %USERPROFILE%\.arcinferzero\server.json    what arc-server started (model, context, chunk)
   %USERPROFILE%\.arcinferzero\last-model.txt the model started last (pi-arc starts it again by default)
