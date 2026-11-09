@@ -27,7 +27,8 @@ All the switches (environment variables; each is read once per process):
 | `ARC_MOE_GR_GU` / `ARC_MOE_GR_DN` | 1 / 4 | rows per sub-group of the experts' gate / up and down GEMVs for one token (`bench\decode_try.ps1` rows for MoE models) | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
-| `ARC_GEMV_PF=1` | on on discrete cards since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s), off on iGPUs; `=0` off | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
+| `ARC_GEMV_PF=1` | on on discrete cards for dense models since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s); off for MoE models since 2026-11-09 (B60 35B 78.77 with it, 85.15 without); off on iGPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
+| `ARC_XALL=0` | on on discrete cards since 2026-11-09, off on iGPUs; `=1` forces it | MoE models, one token: with every expert in the GPU's cache, the layers skip reading their experts' ids on the host (the same tokens; a B60's 35B 78.77 -> 88.05 tok/s, host waits 43 -> 3 a token) | 5 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
 
@@ -153,9 +154,10 @@ same as before, so the results are bit-identical.
 - **The 35B's catch: it waits on the host about 40 times a token**, because every MoE layer reads its experts' ids for
   the expert cache (`ARC_LAUNCH_STATS=1` prints the waits). Between waits there are only ~15 kernels, so the lists
   stay short; on the laptop that was -5 %.
-- **`ARC_XALL=1` (also off by default)** drops those reads when every expert is cached, as on a 24 GB card. The
-  kernels then read the same expert addresses with no waits between layers. On the laptop the cache never holds
-  every expert, so this path still has to be measured on a card that does.
+- **`ARC_XALL`** drops those reads when every expert is cached, as on a 24 GB card. The kernels then read the same
+  expert addresses with no waits between layers. On the laptop the cache never holds every expert. A B60, 2026-11-09:
+  the 35B 78.77 -> 88.05 tok/s, host waits 43 -> 3 a token, the same tokens: **on by default on discrete cards since
+  then** (`ARC_XALL=0` off).
 
 `bench\decode_try.ps1` has rows for both and checks that their tokens match plain.
 
@@ -403,6 +405,21 @@ The levers, largest first:
   `ARC_GEMV_PF=1` gave +3 % (22.39 -> 23.11).
 - **The MoE per-tile GEMVs:** their rows per sub-group (`ARC_MOE_GR_GU` / `_DN`), unmeasured on a B60.
 - `bench\decode_try.ps1` now ends with a `--prof-gen` table per model, the first such profile from a B60.
+
+**Generation (2026-11-09, package 2c132a9, `decode_try.ps1`, 256 tokens, best of 2).** One B60 (of four in the
+machine):
+- **27B IQ3_S:** plain 23.21 tok/s, MTP 49.31 (69 % accepted). No switch beat plain clearly: GEMV_PF=0 22.45,
+  GVROWS 1/2/4 21.99-23.04, GV_IQ3S=1 23.31, BATCH 16/32/128 22.5-23.1 (same tokens), GEMV_GRF=256 21.17. "mtp
+  MT_GRF=128" 51.53 runs the default setting, so MTP's run-to-run spread is about ±4 %. The profile: 56 % of 431
+  GB/s; gate / up / down 59 % of the GPU time, 837 kernels and 4.4 ms of host time a token (the GPU stays busy: not
+  the limit). The ceiling at full bandwidth is ~38 tok/s; ~30 is a realistic target for plain generation.
+- **35B-A3B UD-IQ4_XS** (every expert cached): plain 78.77, **XALL=1 88.05** (same tokens), **GEMV_PF=0 85.15**, MTP
+  113.73 (mtp7 109.54), BATCH 16/32/128 **49-51** (much slower: command lists do not suit the MoE layers' waits),
+  XALL=1 BATCH=32 85.27, MOE_GR_GU / _DN 77.95-78.33. Made defaults: XALL on and GEMV_PF off for MoE models on
+  discrete cards (their sum not measured yet).
+- **27B prompt, `--prof`:** 512 tokens 669 tok/s, of which `h8_decode` 231 ms (31 %): the H8 weight decode costs the
+  same at any prompt length. 4096 tokens 1,018 tok/s: the FFN GEMMs 47 %, `gdn_recur` 7.4 %, `h8_decode` 5.9 %,
+  attention 5.0 %, `h8_act` 4.5 %.
 
 **Towards 1,200 tok/s on the 27B (2026-11-08).** At 4K the H8 path with CG 4 takes ~4.2 s of GPU time; 1,200 tok/s
 is 3.4 s.

@@ -11,14 +11,16 @@
 #   GVROWS=1/2/4   plain, rows per sub-group of the codebook GEMV (ARC_GVROWS; default: by matrix size)
 #   mtp MT_GRF=256 mtp, the 2-8 token GEMV of the verification with 256 registers, as before 2026-11-03 (ARC_GEMV_MT_GRF=256)
 #   mtp MT_GRF=128 the same with 128 registers (the discrete cards' default; iGPUs default to 256)
-#   GEMV_PF=0      plain, without the single-token GEMV issuing all its rows' reads of a step first (ARC_GEMV_PF=0;
-#                  on by default on discrete cards since 2026-11-08)
+#   GEMV_PF=0      dense models: plain, without the single-token GEMV issuing all its rows' reads of a step first
+#                  (ARC_GEMV_PF=0; on by default on discrete cards since 2026-11-08); MoE models: GEMV_PF=1 instead
+#                  (off for them since 2026-11-09, a B60's 35B 78.8 with it, 85.2 without)
 #   GV_IQ3S=1      plain, IQ3_S weights through gemv_v (straight into registers) instead of gemv's local window
 #                  (ARC_GV_IQ3S=1); also with GVROWS=2 / 4 (ARC_GVROWS: its rows per sub-group)
 #   BATCH=16/32/128  plain, kernels recorded into command lists of up to n kernels, each appended to the immediate
 #                  list when full (ARC_BATCH=n; off by default); also "mtp BATCH=32"
-#   XALL=1         MoE models: with every expert in the GPU's expert cache, no expert ids read on the host per
-#                  layer (ARC_XALL=1; off by default); also with BATCH=32. These rows say whether the tokens match plain.
+#   XALL=0         MoE models: without skipping the host's per-layer reads of expert ids when every expert is
+#                  cached (ARC_XALL: on by default on discrete cards since 2026-11-09, a B60's 35B 78.8 -> 88.1);
+#                  also with GEMV_PF=1 (both as before 2026-11-09) and "mtp XALL=0". Their tokens are checked against plain.
 #   (at the end, per model: a --prof-gen table, the GPU time of a generation step by kernel)
 #   MOE_GR_GU=2/4, MOE_GR_DN=2/8   MoE models: rows per sub-group of the experts' gate / up and down GEMVs for one
 #                  token (ARC_MOE_GR_GU, default 1; ARC_MOE_GR_DN, default 4)
@@ -90,14 +92,18 @@ foreach ($model in $Models) {
   foreach ($g in 1, 2, 4) { Line "GVROWS=$g" (Invoke-Run $model @() @{ ARC_GVROWS = "$g" }) }
   Line "mtp MT_GRF=256" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "256" })
   Line "mtp MT_GRF=128" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "128" })
-  Line "GEMV_PF=0" (Invoke-Run $model @() @{ ARC_GEMV_PF = "0" })
+  # (the prefetch is on by default on discrete cards for dense models, off for MoE ones since 2026-11-09: the other one)
+  if ($plain.moe) { Line "GEMV_PF=1" (Invoke-Run $model @() @{ ARC_GEMV_PF = "1" }) }
+  else { Line "GEMV_PF=0" (Invoke-Run $model @() @{ ARC_GEMV_PF = "0" }) }
   Line "GV_IQ3S=1" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1" })
   foreach ($g in 2, 4) { Line "GV_IQ3S=1 GVROWS=$g" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1"; ARC_GVROWS = "$g" }) }
   foreach ($b in 16, 32, 128) { Same "BATCH=$b" (Invoke-Run $model @() @{ ARC_BATCH = "$b" }) $plain }
   Line "mtp BATCH=32" (Invoke-Run $model @("--mtp") @{ ARC_BATCH = "32" })
   if ($plain.moe) {  # (MoE models: the experts' per-tile GEMVs of one token, rows per sub-group)
-    Same "XALL=1" (Invoke-Run $model @() @{ ARC_XALL = "1" }) $plain
-    Same "XALL=1 BATCH=32" (Invoke-Run $model @() @{ ARC_XALL = "1"; ARC_BATCH = "32" }) $plain
+    # (XALL is on by default on discrete cards since 2026-11-09: the rows without it)
+    Same "XALL=0" (Invoke-Run $model @() @{ ARC_XALL = "0" }) $plain
+    Same "XALL=0 GEMV_PF=1" (Invoke-Run $model @() @{ ARC_XALL = "0"; ARC_GEMV_PF = "1" }) $plain
+    Line "mtp XALL=0" (Invoke-Run $model @("--mtp") @{ ARC_XALL = "0" })
     foreach ($g in 2, 4) { Line "MOE_GR_GU=$g" (Invoke-Run $model @() @{ ARC_MOE_GR_GU = "$g" }) }
     foreach ($g in 2, 8) { Line "MOE_GR_DN=$g" (Invoke-Run $model @() @{ ARC_MOE_GR_DN = "$g" }) }
   }
@@ -109,10 +115,10 @@ foreach ($model in $Models) {
     $o = & $runz $model --bench-pp 128 --n 32 --prof-gen 2>&1 | Out-String
   } finally { $ErrorActionPreference = $eap }
   $o -split "`n" | Where-Object { $_ -match "^tg\d+:|tg steps|weights read|GPU time by kernel|^\s+\w+\s+[\d.]+ ms" } | ForEach-Object { $_.TrimEnd() }
-  # (kernel launches and host waits per token: plain, and for MoE models with ARC_XALL=1)
+  # (kernel launches and host waits per token: plain, and for MoE models with ARC_XALL=0)
   "--- launches per token"
   $runs = @(@{ n = "plain"; e = @{} })
-  if ($plain.moe) { $runs += @{ n = "XALL=1"; e = @{ ARC_XALL = "1" } } }
+  if ($plain.moe) { $runs += @{ n = "XALL=0"; e = @{ ARC_XALL = "0" } } }
   foreach ($c in $runs) {
     $eap = $ErrorActionPreference
     try {

@@ -251,8 +251,9 @@
     //  cause is not found yet, QUEUE F30)
     // (ARC_XALL=1: with every expert in the cache, XCache::all_in, checked at each token's first MoE layer, a token's
     //  layers neither read their experts' ids nor call ensure(): ~40 host waits a 35B token fewer, the same kernels
-    //  reading the same addresses. Off by default until measured on a card that holds them all; not multi-GPU)
-    static const bool xall = getenv("ARC_XALL") && atoi(getenv("ARC_XALL")) != 0;
+    //  reading the same addresses. On by default on discrete cards, off on iGPUs: xe2_xall, zero/xe2/engine_xe2.h;
+    //  not multi-GPU)
+    const bool xall = xe2_xall();
     bool skip_x = false;
     if (xall && xc_ && T == 1 && !use_gemm && hp.moe_std && !tp_moe()) {
       if (L.il <= xall_prev_il_) xc_->all_in();

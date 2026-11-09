@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-09: discrete cards, MoE generation defaults from a B60's run
+
+- `ARC_XALL` is on by default on discrete cards: when every expert of a MoE model is in the GPU's cache, a token's
+  layers no longer read their experts' ids on the host. A Pro B60's 35B: 78.77 -> 88.05 tok/s, host waits 43 -> 3 a
+  token, the same tokens. `ARC_XALL=0` turns it off.
+- The single-token GEMV prefetch (`ARC_GEMV_PF`) is off for MoE models on discrete cards (the same B60's 35B 78.77
+  with it, 85.15 without); dense models keep it (27B 23.21 with it, 22.45 without).
+- iGPUs are unchanged: both switches stay off there.
+- `bench\decode_try.ps1`: for MoE models the rows now try the old settings (`XALL=0`, `XALL=0 GEMV_PF=1`, `mtp XALL=0`)
+  against the new defaults; dense models keep `GEMV_PF=0`.
+- `docs/xe2-tuning.md`: the B60's 2026-11-09 generation and prompt numbers.
+
 ## 2026-11-09: web UI, queue and steer messages while an answer runs
 
 - Send (or Enter) while the model answers no longer does nothing: the message goes into a queue above the message

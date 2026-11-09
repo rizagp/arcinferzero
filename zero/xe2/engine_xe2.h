@@ -94,12 +94,23 @@
   }
   // ARC_GEMV_PF=1: the single-token GEMV (gemv, codebook / K types) issues every row's reads of a step before decoding
   // the first (GROWS x more loads in flight: a B60's GEMV reached ~55 % of its bandwidth; QUEUE F31.4). Bit-identical
-  // On by default on discrete cards since 2026-11-08: a Pro B60's 27B 22.39 -> 23.11 and 22.33 -> 23.08 tok/s in two
-  // runs (issue #4), the 35B 84.3 -> 84.8. iGPUs keep it off (the 125H 8 % slower, a 140T 1-2 %). ARC_GEMV_PF=0 / 1
+  // On by default on discrete cards since 2026-11-08 for dense models: a Pro B60's 27B 22.39 -> 23.11 and 22.33 ->
+  // 23.08 tok/s in two runs (issue #4); 2026-11-09, package 2c132a9: 27B 23.21 with it, 22.45 without. Not for MoE
+  // models since 2026-11-09: the same run's 35B 78.77 with it, 85.15 without (+8 %; 2026-11-06 it was 84.08 / 83.88).
+  // iGPUs keep it off (the 125H 8 % slower, a 140T 1-2 %). ARC_GEMV_PF=0 / 1
   std::string xe2_gemv_pf() const {
     static const int pf = getenv("ARC_GEMV_PF") ? (atoi(getenv("ARC_GEMV_PF")) != 0 ? 1 : 0) : -1;
-    const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;
+    const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated() && !hp.moe) : pf == 1;
     return on ? std::string(" -DGEMV_PF") : std::string();
+  }
+  // ARC_XALL (zero/engine_moe.h): a token's MoE layers skip reading their experts' ids and the cache's ensure() when
+  // every expert is cached (XCache::all_in, checked at each token's first MoE layer). On by default on discrete cards
+  // since 2026-11-09: a Pro B60 holding the 35B's 14.7 GiB of experts, package 2c132a9, 78.77 -> 88.05 tok/s, host
+  // waits 43 -> 3 a token, the same tokens (issue #4). Off on iGPUs (they never hold a 35B's experts; unchanged there).
+  // ARC_XALL=0 / 1
+  bool xe2_xall() const {
+    static const int e = getenv("ARC_XALL") ? (atoi(getenv("ARC_XALL")) != 0 ? 1 : 0) : -1;
+    return e < 0 ? !zrt::integrated() : e == 1;
   }
   // the 2-8 token GEMV (gemv_mt / gemv_mt_v: MTP and DFlash2 verification, batched slots) with the default register
   // file (128) on discrete cards: a Pro B60's 27B MTP went 43.3 -> 47.1 tok/s (issue #4, 2026-11-02); ARC_GEMV_MT_GRF=256

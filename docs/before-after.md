@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-09, discrete cards: `ARC_XALL` on, and the GEMV prefetch off for MoE models** (`zero/xe2/engine_xe2.h`,
+  `zero/engine_moe.h`). Measured by a Pro B60's owner (issue #4, package 2c132a9, `decode_try.ps1`, 256 tokens, best
+  of 2), 35B-A3B UD-IQ4_XS with every expert cached: plain 78.77 tok/s; XALL=1 **88.05** (the same tokens, host
+  waits 43 -> 3 a token); GEMV_PF=0 **85.15**. Both together not measured yet (asked). Dense models keep the
+  prefetch (27B 23.21 with it, 22.45 without). iGPUs: both stay off (`!zrt::integrated()` in each switch), so their
+  kernels and steps are the ones they ran before; not checked with `--dump-logits` on the laptop yet (the user's
+  server was running).
 - **2026-11-09, the line-break exemption below undone** (`tools/server_chat.h`). Sampling only, logits unchanged.
   After it, the 35B's reasoning looped twice in one chat (short lines such as "(Done)." and `<br>`, 82 of them once,
   18,038 characters) instead of closing; the code is back to the state before it (git diff: a comment only).
