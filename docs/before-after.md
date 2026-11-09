@@ -80,6 +80,10 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-09, the line-break exemption below undone** (`tools/server_chat.h`). Sampling only, logits unchanged.
+  After it, the 35B's reasoning looped twice in one chat (short lines such as "(Done)." and `<br>`, 82 of them once,
+  18,038 characters) instead of closing; the code is back to the state before it (git diff: a comment only).
+  Kept out on purpose; see "What did not pay off".
 - **2026-11-09, Qwen's reasoning: line breaks free of its presence penalty** (`tools/server_chat.h`,
   `tools/sampler.h`). Sampling only, logits unchanged (no KL). Measured on the 35B chat where "ctlsc" appeared: the
   exact prompt up to the stray token, the server's top-20 log-probabilities. Before: the penalty of 1.5 hit "\n\n"
@@ -280,6 +284,8 @@ That property is what every speed change is held to:
 
 ### What did not pay off (kept out on purpose)
 
+- Line breaks free of Qwen's reasoning presence penalty (2026-11-09): it kept the model's stray "ctlsc" at its own
+  4.4 % instead of ~17 %, but the 35B then looped in short indented lines without closing its reasoning.
 - Larger expert staging by default (`ARC_XSTAGE=256`): prompts +5-11 % but generation -2-3 % (host RAM taken from
   the cache). Deep prefetch gets the overlap without it.
 - GEMM tile / split-K / work-group autotune: the defaults were already the fastest on 27B and 35B.

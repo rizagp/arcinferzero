@@ -287,13 +287,6 @@ class Server {
         const int tid = tok_.token(s);
         if (tid >= 0) stop_ids_.push_back(tid);
       }
-      // tokens made of spaces and line breaks alone: free of the reasoning's presence penalty (server_chat.h)
-      ws_tok_.assign((size_t)std::max(0, e.hp.n_vocab), 0);
-      for (int tk = 0; tk < e.hp.n_vocab; ++tk) {
-        if (tok_.is_special(tk)) continue;
-        const std::string pc = tok_.piece(tk);
-        ws_tok_[(size_t)tk] = !pc.empty() && pc.find_first_not_of(" \t\r\n") == std::string::npos;
-      }
     }
     if (tok_.eos >= 0) stop_ids_.push_back(tok_.eos);
     slots_.resize(e.slot_count());
@@ -507,7 +500,6 @@ class Server {
   std::map<uint64_t, MediaEmb> img_cache_;  // media embeddings keyed by the file bytes
   size_t img_cache_bytes_ = 0;               // (their floats: the cache is emptied past 512 MB or 64 entries)
   std::string think_close_ = "</think>";
-  std::vector<uint8_t> ws_tok_;  // (Qwen: 1 for a token of spaces / line breaks alone, set by load_model)
   SamplingParams defaults_;
   int im_start_ = -1;
   std::vector<int> stop_ids_;

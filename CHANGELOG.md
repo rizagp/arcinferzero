@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-09: Qwen's reasoning: the line-break exemption undone
+
+- The change below ("no stray ctlsc") is undone: every token the reasoning used is penalized again, line breaks
+  included. With line breaks free of the penalty the 35B circled twice in one chat within hours, writing short lines
+  ("(Done).", "(End).", "<br>", indented) without closing its reasoning (18,038 characters once, 82 `<br>` lines;
+  the second stopped by hand). The presence penalty is there against such loops, and these lines are mostly line
+  breaks and indents. A stray "ctlsc" now and then is the smaller harm. `Sampler::set_presence_penalty` keeps its
+  optional exempt list (unused, tested in `test_sampler`).
+
 ## 2026-11-09: web UI, the thinking box rendered as Markdown
 
 - The thinking box showed the reasoning as plain text, so a model's `**bold**`, tables and `<br>` appeared as

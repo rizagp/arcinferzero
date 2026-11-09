@@ -639,11 +639,10 @@
     } gen_leave{*this};
     for (int i = 0; i < max_tokens; ++i) {
       int t;
-      // (the reasoning's own 1.5 spares tokens of spaces / line breaks alone: every reasoning uses "\n" and "\n\n",
-      //  and with them penalized the 35B ended a reasoning with a stray "ctlsc" (its 4.4% raised to ~17%) instead of
-      //  the line break before </think>)
-      const bool own_pp = in_think && !gemma_ && !body["presence_penalty"].is_number();
-      sampler.set_presence_penalty(in_think ? think_pp : sp.presence_penalty, own_pp ? &ws_tok_ : nullptr);
+      // (every token the reasoning used, line breaks included. Sparing tokens of spaces / line breaks alone (against a
+      //  stray "ctlsc" before </think>: the model's 4.4% raised to ~17%) was undone the same day: the 35B then circled
+      //  in short lines ("(Done).", "<br>", indented) without closing its reasoning, twice in one chat)
+      sampler.set_presence_penalty(in_think ? think_pp : sp.presence_penalty);
       if (!forced.empty()) {
         t = forced.front();
         forced.erase(forced.begin());
