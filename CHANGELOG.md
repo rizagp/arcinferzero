@@ -1,30 +1,63 @@
 # Changelog
 
-## 2026-11-09: chunked DeltaNet kernel, opt-in (QUEUE F33.1, step one)
+## 2026-11-09: DeltaNet in chunks and prompt attention on XMX, opt-in (QUEUE F33.1 / F33.2)
 
-- `gdn_chunk` (zero/kernels/ops.cl): the gated delta rule of a prompt pass in chunks of 32 tokens. Per chunk the
-  tokens' deltas come from one forward substitution over a 32 x 32 matrix (A = beta exp(lg_l - lg_m) k_l.k_m), the
-  outputs from P = exp(lg_i - lg_l) q_i.k_l and the state at the chunk's start, and the state moves once per chunk.
-  Four work-items per state row (each a quarter of the 128 key dims, partial sums joined with sub-group shuffles):
-  4x the work-items of `gdn_recur`, whose nv*128 leave a large GPU mostly idle (a B60 at ~30 % with the 27B's 48
-  heads). This form is also the base of the XMX version (its parts are matrix products).
-- Off by default: `ARC_GDN_CHUNK=1` (local rows read element by element) or `=2` (16 floats at a time, fewer
-  messages; ocloc shows a few registers spilled on Xe-LPG, none on a B60). Prompt passes of 32+ tokens only; MTP /
-  DFlash2 verification keeps `gdn_recur`.
-- Checked without a GPU: the math in numpy against the sequential rule (f32: 1e-7 relative, chunks of 16 and 64,
-  decays down to 1e-6); the kernel on the CPU's OpenCL (oneAPI) against a double-precision reference, 100 tokens
-  (three chunks and a short one), gated and fused gates, both read forms: output 5.5e-7, state 8e-8 relative
-  (`gdn_recur` 1.4e-7 / 7e-8). ocloc for Meteor Lake and Battlemage: builds, `=1` without spills. Speed and KL on a
-  model: not measured yet (the GPU is not free).
-- **On XMX: `ARC_GDN_CHUNK=3`** (`gdn_chunk_x`, zero/kernels/gdn_x.cl, chosen in zero/xe2/engine_xe2.h): discrete
-  Xe2 / Xe3 cards (16-lane DPAS); elsewhere `=3` runs `gdn_chunk`. A work-group of 16 sub-groups per v-head, each
-  holding 8 state rows as DPAS accumulators; the state's products with the chunk's k and q, the deltas through
-  T = (I + A)^-1, the outputs through P and the state update are DPAS (8 x 16 x 16, f16 in, f32 sums), 168 per
-  sub-group and chunk. Every f16 operand is split into high and low halves (hi*hi + hi*lo + lo*hi, ~22 bits): plain
-  f16 is too coarse for v - S k. Checked once per device at start against `gdn_chunk` on random data (both gate
-  forms); a difference above 1e-4 of the result keeps `gdn_chunk` and says so. On the CPU's OpenCL with DPAS
-  emulated (`-DGDN_XMX_EMU`, `ARC_GDN_XEMU=1` on a GPU): output 4e-6, state 1.9e-7 relative against double. ocloc
-  for Battlemage: 168 DPAS, no spills. Its speed: a B60's to measure.
+For the Arc Pro B60 (issue #4) and the Arc 140T (issue #5); every switch is off by default, the default path is
+bit-identical to before (laptop, `--dump-logits` of a ~1,500-token prompt and 24 tokens: Qwen3.5 4B, Qwen3.8 27B,
+Qwen3.6 35B-A3B against the build before tonight's work, bb8fd33; `bench\f33_sweep.ps1`'s check, USAGE.md as the
+prompt and 16 tokens, all seven models of the laptop: Gemma 4 E4B, Qwen3.5 4B and 9B, Gemma 4 26B-A4B, 27B, 35B,
+Qwen3.8 Flash Next).
+
+- **Chunked DeltaNet, `ARC_GDN_CHUNK`** (prompt passes of 32+ tokens; MTP / DFlash2 verification keeps `gdn_recur`):
+  - The rule in chunks of 32 tokens: per chunk lg = the cumulative log decay, A = beta exp(lg_l - lg_m) k_l.k_m and
+    P = exp(lg_i - lg_l) q_i.k_l; the tokens' deltas by one forward substitution, the outputs from P and the state at
+    the chunk's start, the state moved once a chunk.
+  - `=3`: on XMX. `gdn_chunk_x` (zero/kernels/gdn_x.cl, 16-lane DPAS: B580 / B60) holds the state as DPAS
+    accumulators and does every product of the chunk as f16 DPAS (k.k and q.k, state x k, state x q, the deltas
+    through (I + A)^-1, the outputs, the state update): 192 DPAS per sub-group and chunk, no spills (ocloc,
+    Battlemage). `gdn_chunk_x8`: the same at 8 lanes for the 140T (264 DPAS, ocloc Arrow Lake H). Every f16
+    operand is scaled by a power of two and split into high and low halves (~22 bits): the low halves stay out of
+    f16's subnormal range, which a DPAS may flush (found by an independent review of the kernels). Checked once per
+    device at start against `gdn_chunk`; a difference above 1e-4 keeps `gdn_recur`. Without XMX `=3` runs
+    `gdn_recur`.
+  - `=1` / `=2`: the vector form `gdn_chunk` (any GPU; 4 work-items per state row, 4x `gdn_recur`'s). **No gain on
+    the laptop** (4K prompt, DeltaNet kernel time): 4B `gdn_recur` 241-272 ms, `=1` 3,506-3,662 ms, `=2` 2,367-2,409 ms;
+    9B 235 / 3,507 / 2,358 ms (512 -> 353 / 388 tok/s); 27B 782-806 / 12,420 / 8,832 ms (prompt 136 -> 95 / 110
+    tok/s); 35B 538-542 / 5,802 / 4,448 ms (782 -> 381 / 454 tok/s); Flash Next 435 / 7,492 / 5,090 ms (207 -> 156 /
+    172 tok/s). Kept for a B60 to measure.
+  - Its own kernel part, zero/kernels/ops_gdn.cl (the last ops part), so ops.cl and the other ops kernels' cache are
+    as before.
+- **Prompt attention on XMX, `ARC_ATTN_XMX=1`** (zero/kernels/attn_x.cl, put in front of the ops parts for
+  `attn_q8`; 16-lane DPAS, Qwen): attn_q8's int8 q.k sums (8 DPAS per 16-key tile at 256 dims) and its u8 P x int8 V
+  sums (16 DPAS) replace 2 x 256 DP4a per tile; everything else is attn_q8's in the same order. DPAS sums integers
+  exactly: bit-identical, checked at start bit for bit (else attn_q8). Not for the 140T: its attention kernels run
+  16-lane sub-groups, its DPAS takes 8 (QUEUE F33.2b).
+- **Checks without XMX:**
+  - The chunked math in numpy against the sequential rule (f32: 1e-7 relative, chunks of 16 and 64, decays to 1e-6).
+  - On the CPU's OpenCL (oneAPI), against a double-precision reference, 100 tokens (three chunks and a short one),
+    gated and fused gates: `gdn_chunk` output 5.5e-7, `gdn_chunk_x` / `gdn_chunk_x8` with DPAS emulated 6.8e-7
+    (state 1.4e-7); `gdn_recur` 1.4e-7.
+  - Laptop GPU with DPAS emulated (`ARC_GDN_XEMU=16` / `8`, `ARC_ATTN_XEMU=1`): both DeltaNet forms pass their start
+    check (4.5e-7 of the result); the attention's start check and the logits of the 4B, 27B and 35B (~1,500-token
+    prompt, 24 tokens) bit-identical to attn_q8, five shapes of the kernel test too (33 to 100 tokens, 3 and 4
+    heads per sub-group).
+  - The laptop GPU compiler got a byte of a shuffled word wrong in an unrolled loop (the emulation's first form):
+    every attention output of the check apart, the CPU's OpenCL exact. The emulation now splits bytes before the
+    shuffle (both agree). Only the emulation was affected; real DPAS does not shuffle.
+- **KL against `gdn_recur`** (4 perplexity chunks of USAGE.md): 4B `=1` / `=2` 0.00084 (perplexity 13.2847 ->
+  13.2987), `=3` emulated 0.00087 (16 lanes) / 0.00091 (8 lanes); 27B `=1` / `=2` 0.00063 (6.3926 -> 6.3941); 35B
+  `=1` / `=2` 0.0052 (9.9937 -> 9.9532). Not bit-identical sums change later int8 roundings (and in the 35B the
+  experts some tokens pick, as a prompt chunk size of 512 instead of 8,192 does: 0.0026-0.017): that is this size of
+  KL, below 0.015. 9B `=1` / `=2` 0.00071 (10.9342 -> 10.9305), `=3` emulated (8 lanes) 0.00078; 27B and 35B `=3`
+  emulated 0.00062 / 0.0053.
+- **Flash Next** moves more: `=1` against `gdn_recur` 0.025 (perplexity 7.2929 -> 7.3449; precise mode 0.0125), `=3`
+  emulated 0.026. Against the f32 reference (`ref_forward`, 480 tokens of USAGE.md) the chunked kernel is as close as
+  `gdn_recur`: fast mode 0.0134 against 0.0117 (top token 456 / 480 against 451), precise 0.00879 against 0.00875
+  (463 against 464): within its limits (~0.02 fast, 0.015 precise). The two runs sit ~0.012 from f32 each, on
+  different sides, so they are 0.025 apart.
+- `bench\f33_sweep.ps1` for the B60 / 140T owners: per model, prompt speed at 512 to 65,536 tokens for every mode,
+  the kernels' own time, KL, and the attention's logits against attn_q8. `ref_forward.exe` is in the package now,
+  for `bench\website_bench.ps1`'s KL against f32.
 
 ## 2026-11-09: MoE expert files kept with their model
 

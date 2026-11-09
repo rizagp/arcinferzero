@@ -35,7 +35,7 @@ $inv = [Globalization.CultureInfo]::InvariantCulture
 if (-not $Models.Count) {
   $names = "Qwen3.5-4B-UD-Q4_K_XL.gguf", "Qwen3.5-9B-UD-Q4_K_XL.gguf", "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
     "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", "gemma-4-E4B_q4_0-it.gguf",
-    "gemma-4-12b-it-qat-q4_0.gguf", "gemma-4-26b-a4b-it-qat-q4_0.gguf"
+    "gemma-4-12b-it-qat-q4_0.gguf", "gemma-4-26b-a4b-it-qat-q4_0.gguf", "gemma-4-26B_q4_0-it.gguf"
   foreach ($n in $names) {
     $f = @(Get-ChildItem $pkg -Recurse -Filter $n -ErrorAction SilentlyContinue) + @(Get-ChildItem $hub -Recurse -Filter $n -ErrorAction SilentlyContinue) |
       Select-Object -First 1

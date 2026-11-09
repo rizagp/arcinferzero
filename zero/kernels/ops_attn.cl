@@ -424,6 +424,9 @@ __kernel void attn_q8(__global const char* qi, __global const float* qsc, __glob
 #pragma unroll
     for (int c = 0; c < SB; ++c) qs[r][c] = active ? qsc[((size_t)m * nh + h0 + r) * SB + c] * M_LOG2E_F : 0.0f;
   }
+#ifdef ATTN_XMX  // (the integer sums on XMX, bit-identical: zero/kernels/attn_x.cl, placed in front of this source)
+  QK_PREP_X
+#endif
   float o[HS][DPL], mx[HS], lp[HS];
   float pk[HS], pb[HS], sacc[HS];
 #pragma unroll
@@ -474,7 +477,9 @@ __kernel void attn_q8(__global const char* qi, __global const float* qsc, __glob
     const bool valid = key <= hi && key >= lo;
 #endif
 #ifndef ABL_NOQK  // ablations (timing experiments only: wrong results)
-#if HS == 4  // one address op per K load instead of two: 4 heads per sub-group spill 608 -> 0 bytes (3 heads: slower)
+#if defined(ATTN_XMX)
+    QK_TILE_X(Kt[(c * 16 + w) * 16 + lane], sob)
+#elif HS == 4  // one address op per K load instead of two: 4 heads per sub-group spill 608 -> 0 bytes (3 heads: slower)
     __local const uint* KL = Kt + lane;
     QK_TILE(KL[(c * 16 + w) * 16], sob)
 #else
@@ -495,7 +500,11 @@ __kernel void attn_q8(__global const char* qi, __global const float* qsc, __glob
     for (int r = 0; r < HS; ++r) { pk[r] = valid ? sacc[r] * 0.01f + 0.5f : 0.0f; pb[r] = 1.0f; lp[r] += pk[r]; }
 #endif
 #ifndef ABL_NOPV
+#ifdef ATTN_XMX
+    PV_TILE_X(Vt, sob, valid)
+#else
     PV_TILE(Vt, sob, valid)
+#endif
 #else
 #pragma unroll
     for (int r = 0; r < HS; ++r) o[r][0] += pk[r] * as_float(Vt[lane].x) * 1e-30f;

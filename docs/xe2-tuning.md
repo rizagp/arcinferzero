@@ -28,6 +28,9 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
 | `ARC_GEMV_PF=1` | on on discrete cards for dense models since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s); off for MoE models since 2026-11-09 (B60 35B 78.77 with it, 85.15 without); off on iGPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
+| `ARC_GDN_CHUNK=1` / `2` / `3` | off (`gdn_recur`) | the DeltaNet of prompt passes (32+ tokens) in chunks of 32 (QUEUE F33.1, 2026-11-09): `1` `gdn_chunk` (vector, 4 work-items per state row, any GPU), `2` its 16-float local reads, `3` on XMX: `gdn_chunk_x` (16-lane DPAS) or `gdn_chunk_x8` (8 lanes, the 140T), checked at start against `gdn_chunk`. Not bit-identical: KL (`bench\f33_sweep.ps1`) | 9 |
+| `ARC_GDN_XEMU=1` / `8` / `16` | off | with `ARC_GDN_CHUNK=3`: DPAS emulated on any GPU, in its own / the 8- / 16-lane form (tests) | 9 |
+| `ARC_ATTN_XMX=1` | off | the prompt attention's integer dot products (`attn_q8`) as int8 DPAS, bit-identical, checked at start bit for bit (QUEUE F33.2, 2026-11-09; 16-lane DPAS, Qwen); `ARC_ATTN_XEMU=1`: emulated (tests) | 9 |
 | `ARC_XALL=0` | on on discrete cards since 2026-11-09, off on iGPUs; `=1` forces it | MoE models, one token: with every expert in the GPU's cache, the layers skip reading their experts' ids on the host (the same tokens; a B60's 35B 78.77 -> 88.05 tok/s, host waits 43 -> 3 a token) | 5 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
@@ -537,6 +540,32 @@ DP4a GEMM 4.7x slower in this check, 47 ms against 10). If XMX loses, those swit
   none at 256), and on the 125H it ran 6x slower (27B 120 -> 19 tok/s, 4B 958 -> 160).
 - The 140T before, all on DP4a: 27B pp2048 180 tok/s, 6.0 tok/s; with `ARC_H8=1` 160 tok/s, as the rotations (1.56 s)
   cost more than the GEMMs gain (~5 %).
+
+## 9. DeltaNet in chunks and attention on XMX (QUEUE F33.1 / F33.2, 2026-11-09): `bench\f33_sweep.ps1`
+
+The B60's 27B 4K prompt spent 290 ms in `gdn_recur` and 198 ms in `attention` (2026-11-09 profile).
+
+- **`gdn_recur`** walks the tokens one by one, a work-item per state row: nv*128 work-items (6,144 for the 27B's 48
+  heads), about 30 % of a B60's threads. **`gdn_chunk`** takes 32 tokens at a time: the chunk's tokens' deltas from
+  one forward substitution over a 32 x 32 matrix, the outputs from the chunk's q.k matrix and the state at its start,
+  the state moved once. Four work-items per state row: 4x the work-items. **`gdn_chunk_x`** holds the state as DPAS
+  accumulators and does all of the chunk's products as f16 DPAS: k.k and q.k (an 8 x 16 tile per sub-group), state x
+  k, state x q, the deltas through (I + A)^-1, the outputs and the state update, every operand split into high and
+  low halves (~22 bits) after a power-of-two scale that keeps the low halves out of f16's subnormal range (a DPAS
+  that flushes them would lose them): 192 DPAS per sub-group and chunk on a B60, no spills. **`gdn_chunk_x8`**: the
+  same at 8 lanes for the 140T (264 DPAS). Only (I + A)^-1 (32 rows, one sub-group) stays on the vector units.
+- **The vector form `gdn_chunk` is no gain on the laptop:** 4B, 4K prompt, `gdn_recur` 252-272 ms against
+  `gdn_chunk` 2,409 ms (16-float reads) / 3,662 ms: its k.k / q.k products and the local-memory reads cost more than
+  the extra work-items win back. It stays as `ARC_GDN_CHUNK=1` / `2` for a B60 to measure; `=3` without XMX (or
+  with a failed check) runs `gdn_recur`, not it.
+- **`attn_q8` on XMX:** its int8 q.k sums (8 DPAS per 16-key tile at 256 dims) and its u8 P x int8 V sums (16 DPAS,
+  half of each zero: a tile has 16 keys, a DPAS takes 32) replace 2 x 256 DP4a per tile and head group; everything
+  around them is attn_q8's, in the same order. DPAS sums integers exactly, as DP4a does: bit-identical. Not for the
+  140T: the attention kernels run 16-lane sub-groups there, and its DPAS takes 8.
+- **Checks without XMX (the laptop):** the chunked math in numpy (f32 1e-7 relative); every kernel on the CPU's
+  OpenCL (oneAPI) against a double reference (`gdn_chunk` 5.5e-7, both XMX forms with DPAS emulated 4e-6, output);
+  ocloc for Meteor Lake, Battlemage and Arrow Lake H: no spills. At start each XMX kernel is compared with its vector
+  twin on random data (`gdn_chunk`: 1e-4; `attn_q8`: bit for bit) and not used if they differ.
 
 ## Not done yet (needs an Xe2 card to develop on)
 

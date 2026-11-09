@@ -448,9 +448,11 @@
     return m;
   }
   static bool gdn_chunk_on() { return gdn_chunk_mode() != 0; }
-  static bool gdn_xemu() {
-    static const bool e = getenv("ARC_GDN_XEMU") && atoi(getenv("ARC_GDN_XEMU")) != 0;
-    return e;
+  // (ARC_GDN_XEMU: 1 = DPAS emulated in the GPU's own form (8 lanes where its sub-groups have 8, else 16); 16 / 8 =
+  //  that form)
+  static int gdn_xemu() {
+    static const int e = getenv("ARC_GDN_XEMU") ? atoi(getenv("ARC_GDN_XEMU")) : 0;
+    return e == 1 || e == 8 || e == 16 ? e : 0;
   }
   std::vector<Layer> layers_;
   cl_kernel k_add_norm_ = nullptr, k_ple_gate_ = nullptr, k_ple_comb_ = nullptr, k_add_nq_ = nullptr;

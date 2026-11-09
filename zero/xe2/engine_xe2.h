@@ -144,30 +144,119 @@
     return xe2_ && !cl_.sg8 && n >= 1 && n <= 16 ? " -DWPF=" + std::to_string(n) : std::string();
   }
 
-  // ---- the chunked DeltaNet on XMX (QUEUE F33.1, ARC_GDN_CHUNK=3; zero/kernels/gdn_x.cl, gdn_chunk_x): where DPAS
-  // takes 16-lane sub-groups (discrete Xe2 / Xe3); elsewhere layer_gdn runs gdn_chunk. ARC_GDN_XEMU=1: DPAS emulated
-  // on any GPU (tests). Checked once per device at start against gdn_chunk on random data (2 heads, 100 tokens: three
+  // ---- attn_q8 on XMX (QUEUE F33.2, ARC_ATTN_XMX=1; zero/kernels/attn_x.cl in front of the ops parts): the prompt
+  // attention's two integer dot products per 16-key tile as int8 DPAS, the rest attn_q8's; bit-identical. Discrete
+  // Xe2 / Xe3 cards (16-lane DPAS), Qwen (one scale per row), up to 4 q heads per sub-group; ARC_ATTN_XEMU=1: DPAS
+  // emulated on any GPU (tests). Checked once per device and shape at start against attn_q8 bit for bit on random data;
+  // any difference keeps attn_q8 and says so.
+  std::string attnx_src_, attn_q8_defs_;
+  static bool attn_xemu() {
+    static const bool e = getenv("ARC_ATTN_XEMU") && atoi(getenv("ARC_ATTN_XEMU")) != 0;
+    return e;
+  }
+  bool attnx_wanted() const {
+    static const bool on = getenv("ARC_ATTN_XMX") && atoi(getenv("ARC_ATTN_XMX")) != 0;
+    return on && ((cl_.xmx && !cl_.sg8) || attn_xemu()) && !hp.gemma && !hp.swa_rings && attn_hs() <= 4 &&
+           !attn_q8_defs_.empty();
+  }
+  std::string attnx_defs() const { return attn_q8_defs_ + " -DATTN_XMX" + (attn_xemu() ? " -DATTN_XMX_EMU" : ""); }
+  void attnx_init() {
+    if (!attnx_wanted()) return;
+    static std::mutex mu;
+    static std::map<std::string, bool> known;
+    const std::string key = cl_.device_id + "|" + attnx_defs();
+    std::lock_guard<std::mutex> g(mu);
+    auto it = known.find(key);
+    if (it == known.end()) {
+      const bool ok = attnx_check();
+      it = known.emplace(key, ok).first;
+      if (ok)
+        fprintf(stderr, "arcinferzero: prompt attention on XMX%s (bit-identical to attn_q8, checked)\n",
+                attn_xemu() ? " (DPAS emulated: tests)" : "");
+    }
+    if (it->second) k_attn_q8_ = kernel("attnx", attnx_defs(), "attn_q8");
+  }
+  bool attnx_check() {
+    // one kv head, its q heads, 40 tokens at position 0 over a 48-slot cache: three tiles, the last one partial
+    const int hpg = hp.n_head / hp.n_head_kv, hd = hp.qwen3 ? hp.head_dim : 256, nh = hpg, M = 40, cap = 48;
+    const int nbc = cap / 16, blk_u = 4 * hd, tpw = attn_tpw();
+    uint32_t seed = 4243;
+    auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed; };
+    std::vector<uint32_t> qi((size_t)M * nh * hd / 4), kq((size_t)nbc * blk_u), vq((size_t)nbc * blk_u);
+    for (auto& v : qi) v = rnd();
+    for (auto& v : kq) v = rnd();
+    for (auto& v : vq) v = rnd();
+    std::vector<float> qsc((size_t)M * nh), ksc((size_t)nbc * 16), vsc((size_t)nbc * 16), out((size_t)M * nh * hd);
+    // (scores of a few log2 units, so P takes mid-range bytes too: random int8 rows of 256 dims sum to ~1e5, so q scales
+    //  of ~1e-5 with k scales of ~5e-2; 10x larger made P nearly 0 or 255 everywhere)
+    for (auto& v : qsc) v = 1e-5f * (1 + rnd() % 100);
+    for (auto& v : ksc) v = 1e-3f * (1 + rnd() % 100);
+    for (auto& v : vsc) v = 1e-3f * (1 + rnd() % 100);
+    std::vector<cl_mem> bufs;
+    auto mk = [&](const void* p, size_t bytes) { cl_mem m = buf(bytes, p); bufs.push_back(m); return m; };
+    struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
+    cl_.soft_fail = true;
+    bool ok = true, built = true;
+    try {
+      const cl_mem bq = mk(qi.data(), qi.size() * 4), bqs = mk(qsc.data(), qsc.size() * 4), bk = mk(kq.data(), kq.size() * 4),
+                   bks = mk(ksc.data(), ksc.size() * 4), bv = mk(vq.data(), vq.size() * 4), bvs = mk(vsc.data(), vsc.size() * 4);
+      std::vector<float> res[2];
+      for (int x = 0; x < 2; ++x) {
+        const cl_mem bo = mk(out.data(), out.size() * 4);
+        cl_kernel k = x == 0 ? kernel("ops", attn_q8_defs_, "attn_q8") : kernel("attnx", attnx_defs(), "attn_q8");
+        int cx = cap, nn = nh, p0 = 0, mm = M, win = 0, nlo = -1, nhi = -1;
+        set_args(k, 0, bq, bqs, bk, bks, bv, bvs, cx, nn, p0, mm, bo, win, nlo, nhi);
+        size_t gws[2] = {(size_t)(M + tpw - 1) / tpw * 512, 1}, lws[2] = {512, 1};
+        run("attnx_check", k, 2, gws, lws);
+        res[x].resize(out.size());
+        CL_CHECK(clEnqueueReadBuffer(cl_.queue, bo, CL_TRUE, 0, res[x].size() * 4, res[x].data(), 0, nullptr, nullptr));
+      }
+      size_t diff = 0;
+      for (size_t i = 0; i < out.size(); ++i) diff += memcmp(&res[0][i], &res[1][i], 4) != 0;
+      if (diff) {
+        fprintf(stderr, "arcinferzero: prompt attention on XMX differs from attn_q8 in %zu of %zu values: attn_q8 "
+                        "(please report)\n", diff, out.size());
+        ok = false;
+      }
+    } catch (const zrt::GpuWaitError&) {
+      for (cl_mem& m : bufs) free_buf(m);
+      throw;
+    } catch (const std::exception& e) {
+      fprintf(stderr, "arcinferzero: prompt attention on XMX does not build here (%s): attn_q8\n", e.what());
+      built = false;
+    }
+    for (cl_mem& m : bufs) free_buf(m);
+    return ok && built;
+  }
+
+  // ---- the chunked DeltaNet on XMX (QUEUE F33.1, ARC_GDN_CHUNK=3; zero/kernels/gdn_x.cl): gdn_chunk_x where DPAS
+  // takes 16-lane sub-groups (discrete Xe2 / Xe3), gdn_chunk_x8 where it takes 8 (the Arc 140T); without XMX
+  // (or when the check fails) layer_gdn runs gdn_recur. ARC_GDN_XEMU=1 / 8 / 16: DPAS emulated on any GPU, in its own / the 8- / 16-lane form
+  // (tests). Checked once per device and form at start against gdn_chunk on random data (2 heads, 100 tokens: three
   // chunks and a short one; gated and fused gates); outputs or states more than 1e-4 of their size apart: not used.
   std::string gdnx_src_;
   bool gdnx_ = false;
-  bool gdnx_wanted() const { return gdn_chunk_mode() == 3 && ((cl_.xmx && !cl_.sg8) || gdn_xemu()); }
+  bool gdnx_wanted() const { return gdn_chunk_mode() == 3 && (cl_.xmx || gdn_xemu()); }
+  bool gdnx_8() const { return gdn_xemu() == 8 || (gdn_xemu() != 16 && cl_.sg8); }
+  const char* gdnx_name() const { return gdnx_8() ? "gdn_chunk_x8" : "gdn_chunk_x"; }
+  size_t gdnx_wg() const { return gdnx_8() ? 128 : 256; }
   std::string gdnx_defs(bool fuse) const {
-    return std::string("-cl-intel-256-GRF-per-thread -DGDN_XMX") + (gdn_xemu() ? " -DGDN_XMX_EMU" : "") +
-           (fuse ? " -DFUSE_GATES" : "");
+    return std::string("-cl-intel-256-GRF-per-thread -DGDN_XMX") + (gdnx_8() ? " -DGDN_XMX8" : "") +
+           (gdn_xemu() ? " -DGDN_XMX_EMU" : "") + (fuse ? " -DFUSE_GATES" : "");
   }
   void gdnx_init() {
     if (!gdnx_wanted()) return;
     static std::mutex mu;
     static std::map<std::string, bool> known;
-    const std::string key = cl_.device_id + (gdn_xemu() ? "|emulated" : "");
+    const std::string key = cl_.device_id + "|" + gdnx_name() + (gdn_xemu() ? "|emulated" : "");
     std::lock_guard<std::mutex> g(mu);
     auto it = known.find(key);
     if (it == known.end()) {
       const bool ok = gdnx_check();
       it = known.emplace(key, ok).first;
       if (ok)
-        fprintf(stderr, "arcinferzero: chunked DeltaNet on XMX%s (results checked against gdn_chunk)\n",
-                gdn_xemu() ? " (DPAS emulated: tests)" : "");
+        fprintf(stderr, "arcinferzero: chunked DeltaNet on XMX, %d lanes%s (results checked against gdn_chunk)\n",
+                gdnx_8() ? 8 : 16, gdn_xemu() ? " (DPAS emulated: tests)" : "");
     }
     gdnx_ = it->second;
   }
@@ -211,11 +300,11 @@
         for (int x = 0; x < 2; ++x) {
           const cl_mem bS = mk(s0), bo = mk(std::vector<float>((size_t)M * nv * 128, 0.0f));
           cl_kernel k = x == 0 ? kernel("ops", std::string("-cl-intel-256-GRF-per-thread") + (fuse ? " -DFUSE_GATES" : ""), "gdn_chunk")
-                               : kernel("gdnx", gdnx_defs(fuse != 0), "gdn_chunk_x");
+                               : kernel("gdnx", gdnx_defs(fuse != 0), gdnx_name());
           int Ci = C, nki = nk, nvi = nv, Mi = M;
           set_args(k, 0, bx, Ci, bab, nki, nvi, bS, Mi, bo, bS);
           if (fuse) set_args(k, 9, bdt, bsa);
-          size_t g1 = (size_t)nv * (x == 0 ? 2 : 1) * 256, l1 = 256;
+          size_t g1 = x == 0 ? (size_t)nv * 2 * 256 : (size_t)nv * gdnx_wg(), l1 = x == 0 ? 256 : gdnx_wg();
           run("gdnx_check", k, 1, &g1, &l1);
           out[x].resize((size_t)M * nv * 128);
           st[x].resize(s0.size());

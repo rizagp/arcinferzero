@@ -80,6 +80,17 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-09, chunked DeltaNet and prompt attention on XMX, opt-in** (`ARC_GDN_CHUNK=1` / `2` / `3`,
+  `ARC_ATTN_XMX=1`; zero/kernels/ops_gdn.cl, gdn_x.cl, attn_x.cl; QUEUE F33.1 / F33.2). Default path: logits
+  bit-identical to bb8fd33 (4B, 27B, 35B; ~1,500-token prompt, 24 tokens; all seven laptop models, E4B, 4B, 9B,
+  Gemma 26B, 27B, 35B, Flash Next, with `bench\f33_sweep.ps1`). Laptop 125H, 4K prompt, best of 3, the
+  DeltaNet kernel's time from `--prof`: 4B `gdn_recur` 873-942 tok/s (241-244 ms) against `gdn_chunk` `=1` 520 tok/s
+  (3,506 ms), `=2` 628 (2,367); 27B 136 (782-806 ms) / 95 (12,420) / 110 (8,832); 35B 777-782 (538-542) / 381
+  (5,802) / 454 (4,448): the vector form loses here, `=3` without XMX runs `gdn_recur`. KL against `gdn_recur` (4
+  perplexity chunks of USAGE.md): 4B 0.00084 (`=3` DPAS emulated: 0.00087 / 0.00091 at 16 / 8 lanes), 9B 0.00071,
+  27B 0.00063, 35B 0.0052, Flash Next 0.025 (but against f32, 480 tokens: 0.0134 vs `gdn_recur`'s 0.0117, precise
+  mode 0.00879 vs 0.00875). 9B / Flash Next 4K: `gdn_recur` 235 / 435 ms, `=1` 3,507 / 7,492, `=2` 2,358 / 5,090. Attention on XMX: bit-identical (DPAS emulated: start check and the three models' logits). XMX speed:
+  the B60 / 140T owners' runs (`bench\f33_sweep.ps1`).
 - **2026-11-09, discrete cards: `ARC_XALL` on, and the GEMV prefetch off for MoE models** (`zero/xe2/engine_xe2.h`,
   `zero/engine_moe.h`). Measured by a Pro B60's owner (issue #4, package 2c132a9, `decode_try.ps1`, 256 tokens, best
   of 2), 35B-A3B UD-IQ4_XS with every expert cached: plain 78.77 tok/s; XALL=1 **88.05** (the same tokens, host

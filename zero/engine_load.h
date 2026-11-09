@@ -33,6 +33,7 @@
                             " -DHS=" + std::to_string(attn_hs()) + " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256) +
                             (hp.qwen3 ? " -DHD=" + std::to_string(hp.head_dim) : std::string());
     k_attn_q8_ = kernel("ops", att, "attn_q8");
+    attn_q8_defs_ = att;  // (attnx_init builds the XMX form with the same options: zero/xe2/engine_xe2.h)
     k_attn_comb_ = kernel("ops", "", "attn_combine");
     k_mtp_concat_ = kernel("ops", "", "mtp_concat");
     auto tabs = build_iq_tables();
