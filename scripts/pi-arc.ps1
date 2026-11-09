@@ -181,17 +181,26 @@ SERVER COMMANDS (arc-server)
                                  microphone as "Me", the app's or the speakers' sound as "Others");
                                  arc-server record-stop: the server transcribes it (web UI, Meetings tab);
                                  arc-server record-status
-  arc-server help                its own options:
+  arc-server list                the models on this PC (id, shortcut, size, auto context); -Json for scripts
+  arc-server logs [-Follow]      the server's log      arc-server doctor   a check to paste into a GitHub issue
+  arc-server version [-Check]    this package, and whether a newer one is out
+  arc-server pull <keys>         download models (4b 9b 35b 27b g12 g31 e4b asr whisper; pull alone lists them)
+  arc-server presets             saved option sets; save-preset -Preset <name> [options]; start -Preset <name>
+  arc-server start ... -DryRun   check the options, print the serverz.exe command and a GPU memory estimate
+  arc-server help [options|writing|errors|all]   its own help; its options:
     -Model <shortcut|text|path>  -Ctx <N|auto>  -Chunk <N>  -SessionCacheGb <N>  -NoMtp  -Vision on|off  -NoStream
     -Slots <N>  -Npu on|off  -Precise / -NoPrecise  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
     -WhisperMaxMinutes <N>  (speech to text: Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; for the web
     UI's Transcripts / Meetings tabs, voice messages and /v1/audio/transcriptions; kept until stop)
     -Port <N> (default 8090)  -MtpDrafts <1..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
     -BudgetGb <GB>  -AttnF32  -NoPrefixCache  -PrefixCacheGb <N>  -NoSwap  -ListenHost <addr>  -SessionDir <dir>
-    -Quiet
+    -Preset <name>  -Drafter auto|mtp|dflash|off|<folder>  -DryRun  -Quiet
+    exit codes: 0 ok, 1 wrong option, 2 the server stopped while loading, 3 timeout, 4 port in use
   arc-launcher.cmd (project folder)  a window: every model and variant with its memory and automatic context, a
-                                 field for every option (speech to text too), Start / Stop, Record, and the running server's GPU memory,
-                                 requests and speeds (the server keeps running when it is closed)
+                                 field for every option (speech to text too) and whether they fit the GPU memory,
+                                 presets, Start / Stop, the running server's GPU memory, requests, speeds and live
+                                 log; More: speech only, Copy the start command, Record, doctor, updates. A tray icon;
+                                 the server keeps running when it is closed
 
 SERVER DIRECTLY (bin\serverz.exe; arc-server passes these for you; details:
 bin\serverz.exe --help)
@@ -236,8 +245,8 @@ WRITING OPTIONS
   paths                          in quotes when they have spaces: -Model "C:\My models\x.gguf". Never end a quoted
                                  path with a backslash ("C:\folder\" makes the quote part of it): "C:\folder".
                                  -Model: a .gguf FILE; --whisper: the FOLDER that holds model.bin; --asr: a .gguf
-                                 FILE. Usually not needed: shortcuts and auto find them (arc-server help: WRITING
-                                 OPTIONS has the exact folders).
+                                 FILE. Usually not needed: shortcuts and auto find them (arc-server help writing
+                                 has the exact folders).
 
 WHEN IT FAILS
   the server stopped while loading, its last log lines below it
@@ -251,7 +260,7 @@ WHEN IT FAILS
                                  arc-server checked the value before starting: write one it names
   'x' matches no model           the list printed with it has every id and shortcut
   Pi says the model is unknown   pi-arc writes Pi's model list on every start; run pi-arc once more (or --pick)
-  arc-server help                the full list of server messages and what to do (WHEN IT FAILS)
+  arc-server help errors         the full list of server messages and what to do
 
 FILES
   %USERPROFILE%\.arcinferzero\server.log     server log: load time, context, per-request prompt / generation speed,

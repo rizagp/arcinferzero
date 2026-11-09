@@ -10,8 +10,8 @@
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.arcinferzero\models, model-dirs.txt), as JSON
 ```
 
-- **Speech to text only**: `serverz -m none` (`arc-server start -Model none`, the launcher's **Speech only**
-  button) loads Qwen3-ASR alone (~3.2 GB of GPU memory; `--whisper auto` adds Whisper) for the Transcripts tab and
+- **Speech to text only**: `serverz -m none` (`arc-server start -Model none`, the launcher's More >
+  **Start speech to text only**) loads Qwen3-ASR alone (~3.2 GB of GPU memory; `--whisper auto` adds Whisper) for the Transcripts tab and
   `POST /v1/audio/transcriptions`. A chat model loads later, when a chat asks for one.
 - Web UI: http://127.0.0.1:8080/: chats with images, audio and files (one folder per chat, kept by the server),
   voice messages and **Talk**, web search, documents the model reads and writes, a terminal, and with `--whisper` the

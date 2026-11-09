@@ -139,5 +139,7 @@ chat's folder (each command allowed by the user), chats search.
 ## 11. Easy to start
 
 A ready-to-use package (no compiler, no Python): unpack, double-click `arc-launcher.cmd`, pick a model that suits the
-laptop's RAM, and the web UI opens. The launcher shows each model's memory plan and the running server's state; one
-command connects the [Pi](https://pi.dev) coding agent.
+laptop's RAM, and the web UI opens. The launcher shows each model's memory plan, whether the options set fit, saved
+presets and the running server's state and log, in Windows' light or dark mode with a tray icon; `arc-server` does
+the same from a terminal (`list`, `start -Preset`, `-DryRun`, `logs`, `doctor`, `pull`); one command connects the
+[Pi](https://pi.dev) coding agent.

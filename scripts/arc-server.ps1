@@ -474,18 +474,32 @@ WHEN IT FAILS (the message, then what to do)
                                 the option wants a number: -Slots 2, -Chunk 4096
   'x' matches no model / matches N models
                                 the list printed with it has every id and shortcut: use one of them
-  The server stopped while loading. Last log lines: ...
+  GPU memory estimate: ... may not fit
+                                a warning only (the start goes on): the context asked, with speech to text and
+                                slots, looks larger than the GPU memory. A smaller -Ctx, -Vision off or -Ctx auto;
+                                check first with -DryRun
+  -Preset: no preset 'x'        arc-server presets lists them; save one with save-preset -Preset x [options]
+  -Drafter dflash: no DFlash2 drafter was found
+                                give the drafter's folder: -Drafter <folder>, or take -Drafter auto / mtp
+  The server stopped while loading. Last log lines: ...   (exit code 2)
                                 the server's own message, e.g. "-m: no file ...", "--whisper needs a value",
                                 "unknown option --wisper (did you mean --whisper ...?)", "... has a quote in it"
                                 (a path ending in a backslash), or the GPU memory: a smaller -Ctx, or -Vision off
-  The server did not become ready within 10 minutes
-                                the log ($log) says how far it got; the first start of a MoE model writes its
-                                expert file (35B ~2.5 min, Flash Next ~9.5 min)
-  the port is in use            another server runs there: arc-server stop, or -Port <another>
+  The server did not become ready within 10 minutes   (exit code 3)
+                                the log (arc-server logs, or $log) says how far it got; the first start of a MoE
+                                model writes its expert file (35B ~2.5 min, Flash Next ~9.5 min)
+  Port N is used by <program>   (exit code 4) another program listens there: stop it, or -Port <another>
+  anything else                 arc-server doctor checks the exes, the driver, the GPU, the port and other GPU
+                                programs; paste its report into a GitHub issue
+
+EXIT CODES (for scripts): 0 ok, 1 a wrong option or value, 2 the server stopped while loading, 3 not ready within
+  10 minutes, 4 the port is used by another program.
 
 
 A window for all of this: arc-launcher.cmd in the project folder (models with their memory and automatic
-context, every option filled in with the best value (speech to text too), Start / Stop, Record, the running server's memory and speeds).
+context, every option filled in with the best value (speech to text too) and whether it fits the GPU memory,
+presets, Start / Stop, the running server's memory, speeds and live log, a tray icon; More: speech to text only,
+Copy the start command, Record, a doctor report, the update check).
 
 The server is started as bin\serverz.exe with --ctx, --mtp (when the model has
 an MTP block or a Gemma drafter), --draft for the -nodf / -df variants, --think-budget 8192 and the options above;

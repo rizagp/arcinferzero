@@ -51,7 +51,8 @@ STEPS
                    converted with Python (tools\convert_gsq.py, the 4B for its tokenizer; huggingface_hub / numpy
                    installed with pip after asking). The free disk space is checked. Then: every model the server
                    finds, with its context for the current GPU memory.
-  5 Pi             scripts\install-pi.ps1: the pi-arc and arc-server commands, Pi's model list
+  5 Pi             scripts\install-pi.ps1: the pi-arc and arc-server commands, Pi's model list. Without Pi:
+                   asks to put this folder on PATH, for its arc-server.cmd
   6 tests          with -Tests: tests\run_tests.ps1 (unit tests, templates, accuracy vs f32, MTP / DFlash2, slots, API)
 
 MODELS
@@ -333,5 +334,6 @@ if ($hasPi -and -not $NoPi) {
 }
 Write-Host "  The easiest start: double-click arc-launcher.cmd (choose a model, Start: the web UI opens in the browser;"
 Write-Host "  'Get models' downloads more)."
-Write-Host "  Server without Pi:  arc-server start   (web UI http://127.0.0.1:8090/, API http://127.0.0.1:8090/v1)"
+Write-Host "  Server without Pi:  arc-server start   (web UI http://127.0.0.1:8090/, API http://127.0.0.1:8090/v1;"
+Write-Host "  not on PATH: $root\arc-server.cmd; arc-server help lists list, logs, doctor, pull, presets, -DryRun)"
 Write-Host "  The first start of a model compiles its GPU kernels once (a minute or two)."

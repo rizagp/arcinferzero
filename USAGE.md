@@ -171,8 +171,8 @@ The server log is `%USERPROFILE%\.arcinferzero\server.log`. The server uses port
 exit code says what happened: 0 ok, 1 a wrong option or value, 2 the server stopped while loading, 3 not ready within
 10 minutes, 4 the port is used by another program.
 
-**Writing the options** (`arc-server help` and `pi-arc --help-all` have the full list, under WRITING OPTIONS and
-WHEN IT FAILS):
+**Writing the options** (`arc-server help writing` and `arc-server help errors` have the full list; `pi-arc
+--help-all` too):
 - `arc-server` and `pi-arc` take one dash or two, in any case: `-Whisper auto`, `--whisper auto` and
   `-whisper AUTO` are the same. `bin\serverz.exe` itself takes two dashes only (`--whisper auto`).
 - On / off values: `on`, `yes`, `true`, `1` or `off`, `no`, `false`, `0`; `-Whisper on` is `-Whisper auto`.
@@ -421,7 +421,7 @@ While the server is running:
   ([tools/server_ocr.h](tools/server_ocr.h)).
 - **Web UI: Transcripts and Meetings** (the left rail's second and third buttons; the server started with
   `--whisper auto`, or `arc-server start -Whisper auto`, or with no chat model: `arc-server start -Model none`, the
-  launcher's Speech only; [docs/whisper-native.md](docs/whisper-native.md)).
+  launcher's More > "Start speech to text only"; [docs/whisper-native.md](docs/whisper-native.md)).
   - **Transcripts**: drop audio or video files (MP3, M4A, WAV, Ogg / Opus voice notes, MP4, MOV, MKV, WebM, AVI,
     WMV) or choose them; they upload and wait their turn, each with its progress. Pick the **language** (Indonesian, the
     default, English, **Indonesian + English mixed**, or detect; with Qwen3-ASR Indonesian keeps the English words
@@ -680,13 +680,14 @@ Only the `pi-arc` / `arc-server` shortcut commands store the folder location; ev
 | Generation gets slower after a few minutes | The laptop throttles under sustained load (5–10 %); plug in the charger and use a performance power mode. |
 | `web_search` in Pi answers "No results found" or never finishes | Its default search engines are DuckDuckGo and Startpage; DuckDuckGo is blocked in Indonesia, so neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or with the `/search-config` command in Pi). |
 | A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. The server log shows it (`system-prompt cache: saved / loaded ... for <folder>`). |
-| `unknown option ...`, `... needs a value`, `expected ... (got ...)`, `is a folder` / `is a file`, `has a quote in it` | An option was written wrong; the message names what it takes (section 3, "Writing the options"; `arc-server help`, WHEN IT FAILS). A path ending in a backslash inside quotes gives "has a quote in it": leave the last backslash out. |
+| `unknown option ...`, `... needs a value`, `expected ... (got ...)`, `is a folder` / `is a file`, `has a quote in it` | An option was written wrong; the message names what it takes (section 3, "Writing the options"; `arc-server help errors`). A path ending in a backslash inside quotes gives "has a quote in it": leave the last backslash out. |
 | Flash Next does not read images | Its image projector is not in the model's folder: `hf download bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf`, copied next to the model (or its package in `%USERPROFILE%\.arcinferzero\zero\models\<name>\`). |
 | "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [docs/install.md, section 6](docs/install.md#6-download-models)). |
 | Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\.arcinferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated), e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first, so a model kept in both places loads from there. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, such as a backup on another drive, or the GGUF an arcinferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
 | The answer is very slow at the start | Normal for the first large prompt (see section 6); later ones use the cache. |
-| Want to see what is happening | `arc-server status`, and the log in `%USERPROFILE%\.arcinferzero\server.log` (prompt processing time, speed, MTP statistics per request). |
+| Want to see what is happening | `arc-server status`, and the log: `arc-server logs -Follow`, the launcher's Log tab, or `%USERPROFILE%\.arcinferzero\server.log` (prompt processing time, speed, MTP statistics per request). |
+| Something else does not work | `arc-server doctor` (or the launcher's More > "Check this PC") checks the exes, the GPU driver, the NPU, memory and disk, the port and other GPU programs; paste its report into a GitHub issue. |
 
 ## 9. Rebuilding from source
 

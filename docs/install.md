@@ -209,10 +209,15 @@ kernels (up to a minute or two); they are cached in `%USERPROFILE%\.arcinferzero
 file once (35B UD-IQ4_XS: 16 GB, about 2.5 minutes; Qwen3.8 Flash Next: 56 GB, about 9.5 minutes; later loads through the
 server ~21–26 s) to `%USERPROFILE%\.arcinferzero\zero\`; it can be deleted at any time and is written again when missing. Then open the web
 UI at http://127.0.0.1:8090/ or call the OpenAI API at `http://127.0.0.1:8090/v1`. `arc-server status` shows what
-is running and `arc-server stop` frees the GPU memory.
+is running and `arc-server stop` frees the GPU memory. Without Pi the command is `arc-server.cmd` in the arcinferzero
+folder (setup offers to put the folder on PATH); `arc-server help` lists the commands (`list`, `logs`, `doctor`,
+`version`, `pull`, presets, `-DryRun`).
 
 **Launcher window.** `arc-launcher.cmd` (double-click it in the project folder) opens a window to pick a model,
-set its options and start or stop the server: [USAGE.md, section 3](../USAGE.md#3-managing-the-server).
+set its options (with presets, and whether they fit the GPU memory) and start or stop the server; it follows
+Windows' light / dark mode and waits in the tray when minimized: [USAGE.md, section 3](../USAGE.md#3-managing-the-server).
+When something does not work, `arc-server doctor` (or the launcher's More > "Check this PC") makes a report to
+paste into a GitHub issue.
 
 ## 9. Pi (optional)
 
