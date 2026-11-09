@@ -313,8 +313,13 @@
       h8_src_ = read_file(opt.kernel_dir + "/h8.cl");
       if (h8_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/h8.cl");
     }
+    if (which == "gdnx" && gdnx_src_.empty()) {  // (the chunked DeltaNet on XMX, zero/xe2/engine_xe2.h)
+      gdnx_src_ = read_file(opt.kernel_dir + "/gdn_x.cl");
+      if (gdnx_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gdn_x.cl");
+    }
     const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_.for_kernel(name) : which == "moe" ? moe_src_
-                             : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_ : ops_.for_kernel(name);
+                             : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_
+                             : which == "gdnx" ? gdnx_src_ : ops_.for_kernel(name);
     auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
     progs_.push_back(p);

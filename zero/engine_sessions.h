@@ -441,11 +441,17 @@
   //  tokens, 2 with its local rows read 16 floats at a time (-DGDN_VEC); off until measured: not bit-identical to
   //  gdn_recur)
   static constexpr int kGdnChunkMin = 32;
+  //  3: gdn_chunk_x, its products on XMX (16-lane DPAS; elsewhere gdn_chunk as 1); ARC_GDN_XEMU=1 with 3: DPAS
+  //  emulated on any GPU (tests)
   static int gdn_chunk_mode() {
-    static const int m = getenv("ARC_GDN_CHUNK") ? std::max(0, std::min(2, atoi(getenv("ARC_GDN_CHUNK")))) : 0;
+    static const int m = getenv("ARC_GDN_CHUNK") ? std::max(0, std::min(3, atoi(getenv("ARC_GDN_CHUNK")))) : 0;
     return m;
   }
   static bool gdn_chunk_on() { return gdn_chunk_mode() != 0; }
+  static bool gdn_xemu() {
+    static const bool e = getenv("ARC_GDN_XEMU") && atoi(getenv("ARC_GDN_XEMU")) != 0;
+    return e;
+  }
   std::vector<Layer> layers_;
   cl_kernel k_add_norm_ = nullptr, k_ple_gate_ = nullptr, k_ple_comb_ = nullptr, k_add_nq_ = nullptr;
   cl_kernel k_rope_tab_ = nullptr;

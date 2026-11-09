@@ -16,6 +16,15 @@
   (three chunks and a short one), gated and fused gates, both read forms: output 5.5e-7, state 8e-8 relative
   (`gdn_recur` 1.4e-7 / 7e-8). ocloc for Meteor Lake and Battlemage: builds, `=1` without spills. Speed and KL on a
   model: not measured yet (the GPU is not free).
+- **On XMX: `ARC_GDN_CHUNK=3`** (`gdn_chunk_x`, zero/kernels/gdn_x.cl, chosen in zero/xe2/engine_xe2.h): discrete
+  Xe2 / Xe3 cards (16-lane DPAS); elsewhere `=3` runs `gdn_chunk`. A work-group of 16 sub-groups per v-head, each
+  holding 8 state rows as DPAS accumulators; the state's products with the chunk's k and q, the deltas through
+  T = (I + A)^-1, the outputs through P and the state update are DPAS (8 x 16 x 16, f16 in, f32 sums), 168 per
+  sub-group and chunk. Every f16 operand is split into high and low halves (hi*hi + hi*lo + lo*hi, ~22 bits): plain
+  f16 is too coarse for v - S k. Checked once per device at start against `gdn_chunk` on random data (both gate
+  forms); a difference above 1e-4 of the result keeps `gdn_chunk` and says so. On the CPU's OpenCL with DPAS
+  emulated (`-DGDN_XMX_EMU`, `ARC_GDN_XEMU=1` on a GPU): output 4e-6, state 1.9e-7 relative against double. ocloc
+  for Battlemage: 168 DPAS, no spills. Its speed: a B60's to measure.
 
 ## 2026-11-09: MoE expert files kept with their model
 

@@ -328,6 +328,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       });
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
+    if (!opt.dry && hp.ssm_nv > 0) gdnx_init();  // (the chunked DeltaNet on XMX, ARC_GDN_CHUNK=3: the same file)
     {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
       // (kept on the host and read row by row: the token embedding when the model has its own output head, Gemma 4
       //  E2B / E4B's per-layer embeddings; E4B's bar stalled at ~60 % and jumped with them counted)

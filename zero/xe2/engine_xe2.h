@@ -144,6 +144,114 @@
     return xe2_ && !cl_.sg8 && n >= 1 && n <= 16 ? " -DWPF=" + std::to_string(n) : std::string();
   }
 
+  // ---- the chunked DeltaNet on XMX (QUEUE F33.1, ARC_GDN_CHUNK=3; zero/kernels/gdn_x.cl, gdn_chunk_x): where DPAS
+  // takes 16-lane sub-groups (discrete Xe2 / Xe3); elsewhere layer_gdn runs gdn_chunk. ARC_GDN_XEMU=1: DPAS emulated
+  // on any GPU (tests). Checked once per device at start against gdn_chunk on random data (2 heads, 100 tokens: three
+  // chunks and a short one; gated and fused gates); outputs or states more than 1e-4 of their size apart: not used.
+  std::string gdnx_src_;
+  bool gdnx_ = false;
+  bool gdnx_wanted() const { return gdn_chunk_mode() == 3 && ((cl_.xmx && !cl_.sg8) || gdn_xemu()); }
+  std::string gdnx_defs(bool fuse) const {
+    return std::string("-cl-intel-256-GRF-per-thread -DGDN_XMX") + (gdn_xemu() ? " -DGDN_XMX_EMU" : "") +
+           (fuse ? " -DFUSE_GATES" : "");
+  }
+  void gdnx_init() {
+    if (!gdnx_wanted()) return;
+    static std::mutex mu;
+    static std::map<std::string, bool> known;
+    const std::string key = cl_.device_id + (gdn_xemu() ? "|emulated" : "");
+    std::lock_guard<std::mutex> g(mu);
+    auto it = known.find(key);
+    if (it == known.end()) {
+      const bool ok = gdnx_check();
+      it = known.emplace(key, ok).first;
+      if (ok)
+        fprintf(stderr, "arcinferzero: chunked DeltaNet on XMX%s (results checked against gdn_chunk)\n",
+                gdn_xemu() ? " (DPAS emulated: tests)" : "");
+    }
+    gdnx_ = it->second;
+  }
+  bool gdnx_check() {
+    const int nk = 1, nv = 2, M = 100, C = 2 * nk * 128 + nv * 128;
+    uint32_t seed = 977;
+    auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return (float)(seed >> 8) / 16777216.0f; };  // [0, 1)
+    auto nrm = [&]() { return (rnd() + rnd() + rnd() - 1.5f) * 2.0f; };
+    std::vector<float> xh((size_t)M * C), raw((size_t)M * 2 * nv), gated((size_t)M * 2 * nv), dtb(nv), ssa(nv),
+        s0((size_t)nv * 128 * 128);
+    for (int t = 0; t < M; ++t) {
+      float* r = &xh[(size_t)t * C];
+      for (int c = 0; c < C; ++c) r[c] = nrm();
+      for (int hd = 0; hd < 2 * nk; ++hd) {  // (q then k rows of unit length, q times 1/sqrt(128), as gdn_conv makes them)
+        float ss = 0.0f;
+        for (int i = 0; i < 128; ++i) ss += r[hd * 128 + i] * r[hd * 128 + i];
+        const float sc = (hd < nk ? 1.0f / std::sqrt(128.0f) : 1.0f) / std::sqrt(ss);
+        for (int i = 0; i < 128; ++i) r[hd * 128 + i] *= sc;
+      }
+      for (int i = 0; i < 2 * nv; ++i) raw[(size_t)t * 2 * nv + i] = nrm() * 2.0f;
+    }
+    for (int hh = 0; hh < nv; ++hh) { dtb[hh] = nrm(); ssa[hh] = -std::exp(nrm()); }
+    for (auto& v : s0) v = nrm() * 0.1f;
+    for (int t = 0; t < M; ++t)
+      for (int hh = 0; hh < nv; ++hh) {  // (gdn_gates' form)
+        const float a = raw[(size_t)t * 2 * nv + hh] + dtb[hh];
+        gated[(size_t)t * 2 * nv + hh] = std::exp((a > 20.0f ? a : std::log(1.0f + std::exp(a))) * ssa[hh]);
+        gated[(size_t)t * 2 * nv + nv + hh] = 1.0f / (1.0f + std::exp(-raw[(size_t)t * 2 * nv + nv + hh]));
+      }
+    std::vector<cl_mem> bufs;
+    auto mk = [&](const std::vector<float>& v) { cl_mem m = buf(v.size() * 4, v.data()); bufs.push_back(m); return m; };
+    struct Soft { bool& f; bool was; ~Soft() { f = was; } } soft{cl_.soft_fail, cl_.soft_fail};
+    cl_.soft_fail = true;
+    bool ok = true;
+    double worst = 0.0;
+    try {
+      const cl_mem bx = mk(xh), bdt = mk(dtb), bsa = mk(ssa);
+      for (int fuse = 0; fuse < 2 && ok; ++fuse) {
+        const cl_mem bab = mk(fuse ? raw : gated);
+        std::vector<float> out[2], st[2];
+        for (int x = 0; x < 2; ++x) {
+          const cl_mem bS = mk(s0), bo = mk(std::vector<float>((size_t)M * nv * 128, 0.0f));
+          cl_kernel k = x == 0 ? kernel("ops", std::string("-cl-intel-256-GRF-per-thread") + (fuse ? " -DFUSE_GATES" : ""), "gdn_chunk")
+                               : kernel("gdnx", gdnx_defs(fuse != 0), "gdn_chunk_x");
+          int Ci = C, nki = nk, nvi = nv, Mi = M;
+          set_args(k, 0, bx, Ci, bab, nki, nvi, bS, Mi, bo, bS);
+          if (fuse) set_args(k, 9, bdt, bsa);
+          size_t g1 = (size_t)nv * (x == 0 ? 2 : 1) * 256, l1 = 256;
+          run("gdnx_check", k, 1, &g1, &l1);
+          out[x].resize((size_t)M * nv * 128);
+          st[x].resize(s0.size());
+          CL_CHECK(clEnqueueReadBuffer(cl_.queue, bo, CL_TRUE, 0, out[x].size() * 4, out[x].data(), 0, nullptr, nullptr));
+          CL_CHECK(clEnqueueReadBuffer(cl_.queue, bS, CL_TRUE, 0, st[x].size() * 4, st[x].data(), 0, nullptr, nullptr));
+        }
+        for (const auto* pr : {&out, &st}) {
+          double e = 0.0, m = 0.0;
+          bool fin = true;
+          for (size_t i = 0; i < (*pr)[0].size(); ++i) {
+            fin = fin && std::isfinite((*pr)[1][i]);
+            e = std::max(e, (double)std::fabs((*pr)[1][i] - (*pr)[0][i]));
+            m = std::max(m, (double)std::fabs((*pr)[0][i]));
+          }
+          const double rel = m > 0.0 ? e / m : 1.0;
+          worst = std::max(worst, rel);
+          if (!fin || !(rel < 1e-4)) ok = false;
+        }
+      }
+    } catch (const zrt::GpuWaitError&) {
+      for (cl_mem& m : bufs) free_buf(m);
+      throw;  // (a GPU that hangs: not a verdict on the kernel)
+    } catch (const std::exception& e) {
+      fprintf(stderr, "arcinferzero: the chunked DeltaNet on XMX does not build here (%s): gdn_chunk instead\n", e.what());
+      ok = false;
+      worst = -1.0;
+    }
+    for (cl_mem& m : bufs) free_buf(m);
+    if (!ok && worst >= 0.0)
+      fprintf(stderr, "arcinferzero: the chunked DeltaNet on XMX differs from gdn_chunk (%.2e of the result): gdn_chunk "
+                      "instead (please report)\n", worst);
+    else if (ok && gdn_xemu())
+      fprintf(stderr, "arcinferzero: chunked DeltaNet XMX check: largest difference %.2e of the result\n", worst);
+    return ok;
+  }
+
   // ---- the f16 XMX prompt GEMM (kernels/gemm_x16.cl) for the W8 layouts (the 27B's IQ3_S, decoded just in time).
   // Off until measured on a B60: ARC_X16=1 on a discrete GPU with XMX. ARC_X16_TRY=1 anywhere, DPAS emulated where
   // the GPU has none (tests of the kernel's layouts on this laptop). Taken only once its results match the DP4a

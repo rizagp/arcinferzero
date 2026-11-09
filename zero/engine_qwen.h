@@ -55,12 +55,17 @@
       if (gdn_chunk_on() && !spec_ && Tq >= kGdnChunkMin) {
         // (ARC_GDN_CHUNK=1, QUEUE F33.1: the chunked rule, 4 work-items per state row; a prompt only, a verification
         //  pass keeps gdn_recur, whose S_next / replay it was made with)
-        static const std::string defs = std::string("-cl-intel-256-GRF-per-thread") + (gdn_chunk_mode() == 2 ? " -DGDN_VEC" : "");
-        cl_kernel k = kernel("ops", fuse ? defs + " -DFUSE_GATES" : defs, "gdn_chunk");
+        // (3: on XMX, gdn_chunk_x, where DPAS takes 16-lane sub-groups (discrete Xe2 / Xe3), else gdn_chunk;
+        //  ARC_GDN_XEMU=1: gdn_chunk_x with DPAS emulated, on any GPU: tests)
+        //  (gdnx_: checked at start, zero/xe2/engine_xe2.h)
+        const bool xmx = gdnx_;
+        const std::string defs = std::string("-cl-intel-256-GRF-per-thread") + (gdn_chunk_mode() == 2 ? " -DGDN_VEC" : "") +
+                                 (fuse ? " -DFUSE_GATES" : "");
+        cl_kernel k = xmx ? kernel("gdnx", gdnx_defs(fuse), "gdn_chunk_x") : kernel("ops", defs, "gdn_chunk");
         set_args(k, 0, cq, C, gq, nk, nv, L.S, Tq, oq, L.S);
         if (fuse) set_args(k, 9, L.dt_bias, L.ssm_a);
-        size_t g1 = (size_t)nv * 2 * 256, l1 = 256;
-        run("gdn_chunk", k, 1, &g1, &l1);
+        size_t g1 = (size_t)nv * (xmx ? 1 : 2) * 256, l1 = 256;
+        run(xmx ? "gdn_chunk_x" : "gdn_chunk", k, 1, &g1, &l1);
       } else {
         // (a T = 1 kernel with 4 lanes per state column and 128 GRF, bit-identical, was slower: 35B 248-341 vs 226-254
         //  ms per 96 tokens; removed 2026-10-22)
