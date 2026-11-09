@@ -181,6 +181,8 @@ svg { width: 22px; height: 22px; fill: currentColor; display: block; }
 @media (hover: hover) { .msg:hover .more { display: grid; } }
 @media (hover: none) { .msg .more { display: grid; } }  /* (as .conv .del: no first tap lost to the hover) */
 .msg .more svg { width: 18px; height: 18px; }
+/* (on the green bubble the muted grey was nearly invisible: its Edit / Delete looked missing) */
+.msg.user .more { color: inherit; }
 .msg.old .more { display: none !important; }
 .menu.bubble { position: fixed; top: 0; left: 0; min-width: 150px; }
 /* the chat */

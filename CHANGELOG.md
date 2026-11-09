@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-09: web UI, the menu button on your own messages visible
+
+- The ▾ button of a message (Edit, Copy, Delete) was drawn in muted grey on the user's green bubble, nearly
+  invisible, so deleting one's own message looked impossible. It now takes the bubble's text colour. Checked: the
+  user's menu holds Edit, Copy and "Delete (and its files)", an answer's Copy and Delete.
+
 ## 2026-11-09: Qwen's reasoning: the line-break exemption undone
 
 - The change below ("no stray ctlsc") is undone: every token the reasoning used is penalized again, line breaks
