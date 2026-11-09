@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-09: web UI, several files attached at once
+
+- Choosing several files with the attach button (or dropping them on the chat) attached only the first. The page
+  cleared the file input right away, which also empties the browser's live list of the chosen files while the first
+  upload was still running. The list is now copied first (checked: 3 files chosen, the live list 0 after clearing,
+  the copy 3). Every model was affected, OCR ones included; the transcript upload already copied its list.
+
 ## 2026-11-09: Qwen's reasoning, no stray "ctlsc"
 
 - The 35B sometimes ended its reasoning with a stray "ctlsc" (as in "Let's investigate.ctlsc") and then copied it

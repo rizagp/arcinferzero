@@ -4133,10 +4133,12 @@ $("compact").addEventListener("click", async () => {
 const chatEl = $("chat");
 ["dragenter", "dragover"].forEach((t) => chatEl.addEventListener(t, (e) => { e.preventDefault(); chatEl.classList.add("drop"); }));
 ["dragleave", "drop"].forEach((t) => chatEl.addEventListener(t, (e) => { e.preventDefault(); if (t === "drop" || !chatEl.contains(e.relatedTarget)) chatEl.classList.remove("drop"); }));
-chatEl.addEventListener("drop", (e) => addFiles(e.dataTransfer.files));
+// (the FileList copied first: a live list, emptied by `value = ""` or once the drop event ends, while addFiles
+//  still awaits the first upload; only the first of several files was attached)
+chatEl.addEventListener("drop", (e) => addFiles([...e.dataTransfer.files]));
 $("attach").addEventListener("click", () => $("file").click());
 $("projfiles").addEventListener("click", () => ocrProjectPick());
-$("file").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+$("file").addEventListener("change", (e) => { addFiles([...e.target.files]); e.target.value = ""; });
 input.addEventListener("paste", (e) => {
   const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
   if (imgs.length) { e.preventDefault(); addFiles(imgs); }
