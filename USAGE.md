@@ -110,9 +110,17 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
 - three tabs: **Running server** (model, filled context, a GPU memory bar and the memory per part, number of
   requests, the last prompt and answer speed, the share of MTP drafts accepted, the `serverz.exe` command line),
   **Selected model**, and **Log** (the server's log, live, with Copy);
-- Start / Stop, Get models and the web UI; the rest is in **More**: speech to text only, Copy the start command, Set as
-  default, Reset options, Refresh the model list, Record a meeting, the log and data folders, a doctor report, and
-  the update check;
+- Start / Stop, Get models and the web UI; the rest is in **More**: Download models, speech to text only, Copy the start
+  command, Set as default, Reset options, Refresh the model list, Record a meeting, the log and data folders, a doctor
+  report, and the update check;
+- **Get models** (or More > Download models): the models of setup's list, several at once (the ones already here are
+  marked), or a **Hugging Face link** pasted in: a model's page, a folder of it, or one file (`.../blob/main/x.gguf`,
+  `.../resolve/main/x.gguf`). Look up lists the repository's GGUF files with their sizes; the linked one is ticked with
+  the other parts of a split file and an image projector (`mmproj`). **Pause / Continue** (the download goes on where
+  it stopped, also after the window was closed: Download again), a **speed limit** (1-50 MB/s, changed while it runs),
+  and a cut connection is **tried again without end** (5 s, then up to 60 s between tries; Pause stops it). A repository
+  that asks you to accept its terms (Gemma) needs a read token in `HF_TOKEN` or `hf auth login`. The files go into the
+  Hugging Face cache, where the server finds them;
 - **Speech to text only** (More): the server with Qwen3-ASR and no chat model (`arc-server start -Model none`;
   Whisper too when the Speech field says `auto`), for transcripts. Pick a model in the web UI later and the first chat
   loads it.

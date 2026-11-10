@@ -1,7 +1,7 @@
 # arcinferzero setup: everything needed on this laptop, in one command. Safe to run again: done steps are skipped.
 #
 #   setup                        check the requirements, build, choose models to download, connect Pi
-#   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq 9b 4b g12 g31 e4b whisper asr, all, none)
+#   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq flash 9b 4b g12 g31 e4b whisper asr, all, none)
 #   setup -Tests                 also build the test tools and run the regression tests (needs the 4B model)
 #   setup -NoPi                  leave Pi alone
 #   setup -Yes                   do not ask (pip installs, downloads of the models given with -Models)
@@ -27,7 +27,7 @@ setup: everything arcinferzero needs on this laptop, in one command. Safe to run
 
 USAGE
   setup                          check, build, ask which models to download, connect Pi
-  setup -Models 27b,4b           download these without asking: 27b 35b 35b-gsq 9b 4b g12 g31 e4b, whisper asr
+  setup -Models 27b,4b           download these without asking: 27b 35b 35b-gsq flash 9b 4b g12 g31 e4b, whisper asr
                                  (speech to text), or all / none
   setup -Tests                   also build the test tools and run the regression tests (needs the 4B model)
   setup -NoPi                    leave Pi alone
@@ -210,7 +210,8 @@ function Present($m) {
   if ($m.key -eq "35b-gsq") { return Test-Path $gsq35 }
   if (Test-ArcModel $m $hub) { return $true }
   $main = Split-Path $m.files[0] -Leaf
-  return [bool]($listed | Where-Object { $_.file -eq $main -or ($_.path -and (Split-Path $_.path -Leaf) -eq $main) })
+  $pkg = $main -replace "-00001-of-\d{5}\.gguf$", ".gguf"  # (a split model kept as a package: one GGUF, Flash Next)
+  return [bool]($listed | Where-Object { $_.file -in $main, $pkg -or ($_.path -and (Split-Path $_.path -Leaf) -in $main, $pkg) })
 }
 foreach ($m in $catalog) { $m | Add-Member have (Present $m) }
 foreach ($m in $catalog) {
@@ -218,15 +219,16 @@ foreach ($m in $catalog) {
 }
 $want = @()
 if ($Models) {
-  if ($Models -contains "all") { $want = @($catalog | ForEach-Object { $_.key }) }
+  # (all: every model but Flash Next, 141 GB of disk: by name only)
+  if ($Models -contains "all") { $want = @($catalog | Where-Object { $_.key -ne "flash" } | ForEach-Object { $_.key }) }
   elseif ($Models -notcontains "none") {
-    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 g31 e4b whisper asr, all or none" } }
+    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq flash 9b 4b g12 g31 e4b whisper asr, all or none" } }
     $want = $Models
   }
 } elseif (-not $Yes) {
   $a = Read-Host "  Models to download (e.g. '27b 4b whisper asr'; Enter = none)"
   $want = @(($a -split "[,;\s]+") | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
-  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq 9b 4b g12 g31 e4b whisper asr" } }
+  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq flash 9b 4b g12 g31 e4b whisper asr" } }
 }
 $todo = @($catalog | Where-Object { $want -contains $_.key -and -not $_.have })
 if ($todo | Where-Object { $_.key -eq "35b-gsq" }) {  # its tokenizer comes from the 4B GGUF
@@ -247,8 +249,10 @@ if ($todo) {
     }
   }
   $gb = ($todo | Measure-Object gb -Sum).Sum
+  # (disk: the download and what the first start writes, Flash Next's 56 GB expert file)
+  $need = ($todo | ForEach-Object { if ($_.disk) { $_.disk } else { $_.gb } } | Measure-Object -Sum).Sum
   $drive = Get-PSDrive ((Split-Path $hub -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
-  if ($drive -and $drive.Free / 1GB -lt $gb + 5) { Bad ("not enough disk space: {0:N0} GB needed, {1:N0} GB free on {2}:" -f ($gb + 5), ($drive.Free / 1GB), $drive.Name) }
+  if ($drive -and $drive.Free / 1GB -lt $need + 5) { Bad ("not enough disk space: {0:N0} GB needed, {1:N0} GB free on {2}:" -f ($need + 5), ($drive.Free / 1GB), $drive.Name) }
   if (-not $Yes -and -not $Models) { if (-not (Ask ("Download {0} ({1:N1} GB)?" -f (($todo | ForEach-Object { $_.key }) -join ", "), $gb))) { $todo = @() } }
   foreach ($m in $todo) {
     Write-Host "  downloading $($m.key): $($m.repo)"

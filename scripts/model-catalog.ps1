@@ -16,6 +16,13 @@ $ArcModels = @(
   [pscustomobject]@{ key = "27b"; name = "Qwen3.8 27B (best answers, slowest; MTP, reads images)"; repo = "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"; gb = 13.1; ram = 32
     plain = "The most careful answers (code, reasoning), but slow. 32 GB laptops."
     files = @("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", "mmproj-Qwen3.8-27B-BF16.gguf") },
+  # (two GGUF parts in the repository's IQ3_S folder; the first start writes its 56 GB expert file, so `disk` counts
+  #  both; serverz --pack then makes a package and the parts can go to a backup disk. Its image projector: bartowski's
+  #  f16, put next to the parts, where the server looks for it)
+  [pscustomobject]@{ key = "flash"; name = "Qwen3.8 Flash Next (512 experts on the SSD; reads images)"; repo = "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"; gb = 84.5; disk = 141; ram = 32
+    plain = "A very large mixture of experts (52 GB of experts read from the SSD): strong answers at ~6-7 words a second. 32 GB laptops, a fast SSD with ~140 GB free."
+    files = @("IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", "IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf", "mmproj-Qwen3.8-Flash-Next-f16.gguf")
+    extra = @{ repo = "bartowski/Qwen3.8-Flash-Next-GGUF"; file = "mmproj-Qwen3.8-Flash-Next-f16.gguf"; into = "IQ3_S" } },
   # Google's QAT Q4_0 release has no drafter: Unsloth's copy of the assistant drafter is put next to the model
   [pscustomobject]@{ key = "g12"; name = "Gemma 4 12B (reads images; drafter)"; repo = "google/gemma-4-12B-it-qat-q4_0-gguf"; gb = 7.4; ram = 32
     plain = "Google's Gemma: good with pictures and documents, many languages."
@@ -50,11 +57,18 @@ function Test-ArcModel($m, [string]$Hub = (Get-HfHub)) {
 # its snapshot folder
 function Install-ArcModel($m) {
   [string[]]$own = $m.files
-  if ($m.drafter) { $own = @($m.files | Where-Object { $_ -ne $m.drafter.file }) }
+  if ($m.drafter) { $own = @($own | Where-Object { $_ -ne $m.drafter.file }) }
+  if ($m.extra) { $own = @($own | Where-Object { $_ -ne $m.extra.file }) }
   $snap = Get-HfFiles $m.repo $own
   if ($m.drafter) {
     $dsnap = Get-HfFiles $m.drafter.repo @($m.drafter.file)
     Copy-Item (Join-Path $dsnap $m.drafter.file) (Join-Path $snap $m.drafter.file) -Force
+  }
+  if ($m.extra) {  # (a file from another repository, copied into the model's folder: `into`, relative to its snapshot)
+    $xsnap = Get-HfFiles $m.extra.repo @($m.extra.file)
+    $dir = Join-Path $snap ($m.extra.into -replace "/", "\")
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    Copy-Item (Join-Path $xsnap $m.extra.file) (Join-Path $dir (Split-Path $m.extra.file -Leaf)) -Force
   }
   return $snap
 }

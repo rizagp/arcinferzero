@@ -261,6 +261,7 @@ static int run_main(int argc, char** argv) {
             "  --tokens 1,2,3        token ids               --tokens-file F   token ids from a file (comma separated)\n"
             "  --text-file F         text, tokenized with the model's vocabulary (special tokens such as <|im_start|> parsed)\n"
             "  --dump-ids F          write the prompt's token ids to F and exit\n"
+            "  --must-fit            exit (code 3) when the model and the context exceed the GPU share (a warning without)\n"
             "generation:\n"
             "  --n N                 tokens to generate (default 16)     --show   print the generated text\n"
             "  --dump-logits F       write the prompt logits and every generation step's (f32) to F, to compare runs bitwise\n"
@@ -314,7 +315,7 @@ static int run_main(int argc, char** argv) {
   int ppl_ctx = 512, ppl_chunks = 0, ppl_score_last = 0, ppl_score_step = 0;
   int n_gen = 16, chunk = 0, ctx = 0, bench_pp = 0, feed_step = 0, gpus = 1;
   EngineOptions eo;
-  bool prof = false, show = false, prof_gen = false, kl_decode = false, slots_check = false;
+  bool prof = false, show = false, prof_gen = false, kl_decode = false, slots_check = false, must_fit = false;
   int bench_batch = 0;
   bool ring_snap_test = false;  // Gemma: a snapshot's ring copy restored after the rings moved on, logits bitwise
   std::string dump_logits;  // every generation step's logits (f32), to compare two builds / settings bitwise
@@ -338,6 +339,7 @@ static int run_main(int argc, char** argv) {
       text_prompt = ss.str();
     }
     else if (a == "--dump-ids") dump_ids = next();  // write the prompt's token ids (comma separated) and exit
+    else if (a == "--must-fit") must_fit = true;  // exit (code 3) when the model and context exceed the GPU share
     else if (a == "--feed-step") feed_step = atoi(next());
     else if (a == "--n") n_gen = atoi(next());
     else if (a == "--chunk") chunk = atoi(next());
@@ -417,6 +419,18 @@ static int run_main(int argc, char** argv) {
   printf("loaded: %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB | W8 %s | chunk %d | ctx %d | load %.0f ms\n",
          eng.hp.n_layer, eng.hp.n_embd, eng.hp.n_vocab, eng.gpu_bytes / 1073741824.0,
          eng.w8_resident ? "resident" : "just-in-time", eng.max_chunk, eng.ctx, eng.load_ms);
+  {  // (more GPU memory than the share less the driver's part: Windows pages GPU memory and everything slows down many
+     //  times over, Qwen3.8 27B with a 131K context on the laptop's 16.5 GiB share: 16.5 GiB used, prompt 8.6 instead of
+     //  ~120 tok/s. The server's --ctx auto stays inside; runz takes the context it is given)
+    const double GiB = 1073741824.0, share = (double)eng.device_mem(), lim = share - Engine::driver_slack();
+    fflush(stdout);
+    if ((double)eng.gpu_bytes > lim) {
+      fprintf(stderr, "arcinferzero: does not fit: %.2f GiB of GPU memory for a context of %d, over the %.2f GiB share "
+                      "less %.1f for the driver; expect paging and far lower speeds (a smaller --ctx fits)\n",
+              eng.gpu_bytes / GiB, eng.ctx, share / GiB, Engine::driver_slack() / GiB);
+      if (must_fit) return 3;  // (--must-fit: bench\website_bench.ps1 records the size as not fitting)
+    }
+  }
 
   // --ring-snap-test (Gemma): the prompt to a, a snapshot, 6,000 more tokens (the sliding-window rings move on, so
   // rewind() to a fails), the snapshot restored, 600 tokens from a: their logits against the same tokens fed after a

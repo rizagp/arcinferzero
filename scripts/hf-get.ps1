@@ -59,8 +59,12 @@ function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)
     if ($have -gt $size) { Remove-Item $part; $have = 0 }
     if ($have -lt $size) {
       Write-Host ("    {0} ({1:N2} GB{2})" -f $f, ($size / 1e9), $(if ($have) { ", resuming at {0:N2} GB" -f ($have / 1e9) } else { "" }))
-      $a = @("-L", "--fail", "--retry", "5", "--retry-delay", "3", "--progress-bar", "-o", $part)
+      # (--speed-time: a connection that stalls, under 1 byte/s for 2 minutes, ends with an error instead of waiting
+      #  forever, so the launcher's Downloads dialog tries again)
+      $a = @("-L", "--fail", "--retry", "5", "--retry-delay", "3", "--speed-limit", "1", "--speed-time", "120", "--progress-bar", "-o", $part)
       if ($have) { $a += @("-C", "-") }
+      # (a speed limit: $env:ARC_HF_RATE in curl's form, e.g. 5M = 5 MiB/s; the launcher's Downloads dialog sets it)
+      if ($env:ARC_HF_RATE -match '^\d+[KkMmGg]?$') { $a += @("--limit-rate", $env:ARC_HF_RATE) }
       if ($token) { $a += @("-H", "Authorization: Bearer $token") }
       & $curl @a "https://huggingface.co/$Repo/resolve/$sha/$f"
       if ($LASTEXITCODE -ne 0) { throw "downloading $f failed (curl exit $LASTEXITCODE): run this again, it goes on where it stopped" }

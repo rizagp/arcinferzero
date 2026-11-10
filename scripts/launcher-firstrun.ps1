@@ -151,8 +151,10 @@ function Show-GetModels([bool]$first) {
       if (-not $keys) { return }
       $ms = @($ArcModels | Where-Object { $keys -contains $_.key })
       $need = ($ms | Where-Object { -not (Test-ArcModel $_ $hub) } | Measure-Object gb -Sum).Sum
-      if ($drive -and $drive.Free / 1GB -lt $need + 5) {
-        [void][System.Windows.Forms.MessageBox]::Show(("Not enough free disk space: {0:N0} GB needed, {1:N0} GB free on {2}:." -f ($need + 5), ($drive.Free / 1GB), $drive.Name), "arcinferzero")
+      # (disk: the download and what the first start writes, Flash Next's 56 GB expert file)
+      $disk = ($ms | Where-Object { -not (Test-ArcModel $_ $hub) } | ForEach-Object { if ($_.disk) { $_.disk } else { $_.gb } } | Measure-Object -Sum).Sum
+      if ($drive -and $drive.Free / 1GB -lt $disk + 5) {
+        [void][System.Windows.Forms.MessageBox]::Show(("Not enough free disk space: {0:N0} GB needed, {1:N0} GB free on {2}:." -f ($disk + 5), ($drive.Free / 1GB), $drive.Name), "arcinferzero")
         return
       }
       if ($sc.Checked) { try { New-DesktopShortcut } catch {} }
@@ -214,7 +216,7 @@ function After-List {
 $getBtn = New-Button "Get models" 110
 $buttons.Controls.Add($getBtn)
 $buttons.Controls.SetChildIndex($getBtn, 2)  # (after Start and Stop)
-$getBtn.Add_Click({ Show-GetModels $false })
+$getBtn.Add_Click({ Show-Downloads })  # (scripts\launcher-downloads.ps1: several models, a link, pause, a speed limit)
 $openWebChk = New-Check "Open the web UI when started"
 $openWebChk.Checked = $true
 $buttons.Controls.Add($openWebChk)

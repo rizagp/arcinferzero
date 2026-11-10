@@ -83,6 +83,54 @@ if ($dark) {
     barErr = (RGB 253 231 233); barWarn = (RGB 255 244 206); barInfo = (RGB 230 240 250) }
 }
 $Pal.accent = $accent
+
+# ---- splash: shown as soon as the colours are known, while the fonts, the window and its parts are made (a few
+# seconds with nothing on the screen before); closed when the window shows. No message loop runs yet, so each step
+# paints it with Refresh(); a borderless window with Windows 11's rounded corners, in the theme's colours.
+$script:splash = $null; $script:splashMsg = $null
+function Set-Splash([string]$t) { if ($script:splash) { try { $script:splashMsg.Text = $t; $script:splash.Refresh() } catch {} } }
+try {
+  $sp = New-Object System.Windows.Forms.Form
+  $sp.FormBorderStyle = "None"; $sp.StartPosition = "CenterScreen"; $sp.ShowInTaskbar = $false; $sp.TopMost = $true
+  $sp.AutoScaleMode = "None"; $sp.Size = New-Object System.Drawing.Size((S 440), (S 190))
+  $sp.BackColor = $Pal.line; $sp.Padding = New-Object System.Windows.Forms.Padding(1)  # (a 1-pixel frame in the line colour)
+  $sp.Text = "arcinferzero"
+  $sp.Add_HandleCreated({ param($s) [void][ArcWin]::Dwm($s.Handle, 33, 2); [void][ArcWin]::Dwm($s.Handle, 20, [int]$dark) })
+  $in = New-Object System.Windows.Forms.Panel; $in.Dock = "Fill"; $in.BackColor = $Pal.bg
+  $sp.Controls.Add($in)
+  # the logo: the launcher's "az" mark in the accent colour, drawn into a picture (no Paint event needed)
+  $n = S 72
+  $bmp = New-Object System.Drawing.Bitmap($n, $n)
+  $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"; $g.TextRenderingHint = "AntiAliasGridFit"
+  $g.FillEllipse((New-Object System.Drawing.SolidBrush($accent)), 1, 1, $n - 3, $n - 3)
+  $sfmt = New-Object System.Drawing.StringFormat; $sfmt.Alignment = "Center"; $sfmt.LineAlignment = "Center"
+  $lf = New-Object System.Drawing.Font("Segoe UI", [single]($n * 0.42), [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+  $g.DrawString("az", $lf, $(if ($dark) { [System.Drawing.Brushes]::Black } else { [System.Drawing.Brushes]::White }), (New-Object System.Drawing.RectangleF(0, 0, $n, ($n - 3))), $sfmt)
+  $g.Dispose()
+  $pic = New-Object System.Windows.Forms.PictureBox; $pic.Image = $bmp; $pic.Size = New-Object System.Drawing.Size($n, $n)
+  $pic.Location = New-Object System.Drawing.Point((S 30), (S 40))
+  $t1 = New-Object System.Windows.Forms.Label; $t1.AutoSize = $true; $t1.Text = "arcinferzero"; $t1.ForeColor = $Pal.text
+  $t1.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 20); $t1.Location = New-Object System.Drawing.Point((S 120), (S 38))
+  $t2 = New-Object System.Windows.Forms.Label; $t2.AutoSize = $true; $t2.Text = "Local AI on the Intel Arc GPU"; $t2.ForeColor = $Pal.sub
+  $t2.Font = New-Object System.Drawing.Font("Segoe UI", 10); $t2.Location = New-Object System.Drawing.Point((S 123), (S 82))
+  $script:splashMsg = New-Object System.Windows.Forms.Label; $script:splashMsg.AutoSize = $true; $script:splashMsg.ForeColor = $Pal.sub
+  $script:splashMsg.Font = New-Object System.Drawing.Font("Segoe UI", 9); $script:splashMsg.Location = New-Object System.Drawing.Point((S 30), (S 146))
+  $script:splashMsg.Text = "Starting..."
+  # (a thin accent line under the text: the window's one touch of colour besides the logo)
+  $ln = New-Object System.Windows.Forms.Panel; $ln.BackColor = $accent; $ln.Size = New-Object System.Drawing.Size((S 378), (S 2))
+  $ln.Location = New-Object System.Drawing.Point((S 30), (S 132))
+  $in.Controls.AddRange(@($pic, $t1, $t2, $ln, $script:splashMsg))
+  $sp.Show()
+  $script:splash = $sp
+  $sp.Refresh()
+  if ($SelfTest) {  # (-SelfTest x.png: the splash as x-splash.png too)
+    $sb = New-Object System.Drawing.Bitmap($sp.Width, $sp.Height)
+    $sp.DrawToBitmap($sb, (New-Object System.Drawing.Rectangle(0, 0, $sp.Width, $sp.Height)))
+    $sb.Save(($SelfTest -replace '\.png$', '') + "-splash.png", [System.Drawing.Imaging.ImageFormat]::Png); $sb.Dispose()
+  }
+} catch { $script:splash = $null }
+function Close-Splash { if ($script:splash) { try { $script:splash.Close(); $script:splash.Dispose() } catch {}; $script:splash = $null } }
+Set-Splash "Loading fonts..."
 # Segoe UI Variable (Windows 11), else Segoe UI; Cascadia Mono, else Consolas
 $fams = @((New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name })
 $uiFont = if ($fams -contains "Segoe UI Variable Text") { "Segoe UI Variable Text" } else { "Segoe UI" }
@@ -104,6 +152,7 @@ $script:running = $null
 $script:props = $null
 $script:jobs = New-Object System.Collections.ArrayList
 
+Set-Splash "Building the window..."
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "arcinferzero"
 $form.AutoScaleMode = "None"  # (sizes are scaled by S here)
@@ -1299,10 +1348,13 @@ $timer.Add_Tick({
     }
   })
 
+Set-Splash "Checking the package files..."
 . (Join-Path $PSScriptRoot "launcher-firstrun.ps1")
+. (Join-Path $PSScriptRoot "launcher-downloads.ps1")  # (Download models: several at once, a Hugging Face link, pause)
 Load-PresetList
 Update-TrayMenu
 $form.Add_Shown({
+    $form.Activate()
     Update-Status
     if (-not $SelfTest -and -not (Test-GpuDriver)) { Show-Bar "No Intel Arc GPU found through its driver: install Intel's graphics driver, restart, open this again." "error" }
     Start-List
@@ -1338,5 +1390,8 @@ $form.Add_FormClosing({
     $timer.Stop(); $script:sync.quit = $true  # (a running server and a start in progress keep going)
     $tray.Visible = $false; $tray.Dispose()
   })
+# (the splash closed before ShowDialog, not in Shown: ShowDialog takes the active window, the splash, as its owner,
+#  and closing an owner closes the window it owns: the launcher ended at once)
+Close-Splash
 [void]$form.ShowDialog()
 try { $pollPs.Dispose(); $pollRs.Dispose() } catch {}

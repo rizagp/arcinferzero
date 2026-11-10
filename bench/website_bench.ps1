@@ -89,7 +89,15 @@ foreach ($m in $Models) {
   # ---- A. prompt sizes
   foreach ($n in $Sizes) {
     $runs = if ($n -le 8192) { "2" } else { "1" }
-    $o = Run @($m, "--bench-pp", $n, "--n", $Gen) @{ ARC_BENCH_RUNS = $runs }
+    # (--must-fit: a context beyond the GPU share stops at load, so the size is marked "does not fit" instead of
+    #  hours of paging: Qwen3.8 27B at 131K on a 16.5 GiB share ran at 8.6 instead of ~120 tok/s)
+    $o = Run @($m, "--bench-pp", $n, "--n", $Gen, "--must-fit") @{ ARC_BENCH_RUNS = $runs }
+    if ($o -match "does not fit: ([\d.]+) GiB") {
+      Save @{ time = $stamp; commit = $commit; gpu = $gpu; model = $name; test = "size"; tokens = $n; pp = $null; tg = $null;
+              ttft_s = $null; fits = $false; need_gib = [double]::Parse($Matches[1], $inv); error = "does not fit in the GPU share" }
+      [string]::Format($inv, "  {0,7} tokens: does not fit in the GPU share ({1} GiB needed)", $n, $Matches[1])
+      continue
+    }
     $pps = [regex]::Matches($o, "pp\d+ run \d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s") | ForEach-Object { [double]::Parse($_.Groups[1].Value, $inv) }
     $pp = if ($pps) { ($pps | Measure-Object -Maximum).Maximum } else { $null }
     $tg = Num $o "tg\d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s"
@@ -150,14 +158,14 @@ $md += "## Prompt processing (tok/s) and time to first token"
 $md += ""; $md += "| Model | " + (($Sizes | ForEach-Object { "$_" }) -join " | ") + " |"; $md += "|---|" + (($Sizes | ForEach-Object { "---" }) -join "|") + "|"
 foreach ($mn in ($rows | Select-Object -ExpandProperty model -Unique)) {
   $cells = foreach ($n in $Sizes) { $r = $rows | Where-Object { $_.model -eq $mn -and $_.test -eq "size" -and $_.tokens -eq $n } | Select-Object -First 1
-    if ($r -and $r.pp) { [string]::Format($inv, "{0:F0} ({1:F1} s)", $r.pp, $r.ttft_s) } else { "-" } }
+    if ($r -and $r.pp) { [string]::Format($inv, "{0:F0} ({1:F1} s)", $r.pp, $r.ttft_s) } elseif ($r -and $r.fits -eq $false) { "does not fit" } else { "-" } }
   $md += "| $mn | " + ($cells -join " | ") + " |"
 }
 $md += ""; $md += "## Generation (tok/s) at that context depth, plain decoding"
 $md += ""; $md += "| Model | " + (($Sizes | ForEach-Object { "$_" }) -join " | ") + " |"; $md += "|---|" + (($Sizes | ForEach-Object { "---" }) -join "|") + "|"
 foreach ($mn in ($rows | Select-Object -ExpandProperty model -Unique)) {
   $cells = foreach ($n in $Sizes) { $r = $rows | Where-Object { $_.model -eq $mn -and $_.test -eq "size" -and $_.tokens -eq $n } | Select-Object -First 1
-    if ($r -and $r.tg) { [string]::Format($inv, "{0:F1}", $r.tg) } else { "-" } }
+    if ($r -and $r.tg) { [string]::Format($inv, "{0:F1}", $r.tg) } elseif ($r -and $r.fits -eq $false) { "does not fit" } else { "-" } }
   $md += "| $mn | " + ($cells -join " | ") + " |"
 }
 $md += ""; $md += "## Generation modes (256-token coding answer, tok/s)"
@@ -174,3 +182,4 @@ foreach ($r in ($rows | Where-Object { $_.test -eq "kl" })) {
 }
 [IO.File]::WriteAllLines((Join-Path $Out "summary.md"), $md)
 "summary: $(Join-Path $Out 'summary.md')"
+exit 0  # (not runz's last exit code: 3 when the last size did not fit)

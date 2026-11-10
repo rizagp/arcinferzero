@@ -6,6 +6,29 @@
   asks for it (`tokenizer.ggml.add_bos_token`, the Gemma models); Qwen ids are unchanged. Without it the KL measured
   a prompt the model never sees: Gemma 4 E4B 0.01644 -> **0.00273**, 26B-A4B 0.09272 -> **0.00479** (480 tokens of
   USAGE.md, laptop). Only the measurement changed; the engine did not.
+- runz warns when the model and its context need more GPU memory than the share less the driver's part
+  ("does not fit: ... expect paging"); `--must-fit` stops there with exit code 3. `website_bench.ps1` passes it and
+  marks such a size "does not fit" instead of measuring hours of paging: Qwen3.8 27B at 131K needs 17.13 GiB, over this
+  laptop's 16.5 GiB share (back to its default after a driver update), and had measured 8.6 tok/s and a first token
+  after 4.2 hours (at 32K: 14.09 GiB, 125 tok/s). The server's `--ctx auto` already stays inside the share.
+- **Qwen3.8 Flash Next in setup's model list** (`setup -Models flash`, the launcher's first run; asked for in issue #4):
+  the two IQ3_S parts from ISTA-DASLab (84.5 GB) and bartowski's f16 image projector, copied next to them. The disk
+  check counts 141 GB (the first start writes the 56 GB expert file; `serverz --pack` then makes a package and the
+  parts can go to a backup disk). `-Models all` leaves it out. A model kept as a package counts as present.
+- **Launcher: a Downloads dialog** (Get models, and More > Download models; `scripts\launcher-downloads.ps1`): several
+  models of the list at once, or a Hugging Face link (a repository, a folder or a file; the other parts of a split file
+  and an image projector ticked with it, the projector copied next to a model in another folder); Pause / Continue
+  (curl stopped, the `.part` files kept, resumed with `-C -`); a speed limit (`ARC_HF_RATE`, curl `--limit-rate`),
+  changed while it runs; a cut connection tried again without end (5 s doubling to 60 s, back to 5 s once data flows;
+  a token or a missing file shown at once instead); models kept as packages count as here. `hf-get.ps1` ends a
+  stalled connection after 2 minutes under 1 byte/s (`--speed-time`), so it is tried again. Tested in Windows
+  PowerShell 5.1: 5 MB/s measured 4.5-5.0, 1 MB/s 1.0; pause, continue and two cut connections on a 0.67 GB file; the
+  first-run welcome dialog is unchanged.
+- **Launcher splash screen**: shown as soon as the theme's colours are read, while the fonts and the window are made
+  (before, a few seconds with nothing on the screen); the "az" mark in the Windows accent colour, a status line, the
+  theme's light / dark colours and rounded corners. Nothing new to load: WinForms and System.Drawing as before, the
+  mark drawn in code. It closes just before the window shows (closed in the window's Shown event it was the window's
+  owner and took the window with it). `-SelfTest x.png` also saves it as `x-splash.png`.
 
 ## 2026-11-09: DeltaNet in chunks and prompt attention on XMX, opt-in (QUEUE F33.1 / F33.2)
 
