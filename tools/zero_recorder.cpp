@@ -456,6 +456,11 @@ int main(int argc, char** argv) {
     else if (a == "--seconds") limit = atof(next().c_str());
     else return usage();
   }
+  if (HANDLE old = OpenEventW(SYNCHRONIZE, FALSE, kStopEventOld)) {  // (an older recorder records)
+    CloseHandle(old);
+    fprintf(stderr, "zero-recorder: a recording already runs (zero-recorder stop ends it)\n");
+    return 1;
+  }
   HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, kStopEvent);
   if (GetLastError() == ERROR_ALREADY_EXISTS) { fprintf(stderr, "zero-recorder: a recording already runs (zero-recorder stop ends it)\n"); return 1; }
   SetConsoleCtrlHandler(on_ctrl, TRUE);

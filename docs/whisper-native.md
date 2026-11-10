@@ -225,8 +225,8 @@ bin\transcribez.exe work\audio\02-clean.wav --lang id --prompt-file tools\audio\
 bin\transcribez.exe work\audio\03-edited.wav --lang id --format fw,captions --out work\audio\transcript-edited.json
 ```
 
-Recording from the command line too: `zero-server record start [--app chrome] [--title "..."]` / `record stop`
-(through `zero-recorder.exe`, below) writes into `sound-recordings\`; `bin\transcribez.exe` on that folder then makes the
+Recording from the command line too: `zero-server record [-App chrome.exe] [-NoMic] [-Title "..."]` / `zero-server record-stop` (`record-status`)
+(through `zero_recorder.exe`, below) writes into `sound-recordings\`; `bin\transcribez.exe` on that folder then makes the
 transcript. A Pi skill / tool can call the same command.
 
 ## Server API
@@ -303,7 +303,7 @@ Formats: [✓] SRT  [ ] VTT  [ ] YouTube SBV  [ ] YouTube SRV3  [ ] ASS  [ ] TTM
 
 ## The Meeting function ("Rapat")
 
-Built 2026-10-28 in the browser (W6 / W7: live, Me / Others from the microphone and a shared tab or screen, the accurate pass, summaries and minutes) and `zero-recorder.exe` (W8: recordings apart from the browser and the server, transcribed when they end; no live text from them). The plan:
+Built 2026-10-28 in the browser (W6 / W7: live, Me / Others from the microphone and a shared tab or screen, the accurate pass, summaries and minutes) and `zero_recorder.exe` (W8: recordings apart from the browser and the server, transcribed when they end; no live text from them). The plan:
 
 ```
 [ Chat ]  [ Transkrip ]  [ Rapat ]
@@ -315,11 +315,11 @@ search in the transcript...
 After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      History: 24 Oct · 22 Oct · ...
 ```
 
-- **Recording that is never lost**: `zero-recorder.exe` (new, small, separate process) records WASAPI **process
+- **Recording that is never lost**: `zero_recorder.exe` (new, small, separate process) records WASAPI **process
   loopback** (only the chosen app: Chrome for Meet / Zoom web, Zoom, Teams, WhatsApp; Windows 10 2004+ / 11) and the
   microphone as two tracks, writes WAV to `sound-recordings\` continuously, survives a server restart, and follows a
   headset change. Microphone track = "Me", loopback = "Others": two speakers separated without a diarization model.
-  `zero-server record start | stop`, or the button in the menu. Before it exists: the browser microphone and
+  `zero-server record` / `record-stop`, or the button in the menu. Before it exists: the browser microphone and
   `getDisplayMedia` (screen + system audio) as the source.
 - **Live transcript** ~1 s after each sentence: VAD pieces (the web UI's Talk mode already cuts them: 1 s of
   silence, 30 s at most, 300 ms before the voice), greedy, the previous text as context, text confirmed once two
@@ -345,7 +345,7 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 | 4 | `transcribez` / `zero-transcribe` (all formats, progress bar) and the server endpoint (formats, streaming, memory budget, taking turns with the LLM) | total <= 25 s greedy for the 14-minute file; the channel pipeline runs on `fw` output unchanged; bench row; docs |
 | 5 | Transcript tab: audio and video upload, queue with a progress bar per file, playback, term replace, the format choice (every format above), history; realtime from the microphone / app sound with the accurate pass after it | every format opens in its target (YouTube upload, Premiere / Resolve import, Remotion `<Captions>`) |
 | 6 | Meeting tab with files and the browser microphone / screen audio: live transcript, accurate pass, summary | text ~1 s after a sentence |
-| 7 | `zero-recorder.exe`: WASAPI process loopback + microphone, Me / Others, `zero-server record` | a 3-hour test recording without a gap |
+| 7 | `zero_recorder.exe`: WASAPI process loopback + microphone, Me / Others, `zero-server record` | a 3-hour test recording without a gap |
 | 8 | Summaries per segment while recording, questions over the transcript (search + cached prefix) | |
 | later | Diarization of the "Others" track, Meet captions for names (Chrome extension), the NPU (measured first: resident encoder weights gained nothing for the LLMs) | |
 

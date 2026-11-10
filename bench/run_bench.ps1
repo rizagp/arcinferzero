@@ -55,7 +55,7 @@ function Start-LlamaServer($engine, $ctx, $port) {
 foreach ($engine in $Engines) {
   Write-Host "=== $Name / $engine ==="
   # (inferzero-npu: inferzero with the NPU next to the GPU for prompt chunks, --npu on)
-  $isArc = $engine -like "inferzero*"
+  $isArc = $engine -like "inferzero*" -or $engine -like "arcinferzero*"  # (the name before 2026-11-10)
   $npuArgs = if ($engine -eq "inferzero-npu") { @("--npu", "on") } else { @() }
   # ---------------------------------------------------------------- synthetic pp / tg
   if ($Tests -contains "pp") {

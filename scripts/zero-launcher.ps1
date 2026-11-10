@@ -950,7 +950,7 @@ function Copy-StartCommand {
   $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$arcServer`" " + ($a -join " ")
   try { [System.Windows.Forms.Clipboard]::SetText($cmd) } catch {}
   $d = "$cmd`r`n`r`nThe same with the zero-server command (this folder's zero-server.cmd, or on PATH): zero-server " + ($a -join " ") +
-    "`r`n`r`narc-server help lists every option. The command line of the running bin\serverz.exe is in the Running server tab."
+    "`r`n`r`nzero-server help lists every option. The command line of the running bin\serverz.exe is in the Running server tab."
   Show-Bar "Start command copied to the clipboard: it starts the server like Start does, with the options as set now." "info" -Details $d
   $msg.Text = "Start command copied to the clipboard."
 }
@@ -1138,7 +1138,7 @@ function Run-Doctor {
 
 # ---- meeting recording (zero-server record / record-stop; only with bin\zero_recorder.exe): App = the meeting app whose
 # sound is "Others" (empty: everything the speakers play)
-$hasRec = Test-Path (Join-Path $root "bin\zero_recorder.exe")
+$hasRec = (Test-Path (Join-Path $root "bin\zero_recorder.exe")) -or (Test-Path (Join-Path $root "bin\arc_recorder.exe"))  # (arc_: a build before 2026-11-10)
 function Start-Record {
   $app = Read-Line "Record a meeting" "The meeting app whose sound is 'Others' (Zoom.exe, Teams.exe, chrome.exe; empty: all the speakers play):" ""
   if ($null -eq $app) { return }

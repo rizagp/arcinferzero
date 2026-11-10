@@ -296,7 +296,7 @@ else {
   $out | Where-Object { $_.Trim() } | ForEach-Object { Ok $_ }
 }
 # zero-server without Pi: this folder's zero-server.cmd, on the user's PATH when they agree (Pi's own bin folder already
-# has an zero-server.cmd)
+# has a zero-server.cmd)
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $onPath = @("$userPath;$env:Path" -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ieq $root.TrimEnd('\') }).Count -gt 0
 if (-not ($hasPi -and -not $NoPi) -and -not $onPath -and (Test-Path (Join-Path $root "zero-server.cmd"))) {

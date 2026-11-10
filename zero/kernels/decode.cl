@@ -395,7 +395,7 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
 #ifndef GL
 #define GL 16
 #endif
-// inferzero expert streaming (-DXCACHE): an expert's rows are not at e * rows in one buffer but in its record,
+// arcinferzero expert streaming (-DXCACHE): an expert's rows are not at e * rows in one buffer but in its record,
 // wherever the expert cache put it; xaddr[e] holds the record's address, the matrix at byte offset `off` in it.
 #ifdef XCACHE
 #define XROW(base, off, e, NR, n, sb) ((__global const uchar*)xaddr[e] + (off) + ((size_t)(n) * nsb + (sb)) * BBP)

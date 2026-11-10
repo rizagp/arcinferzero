@@ -9,12 +9,15 @@ root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 res = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "bench", "results", "results.jsonl")
 page = sys.argv[2] if len(sys.argv) > 2 else os.path.join(root, "docs", "review.md")
 
+# (rows recorded before the rename, 2026-11-10, name the engine "arcinferzero": read as "inferzero")
+OLD_ENGINE = {"arcinferzero": "inferzero", "arcinferzero-npu": "inferzero-npu"}
 best = {}
 for line in open(res, encoding="utf-8-sig"):
     line = line.strip()
     if not line:
         continue
     r = json.loads(line)
+    r["engine"] = OLD_ENGINE.get(r.get("engine"), r.get("engine"))
     key = (r.get("model"), r.get("engine"), r.get("test"), r.get("prompt"))
     old = best.get(key)
     if old is None:

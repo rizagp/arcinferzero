@@ -162,7 +162,7 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     Writer w(tmp);
     std::vector<std::string> keys;
     for (const std::string& k : src.kv_order)
-      if (k.rfind("split.", 0) != 0 && k.rfind("inferzero.", 0) != 0) keys.push_back(k);
+      if (k.rfind("split.", 0) != 0 && k.rfind("arcinferzero.", 0) != 0) keys.push_back(k);  // (the package keys keep their old name, below)
     w.put<uint32_t>(0x46554747);
     w.put<uint32_t>(3);
     w.put<uint64_t>(keep.size());

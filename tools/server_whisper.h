@@ -694,6 +694,8 @@ class Service {
       if (!side["complete"].as_bool()) {
         const DWORD pid = (DWORD)side["pid"].as_number(0);
         HANDLE ev = OpenEventW(SYNCHRONIZE, FALSE, L"Local\\inferzero-recorder-stop");
+        // (the recorder before the rename to inferzero, 2026-11-10, named its event so)
+        if (!ev) ev = OpenEventW(SYNCHRONIZE, FALSE, L"Local\\arcinferzero-recorder-stop");
         HANDLE h = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
         const bool running = ev && h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
         if (h) CloseHandle(h);

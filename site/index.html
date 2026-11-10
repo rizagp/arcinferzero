@@ -226,10 +226,11 @@ td .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spa
 
 /* ---------- code ---------- */
 .code{background:var(--surface);border:1px solid var(--hair);border-radius:12px;overflow:hidden;min-width:0}
-.code .ch{display:flex;gap:4px;padding:6px;border-bottom:1px solid var(--hair);background:var(--surface-2)}
-.code .ch button{font:inherit;font-family:var(--mono);font-size:12px;color:var(--mute);background:none;border:0;padding:6px 10px;border-radius:6px;cursor:pointer}
+.code .chbar{display:flex;align-items:center;gap:4px;padding:6px;border-bottom:1px solid var(--hair);background:var(--surface-2)}
+.code .ch{display:flex;gap:4px}
+.code .chbar button{font:inherit;font-family:var(--mono);font-size:12px;color:var(--mute);background:none;border:0;padding:6px 10px;border-radius:6px;cursor:pointer}
 .code .ch button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--hair)}
-.code .ch .copy{margin-left:auto}
+.code .chbar .copy{margin-left:auto}
 .code pre{margin:0;padding:18px 20px;font-size:13px;line-height:1.7;overflow-x:auto;color:var(--body)}
 .code pre .c{color:var(--faint)} .code pre .s{color:var(--arc)}
 .agents{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:48px;align-items:start}
@@ -347,12 +348,12 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       </div>
       <div>
         <div class="cap"><span>Generation · tok/s</span><span>plain decoding</span></div>
-        <div class="row me"><span class="n">Core Ultra 5 125H<small>12.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:9.4%"></span></span><span class="v">5.0</span></div>
+        <div class="row me"><span class="n">Core Ultra 5 125H<small>12.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:9.6%"></span></span><span class="v">5.1</span></div>
         <div class="row"><span class="n">Core Ultra 9 285H<small>16.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:11.3%"></span></span><span class="v">6.0</span></div>
         <div class="row"><span class="n">1× Arc Pro B60<small>49.3 with MTP</small></span><span class="t"><span class="f" style="width:43.8%"></span></span><span class="v">23.2</span></div>
-        <div class="row"><span class="n">2× Arc Pro B60<small>1.63× one card</small></span><span class="t"><span class="f" style="width:67.4%"></span></span><span class="v">35.7</span></div>
-        <div class="row"><span class="n">3× Arc Pro B60<small>1.97×</small></span><span class="t"><span class="f" style="width:81.1%"></span></span><span class="v">43</span></div>
-        <div class="row"><span class="n">4× Arc Pro B60<small>2.44×</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">53</span></div>
+        <div class="row"><span class="n">2× Arc Pro B60<small>run of 2026-10-31</small></span><span class="t"><span class="f" style="width:67.4%"></span></span><span class="v">35.7</span></div>
+        <div class="row"><span class="n">3× Arc Pro B60<small>run of 2026-10-31</small></span><span class="t"><span class="f" style="width:81.1%"></span></span><span class="v">43</span></div>
+        <div class="row"><span class="n">4× Arc Pro B60<small>run of 2026-10-31</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">53</span></div>
       </div>
     </div>
     <div class="legend"><span><i class="me"></i>the reference laptop</span><span><i></i>measured by users</span><span><i class="d"></i>a shorter prompt, not comparable</span></div>
@@ -366,7 +367,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
     <div class="sh">
       <div>
         <div class="eb">Against llama.cpp</div>
-        <h2>2.1 to 4.9 times faster prompts on the same file. <span>And a lower perplexity.</span></h2>
+        <h2>2.7 to 7.4 times faster prompts on the same file. <span>And a lower perplexity.</span></h2>
       </div>
       <p>Same GGUF files, same laptop, llama.cpp's Vulkan and SYCL back ends. Every matrix product of a prompt runs on the iGPU's int8 DP4a units, with activations quantized per row and checked against an f32 reference.</p>
     </div>
@@ -410,7 +411,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <div class="eb">Results</div>
         <h2>Every model on one laptop, from 128 tokens to 131K. <span>With its error against f32.</span></h2>
       </div>
-      <p>One script measures it all, <code>bench/website_bench.ps1</code>: prompt speed and time to the first token at each size, generation at that depth, the drafting modes, and the KL divergence of the next-token distribution from an independent f32 CPU implementation. The limit for every model is 0.015.</p>
+      <p>One script measures it all, <code>bench/website_bench.ps1</code>: prompt speed and time to the first token at each size, generation at that depth, the drafting modes, and the KL divergence of the next-token distribution from an independent f32 CPU implementation. The limit is 0.015 for every model, and about 0.02 for Flash Next's fast mode.</p>
     </div>
     <div class="tbl">
       <table>
@@ -452,7 +453,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <div class="eb">Speculative decoding</div>
         <h3>Faster generation, the same answer</h3>
         <p>The model's own MTP block and a DFlash2 drafter guess up to 7 tokens; the full model checks them in one pass. Accepted drafts are the tokens plain decoding would have picked.</p>
-        <div class="fig draft" aria-label="Example: drafted tokens, accepted ones underlined in green, a rejected one in orange">
+        <div class="fig draft" role="img" aria-label="Example: drafted tokens, accepted ones underlined in green, a rejected one in orange">
           def <u>get</u><u>(self,</u> <u>key):</u> <u>node</u> <u>=</u> <s>self.cache</s> self._map.get(key)
         </div>
         <div class="stat"><div><span>35B, coding answer</span><b class="hi">21.6 → 38.1 tok/s</b></div><div><span>27B on one B60</span><b class="hi">23.2 → 49.3 tok/s</b></div></div>
@@ -534,25 +535,27 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <div><b>Tools</b><code>web_search · web_fetch · web_view · remember · forget</code></div>
       </div>
       <div class="code">
+        <div class="chbar">
         <div class="ch" role="tablist" aria-label="Examples">
-          <button role="tab" aria-selected="true" data-k="curl" id="tab-curl">curl</button>
-          <button role="tab" aria-selected="false" data-k="pi" id="tab-pi">Pi</button>
-          <button role="tab" aria-selected="false" data-k="server" id="tab-server">server</button>
-          <button class="copy" type="button" id="copy">Copy</button>
+          <button role="tab" aria-selected="true" aria-controls="code-curl" data-k="curl" id="tab-curl">curl</button>
+          <button role="tab" aria-selected="false" aria-controls="code-pi" data-k="pi" id="tab-pi" tabindex="-1">Pi</button>
+          <button role="tab" aria-selected="false" aria-controls="code-server" data-k="server" id="tab-server" tabindex="-1">server</button>
         </div>
-        <pre id="code-curl"><span class="c"># any OpenAI client works the same way</span>
+        <button class="copy" type="button" id="copy">Copy</button>
+        </div>
+        <pre id="code-curl" role="tabpanel" aria-labelledby="tab-curl" tabindex="0"><span class="c"># any OpenAI client works the same way</span>
 curl http://127.0.0.1:8090/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "35b", "stream": true,
        "messages": [{"role": "user",
                      "content": <span class="s">"Summarize docs/architecture.md"</span>}]}'</pre>
-        <pre id="code-pi" hidden><span class="c"># starts the server in the background if needed,</span>
+        <pre id="code-pi" role="tabpanel" aria-labelledby="tab-pi" tabindex="0" hidden><span class="c"># starts the server in the background if needed,</span>
 <span class="c"># then opens the Pi coding agent on it</span>
 zero-pi 35b
 
 <span class="c"># switch models from inside Pi, or run two sessions at once</span>
 zero-server start -Model 27b -Slots 2</pre>
-        <pre id="code-server" hidden><span class="c"># the server on its own, any GGUF</span>
+        <pre id="code-server" role="tabpanel" aria-labelledby="tab-server" tabindex="0" hidden><span class="c"># the server on its own, any GGUF</span>
 .\bin\serverz.exe --model C:\hf\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf `
   --ctx auto --port 8090
 
@@ -678,7 +681,8 @@ zero-server start -Model 27b -Slots 2</pre>
     for (var k = 0; k < 128; k++) { var c = document.createElement('i'); if (rnd() < 0.83) c.className = 'c'; mini.appendChild(c); cells.push(c); }
     var pick = function(){
       cells.forEach(function(c){ if (c.classList.contains('h')) c.classList.remove('h'); });
-      for (var n = 0; n < 8; n++) { var c = cells[Math.floor(rnd() * cells.length)]; c.classList.add('h'); c.classList.add('c'); }
+      var cached = cells.filter(function(c){ return c.classList.contains('c'); });
+      for (var n = 0; n < 8; n++) { cached[Math.floor(rnd() * cached.length)].classList.add('h'); }
     };
     pick();
     if (!reduce) setInterval(pick, 900);
@@ -688,7 +692,13 @@ zero-server start -Model 27b -Slots 2</pre>
   var tabs = document.querySelectorAll('.code [role=tab]');
   tabs.forEach(function(t){
     t.addEventListener('click', function(){
-      tabs.forEach(function(o){ o.setAttribute('aria-selected', o === t ? 'true' : 'false'); document.getElementById('code-' + o.dataset.k).hidden = o !== t; });
+      tabs.forEach(function(o){ var on = o === t; o.setAttribute('aria-selected', on ? 'true' : 'false'); o.tabIndex = on ? 0 : -1;
+        document.getElementById('code-' + o.dataset.k).hidden = !on; });
+    });
+    t.addEventListener('keydown', function(e){
+      var list = Array.prototype.slice.call(tabs), i = list.indexOf(t);
+      var j = e.key === 'ArrowRight' ? (i + 1) % list.length : e.key === 'ArrowLeft' ? (i + list.length - 1) % list.length : -1;
+      if (j >= 0) { e.preventDefault(); list[j].click(); list[j].focus(); }
     });
   });
   var copy = document.getElementById('copy');
@@ -696,7 +706,8 @@ zero-server start -Model 27b -Slots 2</pre>
     var shown = document.querySelector('.code pre:not([hidden])');
     var text = shown ? shown.innerText : '';
     var done = function(){ copy.textContent = 'Copied'; setTimeout(function(){ copy.textContent = 'Copy'; }, 1400); };
-    if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, function(){});
+    var pick = function(){ if (!shown) return; var r = document.createRange(); r.selectNodeContents(shown); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); copy.textContent = 'Press Ctrl+C'; setTimeout(function(){ copy.textContent = 'Copy'; }, 2400); };
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, pick); else pick();
   });
 })();
 </script>

@@ -38,5 +38,15 @@ function Update-PiModels([string]$ServerExe, [string]$Base, [string]$RunningId =
     if (Test-Path $cfgPath) { Copy-Item $cfgPath "$cfgPath.bak" -Force }
     [IO.File]::WriteAllText($cfgPath, $new, (New-Object Text.UTF8Encoding($false)))  # no BOM (Node JSON.parse)
   }
+  # (Pi's own settings may name the old provider: defaultProvider, enabledModels "arcinferzero/<id>"; renamed too)
+  $setPath = Join-Path $env:USERPROFILE ".pi\agent\settings.json"
+  if (Test-Path $setPath) {
+    $st = [IO.File]::ReadAllText($setPath)
+    $st2 = $st -replace '"arcinfer(zero)?"', '"inferzero"' -replace '"arcinfer(zero)?/', '"inferzero/'
+    if ($st2 -ne $st) {
+      Copy-Item $setPath "$setPath.bak" -Force
+      [IO.File]::WriteAllText($setPath, $st2, (New-Object Text.UTF8Encoding($false)))
+    }
+  }
   return @($list | ForEach-Object { $_.id })
 }

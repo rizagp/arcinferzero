@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-10: self audit of the website, logo and renames ([docs/self-audit-2026-11-10.md](docs/self-audit-2026-11-10.md))
+
+- **The package's key filter** (`zero/gguf_pack.h`) is `arcinferzero.` again: the rename had made it `inferzero.`,
+  so a re-pack doubled the package keys and a GSQ model's `expert_format` was copied into new packages.
+- **Recordings of an older recorder** are recognised by the server (not imported while still written) and block a
+  second `zero_recorder start`.
+- **`zero/kernels/decode.cl`** is back to its text before the rename (a comment): the kernel cache stays valid.
+- **Old names still found:** a model asked for as `arcinferzero/<name>`; `%TEMP%\arcinferzero-view-*` cleaned up; bench
+  results recorded as `arcinferzero`; `bin\arc_recorder.exe` of an older build; Pi `settings.json` entries.
+- **The alias scripts** return the script's exit code; the web UI's prompt explains the name as infer + zero.
+- **Website and docs:** the grid animation, the speed-up claim (2.7-7.4x, as the bars show), numbers that disagreed,
+  the code tabs' accessibility; `zero_recorder.exe` spelled right; the recording commands; links to the archived log;
+  a note for packages from before the rename.
+- Checked: serverz, runz and zero_recorder build; Qwen3.5 4B logits bit-identical to the package from before the rename
+  (4ee6693, SHA-256); every changed script parses; the recorder and alias commands run.
+
 ## 2026-11-10: the commands start with zero-, as the logo
 
 - `arc-launcher` -> **`zero-launcher`**, `arc-server` -> **`zero-server`**, `pi-arc` -> **`zero-pi`**, `arc-recorder` ->
@@ -10,8 +26,9 @@
 - **The old names still work:** `arc-launcher.cmd`, `arc-server.cmd`, `scripts\arc-server.ps1`, `scripts\pi-arc.ps1` and
   `scripts\arc-launcher.ps1` hand over to the new ones; `install-pi` puts `zero-pi`, `zero-server`, `pi-arc` and
   `arc-server` on PATH (shims installed before point at the old scripts, which hand over); `--arc-model` is still taken.
-- **The recorder's stop event** became `inferzero-recorder-stop` with the project's rename; `zero-recorder stop` /
-  `status` now also find a recording an older exe started (`arcinferzero-recorder-stop`).
+- **The recorder's stop event** became `inferzero-recorder-stop` with the project's rename; `bin\zero_recorder.exe
+  stop` / `status` (what `zero-server record-stop` / `record-status` run) now also find a recording an older exe
+  started (`arcinferzero-recorder-stop`).
 - Checked: `zero-recorder` builds and reports "not recording"; every changed script parses; `zero-server help` and
   `status`, `zero-pi --help`, and the same through `arc-server.cmd`, `scripts\arc-server.ps1` and `scripts\pi-arc.ps1`;
   `zero-launcher -SelfTest`; `install-pi` on this laptop (the four shims; Pi's provider "inferzero" alone).
@@ -35,7 +52,8 @@
   - `arc-server` reads a package's `VERSION.txt` and the server log with either name.
 - **Kept on purpose:** the GGUF keys packages already carry (`arcinferzero.package`, `.virtual.*`, `.experts_file`,
   `.expert_format`, `.source`: an older engine must still read a newer package); the `ARC_*` switches (settings
-  people have in their scripts); the command names `arc-launcher`, `arc-server`, `pi-arc`, `arc-recorder`; history
+  people have in their scripts); the command names `arc-launcher`, `arc-server`, `pi-arc`, `arc-recorder` (renamed
+  later the same day: the entry above); history
   (older CHANGELOG entries, `docs/archive`, dated reports, `docs/before-after.md`, `BUGS.md`).
 - **Checked:** the ten package exes build; every changed PowerShell script parses; the data-folder move in a test
   profile for the scripts and an exe (the three state files rewritten, JSON's doubled backslashes and the lower-case

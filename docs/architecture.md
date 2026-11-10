@@ -107,7 +107,7 @@ webui/      index.html (chat, files and documents, terminal, web search tools, T
 docs/       before-after.md (every change, before / after, accuracy), review.md (results), speed-progress.md
             (speed by date), lessons-intel-arc-igpu.md, flash-next-spec.md, npu-experiment.md (the NPU next to
             the GPU), qwen3-asr.md + whisper-native.md + whisper-native-status.md (speech to text), kernel-audit and
-            self-audit reports, archive/ (inferzero-log.md, review_notes.md, f21-q2-speed.md: older logs, notes
+            self-audit reports, archive/ (arcinferzero-log.md, review_notes.md, f21-q2-speed.md: older logs, notes
             and finished plans)
 QUEUE.md    open work, measurements and the decisions waiting for the user
 setup.cmd   setup.ps1: checks, builds, downloads models, connects Pi;  build.ps1: builds one or more tools

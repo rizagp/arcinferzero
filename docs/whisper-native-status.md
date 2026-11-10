@@ -211,7 +211,7 @@ Talk mode, Gemma 4 E4B, a 5-s spoken question to the answer's first token (media
 (0.55 s Whisper greedy + 0.17 s), the model hearing the clip 0.50 s (its first call 21.9 s: the audio encoder's
 kernels built once). Whisper costs ~0.2 s and works with every model.
 
-**W8 (2026-10-28): `zero-recorder.exe`** (`tools/zero_recorder.cpp`; `zero-server record [-App Zoom.exe] [-NoMic]
+**W8 (2026-10-28): `zero_recorder.exe`** (`tools/zero_recorder.cpp`; `zero-server record [-App Zoom.exe] [-NoMic]
 [-Title ...]`, `record-stop`, `record-status`): the microphone ("Me") and the meeting's sound ("Others": one app's
 sound through WASAPI process loopback, its child processes included, or everything the speakers play) as a stereo
 16-bit WAV at 48 kHz in `<data>\recordings\`, its sizes put right every second. Each packet goes to its place by its
@@ -266,9 +266,9 @@ transcript's "Продолжение следует..." over the last silence go
 3. Formats: checked in Remotion and Chrome and by structure (W3, above); YouTube, Premiere and Resolve by the user.
    Video files and the transcript library: done (W4, above).
 4. The Transcripts tab, live recording, the Meetings tab with summaries and minutes: done (W5-W7, above); `@` on a
-   recording in a chat: done (QUEUE 8). `zero-recorder.exe`: done (W8, above); the browser's live text does not
+   recording in a chat: done (QUEUE 8). `zero_recorder.exe`: done (W8, above); the browser's live text does not
    come from its recordings (they are transcribed when they end).
 5. Speech in a chat and the Talk mode choice: done (W9, above).
-4. Then the web UI tabs (Transcript, Meeting), `zero-recorder.exe` (separate process, WASAPI process loopback +
+4. Then the web UI tabs (Transcript, Meeting), `zero_recorder.exe` (separate process, WASAPI process loopback +
    microphone, `recorder.json` + named pipe, reconnect after a server crash), Talk mode with the choice of Gemma
    hearing directly or Whisper -> any model.

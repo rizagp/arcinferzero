@@ -12,7 +12,7 @@ from the SSD, and became the default on 16 October; the OpenCL engine was remove
 before 14 October below are from the OpenCL engine.
 
 Sources: [CHANGELOG.md](../CHANGELOG.md), [review_notes.md](archive/review_notes.md) (working notes),
-[inferzero-log.md](archive/inferzero-log.md), [speed-progress.md](speed-progress.md) (the speed tables by date),
+[arcinferzero-log.md](archive/arcinferzero-log.md), [speed-progress.md](speed-progress.md) (the speed tables by date),
 [lessons-intel-arc-igpu.md](lessons-intel-arc-igpu.md), [QUEUE.md](../QUEUE.md),
 the README, `bench/results/results.jsonl` and the git log. Every figure below comes from one of them.
 

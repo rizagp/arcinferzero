@@ -105,6 +105,11 @@ if ($args.Count) {
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot "app-dir.ps1")
 $stateDir = Get-AppDir  # (%USERPROFILE%\.inferzero; renamed from arcinfer once)
+# the meeting recorder: bin\zero_recorder.exe, or arc_recorder.exe from a build before the rename (2026-11-10)
+function Get-RecorderExe {
+  foreach ($n in "zero_recorder", "arc_recorder") { $e = Join-Path $root "bin\$n.exe"; if (Test-Path $e) { return $e } }
+  return $null
+}
 New-Item -ItemType Directory -Force $stateDir | Out-Null
 
 # ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
@@ -548,7 +553,7 @@ function Get-Version {
 # the latest release on GitHub against this package: up to date when its zip is this commit (or, in a git clone, an
 # ancestor of HEAD), newer when it came out after this package was built
 function Get-UpdateInfo($v) {
-  $r = Invoke-RestMethod "https://api.github.com/repos/rizagp/inferzero/releases/latest" -TimeoutSec 10 -Headers @{ "User-Agent" = "inferzero-arc-server" }
+  $r = Invoke-RestMethod "https://api.github.com/repos/rizagp/inferzero/releases/latest" -TimeoutSec 10 -Headers @{ "User-Agent" = "inferzero-zero-server" }
   $names = @($r.assets | ForEach-Object { $_.name })
   $relCommit = ""
   foreach ($n in $names) { if ($n -match '-([0-9a-f]{7,})-win64\.zip$') { $relCommit = $Matches[1] } }
@@ -775,8 +780,8 @@ switch ($Action) {
   }
   "stop" { if (-not (Stop-Arc)) { Say "inferzero server is not running." }; return }
   "record" {
-    $rec = Join-Path $root "bin\zero_recorder.exe"
-    if (-not (Test-Path $rec)) { throw "$rec not found: build it with .\build.ps1 tools\zero_recorder.cpp (or run setup)" }
+    $rec = Get-RecorderExe
+    if (-not $rec) { throw "bin\zero_recorder.exe not found: build it with .\build.ps1 tools\zero_recorder.cpp (or run setup)" }
     $a = @("start")
     if ($App) { $a += "--app", ('"' + $App.Replace('"', '') + '"') }  # (quoted: Start-Process splits a name with a space)
     if ($NoMic) { $a += "--no-mic" }
@@ -789,8 +794,8 @@ switch ($Action) {
     Say "zero-server record-stop ends it."
     return
   }
-  "record-stop" { & (Join-Path $root "bin\zero_recorder.exe") stop; return }
-  "record-status" { & (Join-Path $root "bin\zero_recorder.exe") status; return }
+  "record-stop" { $rec = Get-RecorderExe; if (-not $rec) { Say "No recorder here (bin\zero_recorder.exe): nothing records."; return }; & $rec stop; return }
+  "record-status" { $rec = Get-RecorderExe; if (-not $rec) { Say "not recording"; return }; & $rec status; return }
 }
 
 # ---- start / restart

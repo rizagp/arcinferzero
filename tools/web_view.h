@@ -505,7 +505,8 @@ inline View render(const std::string& url, int screen, int width = 1280, int hei
   {
     std::error_code e2;
     for (const auto& d : std::filesystem::directory_iterator(tmp, e2)) {
-      if (!d.is_directory(e2) || d.path().filename().string().rfind("inferzero-view-", 0) != 0) continue;
+      const std::string fn = d.path().filename().string();
+      if (!d.is_directory(e2) || (fn.rfind("inferzero-view-", 0) != 0 && fn.rfind("arcinferzero-view-", 0) != 0)) continue;
       const auto age = std::filesystem::file_time_type::clock::now() - d.last_write_time(e2);
       if (!e2 && age > std::chrono::minutes(30)) std::filesystem::remove_all(d.path(), e2);
     }

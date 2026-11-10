@@ -15,7 +15,8 @@ Core Ultra (Arc graphics) and Intel's graphics driver, nothing else is needed:
 
 1. Unpack the zip anywhere (right-click, "Extract All...", e.g. to `C:\inferzero`).
 2. Double-click `zero-launcher.cmd`. Windows may ask once whether to run it (the zip came from the internet: "More
-   info", "Run anyway"); the launcher then unblocks its own files.
+   info", "Run anyway"); the launcher then unblocks its own files. A package from before the rename (up to
+   2026.11.10.3, `arcinferzero-<version>-win64.zip`) has `arc-launcher.cmd` instead.
 3. The first time, a window offers a model: the one that suits the laptop's RAM is ticked (4B on 16 GB, the 35B on
    32 GB), each with a line on what it is good at; speech to text (recordings, meetings, voice messages) is an
    add-on, and a desktop shortcut is offered. "Download and start" fetches it with a progress bar (a cut connection

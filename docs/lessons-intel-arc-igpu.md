@@ -5,7 +5,7 @@ from the first working forward pass (early October 2026) to the Level Zero engin
 and 11: later lessons, to 24 October). Every number
 below was measured on one machine; your hardware, driver and models will differ, so treat them as starting points,
 not promises. Sources: [CHANGELOG.md](../CHANGELOG.md), [review.md](review.md), [review_notes.md](archive/review_notes.md),
-[speed-progress.md](speed-progress.md), [inferzero-log.md](archive/inferzero-log.md), [QUEUE.md](../QUEUE.md),
+[speed-progress.md](speed-progress.md), [arcinferzero-log.md](archive/arcinferzero-log.md), [QUEUE.md](../QUEUE.md),
 [before-after.md](before-after.md) (every change with its numbers); how to run it: [USAGE.md](../USAGE.md).
 
 **Machine:** Intel Core Ultra 5 125H, Arc iGPU (Xe-LPG, 7 Xe-cores / 112 EUs at 2.2 GHz, **no XMX matrix engines**),

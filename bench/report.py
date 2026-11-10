@@ -4,6 +4,8 @@ import sys
 from collections import defaultdict
 
 ENGINES = ["inferzero", "vulkan", "sycl"]
+# (rows recorded before the rename, 2026-11-10, name the engine "arcinferzero": read as "inferzero")
+OLD_ENGINE = {"arcinferzero": "inferzero", "arcinferzero-npu": "inferzero-npu"}
 LABEL = {"inferzero": "inferzero", "vulkan": "llama.cpp Vulkan", "sycl": "llama.cpp SYCL"}
 
 
@@ -14,7 +16,9 @@ def load(paths):
             for line in f:
                 line = line.strip()
                 if line:
-                    rows.append(json.loads(line))
+                    r = json.loads(line)
+                    r["engine"] = OLD_ENGINE.get(r.get("engine"), r.get("engine"))
+                    rows.append(r)
     return rows
 
 

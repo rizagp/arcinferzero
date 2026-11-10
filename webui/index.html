@@ -1681,7 +1681,7 @@ function trimTools(h, deep = false) {
 }
 const TIME_SYSTEM = "Each user message starts with the day, date and local time it was sent, in brackets. Use it for " +
   "\"today\", \"now\", \"yesterday\" and how long ago something was said; do not repeat it in your answers. You run " +
-  "locally on inferzero (one word: arc + infer + zero; LLM inference on Intel Arc through Level Zero).";
+  "locally on inferzero (one word: infer + zero, formerly arcinferzero; LLM inference on Intel Arc through Level Zero).";
 // (the name: seen only in folder paths, a model wrote it "Arc Infra Zero")
 const textOf = (c) => typeof c === "string" ? c
   : c.map((p) => p.type === "text" ? p.text : p.type === "file" ? "[file: " + (p.file?.filename || "") + "]" : p.type === "input_audio" ? "[audio]" : "[image]").join("\n");

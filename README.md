@@ -57,6 +57,8 @@ over several of them (`--gpus N`). See [Discrete GPUs](#discrete-arc-gpus-experi
 1. Download `inferzero-<version>-win64.zip` (6 MB) from the
    **[latest release](https://github.com/rizagp/inferzero/releases/latest)** and unpack it anywhere.
 2. Double-click `zero-launcher.cmd` (Windows may ask once: "More info", "Run anyway").
+   Packages released before the rename (up to 2026.11.10.3) are named `arcinferzero-<version>-win64.zip` and start
+   with `arc-launcher.cmd`.
 3. Pick a model (the one that suits the laptop's RAM is ticked) and "Download and start": the web UI opens at
    `http://127.0.0.1:8090/`.
 

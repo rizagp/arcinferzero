@@ -1362,7 +1362,9 @@ int main(int argc, char** argv) {
     auto it = unknown_names.find(want);
     return it != unknown_names.end() && clk::now() - it->second < std::chrono::seconds(60);
   };
-  auto find_model = [&](const std::string& want) -> const ModelInfo* {
+  auto find_model = [&](const std::string& want0) -> const ModelInfo* {
+    // (the data folder's models were "arcinferzero/<name>" before the rename to inferzero, 2026-11-10)
+    const std::string want = want0.rfind("arcinferzero/", 0) == 0 ? want0.substr(3) : want0;
     for (int pass = 0; pass < 2; ++pass) {
       for (const ModelInfo& m : catalog)
         if (m.supported && (m.alias == want || m.name == want || m.file == want)) return &m;

@@ -298,7 +298,7 @@ Each stage can ship on its own.
 
 ### Stage 2: the WebView2 launcher (1-2 weeks)
 
-- `tools\arc_launcher.cpp` builds `bin\zero-launcher.exe`: a Win32 window with Mica, WebView2 with a transparent
+- `tools\zero_launcher.cpp` builds `bin\zero-launcher.exe`: a Win32 window with Mica, WebView2 with a transparent
   background, and a small message bridge (list models, start, stop, status, open log, copy command). Starting and
   stopping still go through `zero-server.ps1`, so the CLI and the window cannot drift apart.
 - `launcher\index.html` (plus CSS / JS): the stage-0 layout, with light / dark from the system, the accent colour,
