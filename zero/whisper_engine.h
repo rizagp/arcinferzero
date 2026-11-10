@@ -211,7 +211,7 @@ class WhisperEngine : public whisper::Backend {
       const auto t0 = std::chrono::steady_clock::now();
       const uint16_t* h = npu_->encode(mel);
       npu_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-      clEnqueueWriteBuffer(cl_.queue, h16_, CL_FALSE, 0, (size_t)A * D * 2, h, 0, nullptr, nullptr);
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, h16_, CL_FALSE, 0, (size_t)A * D * 2, h, 0, nullptr, nullptr));
       cl_kernel k = wk("wh_h2f");
       int d = D, a = A;
       set_args(k, 0, h16_, d, a, hn_);
@@ -221,11 +221,11 @@ class WhisperEngine : public whisper::Backend {
       return true;
     }
     if (T == W) {
-      clEnqueueWriteBuffer(cl_.queue, mel_, CL_FALSE, 0, (size_t)C * T * 4, mel, 0, nullptr, nullptr);
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, mel_, CL_FALSE, 0, (size_t)C * T * 4, mel, 0, nullptr, nullptr));
     } else {  // (the part's frames, rows of T)
       std::vector<float> m((size_t)C * T);
       for (int c = 0; c < C; ++c) memcpy(&m[(size_t)c * T], mel + (size_t)c * W, (size_t)T * 4);
-      clEnqueueWriteBuffer(cl_.queue, mel_, CL_TRUE, 0, m.size() * 4, m.data(), 0, nullptr, nullptr);
+      CL_CHECK(clEnqueueWriteBuffer(cl_.queue, mel_, CL_TRUE, 0, m.size() * 4, m.data(), 0, nullptr, nullptr));
     }
     {  // conv1 + GELU
       cl_kernel k = wk("wh_im2col1");
@@ -252,7 +252,7 @@ class WhisperEngine : public whisper::Backend {
       const char* dir = getenv("WH_DUMP_DIR");
       if (!dir) return;
       std::vector<float> o((size_t)A * D);
-      clEnqueueReadBuffer(cl_.queue, x_, CL_TRUE, 0, o.size() * 4, o.data(), 0, nullptr, nullptr);
+      CL_CHECK(clEnqueueReadBuffer(cl_.queue, x_, CL_TRUE, 0, o.size() * 4, o.data(), 0, nullptr, nullptr));
       std::ofstream(std::string(dir) + "/L" + std::to_string(at) + ".bin", std::ios::binary).write((const char*)o.data(), o.size() * 4);
     };
     dump(-1);

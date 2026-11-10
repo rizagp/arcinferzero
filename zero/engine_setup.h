@@ -35,7 +35,7 @@
       hp.n_ff_exp_pad = padded_k(hp.n_ff_exp);
       // (Flash Next: FFN widths of 640, its down projections padded to 768 and its shared expert to 768 rows)
       if (hp.hc) hp.n_ff_shexp = padded_k(hp.n_ff_shexp);
-      if ((hp.n_expert != 256 && !(hp.hc && hp.n_expert == 512)) || hp.n_expert_used > 16 ||
+      if ((hp.n_expert != 256 && !(hp.hc && hp.n_expert == 512)) || hp.n_expert_used < 1 || hp.n_expert_used > 16 ||
           (hp.n_ff_exp % 256 && !hp.hc) || hp.n_ff_shexp % 256 || (hp.hc && !hp.moe_std))
         throw std::runtime_error("unsupported MoE dimensions");
     }
@@ -71,6 +71,9 @@
           hp.qsa_dim = I("attention.indexer.key_length");
           hp.qsa_topk = I("attention.indexer.top_k");
           if (const char* e = getenv("ARC_QSA_TOPK")) hp.qsa_topk = atoi(e);  // (tests: fewer keys, sparse sooner)
+          // (the interval indexes the ratios: checked here, before the model's other dimensions are)
+          if (hp.full_attn_interval < 1 || hp.full_attn_interval > (int)hp.qsa_ratio.size())
+            throw std::runtime_error("invalid full_attention_interval in the GGUF");
           for (int r : hp.qsa_ratio)
             if (r > 0 && (r < 2 || r > 8 || hp.qsa_topk % r || r != hp.qsa_ratio[hp.full_attn_interval - 1]))
               throw std::runtime_error("unsupported QSA block size");
@@ -217,7 +220,7 @@
       hp.n_ff_exp = I("expert_feed_forward_length");
       hp.n_ff_exp_pad = padded_k(hp.n_ff_exp);
       hp.n_ff_shexp = 0;
-      if (hp.n_expert % 16 || hp.n_expert_used > 16 || hp.n_ff_exp % 32 || hp.n_ple)
+      if (hp.n_expert % 16 || hp.n_expert_used < 1 || hp.n_expert_used > std::min(16, hp.n_expert) || hp.n_ff_exp % 32 || hp.n_ple)
         throw std::runtime_error("unsupported Gemma 4 expert shape");
     }
   }

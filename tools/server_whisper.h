@@ -602,8 +602,9 @@ class Service {
   // ---------------------------------------------------------------- saved transcripts (the Transcript tab)
   // Each in its own folder <dir>\<id>\: meta.json (name, status, progress, options), source.<ext> (the uploaded file,
   // for playback), transcript.json (the full JSON; edits are saved over it). The file comes in pieces; once complete
-  // it is queued, and a worker thread transcribes the queue one file at a time (with the OpenAI endpoint's lock: one
-  // engine). A restart queues again what was queued or running; an upload the restart cut is marked failed.
+  // it is queued, and a worker thread transcribes the queue one file at a time (the engine a window at a time,
+  // shared with live recordings and requests through turn_). A restart queues again what was queued or running; an
+  // upload the restart cut is marked failed.
   //   GET    /v1/transcripts                       the list, newest first (status, progress, place in the queue)
   //   POST   /v1/transcripts                       {name, size, language, beam_size, terms, prompt, dual_language,
   //                                                 condition_on_previous_text} -> the record: a new transcript
@@ -1286,7 +1287,13 @@ class Service {
         }
         const size_t bytes = (padded.empty() ? rq.body.size() : padded.size()) - skip;
         s->wav.write(data + skip, (std::streamsize)bytes);
-        if (!s->wav) return fail(500, "cannot write the recording (disk full?)");
+        if (!s->wav) {
+          // (the stream's error state cleared and its position back at the end of what was written whole: once the
+          //  disk has room again the page's retry of this piece is written, instead of every later piece failing)
+          s->wav.clear();
+          s->wav.seekp((std::streamoff)44 + (std::streamoff)(s->frames * frame));
+          return fail(500, "cannot write the recording (disk full?)");
+        }
         const size_t n = bytes / frame;
         s->frames += n;
         write_wav_header(*s);  // (sizes kept right as it grows: a crash loses nothing written)
@@ -1736,6 +1743,19 @@ class Service {
     }
     it->second.set("size", (double)std::filesystem::file_size(lib_ / s->id / "source.wav", ec));
     it->second.set("duration", (double)s->frames / s->rate);
+    // (the live draft in transcript.json is the meeting's text until the accurate pass is done: as for a redo, the
+    //  record as it is now, so a pass that is stopped or fails keeps the draft instead of writing its part over it)
+    if (!s->draft.empty() && it->second["status"].str() != "cancelled") {
+      Json prev = Json::object();
+      for (const char* k : {"options", "duration", "languages", "x_realtime", "elapsed_s"})
+        if (it->second.has(k)) prev.set(k, it->second[k]);
+      prev.set("status", "done");
+      prev.set("progress", 1.0);
+      prev.set("done_s", (double)s->frames / s->rate);
+      prev.set("segments", (double)s->draft.size());
+      prev.set("error", nullptr);
+      it->second.set("redo_prev", prev);
+    }
     it->second.set("status", it->second["status"].str() == "cancelled" ? "cancelled" : "queued");
     save_meta(s->id);
     lib_cv_.notify_all();
@@ -1863,8 +1883,10 @@ class Service {
         if (!valid_id(pid) || it == metas_.end()) { bad = "no transcript " + pid; return ""; }
         const Json& m = it->second;
         if (m["status"].str() != "done") { bad = m["name"].str(pid) + ": not finished (" + m["status"].str() + ")"; return ""; }
-        // (a live recording just transcribed: its WAV becomes MP3 / M4A right after, and the WAV goes later)
-        if (m["recording"].as_bool() && m["ext"].str() == "wav" && m["mp3_kbps"].as_number(192) > 0) {
+        // (a live recording just transcribed: its WAV becomes MP3 / M4A right after, and the WAV goes later. Only
+        //  while that runs, in its job: a compression that failed, or that a restart cut, never runs again, and the
+        //  WAV is merged as it is)
+        if (m["recording"].as_bool() && m["ext"].str() == "wav" && m["mp3_kbps"].as_number(192) > 0 && running_ == pid) {
           bad = m["name"].str(pid) + ": its recording is still being compressed; try again in a minute";
           return "";
         }

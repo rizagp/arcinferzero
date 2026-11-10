@@ -51,10 +51,12 @@ struct ExpertStore {
     static const char* names[3] = {"gate", "up", "down"};
     if (i < 2 && !f.find(p + "ffn_gate_exps.weight") && f.find(p + "ffn_gate_up_exps.weight")) {
       const GgufTensor& t = f.get(p + "ffn_gate_up_exps.weight");
+      if (t.dims.size() < 2) throw std::runtime_error("unexpected tensor shape: " + p + "ffn_gate_up_exps.weight");
       const uint64_t r = t.dims[1] / 2;
       return {&t, i ? r : 0, r, t.dims[1]};
     }
     const GgufTensor& t = f.get(p + "ffn_" + names[i] + "_exps.weight");
+    if (t.dims.size() < 2) throw std::runtime_error("unexpected tensor shape: " + p + "ffn_" + names[i] + "_exps.weight");
     return {&t, 0, t.dims[1], t.dims[1]};
   }
 

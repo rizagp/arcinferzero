@@ -279,7 +279,7 @@
     if (hp.moe_std) {
       for (int i = 0; i < 3; ++i) {
         const GgufTensor& t = f_.get(p + "ffn_" + names[i] + "_exps.weight");
-        const uint64_t K = t.dims[0];
+        const uint64_t K = t.dims.empty() ? 0 : t.dims[0];  // (the shape tested below before anything else of it)
         if (t.dims.size() != 3 || t.dims[2] != (uint64_t)hp.n_expert || t.nelements() != per_expert * hp.n_expert ||
             K != (i == 2 ? (uint64_t)hp.n_ff_exp : (uint64_t)E) ||
             // (Q4_0 too: rows padded with zero blocks as for Gemma 4 26B's; Flash Next's MTP head file has Q4_0 experts)
@@ -393,6 +393,7 @@
     L.router.K = E;
     {
       const GgufTensor& t = f_.get(p + "ffn_gate_inp.scale");
+      if (t.nelements() != (uint64_t)E) throw std::runtime_error("unexpected tensor shape: " + p + "ffn_gate_inp.scale");
       std::vector<float> w(E);
       dequant_row(t.type, t.data, E, w.data());
       for (float& x : w) x /= std::sqrt((float)E);  // (llama.cpp gemma4: rms_norm(x) / sqrt(n_embd) * scale)
@@ -400,6 +401,7 @@
     }
     {
       const GgufTensor& t = f_.get(p + "ffn_down_exps.scale");
+      if (t.nelements() != (uint64_t)NE) throw std::runtime_error("unexpected tensor shape: " + p + "ffn_down_exps.scale");
       std::vector<float> w(NE);
       dequant_row(t.type, t.data, NE, w.data());
       L.escale = buf((size_t)NE * 4, w.data());
@@ -459,6 +461,12 @@
           L.wv = load_w(p + "attn_v.weight");
         }
         L.wo = load_w(p + "attn_output.weight");
+        expect(L.wo, hp.n_embd, -1, p + "attn_output.weight");
+        expect(L.wq, -1, hp.n_embd, p + "attn_q.weight");
+        if (!stack) {
+          expect(L.wk, -1, hp.n_embd, p + "attn_k.weight");
+          expect(L.wv, -1, hp.n_embd, p + "attn_v.weight");
+        }
         L.q_norm = load_f32(p + "attn_q_norm.weight");
         L.k_norm = load_f32(p + "attn_k_norm.weight");
         if (hp.qwen3) {  // (float attention: f32 K / f16 V rows [kv head][ctx][hd], no int8 copy; see q2_init)

@@ -46,7 +46,7 @@
     mems_.push_back(cl_.buffer(CL_MEM_READ_WRITE, bytes, host));
     return mems_.back();
   }
-  // releases a buffer of buf() before the engine ends (an encoder growing its buffers; no sub-buffers of it)
+  // releases a buffer of buf() before the engine ends (an encoder growing its buffers; its from() views go with it)
   void free_buf(cl_mem& m) {
     if (!m) return;
     // (its views made by from() go with it: a later buffer at the same address must not find them)
@@ -307,6 +307,20 @@
     auto q8 = quantize_rows_q8_0(v.data(), Np, K);
     return make_weight(GGML_Q8_0, q8.data(), q8.size(), Np, K);
   }
+  // a weight matrix of the size the model's dimensions give (N rows, rows of K; -1: any): one wider than the buffer
+  // its product writes, or longer rows than the activations hold, would go past them on the GPU (a broken or
+  // mismatched GGUF); refused when it is loaded
+  static void expect(const GpuWeight& w, int N, int K, const std::string& name) {
+    if ((N >= 0 && w.N != N) || (K >= 0 && w.K != K && w.K != padded_k(K)))
+      throw std::runtime_error("unexpected tensor shape: " + name + " is " + std::to_string(w.N) + " x " + std::to_string(w.K) +
+                               ", the model's dimensions give " + std::to_string(N) + " x " + std::to_string(K));
+  }
+  // a vector of n values (a norm's weights; the kernels read n of them)
+  cl_mem load_vec(const std::string& name, int n) {
+    if (f_.get(name).nelements() != (uint64_t)n)
+      throw std::runtime_error("unexpected tensor shape: " + name + " (" + std::to_string(n) + " values expected)");
+    return load_f32(name);
+  }
   cl_mem load_f32(const std::string& name) {
     const GgufTensor& t = T(name);
     if ((!t.data && t.nbytes) || t.nelements() > (uint64_t)INT32_MAX) throw std::runtime_error("unexpected tensor shape: " + name);
@@ -319,6 +333,8 @@
   GpuWeight load_w_pad(const std::string& name, int Np) {
     const GgufTensor& t = mat(f_.get(name));
     const int K = (int)t.dims[0], N = (int)t.dims[1];
+    // (more rows than the model's dimension: the padded copy below has room for Np rows only)
+    if (N > Np) throw std::runtime_error("unexpected tensor shape: " + name + " has " + std::to_string(N) + " rows, the model " + std::to_string(Np));
     if (K % 256 == 0 && N == Np) return load_w(name);
     int blk = 0, bytes = 0;
     ggml_block_info(t.type, blk, bytes);
@@ -464,12 +480,13 @@
             throw std::runtime_error("unexpected PLE block shape");
         }
       } else {
-        L.attn_norm = load_f32(p + "attn_norm.weight");
-        L.post_norm = load_f32(p + (hp.qwen3 ? "ffn_norm.weight" : "post_attention_norm.weight"));
+        L.attn_norm = load_vec(p + "attn_norm.weight", hp.n_embd);
+        L.post_norm = load_vec(p + (hp.qwen3 ? "ffn_norm.weight" : "post_attention_norm.weight"), hp.n_embd);
       }
       if (hp.recurrent(il)) {
         load_gdn_in(L, p);
         L.ssm_out = load_w(p + "ssm_out.weight");
+        expect(L.ssm_out, hp.n_embd, -1, p + "ssm_out.weight");
         L.dt_bias = load_f32(p + "ssm_dt.bias");
         L.ssm_a = load_f32(p + "ssm_a");
         L.conv_w = load_f32(p + "ssm_conv1d.weight");
@@ -494,11 +511,15 @@
                  f_.get(p + "ffn_gate.weight").type == f_.get(p + "ffn_up.weight").type) {
         L.gate = load_w_stack({p + "ffn_gate.weight", p + "ffn_up.weight"});  // (rows [gate | up], L.up empty: layer_ffn)
         L.down = load_w(p + "ffn_down.weight");
+        expect(L.gate, 2 * hp.n_ff, hp.n_embd, p + "ffn_gate.weight + ffn_up.weight");
       } else {
         L.gate = load_w(p + "ffn_gate.weight");
         L.up = load_w(p + "ffn_up.weight");
         L.down = load_w(p + "ffn_down.weight");
+        expect(L.gate, hp.n_ff, hp.n_embd, p + "ffn_gate.weight");
+        expect(L.up, hp.n_ff, hp.n_embd, p + "ffn_up.weight");
       }
+      if (!hp.moe) expect(L.down, hp.n_embd, hp.n_ff, p + "ffn_down.weight");
       clFinish(cl_.queue);
     }
     // MTP (nextn) block: eh_proj + one gated-attention layer + FFN, sharing the output head

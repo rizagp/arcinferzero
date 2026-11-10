@@ -296,7 +296,12 @@
         one(cuts[g0].first, cuts[g0].second, jobs[0]);
       } else {
         std::vector<std::thread> th;
-        for (size_t k = 0; k < jobs.size(); ++k) th.emplace_back(one, cuts[g0 + k].first, cuts[g0 + k].second, std::ref(jobs[k]));
+        try {
+          for (size_t k = 0; k < jobs.size(); ++k) th.emplace_back(one, cuts[g0 + k].first, cuts[g0 + k].second, std::ref(jobs[k]));
+        } catch (...) {  // (a thread that could not start: the started ones joined first, not left to std::terminate)
+          for (std::thread& t : th) t.join();
+          throw;
+        }
         for (std::thread& t : th) t.join();
       }
       for (Job& j : jobs) {

@@ -160,6 +160,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }
     free_buf(b);
     free_buf(o);
+    clReleaseKernel(k);  // (before its module goes, in release_all)
     return bytes / 1e6 / best;
   }
   static uint64_t raw_bytes(const GpuWeight& w) { return (uint64_t)w.N * (w.K / 256) * gguf_sb_bytes(w.type); }

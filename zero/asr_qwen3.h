@@ -454,7 +454,9 @@ inline std::string find_mmproj(const std::string& model, int n_embd = 0) {
     try {
       const GgufFile g(f.path().string());
       if (g.get_str("clip.audio.projector_type", "") != "qwen3a") continue;
-      if (n_embd <= 0 || (int)g.get("mm.a.mlp.2.weight").dims[1] == n_embd) return f.path().string();
+      const GgufTensor& out = g.get("mm.a.mlp.2.weight");
+      if (out.dims.size() < 2) continue;  // (not a projector this reads)
+      if (n_embd <= 0 || (int)out.dims[1] == n_embd) return f.path().string();
       if (first.empty()) first = f.path().string();
     } catch (const std::exception&) {
     }

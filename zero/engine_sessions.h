@@ -577,8 +577,14 @@
   void ensure_stage() {
     for (int r = 0; r < kRoles; ++r)
       if (stage_need_q_[r] > stage_have_q_[r] || stage_need_h_[r] > stage_have_h_[r]) {
+        // (the old pair freed, and the role's "already decoded" mark dropped: the new buffers hold nothing yet, and a
+        //  weight decoded into the old ones would otherwise be read from them uninitialized)
+        free_buf(stage_q_[r]);
+        free_buf(stage_h_[r]);
         stage_q_[r] = buf(stage_have_q_[r] = std::max(stage_need_q_[r], stage_have_q_[r]));
         stage_h_[r] = buf(stage_have_h_[r] = std::max(stage_need_h_[r], stage_have_h_[r]));
+        stage_owner_[r] = nullptr;
+        stage_h8_[r] = false;
       }
   }
   const GpuWeight* stage_owner_[kRoles] = {};

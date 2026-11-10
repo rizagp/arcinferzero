@@ -606,7 +606,6 @@ inline cl_int clReleaseMemObject(cl_mem m) {
   delete m;
   return CL_SUCCESS;
 }
-// a buffer argument (a registered cl_mem) becomes its USM pointer; anything else is passed as given
 // ARC_LAUNCH_STATS=1 (diagnostics, runz prints them per generated token): kernel launches, and the host time spent
 // setting their arguments and appending them (the CPU's share of a step, against the GPU's)
 namespace zrt {
@@ -713,6 +712,7 @@ inline void watch_wait(ZKernel* k, ze_event_handle_t ev, bool keep, const uint32
   }
 }
 }  // namespace zrt
+// a buffer argument (a registered cl_mem) becomes its USM pointer; anything else is passed as given
 inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
   zrt::LaunchTimer lt{zrt::setarg_ns};
   void* p = nullptr;
@@ -766,6 +766,8 @@ inline void print_last_launch() {
     for (const ZMem* m : D().mems)
       if (v >= (uint64_t)m->ptr && v < (uint64_t)m->ptr + m->size) { in = true; break; }
     if (!in) fprintf(stderr, "   argument %zu (0x%llx) lies in no live buffer of this GPU\n", i, (unsigned long long)v);
+    if (a.gen != mem_gen.load(std::memory_order_relaxed))
+      fprintf(stderr, "   argument %zu was set before a later free (set again at the next launch)\n", i);
   }
   fflush(stderr);
 }
@@ -776,14 +778,21 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   if (zrt::launch_stats) ++zrt::launch_n;
   if (ev) *ev = nullptr;
   uint32_t ls[3] = {1, 1, 1}, gs[3] = {1, 1, 1};
-  for (cl_uint d = 0; d < dim; ++d) gs[d] = (uint32_t)g[d];
+  for (cl_uint d = 0; d < dim; ++d) {
+    if (g[d] == 0) return CL_SUCCESS;  // (nothing to run: no launch, rather than a zero-size one the driver may refuse)
+    if (g[d] > UINT32_MAX) {           // (a size past 32 bits would run a truncated grid)
+      fprintf(stderr, "inferzero: %s: global size %zu past 32 bits (refused)\n", k->name.c_str(), g[d]);
+      return -63;  // (CL_INVALID_GLOBAL_WORK_SIZE)
+    }
+    gs[d] = (uint32_t)g[d];
+  }
   if (l) {
     for (cl_uint d = 0; d < dim; ++d) ls[d] = (uint32_t)l[d];
   } else {
     ZE_CHECK(zeKernelSuggestGroupSize(k->k, gs[0], gs[1], gs[2], &ls[0], &ls[1], &ls[2]));
     // (Level Zero runs whole work-groups only: a group size that does not divide the global size would start
-    //  work-items past it, and these kernels have no bounds checks; take the largest divisor not above the
-    //  suggestion)
+    //  work-items past it, and most kernels have no bounds checks of their own; take the largest divisor not above
+    //  the suggestion)
     for (int d = 0; d < 3; ++d)
       while (ls[d] > 1 && gs[d] % ls[d]) --ls[d];
   }
@@ -862,7 +871,13 @@ inline cl_int clReleaseEvent(cl_event e) {  // (only kernel events are real: bac
   if (e) { ZE_CHECK(zeEventHostReset((ze_event_handle_t)e)); zrt::D().ev_free.push_back((ze_event_handle_t)e); }
   return CL_SUCCESS;
 }
-inline cl_int clReleaseKernel(cl_kernel k) { if (k) { zeKernelDestroy(k->k); delete k; } return CL_SUCCESS; }
+inline cl_int clReleaseKernel(cl_kernel k) {
+  if (!k) return CL_SUCCESS;
+  if (zrt::last_k == k) zrt::last_k = nullptr;  // (the crash log must not read a kernel that is gone)
+  zeKernelDestroy(k->k);
+  delete k;
+  return CL_SUCCESS;
+}
 inline cl_int clReleaseProgram(cl_program p) { if (p) { zeModuleDestroy(p->m); delete p; } return CL_SUCCESS; }
 inline cl_int clReleaseCommandQueue(cl_command_queue) { return CL_SUCCESS; }
 inline cl_int clReleaseContext(cl_context) { return CL_SUCCESS; }

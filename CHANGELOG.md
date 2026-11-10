@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-10 (evening): self audit after the transcription crash ([docs/self-audit-2026-11-10b.md](docs/self-audit-2026-11-10b.md))
+
+- **A live recording's draft is kept** when its accurate pass is stopped or a part of it fails: before, the partial
+  text was written over the whole meeting's draft. Checked through the API: a 5-minute live recording's 70-segment
+  draft survived a cancelled pass.
+- **A live recording goes on after a failed write** (disk full): the WAV stream's error state is cleared, so the
+  page's retry is written once there is room; before, every later piece failed.
+- **A recording whose compression failed can be merged** (it was refused for good as "still being compressed").
+- **Model files checked against their dimensions when loaded:** a tensor with more rows than the model's dimension
+  overflowed a host buffer (`load_w_pad`); attention, DeltaNet and FFN matrices and the norms are now checked
+  (`expect`, `load_vec`); `expert_used_count` 0, `full_attention_interval` out of range, tensors with too few
+  dims and short scale vectors are refused with the tensor's name.
+- **Launches:** a zero-size one runs nothing, one past 32 bits is refused. Staging buffers made again drop their
+  "already decoded" mark; the crash log no longer reads a released kernel; Whisper's copies are checked.
+- Checked: every model on the laptop loads and answers, the 4B's logits bit-identical (plain and MTP), Gemma 4
+  E4B / 26B KL as before, Qwen3-ASR after a warm-up, Whisper.
+
 ## 2026-11-10: prompt attention on XMX by default on discrete cards; website_bench in a package
 
 - **`ARC_ATTN_XMX` is on by default on discrete cards** (Xe2 / Xe3 with 16-lane DPAS; iGPUs unchanged, `=1`
@@ -9,8 +26,8 @@
   (no `.git`) Windows PowerShell stopped the whole benchmark at git's error (issue #4). The commit now comes from the
   package's `bin\PREBUILT.txt`, else from git when there is one.
 - Found while testing: `tests\run_tests.ps1`'s Gemma 4 12B KL fails (10.75, every position) with the last commit's
-  runz too, so not from today; its f32 reference (2026-10-12) is older than E4B's and 26B's (which pass) and is to be
-  made again (QUEUE).
+  runz too, so not from today. Not its reference (made again: the same KL, and its last position equals the engine's):
+  the every-position logits `--kl-ref` takes for the dense 12B are wrong; generation is not affected (QUEUE).
 
 ## 2026-11-10: the server's crash at the start of a meeting's transcription, found and fixed
 

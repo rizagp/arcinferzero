@@ -274,7 +274,7 @@ struct XCache {
       unlink(*P, s);
       where[k] = -1;
       P->key[s] = -1;
-      if (k / NE == last_l && last_seen.size() == (size_t)NE && last_seen[k % NE]) rescue.push_back(k * 0 + s), rescue.push_back(k);
+      if (k / NE == last_l && last_seen.size() == (size_t)NE && last_seen[k % NE]) rescue.push_back(s), rescue.push_back(k);
     }
     for (size_t i = 0; i < rescue.size(); i += 2) {
       const int from = rescue[i], k = rescue[i + 1];
