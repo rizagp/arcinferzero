@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>arcinferzero: fast local LLMs on Intel Arc, laptop iGPU to Pro B60</title>
+<meta name="description" content="A from-scratch LLM inference engine for Intel Arc on Windows. Qwen3.6 35B at 851 tok/s on a Core Ultra laptop iGPU, the 27B past 1,000 tok/s on one Arc Pro B60. Every number measured, every model checked against an f32 reference.">
+<meta name="color-scheme" content="dark light">
+<meta property="og:title" content="arcinferzero">
+<meta property="og:description" content="Fast local LLMs on Intel Arc, laptop iGPU to Pro B60. Every number measured, every answer checked.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M8 22a9 9 0 1 1 16 0' fill='none' stroke='%235ad1ff' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+/* Layout: one 1200 px column, hairline-separated sections, text left-aligned; numbers in tabular mono.
+   Dark first; a light palette for viewers who ask for it. System fonts only. */
+:root{
+  --canvas:#0b0d10; --surface:#12151a; --surface-2:#171b21; --surface-3:#1d2229;
+  --hair:rgba(255,255,255,.08); --hair-2:rgba(255,255,255,.16);
+  --ink:#eceef1; --body:#b6bcc5; --mute:#7d8691; --faint:#565e68;
+  --arc:#5ad1ff; --arc-soft:rgba(90,209,255,.14); --bar:#3a434e;
+  --ok:#4cc38a; --warn:#e6a04a;
+  --btn:#ffffff; --btn-ink:#000000;
+  --sans:system-ui,"Segoe UI Variable Text","Segoe UI",-apple-system,"Helvetica Neue",Roboto,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono","Cascadia Code",Consolas,"SF Mono",Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --canvas:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4; --surface-3:#e4e8ec;
+  --hair:rgba(10,20,30,.10); --hair-2:rgba(10,20,30,.20);
+  --ink:#11151a; --body:#36404b; --mute:#5d6875; --faint:#8a94a0;
+  --arc:#0a78ad; --arc-soft:rgba(10,120,173,.10); --bar:#c3cad2;
+  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; color-scheme:light } }
+:root[data-theme="light"]{
+  --canvas:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4; --surface-3:#e4e8ec;
+  --hair:rgba(10,20,30,.10); --hair-2:rgba(10,20,30,.20);
+  --ink:#11151a; --body:#36404b; --mute:#5d6875; --faint:#8a94a0;
+  --arc:#0a78ad; --arc-soft:rgba(10,120,173,.10); --bar:#c3cad2;
+  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; color-scheme:light }
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--canvas);color:var(--body);font-family:var(--sans);font-size:16px;line-height:1.6;
+  font-feature-settings:"kern","liga";-webkit-font-smoothing:antialiased}
+a{color:var(--arc);text-decoration:none}
+a:hover{text-decoration:underline;text-underline-offset:3px}
+:focus-visible{outline:2px solid var(--arc);outline-offset:3px;border-radius:4px}
+h1,h2,h3{color:var(--ink);font-weight:600;margin:0;text-wrap:balance}
+p{margin:0}
+code,kbd,pre,.mono{font-family:var(--mono)}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.wrap{max-width:1200px;margin:0 auto;padding-left:max(24px,env(safe-area-inset-left,0px));padding-right:max(24px,env(safe-area-inset-right,0px))}
+@media (max-width:520px){.wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}}
+.skip{position:absolute;left:-9999px}.skip:focus{left:16px;top:12px;z-index:50;background:var(--surface);padding:8px 12px;border-radius:6px}
+
+/* ---------- nav ---------- */
+header.nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--canvas) 86%,transparent);
+  backdrop-filter:saturate(1.2) blur(10px);-webkit-backdrop-filter:saturate(1.2) blur(10px);border-bottom:1px solid var(--hair)}
+.nav .wrap{display:flex;align-items:center;gap:28px;height:56px}
+.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-family:var(--mono);font-weight:500;font-size:15px;letter-spacing:-.01em}
+.brand:hover{text-decoration:none}
+.brand svg{flex:none}
+.nav ul{display:flex;gap:22px;list-style:none;margin:0;padding:0;font-size:14px}
+.nav ul a{color:var(--body)} .nav ul a:hover{color:var(--ink);text-decoration:none}
+.nav .right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.nav .gh{font-family:var(--mono);font-size:12.5px;color:var(--mute)}
+@media (max-width:860px){.nav ul{display:none}}
+@media (max-width:520px){.nav .gh{display:none}}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;gap:10px;height:40px;padding:0 16px;border-radius:8px;font-size:14.5px;font-weight:500;border:1px solid transparent;white-space:nowrap;transition:background .15s,border-color .15s}
+.btn:hover{text-decoration:none}
+.btn.p{background:var(--btn);color:var(--btn-ink)}
+.btn.p:hover{background:color-mix(in srgb,var(--btn) 88%,var(--canvas))}
+.btn.s{color:var(--ink);border-color:var(--hair-2)}
+.btn.s:hover{background:var(--surface-2)}
+.btn.sm{height:32px;padding:0 12px;font-size:13px}
+.btn kbd{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid color-mix(in srgb,var(--btn-ink) 25%,transparent);color:color-mix(in srgb,var(--btn-ink) 70%,transparent)}
+
+/* ---------- section scaffolding ---------- */
+section{border-top:1px solid var(--hair);padding-block:96px}
+@media (max-width:860px){section{padding-block:64px}}
+.eb{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute)}
+.eb b{color:var(--arc);font-weight:500}
+.sh{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:24px 48px;align-items:end;margin-bottom:44px}
+.sh h2{font-size:clamp(26px,3.2vw,38px);line-height:1.12;letter-spacing:-.022em;font-weight:600;margin-top:14px}
+.sh h2 span{color:var(--mute)}
+.sh p{max-width:34rem;font-size:15.5px}
+@media (max-width:860px){.sh{grid-template-columns:1fr}}
+.src{font-family:var(--mono);font-size:12px;color:var(--mute);margin-top:20px;line-height:1.55}
+.src a{color:var(--mute);text-decoration:underline;text-decoration-color:var(--hair-2);text-underline-offset:3px}
+
+/* ---------- hero ---------- */
+.hero{padding-block:88px 72px;border-top:0}
+.hero .grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:56px;align-items:center}
+@media (max-width:980px){.hero .grid{grid-template-columns:1fr;gap:44px}.hero{padding-block:56px 56px}}
+.hero h1{font-size:clamp(36px,5.2vw,62px);line-height:1.03;letter-spacing:-.035em;font-weight:600;margin-top:22px}
+.hero h1 span{color:var(--mute)}
+.hero .lede{font-size:18px;line-height:1.55;max-width:35rem;margin-top:24px}
+.hero .cta{display:flex;flex-wrap:wrap;gap:10px;margin-top:32px}
+.hero .req{font-family:var(--mono);font-size:12.5px;color:var(--mute);margin-top:18px;line-height:1.7}
+
+.term{background:var(--surface);border:1px solid var(--hair);border-radius:12px;overflow:hidden;min-width:0;
+  box-shadow:0 0 0 1px rgba(0,0,0,.25),0 50px 90px -50px color-mix(in srgb,var(--arc) 45%,transparent)}
+.term .bar{display:flex;align-items:center;gap:7px;padding:10px 14px;border-bottom:1px solid var(--hair);font-family:var(--mono);font-size:11.5px;color:var(--mute)}
+.term .bar i{width:10px;height:10px;border-radius:50%;border:1px solid var(--hair-2);display:inline-block}
+.term .bar span{margin-left:auto;letter-spacing:.04em}
+.term pre{margin:0;padding:18px 20px 20px;font-size:12.8px;line-height:1.75;color:var(--body);overflow-x:auto;min-height:268px}
+.term .k{color:var(--mute)} .term .v{color:var(--ink)} .term .a{color:var(--arc)} .term .ok{color:var(--ok)}
+.term .cur{display:inline-block;width:7px;height:14px;background:var(--arc);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+@media (prefers-reduced-motion: reduce){.term .cur{animation:none}}
+
+.proof{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--hair);border-radius:12px;margin-top:72px;background:var(--surface)}
+.proof > div{padding:22px 22px 24px;border-right:1px solid var(--hair);min-width:0}
+.proof > div:last-child{border-right:0}
+.proof .eb{font-size:11px}
+.proof b{display:block;font-family:var(--mono);font-weight:500;font-size:clamp(26px,2.6vw,34px);letter-spacing:-.03em;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1.1;margin-top:12px}
+.proof b small{font-size:.5em;color:var(--mute);letter-spacing:0;margin-left:4px}
+.proof p{font-size:13px;color:var(--mute);margin-top:8px;line-height:1.5}
+@media (max-width:980px){.proof{grid-template-columns:1fr 1fr}.proof > div:nth-child(2){border-right:0}.proof > div:nth-child(-n+2){border-bottom:1px solid var(--hair)}}
+@media (max-width:520px){.proof{grid-template-columns:1fr}.proof > div{border-right:0;border-bottom:1px solid var(--hair)}.proof > div:last-child{border-bottom:0}}
+
+/* ---------- bars (ladder, llama.cpp) ---------- */
+.charts{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:48px}
+@media (max-width:860px){.charts{grid-template-columns:1fr;gap:40px}}
+.cap{display:flex;justify-content:space-between;gap:12px;font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);padding-bottom:10px;border-bottom:1px solid var(--hair)}
+.row{display:grid;grid-template-columns:172px minmax(0,1fr) 84px;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid var(--hair);font-size:14px}
+.row .n{color:var(--ink);line-height:1.3}
+.row .n small{display:block;font-family:var(--mono);font-size:11px;color:var(--mute);margin-top:2px}
+.row .t{height:12px;position:relative}
+.row .f{position:absolute;inset:0 auto 0 0;background:var(--bar);border-radius:0 3px 3px 0;min-width:2px}
+.row .f.d{background:repeating-linear-gradient(90deg,var(--bar) 0 4px,transparent 4px 7px)}
+.row.me .f{background:var(--arc)}
+.row .v{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;color:var(--ink);white-space:nowrap}
+.row .v small{display:block;font-size:11px;color:var(--mute)}
+.row.me .v{color:var(--arc)}
+@media (max-width:520px){.row{grid-template-columns:118px minmax(0,1fr) 66px;gap:10px;font-size:13px}}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;color:var(--mute);margin-top:14px}
+.legend i{display:inline-block;width:14px;height:8px;border-radius:0 2px 2px 0;background:var(--bar);margin-right:7px;vertical-align:1px}
+.legend i.me{background:var(--arc)} .legend i.d{background:repeating-linear-gradient(90deg,var(--bar) 0 4px,transparent 4px 7px)}
+
+.cmp{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:40px}
+@media (max-width:980px){.cmp{grid-template-columns:1fr}}
+.cmp h3{font-size:15px;font-weight:600;margin-bottom:4px}
+.cmp .note{font-size:13px;color:var(--mute);margin-bottom:12px}
+.cmp .row{grid-template-columns:120px minmax(0,1fr) 72px}
+
+/* ---------- tables ---------- */
+.tbl{overflow-x:auto;border:1px solid var(--hair);border-radius:12px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px;min-width:640px}
+th,td{padding:12px 16px;text-align:left;border-bottom:1px solid var(--hair);vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);font-weight:500;background:var(--surface-2)}
+td{color:var(--body)}
+td:first-child{color:var(--ink)}
+td.r,th.r{text-align:right}
+td.r{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);white-space:nowrap}
+td.r small{display:block;font-size:11px;color:var(--mute);margin-top:2px}
+td.hl{color:var(--arc)}
+td .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);border:1px solid var(--hair-2);border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:1px}
+.kl-ok{color:var(--ok)}
+
+/* ---------- features (bento) ---------- */
+.bento{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:26px 26px 24px;min-width:0;display:flex;flex-direction:column;gap:12px}
+.card.w3{grid-column:span 3}.card.w2{grid-column:span 2}.card.w4{grid-column:span 4}
+@media (max-width:980px){.bento{grid-template-columns:1fr 1fr}.card.w3,.card.w2,.card.w4{grid-column:span 1}}
+@media (max-width:620px){.bento{grid-template-columns:1fr}}
+.card h3{font-size:18px;letter-spacing:-.01em;line-height:1.3}
+.card p{font-size:14.5px}
+.card .fig{margin-top:auto;padding-top:10px}
+.stat{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);font-size:13px;display:flex;flex-direction:column;gap:6px}
+.stat div{display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--hair);padding-top:7px}
+.stat span{color:var(--mute)}
+.stat .hi{color:var(--arc)}
+.mini{display:grid;grid-template-columns:repeat(32,minmax(0,1fr));gap:3px;max-width:520px}
+@media (max-width:520px){.mini{grid-template-columns:repeat(16,minmax(0,1fr))}}
+.mini i{aspect-ratio:1;border-radius:2px;background:var(--surface-3)}
+.mini i.c{background:color-mix(in srgb,var(--arc) 55%,var(--surface-3))}
+.mini i.h{background:var(--arc)}
+.draft{font-family:var(--mono);font-size:12.5px;line-height:2;color:var(--body);word-break:break-word}
+.draft u{text-decoration:none;border-bottom:2px solid var(--ok);color:var(--ink)}
+.draft s{text-decoration:none;border-bottom:2px solid var(--warn);color:var(--mute)}
+
+/* ---------- web UI mock ---------- */
+.ui{--w-side:#111b21;--w-head:#202c33;--w-chat:#0b141a;--w-in:#202c33;--w-out:#005c4b;--w-text:#e9edef;--w-muted:#8696a0;--w-line:#222d34;--w-acc:#00a884;--w-input:#2a3942;
+  display:grid;grid-template-columns:260px minmax(0,1fr);border:1px solid var(--hair);border-radius:12px;overflow:hidden;min-height:430px;font-size:13px;color:var(--w-text);color-scheme:dark;
+  box-shadow:0 60px 100px -60px rgba(0,0,0,.6)}
+.ui .side{background:var(--w-side);border-right:1px solid var(--w-line);display:flex;flex-direction:column;min-width:0}
+.ui .sh2{background:var(--w-head);padding:12px 14px;display:flex;align-items:center;justify-content:space-between;font-weight:600}
+.ui .sh2 span{font-family:var(--mono);font-weight:400;font-size:11px;color:var(--w-muted)}
+.ui .tabs{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--w-line);font-size:11.5px;flex-wrap:wrap}
+.ui .tabs b{font-weight:500;padding:3px 9px;border-radius:12px;background:var(--w-input);color:var(--w-muted)}
+.ui .tabs b.on{background:color-mix(in srgb,var(--w-acc) 25%,transparent);color:#d9fdd3}
+.ui .it{padding:11px 14px;border-bottom:1px solid var(--w-line);min-width:0}
+.ui .it.on{background:var(--w-input)}
+.ui .it b{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ui .it span{display:block;color:var(--w-muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ui .main{background:var(--w-chat);display:flex;flex-direction:column;min-width:0}
+.ui .mh{background:var(--w-head);padding:10px 16px;display:flex;align-items:center;gap:10px}
+.ui .mh b{font-weight:500}
+.ui .mh span{font-family:var(--mono);font-size:11px;color:var(--w-muted);margin-left:auto}
+.ui .msgs{flex:1;padding:18px 18px 8px;display:flex;flex-direction:column;gap:10px}
+.ui .b{max-width:78%;padding:8px 11px 6px;border-radius:8px;line-height:1.5;box-shadow:0 1px .5px rgba(0,0,0,.25)}
+.ui .b.out{align-self:flex-end;background:var(--w-out)}
+.ui .b.in{align-self:flex-start;background:var(--w-in)}
+.ui .b small{display:block;text-align:right;font-size:10.5px;color:rgba(233,237,239,.6);margin-top:2px}
+.ui .tool{align-self:flex-start;font-family:var(--mono);font-size:11px;color:var(--w-muted);border:1px solid var(--w-line);border-radius:6px;padding:4px 8px;background:rgba(32,44,51,.6)}
+.ui .tool b{color:var(--w-acc);font-weight:500}
+.ui .file{display:flex;gap:8px;align-items:center;margin-top:6px;padding:6px 8px;border-radius:6px;background:rgba(0,0,0,.18);font-size:12px}
+.ui .file i{width:22px;height:26px;border-radius:3px;background:#d0453f;flex:none}
+.ui .inp{margin:8px 14px 14px;background:var(--w-input);border-radius:8px;padding:10px 12px;color:var(--w-muted);display:flex;align-items:center;gap:10px}
+.ui .inp span{margin-left:auto;width:28px;height:28px;border-radius:50%;background:var(--w-acc);flex:none}
+@media (max-width:760px){.ui{grid-template-columns:1fr}.ui .side{display:none}}
+.uigrid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:48px;align-items:center}
+@media (max-width:980px){.uigrid{grid-template-columns:1fr}}
+.points{display:flex;flex-direction:column;gap:0}
+.points div{padding:16px 0;border-top:1px solid var(--hair)}
+.points div:last-child{border-bottom:1px solid var(--hair)}
+.points b{display:block;color:var(--ink);font-weight:600;font-size:15px}
+.points span{font-size:14px}
+
+/* ---------- code ---------- */
+.code{background:var(--surface);border:1px solid var(--hair);border-radius:12px;overflow:hidden;min-width:0}
+.code .ch{display:flex;gap:4px;padding:6px;border-bottom:1px solid var(--hair);background:var(--surface-2)}
+.code .ch button{font:inherit;font-family:var(--mono);font-size:12px;color:var(--mute);background:none;border:0;padding:6px 10px;border-radius:6px;cursor:pointer}
+.code .ch button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--hair)}
+.code .ch .copy{margin-left:auto}
+.code pre{margin:0;padding:18px 20px;font-size:13px;line-height:1.7;overflow-x:auto;color:var(--body)}
+.code pre .c{color:var(--faint)} .code pre .s{color:var(--arc)}
+.agents{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:48px;align-items:start}
+@media (max-width:980px){.agents{grid-template-columns:1fr}}
+.apis{display:flex;flex-direction:column}
+.apis div{display:grid;grid-template-columns:110px 1fr;gap:12px;padding:12px 0;border-top:1px solid var(--hair);font-size:14px}
+.apis div:last-child{border-bottom:1px solid var(--hair)}
+.apis b{color:var(--ink);font-weight:600}
+.apis code{font-size:12.5px;color:var(--mute)}
+
+/* ---------- start ---------- */
+.steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;counter-reset:s}
+@media (max-width:860px){.steps{grid-template-columns:1fr}}
+.step{border:1px solid var(--hair);border-radius:12px;padding:24px;background:var(--surface);counter-increment:s;min-width:0}
+.step::before{content:counter(s);display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;border:1px solid var(--hair-2);font-family:var(--mono);font-size:13px;color:var(--ink);margin-bottom:16px}
+.step h3{font-size:16.5px;margin-bottom:8px}
+.step p{font-size:14.5px}
+.step code{font-size:12.5px;background:var(--surface-2);padding:1px 6px;border-radius:4px;color:var(--ink)}
+.need{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;margin-top:28px;border-top:1px solid var(--hair)}
+.need div{padding:16px 16px 0 0;font-size:14px}
+.need b{display:block;color:var(--ink);font-weight:600;font-size:13px;font-family:var(--mono);letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+@media (max-width:860px){.need{grid-template-columns:1fr}}
+.endcta{display:flex;flex-wrap:wrap;gap:10px;margin-top:40px;align-items:center}
+.endcta .mono{font-size:12.5px;color:var(--mute);margin-left:6px}
+
+/* ---------- discrete ---------- */
+.disc{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+@media (max-width:860px){.disc{grid-template-columns:1fr}}
+.disc .card code{font-size:12.5px;background:var(--surface-2);padding:1px 6px;border-radius:4px;color:var(--ink)}
+
+footer{border-top:1px solid var(--hair);padding-block:48px 64px;font-size:14px}
+footer .wrap{display:grid;grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr));gap:32px}
+@media (max-width:760px){footer .wrap{grid-template-columns:1fr 1fr}}
+footer h4{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute);font-weight:500;margin:0 0 12px}
+footer ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+footer ul a{color:var(--body)}
+footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top" aria-label="arcinferzero home">
+      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 23a9.5 9.5 0 1 1 18 0" fill="none" stroke="var(--arc)" stroke-width="3.4" stroke-linecap="round"/><circle cx="25" cy="23" r="2.2" fill="var(--ink)"/></svg>
+      arcinferzero
+    </a>
+    <ul>
+      <li><a href="#hardware">Hardware</a></li>
+      <li><a href="#results">Results</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#agents">API</a></li>
+      <li><a href="https://github.com/rizagp/arcinferzero/blob/main/USAGE.md">Docs</a></li>
+      <li><a href="https://github.com/rizagp/arcinferzero/blob/main/CHANGELOG.md">Changelog</a></li>
+    </ul>
+    <div class="right">
+      <a class="gh" href="https://github.com/rizagp/arcinferzero">github · 2026.11.10</a>
+      <a class="btn p sm" href="https://github.com/rizagp/arcinferzero/releases/latest">Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ================= HERO ================= -->
+<section class="hero" id="top">
+  <div class="wrap">
+    <div class="grid">
+      <div>
+        <div class="eb"><b>●</b> Level Zero · Intel Arc · laptop iGPU to Pro B60</div>
+        <h1>A 35B model at 851 tok/s on the Intel laptop you already own. <span>No discrete GPU, no Python.</span></h1>
+        <p class="lede">An inference engine written from scratch for Intel Arc graphics. Qwen3.6 35B, Qwen3.8 27B and Flash Next's 52&nbsp;GB of experts run on a Core Ultra laptop with 32&nbsp;GB, and the same engine scales to four Arc Pro B60s. Every model is checked against an f32 reference, and the same prompt gives the same logits, bit for bit.</p>
+        <div class="cta">
+          <a class="btn p" href="https://github.com/rizagp/arcinferzero/releases/latest">Download for Windows <kbd>7 MB</kbd></a>
+          <a class="btn s" href="#results">See the measurements</a>
+        </div>
+        <p class="req">Windows 11 · Core Ultra with Arc graphics · 16 GB RAM for 4B / E4B, 32 GB for 12B-35B<br>Arc B580 / Pro B60 / Pro B70: experimental · Apache-2.0</p>
+      </div>
+      <div class="term" role="img" aria-label="A benchmark run: Qwen3.6 35B-A3B, 8,192-token prompt at 851 tok/s on a Core Ultra 5 125H, 38.1 tok/s generation with MTP and DFlash2, KL 0.0040 against f32, logits bit-identical to the previous run">
+        <div class="bar"><i></i><i></i><i></i><span>runz · Core Ultra 5 125H · 32 GB</span></div>
+        <pre id="term"></pre>
+      </div>
+    </div>
+
+    <div class="proof">
+      <div><div class="eb">Core Ultra 5 125H</div><b>851<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 8K prompt, experts streamed from the SSD. A 131K-token context read in 6.7 minutes.</p></div>
+      <div><div class="eb">Core Ultra 9 285H</div><b>221<small>tok/s</small></b><p>Qwen3.8 27B prompt on the Arc 140T's XMX. Flash Next generates 26 tok/s there with DFlash2.</p></div>
+      <div><div class="eb">1× Arc Pro B60</div><b>1,024<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt. The 35B reads 3,232 tok/s and generates 88 tok/s, 114 with MTP.</p></div>
+      <div><div class="eb">4× Arc Pro B60</div><b>4,290<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 16K prompt, one model split over four cards with tensor parallelism.</p></div>
+    </div>
+    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, 2026-11-09. 285H and B60: measured by users on <a href="https://github.com/rizagp/arcinferzero/issues/5">issue #5</a> and <a href="https://github.com/rizagp/arcinferzero/issues/4">issue #4</a>, 2026-11-06 to 11-09.</p>
+  </div>
+</section>
+
+<!-- ================= HARDWARE LADDER ================= -->
+<section id="hardware">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">Hardware</div>
+        <h2>One engine, from a laptop iGPU to four Pro B60s. <span>The same Qwen3.8 27B file on every machine.</span></h2>
+      </div>
+      <p>The engine was built and tuned on a Core Ultra 5 125H, which has no matrix engines. Where a GPU has XMX, the prompt's matrix products move onto it after a start-up check against the DP4a kernels. One model can be split over several cards with <code>--gpus N</code>.</p>
+    </div>
+    <div class="charts">
+      <div>
+        <div class="cap"><span>Prompt · tok/s</span><span>4K prompt unless noted</span></div>
+        <div class="row me"><span class="n">Core Ultra 5 125H<small>Xe-LPG · DP4a · 8K</small></span><span class="t"><span class="f" style="width:8.3%"></span></span><span class="v">135</span></div>
+        <div class="row"><span class="n">Core Ultra 9 285H<small>Arc 140T · XMX · 2K</small></span><span class="t"><span class="f" style="width:13.6%"></span></span><span class="v">221</span></div>
+        <div class="row"><span class="n">1× Arc Pro B60<small>XMX · H8</small></span><span class="t"><span class="f" style="width:63.1%"></span></span><span class="v">1,024</span></div>
+        <div class="row"><span class="n">2× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:79.6%"></span></span><span class="v">1,292</span></div>
+        <div class="row"><span class="n">3× Arc Pro B60<small>512-token prompt</small></span><span class="t"><span class="f d" style="width:32.7%"></span></span><span class="v">531<small>pp512</small></span></div>
+        <div class="row"><span class="n">4× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">1,624</span></div>
+      </div>
+      <div>
+        <div class="cap"><span>Generation · tok/s</span><span>plain decoding</span></div>
+        <div class="row me"><span class="n">Core Ultra 5 125H<small>12.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:9.4%"></span></span><span class="v">5.0</span></div>
+        <div class="row"><span class="n">Core Ultra 9 285H<small>16.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:11.3%"></span></span><span class="v">6.0</span></div>
+        <div class="row"><span class="n">1× Arc Pro B60<small>49.3 with MTP</small></span><span class="t"><span class="f" style="width:43.8%"></span></span><span class="v">23.2</span></div>
+        <div class="row"><span class="n">2× Arc Pro B60<small>1.63× one card</small></span><span class="t"><span class="f" style="width:67.4%"></span></span><span class="v">35.7</span></div>
+        <div class="row"><span class="n">3× Arc Pro B60<small>1.97×</small></span><span class="t"><span class="f" style="width:81.1%"></span></span><span class="v">43</span></div>
+        <div class="row"><span class="n">4× Arc Pro B60<small>2.44×</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">53</span></div>
+      </div>
+    </div>
+    <div class="legend"><span><i class="me"></i>the reference laptop</span><span><i></i>measured by users</span><span><i class="d"></i>a shorter prompt, not comparable</span></div>
+    <p class="src">Qwen3.8 27B GSQ-RCO IQ3_S. Several cards add their partial sums through host memory, since the B60s have no peer access; 2-4 cards' generation was measured on 2026-10-31, before the newer single-card defaults. The 35B on the same ladder reads 851 tok/s on the laptop, 726 on the 285H, 3,232 on one B60 and 4,290 on four. Details: <a href="https://github.com/rizagp/arcinferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/arcinferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>.</p>
+  </div>
+</section>
+
+<!-- ================= VS LLAMA.CPP ================= -->
+<section id="compare">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">Against llama.cpp</div>
+        <h2>2.1 to 4.9 times faster prompts on the same file. <span>And a lower perplexity.</span></h2>
+      </div>
+      <p>Same GGUF files, same laptop, llama.cpp's Vulkan and SYCL back ends. Every matrix product of a prompt runs on the iGPU's int8 DP4a units, with activations quantized per row and checked against an f32 reference.</p>
+    </div>
+    <div class="cmp">
+      <div>
+        <h3>Qwen3.8 27B, 2K prompt</h3><p class="note">tok/s, higher is better</p>
+        <div class="row me"><span class="n">arcinferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">113</span></div>
+        <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:22.1%"></span></span><span class="v">25</span></div>
+        <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:20.4%"></span></span><span class="v">23</span></div>
+      </div>
+      <div>
+        <h3>Qwen3.8 27B, 34K-token code prompt</h3><p class="note">seconds to the first token, lower is better</p>
+        <div class="row me"><span class="n">arcinferzero</span><span class="t"><span class="f" style="width:13.5%"></span></span><span class="v">327 s</span></div>
+        <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:67.2%"></span></span><span class="v">1,624 s</span></div>
+        <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">2,418 s</span></div>
+      </div>
+      <div>
+        <h3>Qwen3.5 4B, 2K prompt</h3><p class="note">tok/s, higher is better</p>
+        <div class="row me"><span class="n">arcinferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">911</span></div>
+        <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:37%"></span></span><span class="v">337</span></div>
+        <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:26.6%"></span></span><span class="v">242</span></div>
+      </div>
+    </div>
+    <div class="tbl" style="margin-top:40px">
+      <table>
+        <tr><th>Perplexity, same file, lower is better</th><th class="r">arcinferzero</th><th class="r">llama.cpp Vulkan</th><th class="r">llama.cpp SYCL</th></tr>
+        <tr><td>Qwen3.5 4B</td><td class="r hl">6.056</td><td class="r">6.141</td><td class="r">6.138</td></tr>
+        <tr><td>Qwen3.5 9B</td><td class="r hl">5.417</td><td class="r">5.499</td><td class="r">5.497</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="r hl">4.274</td><td class="r">4.311</td><td class="r">4.310</td></tr>
+      </table>
+    </div>
+    <p class="src">Core Ultra 5 125H, 32 GB, 2026-10-25. After the 34K prompt the 27B generates 3.7 tok/s, against 2.1 (Vulkan) and 1.1 (SYCL). How each number was measured: <a href="https://github.com/rizagp/arcinferzero/blob/main/docs/before-after.md">docs/before-after.md</a>.</p>
+  </div>
+</section>
+
+<!-- ================= RESULTS ================= -->
+<section id="results">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">Results</div>
+        <h2>Every model on one laptop, from 128 tokens to 131K. <span>With its error against f32.</span></h2>
+      </div>
+      <p>One script measures it all, <code>bench/website_bench.ps1</code>: prompt speed and time to the first token at each size, generation at that depth, the drafting modes, and the KL divergence of the next-token distribution from an independent f32 CPU implementation. The limit for every model is 0.015.</p>
+    </div>
+    <div class="tbl">
+      <table>
+        <tr><th>Model</th><th class="r">8K prompt</th><th class="r">32K prompt</th><th class="r">131K prompt</th><th class="r">Generation</th><th class="r">With drafting</th><th class="r">KL vs f32</th></tr>
+        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">851<small>9.6 s</small></td><td class="r">637<small>51 s</small></td><td class="r">324<small>6.7 min</small></td><td class="r">21.6</td><td class="r hl">38.1<small>MTP + DFlash2</small></td><td class="r kl-ok">0.0040</td></tr>
+        <tr><td>Qwen3.8 Flash Next <span class="tag">MoE</span></td><td class="r">205<small>40 s</small></td><td class="r">174<small>3.1 min</small></td><td class="r">146<small>15 min</small></td><td class="r">6.3</td><td class="r hl">7.6<small>DFlash2</small></td><td class="r kl-ok">0.0117<small>limit ~0.02</small></td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="r">135<small>61 s</small></td><td class="r">125<small>4.4 min</small></td><td class="r">81<small>27 min</small></td><td class="r">5.1</td><td class="r hl">12.9<small>MTP + DFlash2</small></td><td class="r kl-ok">0.0005</td></tr>
+        <tr><td>Gemma 4 26B-A4B <span class="tag">MoE</span></td><td class="r">232<small>35 s</small></td><td class="r">124<small>4.4 min</small></td><td class="r">44<small>50 min</small></td><td class="r">19.8</td><td class="r">–</td><td class="r kl-ok">0.0048</td></tr>
+        <tr><td>Qwen3.5 9B</td><td class="r">487<small>17 s</small></td><td class="r">435<small>75 s</small></td><td class="r">278<small>7.8 min</small></td><td class="r">11.8</td><td class="r hl">21.6<small>MTP</small></td><td class="r kl-ok">0.0014</td></tr>
+        <tr><td>Gemma 4 E4B</td><td class="r">707<small>12 s</small></td><td class="r">494<small>66 s</small></td><td class="r">222<small>9.8 min</small></td><td class="r">19.1</td><td class="r hl">41.8<small>drafter</small></td><td class="r kl-ok">0.0027</td></tr>
+        <tr><td>Qwen3.5 4B</td><td class="r">896<small>9.2 s</small></td><td class="r">705<small>47 s</small></td><td class="r">366<small>6.0 min</small></td><td class="r">21.0</td><td class="r hl">35.8<small>MTP</small></td><td class="r kl-ok">0.0010</td></tr>
+      </table>
+    </div>
+    <p class="src">Core Ultra 5 125H, 32 GB, Windows 11; commit 281b083, 2026-11-09 (the 27B's 131K row and Gemma's KL measured again 2026-11-10). Prompt in tok/s with the wait for the first token; generation in tok/s for a 256-token coding answer; KL over 480 tokens of USAGE.md. Drafting never changes the text: the drafts are checked by the full model, so the answer is the one plain decoding gives.</p>
+  </div>
+</section>
+
+<!-- ================= FEATURES ================= -->
+<section id="features">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">What it does</div>
+        <h2>Built for long documents and coding agents. <span>On hardware that was never meant for it.</span></h2>
+      </div>
+      <p>An OpenAI-, Anthropic- and Ollama-compatible server with a web UI, in one 7 MB download. No compiler, no Python, no CUDA.</p>
+    </div>
+    <div class="bento">
+      <article class="card w3">
+        <div class="eb">Mixture of experts</div>
+        <h3>Models larger than the GPU's memory</h3>
+        <p>Only the experts in use stay in GPU memory. The next layer's missing experts are read from the SSD while the GPU computes the current one, so Flash Next's 52 GB of experts run on a 32 GB laptop.</p>
+        <div class="fig" aria-hidden="true">
+          <div class="mini" id="mini"></div>
+        </div>
+        <div class="stat"><div><span>Qwen3.6 35B-A3B experts cached on the laptop</span><b>83 %</b></div><div><span>context with the automatic setting</span><b class="hi">131,072 tokens</b></div></div>
+      </article>
+      <article class="card w3">
+        <div class="eb">Speculative decoding</div>
+        <h3>Faster generation, the same answer</h3>
+        <p>The model's own MTP block and a DFlash2 drafter guess up to 7 tokens; the full model checks them in one pass. Accepted drafts are the tokens plain decoding would have picked.</p>
+        <div class="fig draft" aria-label="Example: drafted tokens, accepted ones underlined in green, a rejected one in orange">
+          def <u>get</u><u>(self,</u> <u>key):</u> <u>node</u> <u>=</u> <s>self.cache</s> self._map.get(key)
+        </div>
+        <div class="stat"><div><span>35B, coding answer</span><b class="hi">21.6 → 38.1 tok/s</b></div><div><span>27B on one B60</span><b class="hi">23.2 → 49.3 tok/s</b></div></div>
+      </article>
+      <article class="card w2">
+        <div class="eb">Deterministic</div>
+        <h3>The same logits, bit for bit</h3>
+        <p>Run after run, whatever the expert cache size. Every speed change is held to that, or to a measured KL below 0.015.</p>
+      </article>
+      <article class="card w2">
+        <div class="eb">Caches</div>
+        <h3>Conversations that do not start over</h3>
+        <p>A new message only processes itself. After a 20K-token tool result, a one-line follow-up on Gemma 4 E4B takes 0.8 s instead of 38 s.</p>
+      </article>
+      <article class="card w2">
+        <div class="eb">Documents</div>
+        <h3>Long files, read properly</h3>
+        <p>Whole when the context takes it, else by outline, pages or search. OCR turns scanned PDFs into Markdown, tables as tables. Answers name their page.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ================= WEB UI ================= -->
+<section id="webui">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">Web UI</div>
+        <h2>A chat that searches, reads and listens. <span>At 127.0.0.1:8090, or from your phone.</span></h2>
+      </div>
+      <p>The server ships its own web UI: chats with files and projects, web search, a voice conversation, and tabs for transcripts and meetings. Through a Cloudflare Tunnel with a password it works from anywhere, installable as an app.</p>
+    </div>
+    <div class="uigrid">
+      <div class="ui" role="img" aria-label="The arcinferzero web UI: a list of chats on the left, a conversation on the right where the model searches the web and reads an attached PDF">
+        <div class="side">
+          <div class="sh2">arcinferzero <span>35B-A3B</span></div>
+          <div class="tabs"><b class="on">Chats</b><b>Transcripts</b><b>Meetings</b><b>Projects</b></div>
+          <div class="it on"><b>Q3 report: revenue by region</b><span>The PDF's table on page 14 shows…</span></div>
+          <div class="it"><b>LRU cache in Python</b><span>Here is a module with unit tests…</span></div>
+          <div class="it"><b>Weekly meeting, 4 Nov</b><span>Minutes: three decisions, two owners…</span></div>
+          <div class="it"><b>Level Zero events</b><span>An event pool needs the host-visible…</span></div>
+        </div>
+        <div class="main">
+          <div class="mh"><b>Q3 report: revenue by region</b><span>ctx 131,072 · 20.4 tok/s</span></div>
+          <div class="msgs">
+            <div class="b out">Which region grew fastest, and how does that compare with the analysts' forecast?<div class="file"><i></i>q3-report.pdf · 48 pages</div><small>09:41</small></div>
+            <div class="tool"><b>read_file</b> q3-report.pdf, pages 12-15 · <b>web_search</b> "Q3 regional forecast"</div>
+            <div class="b in">Asia-Pacific grew fastest at 18.4 % year on year (page 14, table 3). Two analyst notes from October had forecast 12-14 %, so it beat the forecast by about 5 points.<small>09:42</small></div>
+          </div>
+          <div class="inp">Message, or hold the microphone to talk<span></span></div>
+        </div>
+      </div>
+      <div class="points">
+        <div><b>Web search and pages</b><span>The model searches and reads pages itself; the server fetches them, public addresses only.</span></div>
+        <div><b>Voice conversation</b><span>The microphone stays open; it answers aloud sentence by sentence and can be interrupted.</span></div>
+        <div><b>Transcripts and meetings</b><span>Qwen3-ASR or Whisper large-v3 write recordings down, with speakers and summaries.</span></div>
+        <div><b>Projects</b><span>Folders with their AGENTS.md, memory and MCP servers, like Claude's Projects.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= AGENTS / API ================= -->
+<section id="agents">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">For agents</div>
+        <h2>Speaks the APIs your tools already use. <span>Plugs into Pi with one command.</span></h2>
+      </div>
+      <p>Prompt and session caches mean an agent's growing context is processed once. Tool calls are constrained to their JSON schema while they are sampled, so they stay well formed. Two sessions can share one model, their tokens computed in the same pass.</p>
+    </div>
+    <div class="agents">
+      <div class="apis">
+        <div><b>OpenAI</b><code>POST /v1/chat/completions · /v1/completions · /v1/models · /v1/audio/transcriptions</code></div>
+        <div><b>Anthropic</b><code>POST /v1/messages · /v1/messages/count_tokens</code></div>
+        <div><b>Ollama</b><code>POST /api/chat · /api/generate · GET /api/tags</code></div>
+        <div><b>Tools</b><code>web_search · web_fetch · web_view · remember · forget</code></div>
+      </div>
+      <div class="code">
+        <div class="ch" role="tablist" aria-label="Examples">
+          <button role="tab" aria-selected="true" data-k="curl" id="tab-curl">curl</button>
+          <button role="tab" aria-selected="false" data-k="pi" id="tab-pi">Pi</button>
+          <button role="tab" aria-selected="false" data-k="server" id="tab-server">server</button>
+          <button class="copy" type="button" id="copy">Copy</button>
+        </div>
+        <pre id="code-curl"><span class="c"># any OpenAI client works the same way</span>
+curl http://127.0.0.1:8090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "35b", "stream": true,
+       "messages": [{"role": "user",
+                     "content": <span class="s">"Summarize docs/architecture.md"</span>}]}'</pre>
+        <pre id="code-pi" hidden><span class="c"># starts the server in the background if needed,</span>
+<span class="c"># then opens the Pi coding agent on it</span>
+pi-arc 35b
+
+<span class="c"># switch models from inside Pi, or run two sessions at once</span>
+arc-server start -Model 27b -Slots 2</pre>
+        <pre id="code-server" hidden><span class="c"># the server on its own, any GGUF</span>
+.\bin\serverz.exe --model C:\hf\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf `
+  --ctx auto --port 8090
+
+<span class="c"># the web UI: http://127.0.0.1:8090/</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= DISCRETE ================= -->
+<section id="discrete">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">Discrete Arc · experimental</div>
+        <h2>Arc B-series cards, one or four. <span>Tuned from users' measurements.</span></h2>
+      </div>
+      <p>B580, Pro B60 and Pro B70 run the same engine with switches of their own that the iGPUs never take. Their speed comes from people who own the cards and post their runs; every default for them was set from those numbers.</p>
+    </div>
+    <div class="disc">
+      <article class="card">
+        <div class="eb">XMX</div>
+        <h3>Prompts on the matrix engines</h3>
+        <p>The prompt GEMMs run as int8 DPAS, checked bit for bit against DP4a at start. H8 rotations with 4 column groups took the 27B from 766 to 1,024 tok/s at 4K.</p>
+      </article>
+      <article class="card">
+        <div class="eb">Tensor parallel</div>
+        <h3>One model over several GPUs</h3>
+        <p><code>--gpus N</code> splits the 27B or the 35B by heads and columns. A GPU that hangs makes the request fail and <code>/health</code> answer 503; the server stays up.</p>
+      </article>
+      <article class="card">
+        <div class="eb">Measure yours</div>
+        <h3>Scripts that report back</h3>
+        <p><code>bench\website_bench.ps1</code>, <code>decode_try.ps1</code> and <code>f33_sweep.ps1</code> print everything needed. Post the output on <a href="https://github.com/rizagp/arcinferzero/issues/4">issue #4</a>.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ================= START ================= -->
+<section id="start">
+  <div class="wrap">
+    <div class="sh">
+      <div>
+        <div class="eb">Get started</div>
+        <h2>Three steps, about five minutes. <span>Plus the model download.</span></h2>
+      </div>
+      <p>The launcher ticks the model that suits your RAM, downloads it with resume and a checksum, and opens the web UI when the server is ready.</p>
+    </div>
+    <div class="steps">
+      <div class="step"><h3>Download</h3><p>Get <code>arcinferzero-&lt;version&gt;-win64.zip</code> from the latest release and unpack it anywhere.</p></div>
+      <div class="step"><h3>Start</h3><p>Double-click <code>arc-launcher.cmd</code>. Windows may ask once: "More info", then "Run anyway".</p></div>
+      <div class="step"><h3>Pick a model</h3><p>Choose one and press "Download and start". The web UI opens at <code>127.0.0.1:8090</code>.</p></div>
+    </div>
+    <div class="need">
+      <div><b>System</b>Windows 11, 64-bit, with Intel's graphics driver.</div>
+      <div><b>GPU</b>Core Ultra with Arc graphics (Meteor Lake, Lunar Lake, Arrow Lake H, Panther Lake), or an Arc B-series card.</div>
+      <div><b>Memory</b>16 GB for the 4B and E4B, 32 GB for the 12B to 35B models.</div>
+    </div>
+    <div class="endcta">
+      <a class="btn p" href="https://github.com/rizagp/arcinferzero/releases/latest">Download for Windows <kbd>7 MB</kbd></a>
+      <a class="btn s" href="https://github.com/rizagp/arcinferzero/blob/main/docs/install.md">Build from source</a>
+      <span class="mono">release 2026.11.10.1</span>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <a class="brand" href="#top"><svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 23a9.5 9.5 0 1 1 18 0" fill="none" stroke="var(--arc)" stroke-width="3.4" stroke-linecap="round"/><circle cx="25" cy="23" r="2.2" fill="var(--ink)"/></svg>arcinferzero</a>
+      <p class="fine">Built and tuned on a Core Ultra 5 125H with 32 GB of RAM. Apache-2.0. Not affiliated with Intel.</p>
+    </div>
+    <div><h4>Project</h4><ul><li><a href="https://github.com/rizagp/arcinferzero">GitHub</a></li><li><a href="https://github.com/rizagp/arcinferzero/releases">Releases</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/CHANGELOG.md">Changelog</a></li></ul></div>
+    <div><h4>Docs</h4><ul><li><a href="https://github.com/rizagp/arcinferzero/blob/main/USAGE.md">Usage guide</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/features.md">Features</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/models.md">Models</a></li></ul></div>
+    <div><h4>Results</h4><ul><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/before-after.md">Before and after</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/multi-gpu.md">Multi-GPU</a></li><li><a href="https://github.com/rizagp/arcinferzero/issues/4">B60 runs</a></li></ul></div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* terminal replay: one real run (laptop, website_bench 2026-11-09) */
+  var out = document.getElementById('term');
+  var lines = [
+    ['<span class="k">PS&gt;</span> runz Qwen3.6-35B-A3B.gguf --bench-pp 8192', 0],
+    ['<span class="k">device</span>    <span class="v">Intel(R) Arc(TM) Graphics</span> · 112 EU · DP4a', 0],
+    ['<span class="k">experts</span>   cache <span class="v">83 %</span> · the rest streamed from the SSD', 0],
+    ['<span class="k">prompt</span>    8192 tokens ......... <span class="a" data-n="851" data-u=" tok/s">851 tok/s</span>', 851],
+    ['<span class="k">first</span>     token after ......... <span class="v" data-n="9.6" data-u=" s">9.6 s</span>', 9.6],
+    ['<span class="k">decode</span>    MTP + DFlash2 ....... <span class="v" data-n="38.1" data-u=" tok/s">38.1 tok/s</span>', 38.1],
+    ['<span class="k">KL</span>        vs f32 reference .... <span class="v">0.0040</span>', 0],
+    ['<span class="k">logits</span>    vs previous run ..... <span class="ok">bit-identical ✓</span>', 0],
+    ['<span class="k">PS&gt;</span> <span class="cur"></span>', 0]
+  ];
+  if (out) {
+    if (reduce) { out.innerHTML = lines.map(function(l){ return l[0]; }).join('\n'); }
+    else {
+      var i = 0;
+      var next = function(){
+        if (i >= lines.length) return;
+        var d = document.createElement('div'); d.innerHTML = lines[i][0]; out.appendChild(d);
+        var target = lines[i][1];
+        if (target) {
+          var el = d.querySelector('[data-n]'), unit = el.getAttribute('data-u'), dec = String(target).indexOf('.') >= 0 ? 1 : 0, t0 = performance.now();
+          (function tick(now){ var p = Math.min(1, (now - t0) / 900); p = 1 - Math.pow(1 - p, 3);
+            el.textContent = (target * p).toFixed(dec) + unit; if (p < 1) requestAnimationFrame(tick); })(t0);
+        }
+        i++; setTimeout(next, i === 1 ? 600 : (target ? 1000 : 360));
+      };
+      setTimeout(next, 300);
+    }
+  }
+
+  /* expert cache grid: 128 slots, 83 % cached, the active 8 highlighted */
+  var mini = document.getElementById('mini');
+  if (mini) {
+    var seed = 7, rnd = function(){ seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+    var cells = [];
+    for (var k = 0; k < 128; k++) { var c = document.createElement('i'); if (rnd() < 0.83) c.className = 'c'; mini.appendChild(c); cells.push(c); }
+    var pick = function(){
+      cells.forEach(function(c){ if (c.classList.contains('h')) c.classList.remove('h'); });
+      for (var n = 0; n < 8; n++) { var c = cells[Math.floor(rnd() * cells.length)]; c.classList.add('h'); c.classList.add('c'); }
+    };
+    pick();
+    if (!reduce) setInterval(pick, 900);
+  }
+
+  /* code tabs + copy */
+  var tabs = document.querySelectorAll('.code [role=tab]');
+  tabs.forEach(function(t){
+    t.addEventListener('click', function(){
+      tabs.forEach(function(o){ o.setAttribute('aria-selected', o === t ? 'true' : 'false'); document.getElementById('code-' + o.dataset.k).hidden = o !== t; });
+    });
+  });
+  var copy = document.getElementById('copy');
+  if (copy) copy.addEventListener('click', function(){
+    var shown = document.querySelector('.code pre:not([hidden])');
+    var text = shown ? shown.innerText : '';
+    var done = function(){ copy.textContent = 'Copied'; setTimeout(function(){ copy.textContent = 'Copy'; }, 1400); };
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, function(){});
+  });
+})();
+</script>
+</body>
+</html>
