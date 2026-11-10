@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-10: website benchmark's KL for Gemma with BOS
+
+- `runz --dump-ids` (used by `bench\website_bench.ps1` for its KL against f32) now puts BOS first when the model
+  asks for it (`tokenizer.ggml.add_bos_token`, the Gemma models); Qwen ids are unchanged. Without it the KL measured
+  a prompt the model never sees: Gemma 4 E4B 0.01644 -> **0.00273**, 26B-A4B 0.09272 -> **0.00479** (480 tokens of
+  USAGE.md, laptop). Only the measurement changed; the engine did not.
+
 ## 2026-11-09: DeltaNet in chunks and prompt attention on XMX, opt-in (QUEUE F33.1 / F33.2)
 
 For the Arc Pro B60 (issue #4) and the Arc 140T (issue #5); every switch is off by default, the default path is

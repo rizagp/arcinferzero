@@ -389,6 +389,13 @@ static int run_main(int argc, char** argv) {
     toks = Vocab(g).encode(text_prompt);
   }
   if (!dump_ids.empty()) {
+    {  // (a model that expects BOS, Gemma, gets it first, like llama.cpp's tokenizer: without it the KL against
+       //  ref_forward measured an off-distribution prompt, Gemma 26B 0.093 instead of 0.004)
+      GgufFile g(model);
+      Vocab v(g);
+      if (g.get_int("tokenizer.ggml.add_bos_token", 0) != 0 && v.bos >= 0 && (toks.empty() || toks[0] != v.bos))
+        toks.insert(toks.begin(), v.bos);
+    }
     FILE* fo = fopen(dump_ids.c_str(), "w");
     for (size_t i = 0; i < toks.size(); ++i) fprintf(fo, i ? ",%d" : "%d", toks[i]);
     fclose(fo);
