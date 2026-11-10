@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-10: one logo: the launcher's "az" mark on the website and the web UI
+
+- The web UI's icon (`/icon.svg`: the browser tab, and the app icon when installed) was a green chat bubble, and the
+  website had an arc of its own. Both are now the launcher's splash mark: a circle in Windows' default accent
+  (#0078D4) with a bold white "az" in Segoe UI; on a dark browser theme the accent 35 % lighter (#59A7E3) with a black
+  "az", as the launcher draws it on a dark window.
+- `site/icon.svg` is the website's favicon and the same SVG the server sends; the website's wordmark is Segoe UI
+  semibold, as in the splash. The app manifest lists the icon as `any` (a round mark, not a full-bleed one).
+- Checked: the server's SVG is byte for byte `site/icon.svg`; both themes rendered in the browser next to
+  `arc-launcher -SelfTest`'s splash picture.
+
 ## 2026-11-10: website benchmark's KL for Gemma with BOS
 
 - **`run-tests.cmd`** (bench\run_tests.ps1) for testers: double-click, leave it running, drag the zip it puts on the

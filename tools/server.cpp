@@ -1403,12 +1403,15 @@ int main(int argc, char** argv) {
     if (rq.method == "GET" && rq.path == "/manifest.webmanifest")
       return rs.send(200, "application/manifest+json",
                      R"({"name":"arcinferzero","short_name":"arcinferzero","start_url":"/","scope":"/","display":"standalone",)"
-                     R"("background_color":"#111b21","theme_color":"#00a884","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]})");
+                     R"("background_color":"#111b21","theme_color":"#00a884","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]})");
+    // the launcher's "az" mark (scripts/arc-launcher.ps1, its splash and tray icon; site/icon.svg): a circle in Windows'
+    // default accent with a white "az", on a dark browser theme the accent 35 % lighter with a black "az"
     if (rq.method == "GET" && rq.path == "/icon.svg")
       return rs.send(200, "image/svg+xml",
-                     R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#00a884"/>)"
-                     R"(<path fill="#fff" d="M256 120c-75 0-136 53-136 118 0 33 15 63 40 85l-12 69 59-30c16 6 32 9 49 9 75 0 136-53 136-118S331 120 256 120z"/>)"
-                     R"(<circle cx="206" cy="238" r="16" fill="#00a884"/><circle cx="256" cy="238" r="16" fill="#00a884"/><circle cx="306" cy="238" r="16" fill="#00a884"/></svg>)");
+                     R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><style>circle{fill:#0078d4}text{fill:#fff})"
+                     R"(@media (prefers-color-scheme:dark){circle{fill:#59a7e3}text{fill:#000}}</style><circle cx="32" cy="32" r="31"/>)"
+                     R"(<text x="32" y="39.5" text-anchor="middle" font-family="'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif" )"
+                     R"(font-size="27" font-weight="700">az</text></svg>)");
     // the web UI's files and chats on disk (tools/server_files.h): no model involved
     if (rq.path == "/v1/files" || rq.path.rfind("/v1/files/", 0) == 0 || rq.path.rfind("/files/", 0) == 0 ||
         rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)

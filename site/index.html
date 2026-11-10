@@ -9,7 +9,7 @@
 <meta property="og:title" content="arcinferzero">
 <meta property="og:description" content="Fast local LLMs on Intel Arc, laptop iGPU to Pro B60. Every number measured, every answer checked.">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M8 22a9 9 0 1 1 16 0' fill='none' stroke='%235ad1ff' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <style>
 /* Layout: one 1200 px column, hairline-separated sections, text left-aligned; numbers in tabular mono.
    Dark first; a light palette for viewers who ask for it. System fonts only. */
@@ -20,6 +20,7 @@
   --arc:#5ad1ff; --arc-soft:rgba(90,209,255,.14); --bar:#3a434e;
   --ok:#4cc38a; --warn:#e6a04a;
   --btn:#ffffff; --btn-ink:#000000;
+  --mark:#59a7e3; --mark-ink:#000000;
   --sans:system-ui,"Segoe UI Variable Text","Segoe UI",-apple-system,"Helvetica Neue",Roboto,sans-serif;
   --mono:ui-monospace,"Cascadia Mono","Cascadia Code",Consolas,"SF Mono",Menlo,monospace;
   color-scheme:dark;
@@ -29,13 +30,13 @@
   --hair:rgba(10,20,30,.10); --hair-2:rgba(10,20,30,.20);
   --ink:#11151a; --body:#36404b; --mute:#5d6875; --faint:#8a94a0;
   --arc:#0a78ad; --arc-soft:rgba(10,120,173,.10); --bar:#c3cad2;
-  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; color-scheme:light } }
+  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; --mark:#0078d4; --mark-ink:#ffffff; color-scheme:light } }
 :root[data-theme="light"]{
   --canvas:#f6f7f9; --surface:#ffffff; --surface-2:#eef1f4; --surface-3:#e4e8ec;
   --hair:rgba(10,20,30,.10); --hair-2:rgba(10,20,30,.20);
   --ink:#11151a; --body:#36404b; --mute:#5d6875; --faint:#8a94a0;
   --arc:#0a78ad; --arc-soft:rgba(10,120,173,.10); --bar:#c3cad2;
-  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; color-scheme:light }
+  --ok:#1d7f4f; --warn:#a85508; --btn:#11151a; --btn-ink:#ffffff; --mark:#0078d4; --mark-ink:#ffffff; color-scheme:light }
 
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
@@ -57,9 +58,11 @@ code,kbd,pre,.mono{font-family:var(--mono)}
 header.nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--canvas) 86%,transparent);
   backdrop-filter:saturate(1.2) blur(10px);-webkit-backdrop-filter:saturate(1.2) blur(10px);border-bottom:1px solid var(--hair)}
 .nav .wrap{display:flex;align-items:center;gap:28px;height:56px}
-.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-family:var(--mono);font-weight:500;font-size:15px;letter-spacing:-.01em}
+.brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-family:var(--sans);font-weight:600;font-size:16px;letter-spacing:-.005em}
 .brand:hover{text-decoration:none}
 .brand svg{flex:none}
+.mark circle{fill:var(--mark)}
+.mark text{fill:var(--mark-ink);font-family:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;font-size:27px;font-weight:700}
 .nav ul{display:flex;gap:22px;list-style:none;margin:0;padding:0;font-size:14px}
 .nav ul a{color:var(--body)} .nav ul a:hover{color:var(--ink);text-decoration:none}
 .nav .right{margin-left:auto;display:flex;align-items:center;gap:14px}
@@ -272,7 +275,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="#top" aria-label="arcinferzero home">
-      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 23a9.5 9.5 0 1 1 18 0" fill="none" stroke="var(--arc)" stroke-width="3.4" stroke-linecap="round"/><circle cx="25" cy="23" r="2.2" fill="var(--ink)"/></svg>
+      <svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="31"/><text x="32" y="39.5" text-anchor="middle">az</text></svg>
       arcinferzero
     </a>
     <ul>
@@ -622,7 +625,7 @@ arc-server start -Model 27b -Slots 2</pre>
 <footer>
   <div class="wrap">
     <div>
-      <a class="brand" href="#top"><svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 23a9.5 9.5 0 1 1 18 0" fill="none" stroke="var(--arc)" stroke-width="3.4" stroke-linecap="round"/><circle cx="25" cy="23" r="2.2" fill="var(--ink)"/></svg>arcinferzero</a>
+      <a class="brand" href="#top"><svg class="mark" width="24" height="24" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="31"/><text x="32" y="39.5" text-anchor="middle">az</text></svg>arcinferzero</a>
       <p class="fine">Built and tuned on a Core Ultra 5 125H with 32 GB of RAM. Apache-2.0. Not affiliated with Intel.</p>
     </div>
     <div><h4>Project</h4><ul><li><a href="https://github.com/rizagp/arcinferzero">GitHub</a></li><li><a href="https://github.com/rizagp/arcinferzero/releases">Releases</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/CHANGELOG.md">Changelog</a></li></ul></div>
