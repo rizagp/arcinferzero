@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-10: the logo: a 4 x 4 grid drawing a Z, everywhere
+
+- The "az" circle (two letters of a system font) becomes a drawn mark: 4 x 4 rounded tiles, ten lit, drawing a Z
+  for zero; the tiles are the engine's int8 GEMM tiles and its mixture-of-experts slots, only some of them in memory.
+  The launcher's accent colours stay (Windows' #0078D4, on a dark theme #59A7E3); the dim tiles are #C9D3DE /
+  #2B3440. No font, so it looks the same on every system.
+- Where: the launcher's splash, window and tray icon (`Draw-ArcMark` in scripts/arc-launcher.ps1, snapped to whole
+  pixels at 16 / 32 px; the tray is accent when a model runs with a smaller green dot, grey when stopped), the web
+  UI's `/icon.svg`, and the website's favicon, nav and footer (`site/icon.svg`, byte for byte the server's).
+- Checked: `arc-launcher -SelfTest` in light and dark (the splash), the tray icon at 32 and 16 px on a light and a
+  dark taskbar, the website in the browser; serverz rebuilt. The concepts compared (the grid, a slashed zero, a gauge,
+  a drawn monogram) are in a local research page, not in the repository.
+
 ## 2026-11-10: one logo: the launcher's "az" mark on the website and the web UI
 
 - The web UI's icon (`/icon.svg`: the browser tab, and the app icon when installed) was a green chat bubble, and the

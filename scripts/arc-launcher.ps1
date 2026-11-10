@@ -83,6 +83,30 @@ if ($dark) {
     barErr = (RGB 253 231 233); barWarn = (RGB 255 244 206); barInfo = (RGB 230 240 250) }
 }
 $Pal.accent = $accent
+# (the mark's dim tiles: the same greys as site/icon.svg)
+$markDim = if ($dark) { RGB 43 52 64 } else { RGB 201 211 222 }
+
+# ---- the arcinferzero mark: 4 x 4 rounded tiles, the lit ones drawing a Z (site/icon.svg, the web UI's /icon.svg).
+# Small sizes snap the tiles to whole pixels, so a 16 / 32-pixel icon stays sharp.
+function Draw-ArcMark($g, [single]$x, [single]$y, [single]$size, $lit, $dim) {
+  if ($size -le 48) {
+    $step = [math]::Floor($size / 4); $cell = $step - [math]::Max(1, [math]::Round($step * 3 / 16))
+    $off = [math]::Floor(($size - (3 * $step + $cell)) / 2)
+  } else { $step = $size / 4; $cell = $step * 13 / 16; $off = ($size - (3 * $step + $cell)) / 2 }
+  $d = [single]($cell * 6 / 13)   # (the corner's diameter: a radius of 3 in 13)
+  $zt = @(0, 1, 2, 3, 6, 9, 12, 13, 14, 15)   # (row * 4 + column: the top row, the diagonal, the bottom row)
+  for ($i = 0; $i -lt 16; $i++) {
+    $cx = [single]($x + $off + ($i % 4) * $step); $cy = [single]($y + $off + [math]::Floor($i / 4) * $step); $c = [single]$cell
+    $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+    if ($d -lt 2) { $p.AddRectangle((New-Object System.Drawing.RectangleF($cx, $cy, $c, $c))) }
+    else {
+      $p.AddArc($cx, $cy, $d, $d, 180, 90); $p.AddArc($cx + $c - $d, $cy, $d, $d, 270, 90)
+      $p.AddArc($cx + $c - $d, $cy + $c - $d, $d, $d, 0, 90); $p.AddArc($cx, $cy + $c - $d, $d, $d, 90, 90); $p.CloseFigure()
+    }
+    $b = New-Object System.Drawing.SolidBrush($(if ($zt -contains $i) { $lit } else { $dim }))
+    $g.FillPath($b, $p); $b.Dispose(); $p.Dispose()
+  }
+}
 
 # ---- splash: shown as soon as the colours are known, while the fonts, the window and its parts are made (a few
 # seconds with nothing on the screen before); closed when the window shows. No message loop runs yet, so each step
@@ -98,14 +122,11 @@ try {
   $sp.Add_HandleCreated({ param($s) [void][ArcWin]::Dwm($s.Handle, 33, 2); [void][ArcWin]::Dwm($s.Handle, 20, [int]$dark) })
   $in = New-Object System.Windows.Forms.Panel; $in.Dock = "Fill"; $in.BackColor = $Pal.bg
   $sp.Controls.Add($in)
-  # the logo: the launcher's "az" mark in the accent colour, drawn into a picture (no Paint event needed)
+  # the logo: the arcinferzero mark in the accent colour, drawn into a picture (no Paint event needed)
   $n = S 72
   $bmp = New-Object System.Drawing.Bitmap($n, $n)
-  $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"; $g.TextRenderingHint = "AntiAliasGridFit"
-  $g.FillEllipse((New-Object System.Drawing.SolidBrush($accent)), 1, 1, $n - 3, $n - 3)
-  $sfmt = New-Object System.Drawing.StringFormat; $sfmt.Alignment = "Center"; $sfmt.LineAlignment = "Center"
-  $lf = New-Object System.Drawing.Font("Segoe UI", [single]($n * 0.42), [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-  $g.DrawString("az", $lf, $(if ($dark) { [System.Drawing.Brushes]::Black } else { [System.Drawing.Brushes]::White }), (New-Object System.Drawing.RectangleF(0, 0, $n, ($n - 3))), $sfmt)
+  $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"
+  Draw-ArcMark $g 0 0 $n $accent $markDim
   $g.Dispose()
   $pic = New-Object System.Windows.Forms.PictureBox; $pic.Image = $bmp; $pic.Size = New-Object System.Drawing.Size($n, $n)
   $pic.Location = New-Object System.Drawing.Point((S 30), (S 40))
@@ -1132,13 +1153,12 @@ function Start-Record {
 function New-ArcIcon([bool]$on) {
   $n = 32
   $bmp = New-Object System.Drawing.Bitmap($n, $n)
-  $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"; $g.TextRenderingHint = "AntiAliasGridFit"
-  $back = New-Object System.Drawing.SolidBrush($(if ($on) { $accent } else { RGB 110 110 110 }))
-  $g.FillEllipse($back, 1, 1, $n - 3, $n - 3)
-  $f = New-Object System.Drawing.Font("Segoe UI", 15, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-  $sf = New-Object System.Drawing.StringFormat; $sf.Alignment = "Center"; $sf.LineAlignment = "Center"
-  $g.DrawString("az", $f, [System.Drawing.Brushes]::White, (New-Object System.Drawing.RectangleF(0, 0, $n, ($n - 2))), $sf)
-  if ($on) { $g.FillEllipse((New-Object System.Drawing.SolidBrush((RGB 16 180 60))), $n - 13, $n - 13, 12, 12); $g.DrawEllipse((New-Object System.Drawing.Pen([System.Drawing.Color]::White, 2)), $n - 13, $n - 13, 12, 12) }
+  $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"
+  # (the mark: lit in the accent while a model runs, grey when stopped; the dim tiles half transparent, so they read
+  # on a light and a dark taskbar alike)
+  Draw-ArcMark $g 0 0 $n $(if ($on) { $accent } else { RGB 120 120 120 }) ([System.Drawing.Color]::FromArgb(90, 128, 128, 128))
+  # (running: a small green dot over the last tile)
+  if ($on) { $g.FillEllipse((New-Object System.Drawing.SolidBrush((RGB 16 180 60))), $n - 11, $n - 11, 10, 10); $g.DrawEllipse((New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.5)), $n - 11, $n - 11, 10, 10) }
   $g.Dispose()
   [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
 }

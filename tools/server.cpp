@@ -1404,14 +1404,23 @@ int main(int argc, char** argv) {
       return rs.send(200, "application/manifest+json",
                      R"({"name":"arcinferzero","short_name":"arcinferzero","start_url":"/","scope":"/","display":"standalone",)"
                      R"("background_color":"#111b21","theme_color":"#00a884","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]})");
-    // the launcher's "az" mark (scripts/arc-launcher.ps1, its splash and tray icon; site/icon.svg): a circle in Windows'
-    // default accent with a white "az", on a dark browser theme the accent 35 % lighter with a black "az"
+    // the arcinferzero mark (site/icon.svg; the launcher draws the same in its splash, window and tray icon):
+    // 4 x 4 rounded tiles, the lit ones drawing a Z; Windows' default accent, 35 % lighter on a dark theme
     if (rq.method == "GET" && rq.path == "/icon.svg")
       return rs.send(200, "image/svg+xml",
-                     R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><style>circle{fill:#0078d4}text{fill:#fff})"
-                     R"(@media (prefers-color-scheme:dark){circle{fill:#59a7e3}text{fill:#000}}</style><circle cx="32" cy="32" r="31"/>)"
-                     R"(<text x="32" y="39.5" text-anchor="middle" font-family="'Segoe UI',system-ui,-apple-system,'Helvetica Neue',Arial,sans-serif" )"
-                     R"(font-size="27" font-weight="700">az</text></svg>)");
+                     R"(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><style>.l{fill:#0078d4}.d{fill:#c9d3de}@)"
+                     R"(media (prefers-color-scheme:dark){.l{fill:#59a7e3}.d{fill:#2b3440}}</style><rect class="l" x="1.5" y)"
+                     R"(="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3")"
+                     R"(/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" w)"
+                     R"(idth="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect )"
+                     R"(class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width=")"
+                     R"(13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class)"
+                     R"(="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" he)"
+                     R"(ight="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x)"
+                     R"(="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height=")"
+                     R"(13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5)"
+                     R"(" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" r)"
+                     R"(x="3"/></svg>)");
     // the web UI's files and chats on disk (tools/server_files.h): no model involved
     if (rq.path == "/v1/files" || rq.path.rfind("/v1/files/", 0) == 0 || rq.path.rfind("/files/", 0) == 0 ||
         rq.path == "/v1/chats" || rq.path.rfind("/v1/chats/", 0) == 0)
