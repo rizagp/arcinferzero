@@ -11,7 +11,7 @@ command line:
   JSON, Markdown, and the inputs of the Remotion video pipeline);
 - **Meeting** ("Rapat"): recording a meeting (Meet, Zoom, Teams, ... and the microphone), the live transcript, then
   an accurate pass, a summary, decisions and tasks;
-- **`bin\transcribez.exe`** (planned as `arc-transcribe`): the same transcription from the command line, for scripted workflows (record -> transcribe
+- **`bin\transcribez.exe`** (planned as `zero-transcribe`): the same transcription from the command line, for scripted workflows (record -> transcribe
   -> Remotion input, in one line).
 
 Both web UI functions open only once the encoder, the decoder and the timestamps are done and checked (phases 0-4).
@@ -20,7 +20,7 @@ Both web UI functions open only once the encoder, the decoder and the timestamps
 
 | # | Function | Where | What it does |
 |---|---|---|---|
-| 1 | **Realtime transcript** | web UI (Transcript and Meeting tabs), `arc-server record` (planned: `arc-transcribe --live`) | text ~1 s after each sentence from the microphone and / or an app's sound (system / process loopback), recorded to `sound-recordings\` at the same time |
+| 1 | **Realtime transcript** | web UI (Transcript and Meeting tabs), `zero-server record` (planned: `zero-transcribe --live`) | text ~1 s after each sentence from the microphone and / or an app's sound (system / process loopback), recorded to `sound-recordings\` at the same time |
 | 2 | **Accurate transcript after recording** | button after a realtime session, `bin\transcribez.exe <recording>` | the whole recording again: full 30-s windows, beam 5, word timestamps; replaces the live draft (marks and edits kept) |
 | 3 | **Audio upload** | drop / choose files, `bin\transcribez.exe <file>` | wav, mp3, m4a / aac, flac, wma, ogg / opus, ... |
 | 4 | **Video upload** | the same | mp4, mov, mkv, webm, wmv, avi, ...: the audio track is read, the video itself is not touched; timestamps match the video's timeline |
@@ -207,7 +207,7 @@ transcribez <file | folder | wildcard> ... [options]
 ```
 
 Not built (planned here before): skipping silence (`--vad`), live recording from the command line (the web UI's
-Live and `arc-server record` do it), handing the work to a running server.
+Live and `zero-server record` do it), handing the work to a running server.
 
 The two Remotion formats (the full list is under "Output formats" above):
 - `fw`: the JSON the Remotion channel pipeline reads today (`tools/audio/transcribe.py`'s output:
@@ -225,15 +225,15 @@ bin\transcribez.exe work\audio\02-clean.wav --lang id --prompt-file tools\audio\
 bin\transcribez.exe work\audio\03-edited.wav --lang id --format fw,captions --out work\audio\transcript-edited.json
 ```
 
-Recording from the command line too: `arc-server record start [--app chrome] [--title "..."]` / `record stop`
-(through `arc-recorder.exe`, below) writes into `sound-recordings\`; `bin\transcribez.exe` on that folder then makes the
+Recording from the command line too: `zero-server record start [--app chrome] [--title "..."]` / `record stop`
+(through `zero-recorder.exe`, below) writes into `sound-recordings\`; `bin\transcribez.exe` on that folder then makes the
 transcript. A Pi skill / tool can call the same command.
 
 ## Server API
 
 Built (2026-10-26, `tools/server_whisper.h`): `serverz --whisper auto|<folder>` (default off),
 `--whisper-device gpu|npu`, `--whisper-max-minutes N` (default 180: a request's or a chat clip's length; the transcript
-library's files take up to 6 hours, or this when it is more); `arc-server -Whisper auto [-WhisperDevice npu]`.
+library's files take up to 6 hours, or this when it is more); `zero-server -Whisper auto [-WhisperDevice npu]`.
 
 - `POST /v1/audio/transcriptions` and `POST /v1/audio/translations`, multipart as OpenAI's API: `file`, `model`,
   `language`, `prompt`, `temperature` (0 = the fallback through higher temperatures), `response_format` = `json`
@@ -303,7 +303,7 @@ Formats: [✓] SRT  [ ] VTT  [ ] YouTube SBV  [ ] YouTube SRV3  [ ] ASS  [ ] TTM
 
 ## The Meeting function ("Rapat")
 
-Built 2026-10-28 in the browser (W6 / W7: live, Me / Others from the microphone and a shared tab or screen, the accurate pass, summaries and minutes) and `arc-recorder.exe` (W8: recordings apart from the browser and the server, transcribed when they end; no live text from them). The plan:
+Built 2026-10-28 in the browser (W6 / W7: live, Me / Others from the microphone and a shared tab or screen, the accurate pass, summaries and minutes) and `zero-recorder.exe` (W8: recordings apart from the browser and the server, transcribed when they end; no live text from them). The plan:
 
 ```
 [ Chat ]  [ Transkrip ]  [ Rapat ]
@@ -315,11 +315,11 @@ search in the transcript...
 After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      History: 24 Oct · 22 Oct · ...
 ```
 
-- **Recording that is never lost**: `arc-recorder.exe` (new, small, separate process) records WASAPI **process
+- **Recording that is never lost**: `zero-recorder.exe` (new, small, separate process) records WASAPI **process
   loopback** (only the chosen app: Chrome for Meet / Zoom web, Zoom, Teams, WhatsApp; Windows 10 2004+ / 11) and the
   microphone as two tracks, writes WAV to `sound-recordings\` continuously, survives a server restart, and follows a
   headset change. Microphone track = "Me", loopback = "Others": two speakers separated without a diarization model.
-  `arc-server record start | stop`, or the button in the menu. Before it exists: the browser microphone and
+  `zero-server record start | stop`, or the button in the menu. Before it exists: the browser microphone and
   `getDisplayMedia` (screen + system audio) as the source.
 - **Live transcript** ~1 s after each sentence: VAD pieces (the web UI's Talk mode already cuts them: 1 s of
   silence, 30 s at most, 300 ms before the voice), greedy, the previous text as context, text confirmed once two
@@ -342,16 +342,16 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 | 1 | GPU mel + encoder (convs, bidirectional attention, W8 GEMMs), several windows per batch | encoder output vs f32 within tolerance; <= 12 s for the 14-minute file |
 | 2 | Decoder: greedy and beam 5 (hypotheses as rows of one pass), cross-attention K / V once per window, timestamp rules, fallback, no-speech, languages per window, prompt | KL <= 0.015 vs f32; transcript checks above; <= 9 s decoder greedy |
 | 3 | Word timestamps (alignment heads on the GPU, DTW) | mean <= 100 ms, p90 <= 300 ms vs faster-whisper; <= 1 s |
-| 4 | `transcribez` / `arc-transcribe` (all formats, progress bar) and the server endpoint (formats, streaming, memory budget, taking turns with the LLM) | total <= 25 s greedy for the 14-minute file; the channel pipeline runs on `fw` output unchanged; bench row; docs |
+| 4 | `transcribez` / `zero-transcribe` (all formats, progress bar) and the server endpoint (formats, streaming, memory budget, taking turns with the LLM) | total <= 25 s greedy for the 14-minute file; the channel pipeline runs on `fw` output unchanged; bench row; docs |
 | 5 | Transcript tab: audio and video upload, queue with a progress bar per file, playback, term replace, the format choice (every format above), history; realtime from the microphone / app sound with the accurate pass after it | every format opens in its target (YouTube upload, Premiere / Resolve import, Remotion `<Captions>`) |
 | 6 | Meeting tab with files and the browser microphone / screen audio: live transcript, accurate pass, summary | text ~1 s after a sentence |
-| 7 | `arc-recorder.exe`: WASAPI process loopback + microphone, Me / Others, `arc-server record` | a 3-hour test recording without a gap |
+| 7 | `zero-recorder.exe`: WASAPI process loopback + microphone, Me / Others, `zero-server record` | a 3-hour test recording without a gap |
 | 8 | Summaries per segment while recording, questions over the transcript (search + cached prefix) | |
 | later | Diarization of the "Others" track, Meet captions for names (Chrome extension), the NPU (measured first: resident encoder weights gained nothing for the LLMs) | |
 
 ## Decided (the user, 2026-10-25)
 
-- Two functions, Meeting and a general Transcript (any audio / video file, e.g. for videos), plus `arc-transcribe` on
+- Two functions, Meeting and a general Transcript (any audio / video file, e.g. for videos), plus `zero-transcribe` on
   the command line feeding the Remotion pipeline.
 - Multilingual: `auto` per window by default.
 - Folders: `%USERPROFILE%\.inferzero\sound-recordings\` and `%USERPROFILE%\.inferzero\transcripts\`.
@@ -360,7 +360,7 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 - Beam 5 as the default for Transcript and the accurate pass, greedy for live (2026-10-27).
 - Recordings are kept after their transcript, as MP3 (2026-10-27): WAV while recording (nothing lost in a crash),
   converted to MP3 with Windows' Media Foundation encoder after the accurate pass, at 192 kbps by default (~86 MB per
-  hour per track), configurable: Settings in the web UI, `recorder.json`, `arc-transcribe --mp3-kbps` (96-320 kbps,
+  hour per track), configurable: Settings in the web UI, `recorder.json`, `zero-transcribe --mp3-kbps` (96-320 kbps,
   or keep the WAV). Since 2026-10-31:
   - the Transcripts tab's format menu: WAV, MP3 96 / 128 / 160 / 192 / 256 / 320 kbps, or M4A (AAC, Windows' encoder)
     96 / 128 / 160 / 192 kbps. AAC sounds better at the same bitrate, and one track takes up to 192 kbps (MP3 up to

@@ -1,4 +1,4 @@
-# The launcher's part for people new to it (dot-sourced by arc-launcher.ps1, after its window and buttons exist):
+# The launcher's part for people new to it (dot-sourced by zero-launcher.ps1, after its window and buttons exist):
 #  - the package's files unblocked once (a zip from the internet marks each file as downloaded: Windows then warns
 #    before every script and program, or refuses them);
 #  - the Intel GPU driver checked (bin\clinfo.exe), with the driver's download page when it is missing;
@@ -35,7 +35,7 @@ function New-DesktopShortcut {
   $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "inferzero.lnk"
   $ws = New-Object -ComObject WScript.Shell
   $s = $ws.CreateShortcut($lnk)
-  $s.TargetPath = Join-Path $root "arc-launcher.cmd"
+  $s.TargetPath = Join-Path $root "zero-launcher.cmd"
   $s.WorkingDirectory = $root
   $s.WindowStyle = 7  # (minimized: the .cmd only starts the window)
   $s.Description = "inferzero: local AI on the Intel Arc GPU"
@@ -114,7 +114,7 @@ function Show-GetModels([bool]$first) {
   $d.Controls.Add($p); $d.Controls.Add($btns)
   $d.AcceptButton = $go
 
-  $state = @{ proc = $null; out = (Join-Path $env:TEMP "arc-get-models.log"); keys = @(); total = 0.0; dirs = @(); chat = $null }
+  $state = @{ proc = $null; out = (Join-Path $env:TEMP "zero-get-models.log"); keys = @(); total = 0.0; dirs = @(); chat = $null }
   $t = New-Object System.Windows.Forms.Timer
   $t.Interval = 1000
   $t.Add_Tick({
@@ -169,7 +169,7 @@ function Show-GetModels([bool]$first) {
       Remove-Item $state.out -ErrorAction SilentlyContinue
       $a = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$(Join-Path $PSScriptRoot 'get-models.ps1')`"") + $keys
       $state.proc = Start-Process -FilePath $shell -ArgumentList $a -WindowStyle Hidden -PassThru -RedirectStandardOutput $state.out `
-        -RedirectStandardError (Join-Path $env:TEMP "arc-get-models.err")
+        -RedirectStandardError (Join-Path $env:TEMP "zero-get-models.err")
       $go.Enabled = $false
       $bar.Visible = $true; $bar.Value = 0
       $info.Text = "Starting the download..."

@@ -1,4 +1,4 @@
-# The launcher's Downloads dialog (dot-sourced by arc-launcher.ps1 after launcher-firstrun.ps1; the "Get models"
+# The launcher's Downloads dialog (dot-sourced by zero-launcher.ps1 after launcher-firstrun.ps1; the "Get models"
 # button and More > "Download models..." open it):
 #  - the models of scripts\model-catalog.ps1, several at once, the ones already here marked;
 #  - or a Hugging Face link pasted in (a repository, a folder of it, or one file: .../blob/main/x.gguf,
@@ -37,7 +37,7 @@ function Get-SplitSet([string]$p, $paths) {
 # %USERPROFILE%\.inferzero\zero\models (one GGUF for a split model: Flash Next)
 function Test-ArcHave($m, [string]$hub) {
   if (Test-ArcModel $m $hub) { return $true }
-  $pk = Join-Path (Get-AppDir) "zero\models"  # (app-dir.ps1: loaded by arc-launcher.ps1)
+  $pk = Join-Path (Get-AppDir) "zero\models"  # (app-dir.ps1: loaded by zero-launcher.ps1)
   if (-not (Test-Path $pk)) { return $false }
   $main = Split-Path $m.files[0] -Leaf
   $one = $main -replace "-00001-of-\d{5}\.gguf$", ".gguf"

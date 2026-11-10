@@ -100,8 +100,8 @@ tools/      server.cpp (the HTTP API, built by zero/serverz.cpp) with server_cac
 bench/      micro-benchmarks (gemv_bench, attn_dec_bench, attn_bench, bw_bench, peak_bench, ...), run_bench.ps1
             (comparison with llama.cpp), prompt_bench.py, review_data.py (review data); gemm_sweep.ps1 /
             decode_try.ps1 / replay_probe.cpp (settings and launch costs to measure on a discrete card)
-scripts/    arc-server.ps1 (server in the background), arc-launcher.ps1 (launcher window, arc-launcher.cmd),
-            pi-arc.ps1 (Pi launcher), install-pi.ps1 (commands and Pi's model list), pi-models.ps1 (writes that list)
+scripts/    zero-server.ps1 (server in the background), zero-launcher.ps1 (launcher window, zero-launcher.cmd),
+            zero-pi.ps1 (Pi launcher), install-pi.ps1 (commands and Pi's model list), pi-models.ps1 (writes that list)
 tests/      run_tests.ps1 and its reference data
 webui/      index.html (chat, files and documents, terminal, web search tools, Talk voice mode)
 docs/       before-after.md (every change, before / after, accuracy), review.md (results), speed-progress.md

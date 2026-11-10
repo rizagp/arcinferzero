@@ -53,7 +53,7 @@ CHANGELOG.md and the working notes. The first ten stages are recorded only as "b
 | before 10 Oct | 1. Qwen3.5 forward pass on the iGPU | GGUF loading, DP4a GEMM, every weight type decoded just in time (JIT) into one int8 "W8" form, f32 attention, the Gated DeltaNet recurrence. 27B, 11K prompt: 116 s |
 | before 10 Oct | 2. int8 attention | DP4a scores over key tiles in local memory, int8 P·V with P quantized per 16-key tile, int8 KV cache, heads split across sub-groups. Attention 33 → 5.2 s, TTFT 116 → 101 s |
 | before 10 Oct | 3. GEMM and pipeline | split-K, Q4_K requantized to signed int8, weight tiles shared across token tiles, layer-major prefill, SwiGLU in the GEMM epilogue. 101 → ~89 s; GEMMs at 8–9 TOPS |
-| before 10 Oct | 4. Server for agents | OpenAI-compatible API (streaming, reasoning, tool calls), prefix reuse, web UI, `pi-arc` / `arc-server` |
+| before 10 Oct | 4. Server for agents | OpenAI-compatible API (streaming, reasoning, tool calls), prefix reuse, web UI, `zero-pi` / `zero-server` |
 | before 10 Oct | 5. MTP speculative decoding | drafts from the Qwen GGUFs' own multi-token-prediction block. 27B generation 4.1 → 5.3–5.8 tok/s |
 | before 10 Oct | 6. Gemma 4 | sliding-window and global layers, shared KV layers, per-layer embeddings (E4B), Jinja templates through minja, 12B image input |
 | before 10 Oct | 7. Qwen3.6 35B-A3B, GSQ 2-bit | converter (`tools/convert_gsq.py`) and MoE kernels on the 2-bit codes. 11K prompt ~14 s, ~15 tok/s |
@@ -474,7 +474,7 @@ The ones that shaped the design:
   of the DP4a peak. The 11K prompt has not been timed again on inferzero since its faster GEMM.
 - **Slow-run variance**: about one run in five on the 35B, every dense-weight kernel runs ~2x slower with identical
   work (the expert cache stays at full speed); a server started right after another one stops sometimes ran at half
-  speed for its whole life (`arc-server stop` now waits 5 s). Suspected: physical page placement of the weight
+  speed for its whole life (`zero-server stop` now waits 5 s). Suspected: physical page placement of the weight
   buffers. Not solved.
 - **27B generation** stays at ~72 % of the bandwidth: the IQ3 / IQ2 codebook decoding is not hidden behind the
   memory reads.

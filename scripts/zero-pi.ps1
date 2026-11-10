@@ -1,0 +1,382 @@
+# Pi on inferzero in one command: starts the inferzero server in the background if needed (the running model, else
+# the one used last, else a list of every supported GGUF model in the Hugging Face cache by its full name), writes
+# every model with its context into Pi's model list (so Pi's /model switches between them), then starts Pi.
+# Other arguments go to Pi.
+#
+#   zero-pi                          the running / last model (the first time: choose from the list)
+#   zero-pi --pick                   choose from the list
+#   zero-pi 35b  /  zero-pi -Model swift   a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 g31, with -mtp /
+#                                   -vision / -std / -nodf / -df for a variant) or part of a model's name
+#   zero-pi -c  /  zero-pi -r         continue the last Pi session in this folder / choose one (Pi's options)
+#   zero-pi --think off              no reasoning (fastest answers); also minimal / low (default) / medium / high /
+#                                   xhigh / max
+#   zero-pi -p "explain src/x"       any Pi arguments after the launcher options
+#   zero-pi --ctx auto|N --chunk N   context (default auto: the largest that fits the GPU memory) / chunk size
+#   zero-pi --session-cache 0        do not keep conversations on disk when switching (default 8 GB)
+#   zero-pi --help / --help-all      the short help / every option
+#   zero-server stop                 stop the background server when you are done (frees the GPU memory)
+#
+# (No param() block on purpose: PowerShell would otherwise try to bind Pi's own options such as -p or --tools.)
+$ErrorActionPreference = "Stop"
+$shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "g12", "e4b", "g26", "g31")
+# (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
+function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
+$precise = ""; $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
+$whisper = ""; $asr = ""; $whDev = ""; $whMax = 0
+$piArgs = New-Object System.Collections.Generic.List[string]
+# an option's value: there, and not the next option ("--think" at the end gave Pi an empty level); numbers checked
+function Need-Value([object[]]$all, [int]$k, [string]$name, [string]$what) {
+  if ($k + 1 -ge $all.Count -or "$($all[$k + 1])" -like "--*") { Write-Host "zero-pi: $name needs a value ($what)" -ForegroundColor Red; exit 1 }
+  return [string]$all[$k + 1]
+}
+function Need-Number([string]$name, [string]$v, [string]$what) {
+  $n = 0.0
+  if (-not [double]::TryParse($v, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$n)) {
+    Write-Host "zero-pi: $name takes $what (got '$v')" -ForegroundColor Red; exit 1
+  }
+  return $n
+}
+for ($i = 0; $i -lt $args.Count; $i++) {
+  $a = [string]$args[$i]
+  if ($a -in "--help-all", "-HelpAll") {
+    Write-Host @'
+zero-pi: the Pi coding agent on the local inferzero server (Intel Arc iGPU), every option.
+
+USAGE
+  zero-pi [model] [launcher options] [Pi options and message]
+
+  zero-pi                         start Pi right away: on the model the server runs, else the one used last
+                                 (the first time: choose from the list)
+  zero-pi --pick                  choose the model from the list first
+  zero-pi 35b                     start Pi on a known model
+  zero-pi -c                      continue the last Pi session in this folder (zero-pi -r: choose a session)
+  zero-pi -Model swift --think off -p "summarize README.md"
+
+SETUP
+  setup.cmd                      (in the inferzero folder) checks the requirements, builds, downloads models and
+                                 connects Pi; setup.cmd --help lists its options
+
+CHANGING THE MODEL INSIDE PI
+  /model                         every model below is in Pi's list (provider "inferzero"); choosing one makes
+                                 the server unload the current model and load that one (5-40 s), with that
+                                 model's own context. The next zero-pi starts with the model you switched to.
+
+WORKING IN PI
+  Esc                            stops the server right away: while it reads the prompt within ~1 s, while it
+                                 writes before the next token. Your next message only processes what is new.
+  next step in a session         only the new tokens are processed (the server holds the conversation).
+  new session (/new, zero-pi)     reuses Pi's system prompt: in memory, and from disk after a server restart or
+                                 a model switch (27B: ~5 s to the first token instead of ~40 s).
+  another project folder         Pi's system prompt contains the folder and its AGENTS.md, so the first session
+                                 in a project processes it once (27B: ~40 s); later ones reuse it. Kept per
+                                 folder in %USERPROFILE%\.inferzero\zero\prefix: its 2 latest versions, which other
+                                 projects do not replace; past 8 GB in all the least recently used go first.
+  going back to an old session   (zero-pi -c, zero-pi -r, /resume) right after closing it: only the new message.
+                                 After other sessions (or the web UI): loaded from disk in seconds (session
+                                 cache, on by default; --session-cache 0: the whole conversation again). After a server restart:
+                                 loaded from disk too (zero-server saves the held one before it stops).
+
+MODEL
+  --pick, -Pick                  numbered list of every supported GGUF model in the Hugging Face cache
+                                 (%USERPROFILE%\.cache\huggingface\hub), %USERPROFILE%\.inferzero\models and
+                                 the folders in model-dirs.txt,
+                                 by full name (e.g. ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF); Enter keeps the
+                                 model that is already running. Image projectors (mmproj-*) and drafters
+                                 (mtp-*) next to a model are loaded with it, not listed.
+  27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26 g31
+                                 shortcuts, as the first argument: Qwen3.8 27B; Qwen3.6 35B-A3B (35b: UD-IQ4_XS
+                                 from Unsloth's MTP repository, or UD-Q3_K_M / the GSQ file when that is the one
+                                 downloaded; 35b-s: UD-Q3_K_S, longer context; 35b-mtp: UD-Q3_K_M of the MTP
+                                 repository); flash: Qwen3.8 Flash Next; Qwen3.5 9B / 4B; Gemma 4 12B / E4B /
+                                 26B-A4B (g26: mixture of experts on the SSD, reads images)
+  <shortcut>-mtp / -vision / -std  a variant of the same file: MTP without images, images without MTP, neither
+                                 (e.g. 9b-std: the most context, 27b-std, 35b-mtp-std). A shortcut must come
+                                 before Pi's options and message; any model's id from --pick works too.
+  <shortcut>-nodf / -df          a model with a DFlash2 drafter (27b, 35b): drafts with the MTP block only /
+                                 DFlash2 only (default: both, picked per step), e.g. 35b-nodf
+  -Model <text>                  the model whose id, name or file contains <text>, or a path to a .gguf file.
+                                 Also --model <text> (or inferzero/<id>, as in Pi), --zero-model, --model-name.
+
+LAUNCHER OPTIONS
+  --think <level>                reasoning effort: off, minimal, low (default), medium, high, xhigh, max
+                                 (also --thinking, -Thinking; Pi's /thinking changes it later). Pi sends a
+                                 thinking budget per level: minimal = reasoning off on inferzero, low 2,048,
+                                 medium 8,192, high / xhigh / max 16,384 tokens; the <think> block is closed there.
+  --no-stream                    MoE models without the SSD expert cache: every expert on the GPU (a smaller
+                                 context). Normally MoE models (35B, Flash Next, Gemma 4 26B) keep their experts,
+                                 MTP layer included, on the SSD and the most used ones in a GPU cache, and read the
+                                 next layer's missing experts while the GPU computes: 131,072 tokens of context by
+                                 default, up to 262,144 with --ctx. The expert file (35B: 16 GB, Flash Next: 56 GB,
+                                 Gemma 4 26B: 13 GB) is written once and reused.
+  --vision on|off, --no-vision   image / audio input (default on); off: the projector is not loaded and the
+                                 automatic context is longer (Qwen3.5 9B: ~143K -> ~217K tokens)
+  --preserve-thinking            Qwen3.6 35B: earlier turns keep their reasoning in the prompt (Qwen3.8 27B always
+                                 does). The model sees why it took its earlier steps; the context fills sooner.
+  --no-mtp, -NoMtp               no speculative decoding (default: on when the model has an MTP block or a
+                                 Gemma drafter; same output, faster generation)
+  --ctx <N|auto>, -Ctx           context size in tokens, or auto = the largest that fits the GPU memory
+                                 currently set (bin\clinfo.exe, "global mem") less 0.5 GiB for the driver,
+                                 at most the model's max context length. Computed for every model in
+                                 a few seconds (a dry load that only adds up the memory), remembered in
+                                 %USERPROFILE%\.inferzero\zero\ctx-auto.txt, recomputed when the GPU memory changes.
+                                 35b and flash get 131,072 (the expert cache gets the rest); --pick shows every
+                                 model's value.
+                                 Without --ctx: a running server keeps its context, a new one starts with auto.
+                                 --ctx auto also restarts a server that runs a fixed context (e.g. one started
+                                 with --ctx 32768).
+  --chunk <N>, -Chunk            prompt chunk size in tokens (default per model: 27B 4096; 35B 8192; Gemma 4 26B
+                                 and Flash Next 2048; 512 when the decoded weights stay resident, as on the 4B /
+                                 9B / E4B; Gemma with images at least 2048). Smaller chunks need less GPU
+                                 memory, which the auto context turns into more context: 27B with
+                                 --chunk 1024 -> ~65K tokens at 17.4 GiB, 118,784 at 18.3 GiB; ~11K-token
+                                 prompts ~4 % slower, long prompts the same speed.
+  --session-cache <GB>           keep conversations on disk (%USERPROFILE%\.inferzero\zero\sessions) when you switch
+  (also -SessionCache)           Pi sessions: going back to one loads it in seconds instead of processing its
+                                 whole prompt again (default: 8 GB, all models together; 0 = off). New sessions always reuse the
+                                 system prompt (in memory; from disk after a restart or a model switch).
+  --slots <N>, -Slots            the server holds N conversations at once (default 1): start the first Pi with
+                                 --slots 2, a second Pi (another terminal, plain zero-pi) shares the server; each
+                                 keeps its own KV cache and they take turns step by step; while both write their
+                                 answers, their next tokens run in one pass (27B prose 7.3 -> 10.5 tok/s together,
+                                 35B 20.2 -> 24.7). Each slot gets the context that fits N of them (27B: 2 x 49,152
+                                 tokens, 35B: 2 x 65,536, g26: 2 x 32,768)
+  --npu on|off, -Npu             the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
+                                 (Qwen3.8 27B +15 %, Gemma 4 12B +10 %; other models stay off). Kept when you switch
+                                 models (/model, zero-pi on another model) and on a restart; off after zero-server stop
+  --precise, -Precise            Qwen3.8 Flash Next's precise mode: KL 0.0186 -> 0.0127 at 3.5K tokens (under the
+                                 0.015 limit), prompts about half as fast; kept like --npu (--no-precise: off)
+  --help, -h, -?, /?, help       the short help;  --help-all: this text
+
+  A launcher option that differs from what the running server uses restarts the server (loading takes
+  5-40 s). Without launcher options the running server is kept as it is.
+
+PI OPTIONS (passed to Pi unchanged; all of them: pi --help)
+  -c, --continue                 continue the last Pi session in this folder
+  -r, --resume                   choose a session of this folder to resume
+  --session <path|id>            open a specific session (file or part of its id)
+  --fork <path|id>               copy a session into a new one and continue there
+  -n, --name <name>              name the session (shown in -r)
+  --no-session                   do not save the session
+  -p, --print                    answer the message and exit (no interactive screen)
+  "message" / @file              a first message; @file attaches a file (an image when the model has vision)
+  -t, --tools <list>             only these tools (e.g. read,grep,find,ls = read-only); --no-tools: none
+  -xt, --exclude-tools <list>    every tool except these
+  -nc, --no-context-files        do not load AGENTS.md / CLAUDE.md (a shorter system prompt)
+  --system-prompt / --append-system-prompt <text>  replace / extend Pi's system prompt
+  --export <session> [file.html] write a session as HTML and exit
+  Resuming a session the server still holds is instant; otherwise its whole conversation is processed again
+  (unless the session cache saved it; on by default).
+  zero-pi gives Pi --model inferzero/<id> and --thinking itself. Pi's model list (provider "inferzero") is written
+  to %USERPROFILE%\.pi\agent\models.json: every model the server finds, each with its context for the current
+  GPU memory (the running one's as the server reports it); other providers are kept. It is rescanned on every
+  zero-pi and zero-server start: a model deleted from the Hugging Face cache leaves Pi's /model.
+
+SERVER COMMANDS (zero-server)
+  zero-server start [options]     start the server or switch the model; same model choice as zero-pi
+  zero-server restart [options]   restart with other options
+  zero-server status              running model, its file, context and chunk size, saved conversations
+  zero-server stop                stop the server and free the GPU memory
+  zero-server clear-cache         delete all saved conversations (session cache)
+  zero-server record [-App Zoom.exe] [-NoMic] [-Title "..."]   record a meeting in the background (your
+                                 microphone as "Me", the app's or the speakers' sound as "Others");
+                                 zero-server record-stop: the server transcribes it (web UI, Meetings tab);
+                                 zero-server record-status
+  zero-server list                the models on this PC (id, shortcut, size, auto context); -Json for scripts
+  zero-server logs [-Follow]      the server's log      zero-server doctor   a check to paste into a GitHub issue
+  zero-server version [-Check]    this package, and whether a newer one is out
+  zero-server pull <keys>         download models (4b 9b 35b 27b g12 g31 e4b asr whisper; pull alone lists them)
+  zero-server presets             saved option sets; save-preset -Preset <name> [options]; start -Preset <name>
+  zero-server start ... -DryRun   check the options, print the serverz.exe command and a GPU memory estimate
+  zero-server help [options|writing|errors|all]   its own help; its options:
+    -Model <shortcut|text|path>  -Ctx <N|auto>  -Chunk <N>  -SessionCacheGb <N>  -NoMtp  -Vision on|off  -NoStream
+    -Slots <N>  -Npu on|off  -Precise / -NoPrecise  -Whisper auto|on|off|<folder>  -WhisperDevice gpu|npu  -Asr auto|off|<file>
+    -WhisperMaxMinutes <N>  (speech to text: Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; for the web
+    UI's Transcripts / Meetings tabs, voice messages and /v1/audio/transcriptions; kept until stop)
+    -Port <N> (default 8090)  -MtpDrafts <1..7>  -ThinkBudget <N>  -ImageMinTokens / -ImageMaxTokens <N>
+    -BudgetGb <GB>  -AttnF32  -NoPrefixCache  -PrefixCacheGb <N>  -NoSwap  -ListenHost <addr>  -SessionDir <dir>
+    -Preset <name>  -Drafter auto|mtp|dflash|off|<folder>  -DryRun  -Quiet
+    exit codes: 0 ok, 1 wrong option, 2 the server stopped while loading, 3 timeout, 4 port in use
+  zero-launcher.cmd (project folder)  a window: every model and variant with its memory and automatic context, a
+                                 field for every option (speech to text too) and whether they fit the GPU memory,
+                                 presets, Start / Stop, the running server's GPU memory, requests, speeds and live
+                                 log; More: speech only, Copy the start command, Record, doctor, updates. A tray icon;
+                                 the server keeps running when it is closed
+
+SERVER DIRECTLY (bin\serverz.exe; zero-server passes these for you; details:
+bin\serverz.exe --help)
+  -m, --model <model.gguf>       model file              --port <N>          port (default 8080)
+  -c, --ctx <N|auto>             context                 --chunk <N>         prompt chunk size
+  --alias <name>                 model id in the API     --mtp               speculative decoding
+  --mtp-drafts <N>               drafts per step (27B 7, 35B 5, 4B and Gemma 26B 3, else 2; 7 with DFlash2)
+  --draft auto|mtp|dflash        with a DFlash2 drafter: both (auto), the MTP block only, DFlash2 only (the
+                                 -nodf / -df variants)
+  --think-budget <N>             close reasoning after N tokens
+                                                                             (zero-server: 8192)
+  --mmproj <file> / --no-mmproj  image projector (the models that read images; found next to the model)
+  --session-cache-gb <N>         disk session cache      --session-dir <dir> where it is kept
+  --no-prefix-cache              do not keep system prompts on disk
+  --prefix-cache-gb <N>          disk space for them, all models together (default 8)
+  --no-swap                      keep the loaded model (requests for another model are not switched to)
+  --host <addr>                  listen address (default 127.0.0.1)
+  --attn-f32                     f32 attention (tests)   --budget <GB>       keep decoded weights resident up to GB
+  --slots <N>                    hold N conversations at once, taking turns step by step
+  --npu on|off|force             the NPU next to the GPU for prompt chunks (on: 27B, Gemma 4 12B; force: all)
+  --whisper auto|on|<dir>|off    speech to text (Whisper large-v3; turbo when large-v3 is not cached; <dir>: the
+                                 folder that holds model.bin)
+  --whisper-device gpu|npu       Whisper's encoder on the iGPU or the NPU
+  --asr auto|<file>|off          Qwen3-ASR next to Whisper, the default speech model (needs --whisper)
+  --whisper-max-minutes <N>      longest upload / chat clip (default 180; library files up to 6 hours)
+  --no-web-tools                 no web_search / web_fetch for the web UI
+  --no-terminal                  no run_command (the web UI's terminal tool)
+  --webui <dir>                  web UI folder           --kernels <dir>     kernel folder (zero\kernels)
+  --list-models                  the models zero-server's list shows, as JSON
+  --help, -h                     every option with its default
+  API: http://127.0.0.1:8090/v1 (OpenAI chat completions), web UI http://127.0.0.1:8090/,
+       /health, /props (also GPU memory by part and request stats), /tokenize, /sessions (GET size, DELETE clear),
+       with --whisper: /v1/audio/transcriptions and /translations, /v1/transcripts (the library), /v1/live
+
+WRITING OPTIONS
+  dashes and case                zero-pi and zero-server take one dash or two, any case: --think off = -Thinking off,
+                                 --whisper auto = -Whisper auto. bin\serverz.exe itself takes two dashes only.
+                                 Pi's own options (-p, -c, -r, --tools ...) are written as Pi documents them.
+  order                          the model shortcut first, then launcher options, then Pi's options and message:
+                                 zero-pi 35b --think high -p "explain main.cpp"
+  on / off                       on, yes, true, 1 or off, no, false, 0 (--vision, --npu; --whisper on = auto)
+  paths                          in quotes when they have spaces: -Model "C:\My models\x.gguf". Never end a quoted
+                                 path with a backslash ("C:\folder\" makes the quote part of it): "C:\folder".
+                                 -Model: a .gguf FILE; --whisper: the FOLDER that holds model.bin; --asr: a .gguf
+                                 FILE. Usually not needed: shortcuts and auto find them (zero-server help writing
+                                 has the exact folders).
+
+WHEN IT FAILS
+  the server stopped while loading, its last log lines below it
+                                 the server's message says what was wrong and what it expects, e.g.
+                                 "--whisper: '...' holds no model.bin: give the folder that has it",
+                                 "-m: '...' is a folder: give the .gguf file in it", "--npu: expected on, off or force
+                                 (got "maybe")", "unknown option --wisper (did you mean --whisper ...?)"
+  zero-pi: --think needs a value (...) / --chunk takes a number of tokens (got '...')
+                                 the option needs a value of that kind right after it
+  -Whisper / -Asr / -Npu: expected ... (got '...')
+                                 zero-server checked the value before starting: write one it names
+  'x' matches no model           the list printed with it has every id and shortcut
+  Pi says the model is unknown   zero-pi writes Pi's model list on every start; run zero-pi once more (or --pick)
+  zero-server help errors         the full list of server messages and what to do
+
+FILES
+  %USERPROFILE%\.inferzero\server.log     server log (earlier starts': logs\server_<date>_<time>.log, the newest 10): load time, context, per-request prompt / generation speed,
+                                          system-prompt cache loads and saves
+  %USERPROFILE%\.inferzero\server.json    what zero-server started (model, context, chunk)
+  %USERPROFILE%\.inferzero\last-model.txt the model started last (zero-pi starts it again by default)
+  %USERPROFILE%\.inferzero\kernels        compiled GPU kernels (cache)
+  %USERPROFILE%\.inferzero\zero\         inferzero's data:
+    ctx-auto.txt                          computed contexts per model and GPU memory
+    sessions                              saved conversations (--session-cache)
+    prefix                                saved system prompts, per project folder (Pi's differs per
+                                          project: it contains the folder and its AGENTS.md)
+    models\<name>\*.experts / *.lru       MoE expert files (written once per model) and their cache state, for a
+                                          GGUF outside the data folder (source.txt names it); one inside it has its
+                                          expert file next to it. Loose *.experts here: from before 2026-11-09
+  %USERPROFILE%\.inferzero\build.log      compiler output of the last setup.cmd build
+'@
+    exit 0
+  }
+  if ($a -in "--help", "-h", "-?", "/?", "help") {
+    Write-Host @'
+zero-pi: the Pi coding agent on the local inferzero server (Intel Arc iGPU).
+
+  zero-pi                         start Pi on the model the server runs, else the one used last
+  zero-pi -c                      continue the last Pi session in this folder (zero-pi -r: choose a session)
+  zero-pi 35b                     start on a model: 35b, 27b, flash (Qwen3.8 Flash Next), 9b, 4b, g12, e4b, g26
+  zero-pi 35b-nodf / 35b-df       drafting with the MTP block only (prose, Indonesian) / DFlash2 only (code)
+  zero-pi --pick                  choose from the list of every model on disk
+  zero-pi --think off             no reasoning (fastest answers); minimal / low (default) / medium / high
+  zero-pi -p "summarize x.md"     answer one message and exit (any other Pi option works too)
+  zero-server stop                stop the background server (frees the GPU memory)
+  zero-server start -Whisper auto speech to text too: the web UI's Transcripts / Meetings tabs and voice messages
+                                 (Qwen3-ASR by default, Whisper large-v3, Gemma 4 E4B; ~8 GB of GPU memory)
+  zero-server record -App Zoom.exe   record a meeting (record-stop: transcribed in the Meetings tab)
+  web UI                         http://127.0.0.1:8090/ while the server runs
+
+In Pi: /model switches the model (5-40 s), Esc stops the answer, /new starts a new session, /compact
+shortens a long conversation (the details it drops are gone for the model).
+
+  zero-pi --help-all              every option: models and variants, context, chunk size, caches, server
+                                 (and WRITING OPTIONS: dashes, on / off, paths; WHEN IT FAILS: what an error means)
+'@
+    exit 0
+  }
+  elseif ((Test-Shortcut $a) -and $piArgs.Count -eq 0) { $model = $(if ($a.ToLower() -eq "35b-m") { "35b" } else { $a.ToLower() }) }
+  elseif ($a -in "--pick", "-Pick") { $pick = $true }
+  elseif ($a -in "--session-cache", "-SessionCache", "--session-cache-gb", "-SessionCacheGb") {
+    $sessGb = Need-Number $a (Need-Value $args $i $a "GB, 0 = off") "GB, 0 = off"; $i++
+  }
+  elseif ($a -in "--think", "--thinking", "-Thinking", "-Think") {
+    $thinking = (Need-Value $args $i $a "off, minimal, low, medium, high, xhigh or max").ToLower(); $i++
+    if ($thinking -notin "off", "none", "minimal", "low", "medium", "high", "xhigh", "max") {
+      Write-Host "zero-pi: $a takes off, minimal, low, medium, high, xhigh or max (got '$thinking')" -ForegroundColor Red; exit 1
+    }
+  }
+  elseif ($a -in "--zero-model", "--arc-model", "-Model", "--model-name", "--model") {  # (--model: Pi's own option, taken here so
+    $model = (Need-Value $args $i $a "a shortcut, a model id or name, or a .gguf file") -replace '^(arcinfer|arcinferzero|inferzero)/', ''; $i++
+  }  # (that Pi gets only the one zero-pi sets)
+  elseif ($a -in "--ctx", "-Ctx") {
+    $ctx = (Need-Value $args $i $a "a number of tokens or auto").Trim().ToLower(); $i++
+    if ($ctx -ne "auto" -and $ctx -notmatch '^\d+$') { Write-Host "zero-pi: --ctx takes a number of tokens or auto (got '$ctx')" -ForegroundColor Red; exit 1 }
+  }
+  elseif ($a -in "--chunk", "-Chunk") { $chunk = [int](Need-Number $a (Need-Value $args $i $a "a number of tokens") "a number of tokens"); $i++ }
+  elseif ($a -in "--no-mtp", "-NoMtp") { $noMtp = $true }
+  elseif ($a -in "--no-vision", "-NoVision") { $vision = "off" }
+  elseif ($a -in "--vision", "-Vision" -and $i + 1 -lt $args.Count) { $i++; $vision = ([string]$args[$i]).ToLower() }
+  elseif ($a -in "--preserve-thinking", "-PreserveThinking") { $preserve = $true }
+  elseif ($a -in "--no-stream", "-NoStream") { $noStream = $true }
+  elseif ($a -in "--slots", "-Slots") { $slots = [int](Need-Number $a (Need-Value $args $i $a "1..8") "1..8"); $i++ }  # (conversations at once)
+  elseif ($a -in "--precise", "-Precise") { $precise = "on" }  # (Flash Next's precise mode; kept by zero-server)
+  elseif ($a -in "--no-precise", "-NoPrecise") { $precise = "off" }
+  elseif ($a -in "--npu", "-Npu") { $npu = Need-Value $args $i $a "on or off"; $i++ }  # (the NPU next to the GPU; zero-server checks it)
+  # speech to text, passed to zero-server (which checks the values and paths): before, these went to Pi
+  elseif ($a -in "--whisper", "-Whisper") { $whisper = Need-Value $args $i $a "auto, on, off, or the folder that holds model.bin"; $i++ }
+  elseif ($a -in "--asr", "-Asr") { $asr = Need-Value $args $i $a "auto, off, or a Qwen3-ASR .gguf file"; $i++ }
+  elseif ($a -in "--whisper-device", "-WhisperDevice") { $whDev = Need-Value $args $i $a "gpu or npu"; $i++ }
+  elseif ($a -in "--whisper-max-minutes", "-WhisperMaxMinutes") {
+    $whMax = [int](Need-Number $a (Need-Value $args $i $a "minutes") "minutes"); $i++
+  }
+  else { $piArgs.Add($a) }
+}
+# Which model: the one the server is running, else the one started last, else ask (--pick: always ask).
+. (Join-Path $PSScriptRoot "app-dir.ps1")
+$stateDir = Get-AppDir  # (%USERPROFILE%\.inferzero; renamed from arcinfer once)
+$base = "http://127.0.0.1:8090"
+# the id of the loaded model: the entry marked loaded (the server lists every model it can switch to), else the first
+function Get-LoadedId([int]$TimeoutSec) {
+  $d = @((Invoke-RestMethod "$base/v1/models" -TimeoutSec $TimeoutSec).data)
+  $l = @($d | Where-Object { $_.loaded -eq $true })
+  if ($l.Count) { return $l[0].id } else { return $d[0].id }
+}
+if (-not $model -and -not $pick) {
+  $running = try { Get-LoadedId 2 } catch { $null }
+  $last = Join-Path $stateDir "last-model.txt"
+  if ($running) { $model = $running }
+  elseif (Test-Path $last) {
+    $lp = (Get-Content $last -Raw).Trim()
+    if ($lp -and (Test-Path $lp)) { $model = $lp }
+  }
+}
+$sessArg = @{}; if ($null -ne $sessGb) { $sessArg.SessionCacheGb = $sessGb }  # (not given: the server's default, 8 GB)
+if ($preserve) { $sessArg.PreserveThinking = $true }  # (only when given: a plain start keeps the running server)
+if ($slots -gt 0) { $sessArg.Slots = $slots }  # (only when given, as above)
+if ($npu) { $sessArg.Npu = $npu }  # (not given: a running server keeps its setting, also on another model)
+if ($precise -eq "on") { $sessArg.Precise = $true } elseif ($precise -eq "off") { $sessArg.NoPrecise = $true }
+if ($whisper) { $sessArg.Whisper = $whisper }  # (not given: a running server keeps its speech setting)
+if ($asr) { $sessArg.Asr = $asr }
+if ($whDev) { $sessArg.WhisperDevice = $whDev }
+if ($whMax -gt 0) { $sessArg.WhisperMaxMinutes = $whMax }
+& (Join-Path $PSScriptRoot "zero-server.ps1") start -Model $model -Ctx $ctx -Chunk $chunk @sessArg -NoMtp:$noMtp -Vision $vision -NoStream:$noStream
+if (-not $?) { exit 1 }
+
+# (zero-server start has brought Pi's model list up to date: every model on disk, each with its own context)
+$id = Get-LoadedId 5
+
+$pi = Join-Path $env:USERPROFILE ".pi\agent\bin\pi.cmd"
+if (-not (Test-Path $pi)) { $pi = "pi" }
+& $pi --model "inferzero/$id" --thinking $thinking @piArgs
+exit $LASTEXITCODE

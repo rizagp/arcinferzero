@@ -1,4 +1,4 @@
-// Loading progress for whoever starts the server and waits for it (scripts/arc-server.ps1, the launcher): lines
+// Loading progress for whoever starts the server and waits for it (scripts/zero-server.ps1, the launcher): lines
 //   progress: P % <what>        (P 0-100; -1: a step without a measure, shown as busy)
 // on stderr (the server's log), each step's first and last line and at most one every 0.3 s between. The engine
 // counts the weight bytes it uploads (begin / add), the expert file and the expert cache count their layers / bytes

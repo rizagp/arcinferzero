@@ -90,7 +90,7 @@ stay f16, 24 MB, where int8 left one token of a clip 30 % off). 60 s of a record
 (f16: 0.059 %), encoder 767 -> 503 ms, 0.26 GiB less; the f32 text model fed the f32, f16 and int8 encoder rows
 (`asr_testz --kl-files`, `ref_forward` with `REF_EMB`), 167 transcript positions: KL max 0.000003 (f16) / 0.000002
 (int8), the top token the same everywhere. `ARC_ASR_Q2=0`: the f16 encoder. The server now keeps **one slot** by
-default (`--asr-slots N`, `arc-server -AsrSlots N`, 1-4; each more ~0.6 GiB, faster only for clips over 4 minutes):
+default (`--asr-slots N`, `zero-server -AsrSlots N`, 1-4; each more ~0.6 GiB, faster only for clips over 4 minutes):
 Qwen3-ASR alone 3.15 GiB in the server. No register spills in the encoder's kernels (the driver's `ARC_ZE_KPROPS`
 and ocloc 2026.1); 8 rows per GEMM tile instead of 16 was slower (int8 +7 %, f16 +36 %).
 
@@ -174,7 +174,7 @@ Since 2026-10-28 (the user's choice after the comparisons above) the server's tr
 Gemma 4 12B does not transcribe.
 
 ```
-serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
+serverz -m <chat model> --whisper auto        (zero-server start -Whisper auto)
 ```
 
 - `--whisper auto` loads faster-whisper large-v3 (turbo only when large-v3 is not in the cache) and, next to it,
@@ -186,12 +186,12 @@ serverz -m <chat model> --whisper auto        (arc-server start -Whisper auto)
   Qwen3-ASR decodes as fast as on the command line: the 2:34 recording's 507 tokens in 19.1-19.2 s three times, the
   command line in between 18.9-25.1 s (the laptop's own variation; one 24.1-s server run was that too). Whisper
   large-v3 loaded before or after it on the command line: +2 % at most.
-- **Speech to text without a chat model** (2026-10-31): `serverz -m none` (`arc-server start -Model none`, the
+- **Speech to text without a chat model** (2026-10-31): `serverz -m none` (`zero-server start -Model none`, the
   launcher's **Speech only** button) starts Qwen3-ASR alone when no speech option is given. `/health`, `/props`,
   `/v1/models` and the web UI answer without a chat model, and the first chat request naming a model loads it.
   The encoder's weights and kernels load at start: the first transcript is as fast as the next ones (60 s of audio:
   encoder 0.49 s instead of 4.1).
-- **Qwen3-ASR alone** (2026-10-30): `--asr auto` without `--whisper` (`arc-server start -Asr auto`) loads only
+- **Qwen3-ASR alone** (2026-10-30): `--asr auto` without `--whisper` (`zero-server start -Asr auto`) loads only
   Qwen3-ASR: 3.15 GiB (one slot, the int8 encoder below; 5.37 GiB with 4 slots and the f16 encoder) instead of
   9.76 GiB with Whisper (the 35B then kept 55 % of its experts cached instead of 10 %). Everything above goes to it; what needs Whisper says so: translations and a
   request naming Whisper get 400, a live recording has no text while recording (the pass after Stop writes it), no

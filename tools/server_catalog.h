@@ -647,7 +647,7 @@ static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
   }
 }
 
-// --list-models: the catalog as JSON (scripts\arc-server.ps1 and pi-arc read it). ctx: the context --ctx auto chose
+// --list-models: the catalog as JSON (scripts\zero-server.ps1 and zero-pi read it). ctx: the context --ctx auto chose
 // for this GPU memory (with --mtp when the model has a drafter, default chunk), computed now if not known yet.
 static int list_models() {
   Json out = Json::array();

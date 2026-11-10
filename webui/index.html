@@ -747,7 +747,7 @@ const $ = (id) => document.getElementById(id);
 const thread = $("thread"), input = $("input"), app = $("app");
 let history = [], controller = null, modelId = "", loadedId = "";
 // (the model the user picked in this page's menu; until then the page follows the model the server has loaded, as
-//  arc-server / pi-arc / Pi started it: a chat's own model or the page's last one no longer switched the server back)
+//  zero-server / zero-pi / Pi started it: a chat's own model or the page's last one no longer switched the server back)
 let pickedId = "";
 let ctxLen = 0, used = 0;  // the server's context size; tokens the conversation took at the last reply
 // the loaded model's controls (/props): its thinking switch, Qwen3.8's effort levels, its default sampling

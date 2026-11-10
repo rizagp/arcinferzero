@@ -1,8 +1,8 @@
 # A ready-to-use package of inferzero: dist\inferzero-<version>-win64.zip. Unpacked anywhere, setup.cmd (or
-# arc-launcher.cmd) runs without Visual Studio or Python: the exes come built (static C++ runtime, the OpenMP
+# zero-launcher.cmd) runs without Visual Studio or Python: the exes come built (static C++ runtime, the OpenMP
 # runtime vcomp140.dll next to them), bin\PREBUILT.txt tells setup to keep them, and models download with
 # scripts\hf-get.ps1. What it holds: every file git tracks (sources too, so setup -Rebuild still builds; nothing
-# untracked: no recordings, reports or models), plus bin\ with serverz, runz, transcribez, arc_recorder, clinfo,
+# untracked: no recordings, reports or models), plus bin\ with serverz, runz, transcribez, zero_recorder, clinfo,
 # mgpu_probe, event_probe, replay_probe, membw_probe, ref_forward.
 #   powershell -File scripts\make-package.ps1            build the ten exes, then the zip
 #   powershell -File scripts\make-package.ps1 -NoBuild   the exes as they are in bin\
@@ -10,7 +10,7 @@ param([switch]$NoBuild)
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot
 Set-Location $root
-$exes = @("zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder", "tools\clinfo", "zero\mgpu_probe", "zero\event_probe", "bench\replay_probe", "bench\membw_probe",
+$exes = @("zero\serverz", "zero\runz", "zero\transcribez", "tools\zero_recorder", "tools\clinfo", "zero\mgpu_probe", "zero\event_probe", "bench\replay_probe", "bench\membw_probe",
           "tools\ref_forward")  # (ref_forward: the f32 CPU reference of bench\website_bench.ps1's KL, 2026-11-09)
 if (-not $NoBuild) {
   $srcs = @($exes | ForEach-Object { "$_.cpp" })  # (splatted from a variable: @(...) inline is one argument)
@@ -53,4 +53,4 @@ Copy-Item $omp $bin
 $zip = Join-Path $dist "$name.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
-Write-Host ("{0} ({1:N1} MB): unpack it anywhere, then run setup.cmd (or arc-launcher.cmd once a model is there)" -f $zip, ((Get-Item $zip).Length / 1MB))
+Write-Host ("{0} ({1:N1} MB): unpack it anywhere, then run setup.cmd (or zero-launcher.cmd once a model is there)" -f $zip, ((Get-Item $zip).Length / 1MB))

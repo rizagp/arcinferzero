@@ -38,7 +38,7 @@ $ArcModels = @(
     plain = "Google's small Gemma: hears audio and sees pictures. 16 GB laptops."
     files = @("gemma-4-E4B_q4_0-it.gguf", "gemma-4-E4B-it-mmproj.gguf", "mtp-gemma-4-E4B-it.gguf")
     drafter = @{ repo = "unsloth/gemma-4-E4B-it-qat-GGUF"; file = "mtp-gemma-4-E4B-it.gguf" } },
-  # speech to text (arc-server -Whisper auto): Whisper large-v3, and Qwen3-ASR, the default speech model
+  # speech to text (zero-server -Whisper auto): Whisper large-v3, and Qwen3-ASR, the default speech model
   [pscustomobject]@{ key = "whisper"; name = "Whisper large-v3 (speech to text: words' times, live text)"; repo = "Systran/faster-whisper-large-v3"; gb = 3.1; ram = 16; speech = $true
     plain = "Speech to text with every word's time (subtitles, live text while you talk)."
     files = @("model.bin", "config.json", "tokenizer.json", "preprocessor_config.json", "vocabulary.json") },

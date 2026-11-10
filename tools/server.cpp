@@ -915,7 +915,7 @@ class Server {
   }
   int current_floor() const { return rings_ ? eng_.rewind_floor() : 0; }
 
-  // Saves the held conversation to the session cache and waits until it is on disk (arc-server stop / restart and a
+  // Saves the held conversation to the session cache and waits until it is on disk (zero-server stop / restart and a
   // model switch call it first, so that going back to the conversation afterwards loads it). False when there is
   // nothing worth saving (cache off, already saved, under 1,024 tokens).
 #include "server_cache.h"  // (saved state: prefix cache, sessions)
@@ -1245,7 +1245,7 @@ int main(int argc, char** argv) {
             "  GPU: picked at start: Xe2 / Xe3 GPUs (no 8-lane sub-groups) get 16-lane kernels, and XMX for the prompt\n"
             "  GEMMs when their results match the DP4a kernels' on a test (ARC_NO_XMX=1: DP4a; ARC_NO_SG8=1: 16 lanes)\n"
             "  --kernels DIR         kernel folder (default zero\\kernels);  --webui DIR  web UI folder\n"
-            "  --session-cache-gb N  disk space for saved conversations, all models together (default 0 = off; arc-server\n"
+            "  --session-cache-gb N  disk space for saved conversations, all models together (default 0 = off; zero-server\n"
             "                        and the launcher: 8): switching between conversations loads the other one's state\n"
             "                        instead of processing its prompt again (other models' go first, oldest first)\n"
             "  --session-dir DIR     where they are kept (default " ARC_DATA_HELP "sessions)\n"
@@ -1304,7 +1304,7 @@ int main(int argc, char** argv) {
   if ((so.eo.npu > 0 || (so.eo.npu < 0 && getenv("ARC_NPU") && atoi(getenv("ARC_NPU")) != 0)) && ze_load()) zeInit(0);
   // the speech service before the model: --ctx auto then leaves its GPU memory free (tools/server_speech.h)
   std::unique_ptr<srvwh::Service> wh;
-  loadp::st().on = true;  // ("progress: P % ..." lines while loading: arc-server's and the launcher's progress bar)
+  loadp::st().on = true;  // ("progress: P % ..." lines while loading: zero-server's and the launcher's progress bar)
   try {
     wh = srvsp::start(whisper_opt, whisper_dev, asr_opt, whisper_max_min, so);
   } catch (const std::exception& e) {
@@ -2208,7 +2208,7 @@ int main(int argc, char** argv) {
       // (no model loaded, -m none or a failed switch: none is "loaded", the one started last comes first, as the
       //  model a client taking the first entry then loads)
       std::string last;
-      if (!cur) {  // (written by arc-server: a UTF-8 BOM, CRLF; the catalog's Hugging Face paths mix / and \)
+      if (!cur) {  // (written by zero-server: a UTF-8 BOM, CRLF; the catalog's Hugging Face paths mix / and \)
         std::ifstream f(app_dir() + "/last-model.txt");
         std::getline(f, last);
         if (last.rfind("\xEF\xBB\xBF", 0) == 0) last.erase(0, 3);
@@ -2304,7 +2304,7 @@ int main(int argc, char** argv) {
             cur = load_model(m->path, m->alias, s2);
             cur_so = s2;
             fprintf(stderr, "switched to %s in %.1f s\n", m->alias.c_str(), ms_since(t0) / 1000);
-            // (pi-arc starts with this model next time; not for the transcript service's Gemma 4 E4B requests, which
+            // (zero-pi starts with this model next time; not for the transcript service's Gemma 4 E4B requests, which
             //  carry "x-arc-speech: 1" (tools/server_speech.h attach_e4b): the user did not choose that model)
             if (rq.header("x-arc-speech").empty()) std::ofstream(app_dir() + "/last-model.txt") << m->path << "\n";
           } catch (const std::exception& e) {
@@ -2344,7 +2344,7 @@ int main(int argc, char** argv) {
     std::shared_lock<std::shared_mutex> lk(swap_mu);
     if (cur && cur->tp && cur->tp->broken() && rq.path == "/health")
       return rs.send(503, "application/json",
-                     "{\"status\":\"error\",\"message\":\"a GPU failed or hangs: restart the server (arc-server restart)\"}");
+                     "{\"status\":\"error\",\"message\":\"a GPU failed or hangs: restart the server (zero-server restart)\"}");
     if (!cur) {  // (a chat request naming no model, or an unknown one, while none is loaded)
       Json err = Json::object(), r = Json::object();
       err.set("message", "no chat model is loaded (started with -m none, or the last model switch failed): name one in the request (\"model\": an id of /v1/models)");

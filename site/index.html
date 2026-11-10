@@ -548,10 +548,10 @@ curl http://127.0.0.1:8090/v1/chat/completions \
                      "content": <span class="s">"Summarize docs/architecture.md"</span>}]}'</pre>
         <pre id="code-pi" hidden><span class="c"># starts the server in the background if needed,</span>
 <span class="c"># then opens the Pi coding agent on it</span>
-pi-arc 35b
+zero-pi 35b
 
 <span class="c"># switch models from inside Pi, or run two sessions at once</span>
-arc-server start -Model 27b -Slots 2</pre>
+zero-server start -Model 27b -Slots 2</pre>
         <pre id="code-server" hidden><span class="c"># the server on its own, any GGUF</span>
 .\bin\serverz.exe --model C:\hf\Qwen3.6-35B-A3B-UD-IQ4_XS.gguf `
   --ctx auto --port 8090
@@ -604,7 +604,7 @@ arc-server start -Model 27b -Slots 2</pre>
     </div>
     <div class="steps">
       <div class="step"><h3>Download</h3><p>Get <code>inferzero-&lt;version&gt;-win64.zip</code> from the latest release and unpack it anywhere.</p></div>
-      <div class="step"><h3>Start</h3><p>Double-click <code>arc-launcher.cmd</code>. Windows may ask once: "More info", then "Run anyway".</p></div>
+      <div class="step"><h3>Start</h3><p>Double-click <code>zero-launcher.cmd</code>. Windows may ask once: "More info", then "Run anyway".</p></div>
       <div class="step"><h3>Pick a model</h3><p>Choose one and press "Download and start". The web UI opens at <code>127.0.0.1:8090</code>.</p></div>
     </div>
     <div class="need">

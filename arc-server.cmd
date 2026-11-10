@@ -1,7 +1,4 @@
 @echo off
-rem arc-server from the inferzero folder (scripts\arc-server.ps1), with or without Pi: arc-server help
-rem (setup offers to put this folder on PATH; Windows PowerShell gets its own module path, GitHub #3)
-setlocal
-set "PSModulePath="
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\arc-server.ps1" %*
+rem The old name (before 2026-11-10): the command is zero-server now (zero-server.cmd). Kept so scripts still work.
+call "%~dp0zero-server.cmd" %*
 exit /b %errorlevel%

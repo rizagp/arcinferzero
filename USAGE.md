@@ -15,13 +15,13 @@ Open PowerShell or Terminal in the inferzero folder, then run:
 
 The setup is safe to run again (steps that are already done are skipped): it checks the requirements, builds the
 programs (a ready-to-use package keeps its own: no compiler needed), asks which models to download (no Python:
-`curl.exe`, resumed after a cut, SHA256 checked) and connects Pi (the `pi-arc` and `arc-server` commands, callable
+`curl.exe`, resumed after a cut, SHA256 checked) and connects Pi (the `zero-pi` and `zero-server` commands, callable
 from any folder). What it does and its options: [docs/install.md, "Ready-to-use package"](docs/install.md#ready-to-use-package-no-compiler-no-python-no-terminal)
 and ["Quick setup"](docs/install.md#quick-setup). One model's files by hand, the same way:
 `powershell -File scripts\hf-get.ps1 unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-UD-Q4_K_XL.gguf mmproj-F16.gguf`.
 
 Download a model by hand: see [docs/install.md, section 6](docs/install.md#6-download-models) (every model, its shortcut and the
-`hf download` command). `35b` in `setup.cmd` and `pi-arc 35b` is Qwen3.6 35B-A3B UD-IQ4_XS from Unsloth's MTP
+`hf download` command). `35b` in `setup.cmd` and `zero-pi 35b` is Qwen3.6 35B-A3B UD-IQ4_XS from Unsloth's MTP
 repository (MTP and images, 19 GB); `35b-gsq` downloads ISTA-DASLab's GSQ 2-bit version instead and converts it once
 with Python (no MTP; [docs/install.md, section 7](docs/install.md#7-qwen36-35b-a3b-optional-convert-the-gsq-checkpoint)). Qwen3.8
 Flash Next (`flash`) and the DFlash2 drafters are not downloaded by setup.
@@ -30,42 +30,42 @@ Flash Next (`flash`) and the DFlash2 drafters are not downloaded by setup.
 
 1. Open a terminal in the project folder you want to work on. In File Explorer: open the folder, right-click an
    empty area, then choose **Open in Terminal**.
-2. Run `pi-arc`. On first use, the server is started in the background first (5–40 s until "Ready" appears), then
+2. Run `zero-pi`. On first use, the server is started in the background first (5–40 s until "Ready" appears), then
    Pi opens.
 3. Type your requests in Pi as usual.
 
 | Command | What it does |
 |---|---|
-| `pi-arc` | The model that is running or was used last (the first time: choose from a list) |
-| `pi-arc --pick` | Choose a model from the list of every downloaded model, by full name |
-| `pi-arc 27b` | Qwen3.8 27B: very smart, slowest |
-| `pi-arc 35b` | Qwen3.6 35B-A3B: smart and fast (mixture of experts, only ~3B active parameters per token) |
-| `pi-arc flash` | Qwen3.8 Flash Next: large mixture of experts, slower (~6-7 tokens/s) |
-| `pi-arc g12` | Gemma 4 12B: reads images (attach an image in Pi or the web UI) |
-| `pi-arc e4b` | Gemma 4 E4B: small and fast (~32 tokens/s with its drafter); hears audio: the voice model for Talk in the web UI |
-| `pi-arc g26` | Gemma 4 26B-A4B (Google QAT Q4_0): mixture of experts (~4B active), ~25 tokens/s with its drafter, reads images; 90K context with images, 118K with `--vision off` |
-| `pi-arc 9b` | Qwen3.5 9B: faster, medium quality |
-| `pi-arc 4b` | Qwen3.5 4B: fastest |
-| `pi-arc --think off` | No thinking (reasoning) phase: much faster answers |
-| `pi-arc --think medium` | Thinks longer for hard tasks (`off` / `minimal` / `low` / `medium` / `high`; default `low`) |
-| `pi-arc 9b --think off` | A fast combination for everyday questions |
-| `pi-arc -c` | Continue the last session in this folder (`pi-arc -r`: choose a session) |
-| `pi-arc -p "explain app/auth.py"` | Other Pi arguments still work, written after the pi-arc options |
-| `pi-arc --ctx 32768` | A different context size (default = the largest that fits, see section 5); `pi-arc --ctx auto` goes back to automatic |
-| `pi-arc --no-mtp` | No speculative decoding (MTP / drafter) |
-| `pi-arc --help` | Every pi-arc option, the server and the files it uses |
+| `zero-pi` | The model that is running or was used last (the first time: choose from a list) |
+| `zero-pi --pick` | Choose a model from the list of every downloaded model, by full name |
+| `zero-pi 27b` | Qwen3.8 27B: very smart, slowest |
+| `zero-pi 35b` | Qwen3.6 35B-A3B: smart and fast (mixture of experts, only ~3B active parameters per token) |
+| `zero-pi flash` | Qwen3.8 Flash Next: large mixture of experts, slower (~6-7 tokens/s) |
+| `zero-pi g12` | Gemma 4 12B: reads images (attach an image in Pi or the web UI) |
+| `zero-pi e4b` | Gemma 4 E4B: small and fast (~32 tokens/s with its drafter); hears audio: the voice model for Talk in the web UI |
+| `zero-pi g26` | Gemma 4 26B-A4B (Google QAT Q4_0): mixture of experts (~4B active), ~25 tokens/s with its drafter, reads images; 90K context with images, 118K with `--vision off` |
+| `zero-pi 9b` | Qwen3.5 9B: faster, medium quality |
+| `zero-pi 4b` | Qwen3.5 4B: fastest |
+| `zero-pi --think off` | No thinking (reasoning) phase: much faster answers |
+| `zero-pi --think medium` | Thinks longer for hard tasks (`off` / `minimal` / `low` / `medium` / `high`; default `low`) |
+| `zero-pi 9b --think off` | A fast combination for everyday questions |
+| `zero-pi -c` | Continue the last session in this folder (`zero-pi -r`: choose a session) |
+| `zero-pi -p "explain app/auth.py"` | Other Pi arguments still work, written after the zero-pi options |
+| `zero-pi --ctx 32768` | A different context size (default = the largest that fits, see section 5); `zero-pi --ctx auto` goes back to automatic |
+| `zero-pi --no-mtp` | No speculative decoding (MTP / drafter) |
+| `zero-pi --help` | Every zero-pi option, the server and the files it uses |
 
-Without a model name, `pi-arc` takes the one the server runs, else the one used last, else asks from a numbered list
-(`pi-arc -Model swift` also chooses by part of a name). Inside Pi, `/model` shows every model; choosing one makes the
-server switch to that model (5–40 s), with its own context. The next `pi-arc` uses the model chosen last. The list
-is rescanned on every `pi-arc` and `arc-server start` / `restart`: a model deleted from the Hugging Face cache
+Without a model name, `zero-pi` takes the one the server runs, else the one used last, else asks from a numbered list
+(`zero-pi -Model swift` also chooses by part of a name). Inside Pi, `/model` shows every model; choosing one makes the
+server switch to that model (5–40 s), with its own context. The next `zero-pi` uses the model chosen last. The list
+is rescanned on every `zero-pi` and `zero-server start` / `restart`: a model deleted from the Hugging Face cache
 disappears from it.
 
 The server keeps running after Pi is closed. The next session is ready right away without loading the model again,
-and a repeated prompt (for example Pi's system prompt) comes from the cache. If `pi-arc` is called with another
+and a repeated prompt (for example Pi's system prompt) comes from the cache. If `zero-pi` is called with another
 model, the server switches models automatically.
 
-**Thinking.** Pi sends the effort and a thinking budget per level (`pi-arc --think`, or Pi's `/thinking`), so the
+**Thinking.** Pi sends the effort and a thinking budget per level (`zero-pi --think`, or Pi's `/thinking`), so the
 server's `--think-budget` does not apply to it:
 
 | Pi level | budget Pi sends | server |
@@ -79,22 +79,22 @@ server's `--think-budget` does not apply to it:
 The effort reaches the chat template only where it uses one (Qwen3.8 27B); the budget applies to every model.
 
 **Sessions.** A new session always starts empty: Pi only sends its system prompt and your message, so the model does
-not see the conversation of an earlier session. To continue a conversation, use `pi-arc -c` or `pi-arc -r`. What the
+not see the conversation of an earlier session. To continue a conversation, use `zero-pi -c` or `zero-pi -r`. What the
 server processes (times on the 27B; how the caches work: [docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand)):
 
 | You | The server processes |
 |---|---|
 | keep working in a session (agent loop) | only what is new: 5–7 s before the model starts writing, even 27K tokens into a session |
-| open a new session (`pi-arc`, `/new`) in a project used before | only your message: the project's ~4K-token system prompt comes from memory or disk (~4–5 s instead of ~40 s), also after a server restart or a model switch |
+| open a new session (`zero-pi`, `/new`) in a project used before | only your message: the project's ~4K-token system prompt comes from memory or disk (~4–5 s instead of ~40 s), also after a server restart or a model switch |
 | open the first session in a new project folder | its system prompt once (~40 s); it is then kept for that folder (`%USERPROFILE%\.inferzero\zero\prefix`, its 2 latest versions, all models together at most 8 GB: `--prefix-cache-gb`) |
-| continue a session (`pi-arc -c`, `pi-arc -r`, `/resume`) right after closing it | only your new message (the server still holds that conversation) |
-| ... after another session or project used the server | only the new message: the session cache (on by default, 8 GB for all models together: the launcher's "Session cache" field or `-SessionCacheGb N`; `pi-arc --session-cache 0` turns it off) loads it from disk in seconds |
-| ... after `arc-server restart` / `stop` or a model switch | only the new message: the held conversation is saved first and loaded from disk (lost only if the server process is killed) |
+| continue a session (`zero-pi -c`, `zero-pi -r`, `/resume`) right after closing it | only your new message (the server still holds that conversation) |
+| ... after another session or project used the server | only the new message: the session cache (on by default, 8 GB for all models together: the launcher's "Session cache" field or `-SessionCacheGb N`; `zero-pi --session-cache 0` turns it off) loads it from disk in seconds |
+| ... after `zero-server restart` / `stop` or a model switch | only the new message: the held conversation is saved first and loaded from disk (lost only if the server process is killed) |
 | press Esc | nothing more: the server stops within ~1 s while reading the prompt, before the next token while writing; your next message only processes what is new |
 
 ## 3. Managing the server
 
-**Through the window:** double-click `arc-launcher.cmd` in the project folder. The window shows:
+**Through the window:** double-click `zero-launcher.cmd` in the project folder. The window shows:
 - every model and its variants in the Hugging Face cache (MTP, images, auto context, GPU memory at that context,
   file size, its id for Pi's `/model`, compatible or not); the running one is green;
 - for the selected model: what it supports and how the auto context is counted (GPU memory minus 0.5 GiB for the
@@ -105,7 +105,7 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
   `--no-swap`, f32 attention) appear after ticking "Show advanced options";
 - under the context field, **GPU memory**: whether the options as set fit (green) or may not (red): the model's
   weights, buffers and encoders plus the context asked (per conversation slot) plus speech to text, against the GPU
-  memory less the driver's share. An estimate (the same as `arc-server start ... -DryRun`); with `auto` the server
+  memory less the driver's share. An estimate (the same as `zero-server start ... -DryRun`); with `auto` the server
   makes it fit itself;
 - three tabs: **Running server** (model, filled context, a GPU memory bar and the memory per part, number of
   requests, the last prompt and answer speed, the share of MTP drafts accepted, the `serverz.exe` command line),
@@ -121,25 +121,25 @@ server processes (times on the 27B; how the caches work: [docs/server.md, "Run t
   and a cut connection is **tried again without end** (5 s, then up to 60 s between tries; Pause stops it). A repository
   that asks you to accept its terms (Gemma) needs a read token in `HF_TOKEN` or `hf auth login`. The files go into the
   Hugging Face cache, where the server finds them;
-- **Speech to text only** (More): the server with Qwen3-ASR and no chat model (`arc-server start -Model none`;
+- **Speech to text only** (More): the server with Qwen3-ASR and no chat model (`zero-server start -Model none`;
   Whisper too when the Speech field says `auto`), for transcripts. Pick a model in the web UI later and the first chat
   loads it.
 
 All fields are filled in automatically with the best values for the selected model (what the server picks itself),
 so just choose a model and press Start. Fields you change turn yellow and only those are sent to the server. "Set
 as default" saves the changed fields (`%USERPROFILE%\.inferzero\launcher.json`) and makes the selected model the
-default one (also for `pi-arc` without a model name); "Reset options" goes back to the best values. The Start / Stop
-buttons use `arc-server`, so the server keeps running after the window is closed. "Copy the start command" puts the
+default one (also for `zero-pi` without a model name); "Reset options" goes back to the best values. The Start / Stop
+buttons use `zero-server`, so the server keeps running after the window is closed. "Copy the start command" puts the
 command that starts the server that way (the selected model, the options as set) on the clipboard, for a script
-or shortcut of your own (`powershell -NoProfile -ExecutionPolicy Bypass -File "...\scripts\arc-server.ps1" start
--Model ...`); the "Running server" tab and `arc-server status` show the `serverz.exe` command line it ran. (The window text is in English:
+or shortcut of your own (`powershell -NoProfile -ExecutionPolicy Bypass -File "...\scripts\zero-server.ps1" start
+-Model ...`); the "Running server" tab and `zero-server status` show the `serverz.exe` command line it ran. (The window text is in English:
 prompt cache = saved conversations, prefix cache = saved system prompt.) The same numbers come from
 `serverz.exe --list-models` ("memory", "defaults") and the server's `/props` ("memory", "stats").
 
 **Presets.** The Preset row at the top of the options keeps named sets: choose the model and the options, then "Save
 as...". Picking a preset selects its model and fills in its options; Delete removes it. They are files in
-`%USERPROFILE%\.inferzero\presets\<name>.json`, written with `arc-server`'s own option names (`{"Model": "35b",
-"Ctx": "65536", "Npu": "on"}`), so `arc-server start -Preset <name>` starts the same from a terminal or a script.
+`%USERPROFILE%\.inferzero\presets\<name>.json`, written with `zero-server`'s own option names (`{"Model": "35b",
+"Ctx": "65536", "Npu": "on"}`), so `zero-server start -Preset <name>` starts the same from a terminal or a script.
 
 **Messages, tray, updates.** Errors and notices appear in a bar under the title (with "Copy details" and, for a
 failed start, "Show log") instead of boxes that stop the window. Minimized, the window waits in the tray (right-click:
@@ -150,40 +150,40 @@ window follows Windows' light or dark mode and accent colour (`-Theme light|dark
 The thinking budget in the launcher only applies to clients that do not send their own budget (web UI, other
 apps). Pi sends its own budget according to its `/thinking` level (section 2).
 
-**Through the terminal:** `arc-server` is installed with Pi (`~\.pi\agent\bin`); without Pi it is `arc-server.cmd`
+**Through the terminal:** `zero-server` is installed with Pi (`~\.pi\agent\bin`); without Pi it is `zero-server.cmd`
 in the inferzero folder, which setup offers to put on your PATH.
 
 ```powershell
-arc-server list                # the models on this PC: id, shortcut, size, auto context, MTP, images
-arc-server pull 4b             # download a model of the catalog (pull alone lists them: 4b 9b 35b 27b g12 g31 e4b asr whisper)
-arc-server status              # whether the server is running, which model is loaded, size of the conversation cache
-arc-server status -Json        # the same as JSON, for scripts (also list, presets, doctor, version)
-arc-server logs -Follow        # the server's log, new lines as they come (Ctrl+C ends it)
-arc-server doctor              # checks the exes, driver, GPU, NPU, disk, port and other GPU programs: paste it into an issue
-arc-server version -Check      # this package's version, and whether a newer one is out
-arc-server start -Model 27b -Ctx 65536 -DryRun   # check the options, print the serverz.exe command and the memory estimate
-arc-server save-preset -Preset long -Model 27b -Ctx 65536 -Npu on   # save options under a name
-arc-server start -Preset long  # start with them (an option given here wins over the preset's)
-arc-server start -Model 27b -Drafter off   # speculative decoding: auto, mtp, dflash, off, or a DFlash2 folder
-arc-server stop                # stop the server and free the GPU memory (12–16 GB depending on the model)
-arc-server clear-cache         # delete every saved conversation (session cache; on by default, turn off with pi-arc --session-cache 0)
-arc-server start -Model 9b     # start with a particular model without opening Pi
-arc-server start -Model 27b -Ctx 32768 -NoMtp
-arc-server start -Model 27b -Ctx auto   # back to the automatic context (restarts a server with a fixed context)
-arc-server restart             # restart, for example after the GPU memory setting was changed
-arc-server start -Model 35b -MtpDrafts 2 -ThinkBudget 4096 -NoSwap   # other options (see arc-server help)
-arc-server help                # the common commands and options; help options / writing / errors / all for the rest
+zero-server list                # the models on this PC: id, shortcut, size, auto context, MTP, images
+zero-server pull 4b             # download a model of the catalog (pull alone lists them: 4b 9b 35b 27b g12 g31 e4b asr whisper)
+zero-server status              # whether the server is running, which model is loaded, size of the conversation cache
+zero-server status -Json        # the same as JSON, for scripts (also list, presets, doctor, version)
+zero-server logs -Follow        # the server's log, new lines as they come (Ctrl+C ends it)
+zero-server doctor              # checks the exes, driver, GPU, NPU, disk, port and other GPU programs: paste it into an issue
+zero-server version -Check      # this package's version, and whether a newer one is out
+zero-server start -Model 27b -Ctx 65536 -DryRun   # check the options, print the serverz.exe command and the memory estimate
+zero-server save-preset -Preset long -Model 27b -Ctx 65536 -Npu on   # save options under a name
+zero-server start -Preset long  # start with them (an option given here wins over the preset's)
+zero-server start -Model 27b -Drafter off   # speculative decoding: auto, mtp, dflash, off, or a DFlash2 folder
+zero-server stop                # stop the server and free the GPU memory (12–16 GB depending on the model)
+zero-server clear-cache         # delete every saved conversation (session cache; on by default, turn off with zero-pi --session-cache 0)
+zero-server start -Model 9b     # start with a particular model without opening Pi
+zero-server start -Model 27b -Ctx 32768 -NoMtp
+zero-server start -Model 27b -Ctx auto   # back to the automatic context (restarts a server with a fixed context)
+zero-server restart             # restart, for example after the GPU memory setting was changed
+zero-server start -Model 35b -MtpDrafts 2 -ThinkBudget 4096 -NoSwap   # other options (see zero-server help)
+zero-server help                # the common commands and options; help options / writing / errors / all for the rest
 ```
 
 The server log is `%USERPROFILE%\.inferzero\server.log`. Each start writes it anew; the earlier servers' logs are
 kept in `logs\` next to it, named by the local date and time of their last line
-(`server_2026-11-09_14-13-48.log`), the newest 10. The server uses port 8090. For scripts, `arc-server`'s
+(`server_2026-11-09_14-13-48.log`), the newest 10. The server uses port 8090. For scripts, `zero-server`'s
 exit code says what happened: 0 ok, 1 a wrong option or value, 2 the server stopped while loading, 3 not ready within
 10 minutes, 4 the port is used by another program.
 
-**Writing the options** (`arc-server help writing` and `arc-server help errors` have the full list; `pi-arc
+**Writing the options** (`zero-server help writing` and `zero-server help errors` have the full list; `zero-pi
 --help-all` too):
-- `arc-server` and `pi-arc` take one dash or two, in any case: `-Whisper auto`, `--whisper auto` and
+- `zero-server` and `zero-pi` take one dash or two, in any case: `-Whisper auto`, `--whisper auto` and
   `-whisper AUTO` are the same. `bin\serverz.exe` itself takes two dashes only (`--whisper auto`).
 - On / off values: `on`, `yes`, `true`, `1` or `off`, `no`, `false`, `0`; `-Whisper on` is `-Whisper auto`.
 - Paths with spaces go in quotes, and a quoted path never ends in a backslash (`"C:\folder\"` makes the closing
@@ -192,7 +192,7 @@ exit code says what happened: 0 ok, 1 a wrong option or value, 2 the server stop
 - A wrong option or value stops before anything loads, with what it expects: `unknown option -Whispr: did you mean
   -Whisper?`, `-Npu: expected on, off (got 'maybe')`, `-Whisper: '...\model.bin' is a file: give the folder that
   holds model.bin, ...`, `--whisper needs a value (auto (or on), off, or a faster-whisper folder with model.bin)`.
-- `arc-server start` without `-Model` shows the numbered list in a console. Where no one can type a number (a
+- `zero-server start` without `-Model` shows the numbered list in a console. Where no one can type a number (a
   script, a scheduled task, a redirected input), it keeps the running server, else starts the model used last.
 
 **inferzero (the engine):** the server runs through Level Zero (Intel's GPU driver). For
@@ -201,9 +201,9 @@ cache): the context can reach 262K together with images and MTP. The automatic c
 sizes the expert cache, because a small cache makes generation pause for SSD reads (section 5).
 
 ```powershell
-arc-server start -Model 35b          # experts streamed from the SSD
-pi-arc 35b
-pi-arc 35b --no-stream               # without the SSD cache: every expert on the GPU (a smaller context)
+zero-server start -Model 35b          # experts streamed from the SSD
+zero-pi 35b
+zero-pi 35b --no-stream               # without the SSD cache: every expert on the GPU (a smaller context)
 ```
 
 On first use, inferzero writes the expert file once (35B UD-IQ4_XS: 16 GB, about 2.5 minutes; Flash Next: 56 GB, about 9.5 minutes):
@@ -213,7 +213,7 @@ next to the GGUF when the GGUF is inside `%USERPROFILE%\.inferzero` (its `models
 names a folder whose GGUF is gone (it deletes nothing itself). Expert files from before 2026-11-09 lie loose in
 `zero\` and move to their place the next time their model is loaded. An expert file can be deleted at any time; when
 it is missing, it is written again automatically. The cache size is set automatically: inferzero uses the GPU memory Windows reports for the iGPU (your
-shared-memory setting) less 0.5 GiB for the driver (`-DriverReserveGb N` on `arc-server`, `--driver-reserve-gb N` on serverz / runz, or `ARC_DRIVER_RESERVE_GB`, changes it), and the cache takes what the rest of the model leaves (it can be
+shared-memory setting) less 0.5 GiB for the driver (`-DriverReserveGb N` on `zero-server`, `--driver-reserve-gb N` on serverz / runz, or `ARC_DRIVER_RESERVE_GB`, changes it), and the cache takes what the rest of the model leaves (it can be
 changed: server options `--expert-cache-gb`, `--expert-cache-pct`). If GPU memory suddenly runs short because of other apps (e.g.
 Chrome), the cache shrinks itself by 1 GB per step instead of crashing.
 
@@ -243,7 +243,7 @@ once from the main model's hidden state, then the main model checks them in a si
 with `--dflash DIR`. The model's MTP block is still used: at each step the server picks DFlash2 while many of its
 drafts are accepted, otherwise MTP; greedy answers are identical to running without a drafter.
 
-A model with a DFlash2 drafter is also listed (Pi's `/model`, `pi-arc --pick`) with one drafter only:
+A model with a DFlash2 drafter is also listed (Pi's `/model`, `zero-pi --pick`) with one drafter only:
 `<id>-nodf` drafts with the MTP block only, `<id>-df` with DFlash2 only (the MTP block is not loaded, which leaves a
 little more GPU memory for the expert cache), e.g. `35b`, `35b-nodf`, `35b-df`; picking one in Pi switches the
 server like another model does. On the command line: `--draft auto|mtp|dflash` (server and `runz`). Which one to
@@ -255,16 +255,16 @@ code), the default (both) when the text is mixed. Speeds of each variant:
 one: [docs/architecture.md, "How it works"](docs/architecture.md#how-it-works), its KL under "Validation"). Conversations saved by an older
 mode are not loaded (they are processed again).
 
-**The NPU next to the GPU (`-Npu on`).** `pi-arc 27b --npu on` (or `arc-server start -Model 27b -Npu on`) lets
+**The NPU next to the GPU (`-Npu on`).** `zero-pi 27b --npu on` (or `zero-server start -Model 27b -Npu on`) lets
 the Intel AI Boost NPU compute part of every prompt chunk while the GPU computes the rest (Qwen3.8 27B and Gemma 4
-12B; generation unchanged). The setting stays with the server across model switches and `arc-server restart`; a
+12B; generation unchanged). The setting stays with the server across model switches and `zero-server restart`; a
 stop turns it off. Which models it helps, its cost and first-use compile: [docs/npu-experiment.md](docs/npu-experiment.md).
 
 **Two conversations at once (`-Slots 2`, inferzero).** By default the server holds one conversation and runs one
 request at a time: a second Pi window waits until the first one's answer is finished, and switching between them
-goes through the session cache. `pi-arc 35b --slots 2` (or `arc-server start -Model 35b -Slots 2`) makes the server
+goes through the session cache. `zero-pi 35b --slots 2` (or `zero-server start -Model 35b -Slots 2`) makes the server
 hold two conversations, each with its own attention cache, DeltaNet states and snapshots; start a second Pi in
-another terminal with plain `pi-arc` and it shares that server. The GPU still runs one step at a time, but the two
+another terminal with plain `zero-pi` and it shares that server. The GPU still runs one step at a time, but the two
 requests take turns step by step (a piece of up to 8,192 prompt tokens, or one generated token / verification
 pass), sharing the GPU time evenly, so a short question is answered while the other session reads a long prompt
 (35B, a 46K-token prompt in one slot: a question sent 2 s later was answered after 9.6 s instead of after the whole
@@ -280,14 +280,14 @@ engine's logits bit-identical alone, interleaved or batched). `ARC_NO_BATCH=1` t
 
 **Qwen3.8 Flash Next (inferzero only).** A MoE model with 512 experts fetched from the SSD (like the 35B). Run
 `serverz.exe` with `-m` pointing to the first file (`...-IQ3_S-00001-of-00002.gguf`); the second file must be in the
-same folder (or use `pi-arc flash` / `arc-server start -Model flash`). The first start writes a 56 GB expert file
+same folder (or use `zero-pi flash` / `zero-server start -Model flash`). The first start writes a 56 GB expert file
 to `%USERPROFILE%\.inferzero\zero\` (~9.5 minutes); later loads through the server take ~21–26 s. It writes ~6–7
 tokens/s (the expert cache holds about a fifth of the experts at 131K); prompts: 166 tokens/s at 4K, ~145-163 at
 9-32K, ~123 at 125K. The automatic context is 131,072; up to 262,144 with `--ctx`. The difference from the CPU
 reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. That is accepted for text work such as
 summaries, where it does not change what is said. For work that needs exactness (code, numbers, quotes), its precise
-mode makes it more exact (0.0127 at 3.5K, under the 0.015 limit) at about half the prompt speed: `arc-server start -Model flash -Precise`
-(`pi-arc flash --precise`, the launcher's "Accuracy" box; kept on a restart and a model switch like `-Npu`,
+mode makes it more exact (0.0127 at 3.5K, under the 0.015 limit) at about half the prompt speed: `zero-server start -Model flash -Precise`
+(`zero-pi flash --precise`, the launcher's "Accuracy" box; kept on a restart and a model switch like `-Npu`,
 `-NoPrecise` turns it off; the server's own option `--precise`, or `ARC_FN_PRECISE=1`). The model file has no MTP
 block, but its MTP head as a file of its own works: put `mtp-Qwen3.8-Flash-Next-Q4_0.gguf` (2.2 GB, from
 [SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF](https://huggingface.co/SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF),
@@ -297,7 +297,7 @@ the base model's head made for llama.cpp; the launcher's Get models takes the li
 reads images with its projector next to it (bartowski's `mmproj-Qwen3.8-Flash-Next-f16.gguf`); the packaged single
 file in `%USERPROFILE%\.inferzero\zero\models` works too.
 
-Stop the server (`arc-server stop`) before using the laptop for other heavy GPU work (games, video editing), or
+Stop the server (`zero-server stop`) before using the laptop for other heavy GPU work (games, video editing), or
 before moving or rebuilding the inferzero folder.
 
 **Discrete Arc cards (experimental).** On a PC with Arc B-series cards (B580, Pro B60, Pro B70), the same server
@@ -388,7 +388,7 @@ While the server is running:
   - There is no answer length limit to set: an answer may use the rest of the context (the reasoning is bounded by
     the server's thinking budget), and **Compact** in the chat header (or automatically when the context is nearly
     full) summarizes the earlier messages.
-- **Recordings that end badly.** A meeting recorder (`arc-server record`) that is killed, a shutdown or a power
+- **Recordings that end badly.** A meeting recorder (`zero-server record`) that is killed, a shutdown or a power
   cut leaves its WAV in `%USERPROFILE%\.inferzero\recordings`: the server picks it up at its next start
   and transcribes it. A live recording whose browser tab closed or lost its connection is stopped once the page has sent
   nothing for 5 minutes, and transcribed as well; a recording of another tab can be stopped with its Stop
@@ -439,7 +439,7 @@ While the server is running:
   The text keeps the image's language. For questions about a document, use Qwen3.5 4B / 9B or Gemma 4 instead
   ([tools/server_ocr.h](tools/server_ocr.h)).
 - **Web UI: Transcripts and Meetings** (the left rail's second and third buttons; the server started with
-  `--whisper auto`, or `arc-server start -Whisper auto`, or with no chat model: `arc-server start -Model none`, the
+  `--whisper auto`, or `zero-server start -Whisper auto`, or with no chat model: `zero-server start -Model none`, the
   launcher's More > "Start speech to text only"; [docs/whisper-native.md](docs/whisper-native.md)).
   - **Transcripts**: drop audio or video files (MP3, M4A, WAV, Ogg / Opus voice notes, MP4, MOV, MKV, WebM, AVI,
     WMV) or choose them; they upload and wait their turn, each with its progress. Pick the **language** (Indonesian, the
@@ -469,9 +469,9 @@ While the server is running:
     too. Afterwards **Summarize** (the loaded chat model writes the summary, decisions, action items and open
     questions with their minute, in the meeting's language) and **Minutes DOCX / PDF** (also in the Files panel).
     A recording made elsewhere can be dropped in the Meetings list too. For a meeting in a desktop app (Zoom,
-    Teams) or a long one: `arc-server record -App Zoom.exe -Title "weekly"` records your microphone and that app's
+    Teams) or a long one: `zero-server record -App Zoom.exe -Title "weekly"` records your microphone and that app's
     sound in the background (without `-App`: everything the speakers play; `-NoMic`: the meeting's sound only),
-    whatever the browser or the server do meanwhile; `arc-server record-stop` ends it, and it appears in the
+    whatever the browser or the server do meanwhile; `zero-server record-stop` ends it, and it appears in the
     Meetings tab, transcribed as Me / Others.
   - **Audio in a chat**: an attached audio file or a voice message reaches every model as text written by
     Qwen3-ASR (Whisper when Qwen3-ASR is off; long recordings as a document the model reads by parts). Settings >
@@ -554,7 +554,7 @@ While the server is running:
   discards it, Send sends it). The headset in the chat header starts **Talk**: the microphone stays on, the end of
   each sentence is detected after a second of quiet, and the answer is read aloud while it is written. Speak while
   it talks to interrupt it; press the headset again to stop. With speech to text on the server (`--whisper auto`, or
-  `arc-server start -Whisper auto`: Qwen3-ASR by default) your speech is written as text first, so both work with
+  `zero-server start -Whisper auto`: Qwen3-ASR by default) your speech is written as text first, so both work with
   every model; without it they need Gemma 4 E4B or 12B, which hear the recording
   themselves. Something you said just before stopping Talk waits in the message box instead of being sent. Pick the reading voice and
   speed in the settings (Windows: Settings > Time & language > Speech adds an Indonesian voice). The audio goes only
@@ -575,7 +575,7 @@ While the server is running:
   - **OpenAI Responses**: `/v1/responses` (used e.g. by Codex CLI); the old **Completions**: `/v1/completions`
     (raw prompt, for code autocomplete).
   - **Audio transcription**: `/v1/audio/transcriptions` (upload an audio file, the result is text), with
-    `--whisper auto` (arc-server `-Whisper auto`): which model answers what is in
+    `--whisper auto` (zero-server `-Whisper auto`): which model answers what is in
     [docs/qwen3-asr.md, "Using it"](docs/qwen3-asr.md#using-it).
 - Embeddings (`/v1/embeddings`) are not available yet: they need an embedding model with an architecture the engine
   does not support yet.
@@ -585,7 +585,7 @@ While the server is running:
   **Stop** cancels it.
 - **Well-formed tool calls** (Gemma 4 and Qwen): the server keeps every tool call valid for the tool's schema
   ([docs/server.md, "Run the server by hand"](docs/server.md#run-the-server-by-hand); `ARC_TOOL_CONSTRAINT=0` turns it off).
-- **Qwen3.6 35B: `pi-arc 35b --preserve-thinking`**: the thinking of earlier turns stays in the prompt (an official
+- **Qwen3.6 35B: `zero-pi 35b --preserve-thinking`**: the thinking of earlier turns stays in the prompt (an official
   option of the Qwen3.6 template; Qwen3.8 27B always does this). Follow-up messages do not process anything again;
   the context fills faster.
 
@@ -612,7 +612,7 @@ print(r.choices[0].message.content)
 Each model uses the largest context that fits the GPU memory currently available (set in Intel Graphics Software,
 a 20.4 GiB GPU share on this laptop now; the amount the driver offers changes with what other apps run), minus 0.5 GiB
 for the driver, or the model's training limit. The context adjusts itself when that setting is changed (run
-`arc-server restart` afterwards). The launcher window shows the current numbers. Examples:
+`zero-server restart` afterwards). The launcher window shows the current numbers. Examples:
 
 | Model | Default context |
 |---|---|
@@ -624,7 +624,7 @@ for the driver, or the model's training limit. The context adjusts itself when t
 | Gemma 4 12B | 262,144 tokens (full) |
 | Gemma 4 E4B | 131,072 tokens (full) |
 
-`pi-arc --ctx N` sets a context, `pi-arc --ctx auto` goes back to the automatic one (restarting a server that runs a
+`zero-pi --ctx N` sets a context, `zero-pi --ctx auto` goes back to the automatic one (restarting a server that runs a
 fixed context). `--chunk 1024` frees 1.1 GiB on the 27B for more context (118,784 at 18.3 GiB; prompts of ~11K
 tokens ~4 % slower, from ~34K on no difference).
 
@@ -672,41 +672,41 @@ Tips:
 - The longest part is usually the thinking phase. `--think off` or `--think minimal` speeds up simple answers.
 - Follow-up requests, new sessions in a project used before and old sessions taken up again only process what is
   new (the caches: section 2). Saved conversations are in `%USERPROFILE%\.inferzero\zero\sessions`;
-  `arc-server clear-cache` deletes them.
+  `zero-server clear-cache` deletes them.
 - A new message in the same session (Qwen 4B / 9B / 35B) only processes the last turn again: the Qwen template drops
   the thinking of earlier turns as soon as you write again, and the server keeps the starting point of that turn
   (inferzero).
-- Stop the server with `arc-server stop` (or the Stop button in the launcher), not by killing its process: only
+- Stop the server with `zero-server stop` (or the Stop button in the launcher), not by killing its process: only
   that way is the conversation being held saved first.
 - A hot laptop slows down by 5–10 %. Do not run other GPU work at the same time.
 
 ## 7. Moving the inferzero folder
 
-1. `arc-server stop`
+1. `zero-server stop`
 2. Move the `inferzero` folder to its new location (File Explorer or `mv`).
 3. Run setup again from the new location: `<new-folder>\setup.cmd -Models none`
 
-Only the `pi-arc` / `arc-server` shortcut commands store the folder location; everything else uses relative paths.
+Only the `zero-pi` / `zero-server` shortcut commands store the folder location; everything else uses relative paths.
 
 ## 8. Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `pi-arc` is not recognized | Run `setup.cmd` (section 1), then open a new terminal. |
+| `zero-pi` is not recognized | Run `setup.cmd` (section 1), then open a new terminal. |
 | Setup fails at the build step | Visual Studio Build Tools (C++) is not installed; setup shows how to install it. The compiler output is in `%USERPROFILE%\.inferzero\build.log`. |
-| "The server stopped while loading", or another model fails to start | Look at the log it shows (`%USERPROFILE%\.inferzero\server.log`). Usually there is not enough GPU memory: another inferzero server or a llama.cpp process holds it (`arc-server stop`, close other GPU programs), or use `--ctx 32768` / a smaller model. |
-| Windows is slow or stops responding while a model loads | The GPU memory is set too high (section 5; seen at 20 GB on a 32 GB laptop): lower it in Intel Graphics Software, then `arc-server restart`. |
+| "The server stopped while loading", or another model fails to start | Look at the log it shows (`%USERPROFILE%\.inferzero\server.log`). Usually there is not enough GPU memory: another inferzero server or a llama.cpp process holds it (`zero-server stop`, close other GPU programs), or use `--ctx 32768` / a smaller model. |
+| Windows is slow or stops responding while a model loads | The GPU memory is set too high (section 5; seen at 20 GB on a 32 GB laptop): lower it in Intel Graphics Software, then `zero-server restart`. |
 | Generation gets slower after a few minutes | The laptop throttles under sustained load (5–10 %); plug in the charger and use a performance power mode. |
 | `web_search` in Pi answers "No results found" or never finishes | Its default search engines are DuckDuckGo and Startpage; DuckDuckGo is blocked in Indonesia, so neither returns results. Add Yandex in `%USERPROFILE%\.pi\agent\settings.json`: `"webSearch": {"engines": ["yandex", "startpage", "duckduckgo"]}` (or with the `/search-config` command in Pi). |
 | A new Pi session takes ~40 s before answering | Normal for the first session in a new project folder (the system prompt is processed once); later sessions in that folder are fast. The server log shows it (`system-prompt cache: saved / loaded ... for <folder>`). |
-| `unknown option ...`, `... needs a value`, `expected ... (got ...)`, `is a folder` / `is a file`, `has a quote in it` | An option was written wrong; the message names what it takes (section 3, "Writing the options"; `arc-server help errors`). A path ending in a backslash inside quotes gives "has a quote in it": leave the last backslash out. |
+| `unknown option ...`, `... needs a value`, `expected ... (got ...)`, `is a folder` / `is a file`, `has a quote in it` | An option was written wrong; the message names what it takes (section 3, "Writing the options"; `zero-server help errors`). A path ending in a backslash inside quotes gives "has a quote in it": leave the last backslash out. |
 | Flash Next does not read images | Its image projector is not in the model's folder: `hf download bartowski/Qwen3.8-Flash-Next-GGUF mmproj-Qwen3.8-Flash-Next-f16.gguf`, copied next to the model (or its package in `%USERPROFILE%\.inferzero\zero\models\<name>\`). |
 | "Model file ... not found" | The model has not been downloaded to the Hugging Face cache yet (see [docs/install.md, section 6](docs/install.md#6-download-models)). |
 | Models moved to another drive | Write the folders (one per line) in `%USERPROFILE%\.inferzero\model-dirs.txt` (or `ARC_MODEL_DIRS`, `;`-separated), e.g. `D:\models` (a Hugging Face cache layout `models--...`, or `.gguf` files directly in that folder). The Hugging Face cache on C: is still searched first, so a model kept in both places loads from there. A plain folder of `.gguf` files (a copied model, e.g. `hub\agentionai-Qwen3.8-27B-AP-GGUF\`) is found one level deep in the Hugging Face cache and in those folders too. A model that is in several places (the same file name and size, such as a backup on another drive, or the GGUF an inferzero package was made from) is listed once: the package, else the Hugging Face cache, else the C: copy. If that drive is removed, its models disappear from the list until the drive is connected again. |
 | Pi stops with a context error | Type `/compact` in Pi, or start a new session. |
 | The answer is very slow at the start | Normal for the first large prompt (see section 6); later ones use the cache. |
-| Want to see what is happening | `arc-server status`, and the log: `arc-server logs -Follow`, the launcher's Log tab, or `%USERPROFILE%\.inferzero\server.log` (prompt processing time, speed, MTP statistics per request). |
-| Something else does not work | `arc-server doctor` (or the launcher's More > "Check this PC") checks the exes, the GPU driver, the NPU, memory and disk, the port and other GPU programs; paste its report into a GitHub issue. |
+| Want to see what is happening | `zero-server status`, and the log: `zero-server logs -Follow`, the launcher's Log tab, or `%USERPROFILE%\.inferzero\server.log` (prompt processing time, speed, MTP statistics per request). |
+| Something else does not work | `zero-server doctor` (or the launcher's More > "Check this PC") checks the exes, the GPU driver, the NPU, memory and disk, the port and other GPU programs; paste its report into a GitHub issue. |
 
 ## 9. Rebuilding from source
 
@@ -714,7 +714,7 @@ Needs Visual Studio 2026 Build Tools (MSVC). From the inferzero folder, `.\setup
 is needed (and stops the server first when `serverz.exe` is rebuilt too). Or by hand:
 
 ```powershell
-arc-server stop
+zero-server stop
 .\build.ps1 zero\serverz.cpp zero\runz.cpp
 ```
 

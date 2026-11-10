@@ -1,7 +1,7 @@
 # Launcher and CLI: what a good first version needs, and a native Windows 11 look
 
 Research report, 2026-11-08. **Status 2026-11-09:** stages 0 and 1 are built (CHANGELOG, 2026-11-09), except
-`serverz --plan`: the memory estimate is computed from `--list-models`' numbers in `arc-server` and the launcher
+`serverz --plan`: the memory estimate is computed from `--list-models`' numbers in `zero-server` and the launcher
 instead. Stages 2 and 3 are not started.
 
 ## Summary
@@ -19,7 +19,7 @@ instead. Stages 2 and 3 are not started.
   a tray icon). It ships with nothing new, because Windows PowerShell 5.1 and .NET Framework 4.8 are on every
   Windows 10 / 11 PC.
 - For a launcher that really looks like a Windows 11 app, the best fit for this project is **a small C++ exe that
-  hosts an HTML page in WebView2** (`bin\arc-launcher.exe`). It is built with the same `build.ps1` / MSVC toolchain
+  hosts an HTML page in WebView2** (`bin\zero-launcher.exe`). It is built with the same `build.ps1` / MSVC toolchain
   as the engine and ships prebuilt in the zip. WebView2 is part of Windows 11. The page reuses the web UI's CSS
   skills, and the window gets Mica from DWM behind a transparent page. WPF with the Fluent theme or WinUI 3 look
   more native, but each needs a .NET or Windows App SDK runtime of 60-200 MB in the zip and a second toolchain.
@@ -32,13 +32,13 @@ instead. Stages 2 and 3 are not started.
 
 | Part | What it is | Notes |
 |---|---|---|
-| `arc-launcher.cmd` | starts `scripts\arc-launcher.ps1` with `pwsh` when present, else `powershell`, hidden, STA | a PowerShell console can still flash or stay visible (issue #5 comment) |
-| `scripts\arc-launcher.ps1` | a WinForms window, 727 lines | model grid; options panel (main + "Show advanced options"); "Selected model" panel (features, auto-context breakdown); "Running server" panel (memory per part, last request speeds, MTP acceptance, command line); a loading progress bar from the server's `progress:` lines; buttons Get models, Start, Speech only, Stop, Set as default, Reset options, Copy command, Refresh list, Open web UI, Open log, and Record / Stop recording with an App field |
+| `zero-launcher.cmd` | starts `scripts\zero-launcher.ps1` with `pwsh` when present, else `powershell`, hidden, STA | a PowerShell console can still flash or stay visible (issue #5 comment) |
+| `scripts\zero-launcher.ps1` | a WinForms window, 727 lines | model grid; options panel (main + "Show advanced options"); "Selected model" panel (features, auto-context breakdown); "Running server" panel (memory per part, last request speeds, MTP acceptance, command line); a loading progress bar from the server's `progress:` lines; buttons Get models, Start, Speech only, Stop, Set as default, Reset options, Copy command, Refresh list, Open web UI, Open log, and Record / Stop recording with an App field |
 | `scripts\launcher-firstrun.ps1` | first-run part | unblocks the zip's files once; checks the GPU driver with `bin\clinfo.exe` and links Intel's driver page; "Get models" dialog with a model picked for the PC's RAM, free disk space, speech add-on, desktop shortcut, background download with progress and resume; starts the model and opens the web UI afterwards (first run only since 2026-11-10) |
 | `scripts\launcher-downloads.ps1` | Downloads dialog (2026-11-10) | the Get models button and More > Download models: several catalog models at once, or a pasted Hugging Face link (repository, folder or file; split parts and an mmproj ticked with it); Pause / Continue, a speed limit, a cut connection tried again without end; runs `scripts\get-models.ps1` in the background |
-| `scripts\arc-server.ps1` | the CLI, 668 lines | `start`, `restart`, `stop`, `status`, `clear-cache`, `record`, `record-stop`, `record-status`, `help`; about 40 options; a typo gets "did you mean"; on / off values checked; the server is kept when nothing changed; options like `-Npu` and `-Whisper` carry over a restart; a numbered model menu when no `-Model` is given |
+| `scripts\zero-server.ps1` | the CLI, 668 lines | `start`, `restart`, `stop`, `status`, `clear-cache`, `record`, `record-stop`, `record-status`, `help`; about 40 options; a typo gets "did you mean"; on / off values checked; the server is kept when nothing changed; options like `-Npu` and `-Whisper` carry over a restart; a numbered model menu when no `-Model` is given |
 | `setup.cmd` / `setup.ps1` | one-time setup | keeps prebuilt exes, downloads models, connects Pi |
-| `scripts\install-pi.ps1` | puts `pi-arc.cmd` and `arc-server.cmd` into `~\.pi\agent\bin` | **only when Pi is installed**: without Pi, `arc-server` is not a command |
+| `scripts\install-pi.ps1` | puts `zero-pi.cmd` and `zero-server.cmd` into `~\.pi\agent\bin` | **only when Pi is installed**: without Pi, `zero-server` is not a command |
 | `scripts\make-package.ps1` | the release zip | tracked files plus nine prebuilt exes and `vcomp140.dll`; no Visual Studio, Python or runtime needed |
 
 State lives in `%USERPROFILE%\.inferzero`: `server.json` (pid, model, options, command line), `launcher.json`
@@ -51,7 +51,7 @@ State lives in `%USERPROFILE%\.inferzero`: `server.json` (pid, model, options, c
   the timer kept ticking; a git clone has no `bin\serverz.exe`, so the model list stayed empty with only one line
   saying why. All three are fixed, but they show where the launcher is weak: it runs on two PowerShell versions
   with different behaviour, it has no tests, and errors arrive as modal boxes.
-- **Issue #6**: the command line was hidden. "Copy command" and the command line in `arc-server status` answer it.
+- **Issue #6**: the command line was hidden. "Copy command" and the command line in `zero-server status` answer it.
   In the same thread the owner noted that `--ctx auto` with many on / off switches "might get wrong sometimes",
   which can crash the server. A preview of the memory before Start would help here (section 2, item 6).
 - **Issue #3**: `setup.cmd` depended on the PowerShell version (a PowerShell 7 module path hid cmdlets in 5.1).
@@ -119,7 +119,7 @@ for the current PowerShell launcher unless noted. Ranked by value against effort
 
 | # | Feature | Today | Value | Effort | Notes |
 |---|---|---|---|---|---|
-| 1 | Pick a model, Start / Stop, server outlives the window | **have** | high | - | via `arc-server`; double-click starts |
+| 1 | Pick a model, Start / Stop, server outlives the window | **have** | high | - | via `zero-server`; double-click starts |
 | 2 | First run: driver check, suggested model download, start, open web UI | **have** | high | - | `launcher-firstrun.ps1` |
 | 3 | Clear server state and address | **have** | high | - | status line, API address with Copy |
 | 4 | Copy the start command / show the server's command line | **have** | high | - | issue #6 |
@@ -144,25 +144,25 @@ owner's own note in #6 is that wrong switch combinations can crash the server or
 
 ## 4. CLI changes worth making
 
-`arc-server` is already careful: typos get suggestions, values are checked, and the help has "WRITING OPTIONS" and
+`zero-server` is already careful: typos get suggestions, values are checked, and the help has "WRITING OPTIONS" and
 "WHEN IT FAILS" sections. The gaps are in the commands it has, and in where it is found.
 
-1. **On PATH without Pi.** Put `arc-server.cmd` in the package root (next to `setup.cmd`), and let setup add a
-   folder to the user PATH with its own question. `install-pi.ps1` keeps the Pi-only `pi-arc`. Today a user without
-   Pi has to type `powershell -NoProfile -ExecutionPolicy Bypass -File ...\scripts\arc-server.ps1`.
-2. **`arc-server list`** (alias `ls`): the supported models with id, shortcut, size, auto context and variants. It
+1. **On PATH without Pi.** Put `zero-server.cmd` in the package root (next to `setup.cmd`), and let setup add a
+   folder to the user PATH with its own question. `install-pi.ps1` keeps the Pi-only `zero-pi`. Today a user without
+   Pi has to type `powershell -NoProfile -ExecutionPolicy Bypass -File ...\scripts\zero-server.ps1`.
+2. **`zero-server list`** (alias `ls`): the supported models with id, shortcut, size, auto context and variants. It
    is the numbered menu without the question. `--json` passes `serverz --list-models` through.
-3. **`arc-server start ... -DryRun`** (or `print-command`): checks the options and prints the `serverz.exe` command
+3. **`zero-server start ... -DryRun`** (or `print-command`): checks the options and prints the `serverz.exe` command
    and the planned memory without starting anything. The launcher's "Copy command" and the fits-or-not preview
    (item 6) can use the same path.
-4. **`arc-server logs [-Follow] [-Lines N]`**: the log without knowing where it is; `-Follow` tails it.
-5. **`arc-server doctor`**: the report of item 10, plain text, made to paste into a GitHub issue.
-6. **`arc-server version`** (and `--version` on `serverz.exe`): the package version and commit from `PREBUILT.txt`,
+4. **`zero-server logs [-Follow] [-Lines N]`**: the log without knowing where it is; `-Follow` tails it.
+5. **`zero-server doctor`**: the report of item 10, plain text, made to paste into a GitHub issue.
+6. **`zero-server version`** (and `--version` on `serverz.exe`): the package version and commit from `PREBUILT.txt`,
    the driver version, and whether a newer release exists (only when asked: `version -Check`).
-7. **`arc-server pull <key>`** (alias `get`): `scripts\get-models.ps1` with the catalog keys (`4b`, `35b`, `asr`...),
+7. **`zero-server pull <key>`** (alias `get`): `scripts\get-models.ps1` with the catalog keys (`4b`, `35b`, `asr`...),
    plus `pull -List` for the catalog. Same names as the shortcuts.
-8. **Presets**: `arc-server start -Preset work` reads `%USERPROFILE%\.inferzero\presets\work.json` (the
-   launcher's options, model included); `arc-server save-preset work -Model 35b -Ctx 65536 -Npu on` writes one.
+8. **Presets**: `zero-server start -Preset work` reads `%USERPROFILE%\.inferzero\presets\work.json` (the
+   launcher's options, model included); `zero-server save-preset work -Model 35b -Ctx 65536 -Npu on` writes one.
    Command-line options override the preset. The launcher's "Set as default" becomes the preset `default`, so
    both share one format, in the way koboldcpp's `.kcpps` files work.
 9. **`--json` on `status`** (and `list`): one JSON object for scripts, instead of the current mix of text and a
@@ -172,8 +172,8 @@ owner's own note in #6 is that wrong switch combinations can crash the server or
 11. **Exit codes that mean something**: 0 ok, 1 wrong option, 2 server failed to load, 3 timeout, 4 port in use, so
     scripts and the launcher can tell them apart without parsing text.
 12. **Drafter naming.** The owner's comment in #6 speaks of one `--drafter` switch for MTP and DFlash2, while
-    `arc-server` has `-NoMtp`, `-DFlash` and the `-nodf` / `-df` model suffixes, and `serverz` has `--draft
-    auto|mtp|dflash`. A single `-Drafter auto|mtp|dflash|off|<folder>` in `arc-server`, with the old names kept as
+    `zero-server` has `-NoMtp`, `-DFlash` and the `-nodf` / `-df` model suffixes, and `serverz` has `--draft
+    auto|mtp|dflash`. A single `-Drafter auto|mtp|dflash|off|<folder>` in `zero-server`, with the old names kept as
     aliases, would match what users are told.
 
 Not worth copying: Ollama's always-on service (the GPU memory is shared with Windows on an iGPU, so a server that
@@ -243,7 +243,7 @@ prebuilt.** A runtime may ship inside the zip, but it counts against the downloa
   NuGet package that can be committed to `third_party\` or fetched by `build.ps1`, and the zip needs nothing
   extra. With a transparent WebView2 background and `DWMSBT_MAINWINDOW`, Mica shows behind the whole page,
   rounded corners come free on Windows 11, and dark mode follows `prefers-color-scheme`. The page talks to the
-  host through `window.chrome.webview.postMessage`, and the host runs `arc-server.ps1` (or later starts
+  host through `window.chrome.webview.postMessage`, and the host runs `zero-server.ps1` (or later starts
   `serverz.exe` itself), reads `server.json` and polls `/props` off the UI thread.
 - **Limits:** WebView2 is missing on some Windows 10 LTSC installs, so the host checks for it and falls back to the
   PowerShell launcher. A Fluent look in CSS is hand-made, though Fluent UI Web Components can be shipped as one JS
@@ -268,7 +268,7 @@ prebuilt.** A runtime may ship inside the zip, but it counts against the downloa
 ## 6. Recommendation and stages
 
 **Polish the existing launcher first, then replace its window with a C++ + WebView2 one that uses the same
-`arc-server` commands**, and keep the PowerShell launcher as the fallback. That way:
+`zero-server` commands**, and keep the PowerShell launcher as the fallback. That way:
 - the zip stays free of runtimes;
 - the build stays MSVC only;
 - the UI is written in the HTML / CSS this project already writes well (`webui/index.html`);
@@ -290,7 +290,7 @@ Each stage can ship on its own.
 
 ### Stage 1: CLI (2-3 days, in parallel with stage 0)
 
-- `arc-server.cmd` in the package root and an optional PATH entry without Pi.
+- `zero-server.cmd` in the package root and an optional PATH entry without Pi.
 - `list`, `logs`, `doctor`, `version`, `pull`, `-DryRun`, `--json` on `status` / `list`, presets (`-Preset`,
   `save-preset`, shared with the launcher), exit codes, a shorter `help`.
 - `serverz --plan` (or options on `--list-models`) for the planned memory of a given option set. This is the base
@@ -298,12 +298,12 @@ Each stage can ship on its own.
 
 ### Stage 2: the WebView2 launcher (1-2 weeks)
 
-- `tools\arc_launcher.cpp` builds `bin\arc-launcher.exe`: a Win32 window with Mica, WebView2 with a transparent
+- `tools\arc_launcher.cpp` builds `bin\zero-launcher.exe`: a Win32 window with Mica, WebView2 with a transparent
   background, and a small message bridge (list models, start, stop, status, open log, copy command). Starting and
-  stopping still go through `arc-server.ps1`, so the CLI and the window cannot drift apart.
+  stopping still go through `zero-server.ps1`, so the CLI and the window cannot drift apart.
 - `launcher\index.html` (plus CSS / JS): the stage-0 layout, with light / dark from the system, the accent colour,
   and a real GPU memory bar with the fits-or-not preview.
-- `arc-launcher.cmd` starts the exe when WebView2 is there, else the PowerShell window.
+- `zero-launcher.cmd` starts the exe when WebView2 is there, else the PowerShell window.
 - `make-package.ps1` adds the exe and the `launcher\` folder; `build.ps1` learns the WebView2 SDK.
 
 ### Stage 3: later
@@ -323,8 +323,8 @@ a full app with chat, which the web UI already covers.
 ## Sources
 
 Local:
-- `scripts/arc-launcher.ps1`, `scripts/launcher-firstrun.ps1`, `scripts/arc-server.ps1`, `scripts/install-pi.ps1`,
-  `scripts/make-package.ps1`, `scripts/model-catalog.ps1`, `setup.cmd`, `arc-launcher.cmd`, `USAGE.md` sections 1-3
+- `scripts/zero-launcher.ps1`, `scripts/launcher-firstrun.ps1`, `scripts/zero-server.ps1`, `scripts/install-pi.ps1`,
+  `scripts/make-package.ps1`, `scripts/model-catalog.ps1`, `setup.cmd`, `zero-launcher.cmd`, `USAGE.md` sections 1-3
   and 8, `tools/server.cpp` (routes and `--list-models`).
 - GitHub issues [#3](https://github.com/rizagp/inferzero/issues/3),
   [#5](https://github.com/rizagp/inferzero/issues/5), [#6](https://github.com/rizagp/inferzero/issues/6) and

@@ -619,7 +619,7 @@ class Service {
   //   POST   /v1/transcripts/<id>/cancel           stops it, queued or running (what was done is kept)
   //   DELETE /v1/transcripts/<id>                  stops it and deletes its folder
   //   POST   /v1/transcripts/import                {path, name, kind, tracks, speakers}: a finished recording of
-  //                                                 arc-recorder (<data>\recordings\), from this computer only
+  //                                                 zero-recorder (<data>\recordings\), from this computer only
   void start_library(const std::filesystem::path& dir) {
     namespace fs = std::filesystem;
     lib_ = dir;
@@ -681,7 +681,7 @@ class Service {
       save_meta(tid);
     }
     for (const std::string& tid : sweep) remove_folder(tid);
-    // arc-recorder's finished recordings the server did not take yet (it was not running when they ended), and those
+    // zero-recorder's finished recordings the server did not take yet (it was not running when they ended), and those
     // whose recorder ended without finishing them (killed, a shutdown, the power cut: its note says complete false;
     // taken once no recorder runs, the WAV's sizes put right)
     for (const auto& e : fs::directory_iterator(fs::path(app_dir()) / "recordings", ec)) {
@@ -826,7 +826,7 @@ class Service {
       if (merge_start(in, bad, rec).empty()) return fail(400, bad);
       return rs.send(200, "application/json", rec.dump());  // (its record as made: not metas_[nid], a delete may have come)
     }
-    if (rq.path == "/v1/transcripts/import" && rq.method == "POST") {  // (arc-recorder's recordings)
+    if (rq.path == "/v1/transcripts/import" && rq.method == "POST") {  // (zero-recorder's recordings)
       if (!rq.local_peer) return fail(403, "only from this computer");
       Json in;
       if (!Json::try_parse(rq.body, in) || !in.is_object()) return fail(400, "a JSON object expected");
@@ -1739,7 +1739,7 @@ class Service {
     lib_cv_.notify_all();
   }
 
-  // a finished recording of arc-recorder (a WAV in <data>\recordings\, its sidecar <name>.json next to it) moved
+  // a finished recording of zero-recorder (a WAV in <data>\recordings\, its sidecar <name>.json next to it) moved
   // into the library and queued for the accurate pass (its tracks with their speakers); the new id, or "" and why
   std::string import_recording(const Json& in, std::string& bad) {
     namespace fs = std::filesystem;

@@ -139,7 +139,7 @@
   static constexpr int kMaxSlots = 8;
   static constexpr int kSlotCtxFloor = 32768;
   // GPU share bytes left to the driver (the user's choice): 0.5 GiB by default on iGPUs and discrete cards alike (1.2 GiB
-  // until 2026-11-08); ARC_DRIVER_RESERVE_GB=N, or serverz / runz --driver-reserve-gb N (arc-server -DriverReserveGb N),
+  // until 2026-11-08); ARC_DRIVER_RESERVE_GB=N, or serverz / runz --driver-reserve-gb N (zero-server -DriverReserveGb N),
   // sets it, 0 to 8 GiB. Read once per process
   static double driver_slack() {
     static const double v = [] {

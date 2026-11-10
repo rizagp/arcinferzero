@@ -10,7 +10,7 @@
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.inferzero\models, model-dirs.txt), as JSON
 ```
 
-- **Speech to text only**: `serverz -m none` (`arc-server start -Model none`, the launcher's More >
+- **Speech to text only**: `serverz -m none` (`zero-server start -Model none`, the launcher's More >
   **Start speech to text only**) loads Qwen3-ASR alone (~3.2 GB of GPU memory; `--whisper auto` adds Whisper) for the Transcripts tab and
   `POST /v1/audio/transcriptions`. A chat model loads later, when a chat asks for one.
 - Web UI: http://127.0.0.1:8080/: chats with images, audio and files (one folder per chat, kept by the server),
@@ -140,9 +140,9 @@
   one), the server saves the conversation it holds to disk (KV cache, DeltaNet states; `%USERPROFILE%\.inferzero\zero\sessions`)
   and loads a saved one that matches the request, instead of processing its whole prompt again. New conversations
   resume after the system prompt they share (Qwen: a recurrent-state snapshot there, kept in host memory). Saving
-  and loading take about a second; outputs are identical to never switching. `--session-cache-gb N` (the server's default 0 = off; arc-server / pi-arc and the launcher start it with 8 GB,
-  `pi-arc --session-cache 0` = off). The size holds for all models together: when a save goes over it, other models'
-  saved conversations go first (oldest first), then this model's least recently used ones; `arc-server clear-cache` deletes them all. `arc-server stop` /
+  and loading take about a second; outputs are identical to never switching. `--session-cache-gb N` (the server's default 0 = off; zero-server / zero-pi and the launcher start it with 8 GB,
+  `zero-pi --session-cache 0` = off). The size holds for all models together: when a save goes over it, other models'
+  saved conversations go first (oldest first), then this model's least recently used ones; `zero-server clear-cache` deletes them all. `zero-server stop` /
   `restart` and a model switch save the conversation the server holds first (`POST /sessions/save`), so it is
   loaded afterwards instead of processed again; only a server that is killed loses it.
 - Qwen turn snapshot (inferzero): the Qwen templates drop the reasoning of earlier turns as soon as the user
@@ -180,7 +180,7 @@
 
 ## Using Pi
 
-`pi-arc` (step 9, or `setup.cmd`) starts the server in the background if it is not running, then Pi; the server
+`zero-pi` (step 9, or `setup.cmd`) starts the server in the background if it is not running, then Pi; the server
 stays loaded between Pi sessions. Choosing the model, the context, the reasoning levels, what each new or resumed
 session processes, Esc and compaction: [USAGE.md, section 2](../USAGE.md#2-using-pi) and
 [section 5](../USAGE.md#5-context-size-and-when-a-conversation-gets-long).

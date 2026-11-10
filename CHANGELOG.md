@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-10: the commands start with zero-, as the logo
+
+- `arc-launcher` -> **`zero-launcher`**, `arc-server` -> **`zero-server`**, `pi-arc` -> **`zero-pi`**, `arc-recorder` ->
+  **`zero-recorder`** (`bin\zero_recorder.exe`); the files moved (`zero-launcher.cmd`, `zero-server.cmd`,
+  `scripts\zero-launcher.ps1`, `scripts\zero-server.ps1`, `scripts\zero-pi.ps1`, `tools\zero_recorder.cpp`) and every
+  living doc and help text with them (560 uses in 38 files; the planned `arc-transcribe` is `zero-transcribe`, zero-pi's
+  `--arc-model` is `--zero-model`).
+- **The old names still work:** `arc-launcher.cmd`, `arc-server.cmd`, `scripts\arc-server.ps1`, `scripts\pi-arc.ps1` and
+  `scripts\arc-launcher.ps1` hand over to the new ones; `install-pi` puts `zero-pi`, `zero-server`, `pi-arc` and
+  `arc-server` on PATH (shims installed before point at the old scripts, which hand over); `--arc-model` is still taken.
+- **The recorder's stop event** became `inferzero-recorder-stop` with the project's rename; `zero-recorder stop` /
+  `status` now also find a recording an older exe started (`arcinferzero-recorder-stop`).
+- Checked: `zero-recorder` builds and reports "not recording"; every changed script parses; `zero-server help` and
+  `status`, `zero-pi --help`, and the same through `arc-server.cmd`, `scripts\arc-server.ps1` and `scripts\pi-arc.ps1`;
+  `zero-launcher -SelfTest`; `install-pi` on this laptop (the four shims; Pi's provider "inferzero" alone).
+
 ## 2026-11-10: arcinferzero is now inferzero
 
 - **Why:** Intel's trademark guidelines ask third parties not to put an Intel mark, or any part of one, into a product

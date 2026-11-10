@@ -68,6 +68,6 @@ the Qwen encoders of the dense models run their matrix products on two int8 pass
 image 27B 1.26-1.35 s, 9B 1.28-1.30, 4B 0.96-0.97; the 35B and Flash Next keep the f16 encoder).
 KL is the divergence of the next-token distributions from the f32 reference (0 = identical); run-to-run int8
 rounding noise is ~0.0003. The limit kept for every model and change is KL < 0.015. Flash Next's default meets it on short prompts and
-is just above it at 3.5K; its precise mode (`arc-server -Precise`, `--precise`; BF16 hyper-connection rows and router, two int8 passes everywhere)
+is just above it at 3.5K; its precise mode (`zero-server -Precise`, `--precise`; BF16 hyper-connection rows and router, two int8 passes everywhere)
 stays under it at about half the prompt speed, opt-in (QUEUE.md item "Flash Next KL"). How each number was measured, every change with its before and after, and the
 consistency checks (56 of 56 regression runs bit-identical): **[docs/before-after.md](before-after.md)**.

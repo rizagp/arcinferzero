@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# One real task on every model: sends the same chat prompt through arc-server (each model with its own sampling
+# One real task on every model: sends the same chat prompt through zero-server (each model with its own sampling
 # defaults, reasoning off, a fixed seed), streams the answer and records time to first token, answer tokens,
 # generation speed and draft acceptance. Saves the raw answer and the HTML page it contains.
 # usage: python bench/prompt_bench.py [--models 35b,g12,9b,4b,e4b,27b] [--out bench/results/landing]
@@ -16,7 +16,7 @@ ap.add_argument("--max-tokens", type=int, default=6144)
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 base = f"http://127.0.0.1:{args.port}"
-server_ps1 = os.path.join(root, "scripts", "arc-server.ps1")
+server_ps1 = os.path.join(root, "scripts", "zero-server.ps1")
 
 
 def ps(*a):

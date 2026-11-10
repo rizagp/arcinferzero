@@ -1,13 +1,13 @@
-// arc-recorder: records a meeting for the Meetings tab, apart from the server: the microphone ("Me") and the meeting's
+// zero-recorder: records a meeting for the Meetings tab, apart from the server: the microphone ("Me") and the meeting's
 // sound ("Others": one app's sound through WASAPI process loopback (Windows 10 2004 and later), or everything the
 // speakers play) as a stereo 16-bit WAV at 48 kHz in <data>\recordings\, written as it comes, its sizes kept right
 // every second (a crash or a power cut loses a second at most). Each packet is placed by its time stamp, so the tracks
 // stay together and a silent app, a headset change or a device that comes back leave silence, not a shift. The
 // server is not needed while it records; when it stops, the recording goes to the server's transcript library
 // (POST /v1/transcripts/import: the accurate pass, Me / Others, then MP3), or the server takes it at its next start.
-//   arc-recorder start [--app <name.exe | pid>] [--no-mic] [--title "..."] [--seconds N]
-//   arc-recorder stop       ends the recording that runs (from another console; Ctrl+C in its own does the same)
-//   arc-recorder status
+//   zero-recorder start [--app <name.exe | pid>] [--no-mic] [--title "..."] [--seconds N]
+//   zero-recorder stop       ends the recording that runs (from another console; Ctrl+C in its own does the same)
+//   zero-recorder status
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -40,6 +40,12 @@ namespace {
 
 constexpr int kRate = 48000;
 const wchar_t* kStopEvent = L"Local\\inferzero-recorder-stop";
+// (the name before the rename to inferzero, 2026-11-10: a recording an older exe started is still found and stopped)
+const wchar_t* kStopEventOld = L"Local\\arcinferzero-recorder-stop";
+HANDLE open_stop(DWORD access) {
+  HANDLE e = OpenEventW(access, FALSE, kStopEvent);
+  return e ? e : OpenEventW(access, FALSE, kStopEventOld);
+}
 
 fs::path state_file() { return fs::path(app_dir()) / "recorder.json"; }
 
@@ -271,7 +277,7 @@ struct Track {
     }
   }
   void fail(HRESULT hr) {  // (a device unplugged or changed, an app closed: closed, tried again every second)
-    if (!down) fprintf(stderr, "arc-recorder: %s: lost (0x%08lx), recording silence until it is back\n", what.c_str(), (unsigned long)hr);
+    if (!down) fprintf(stderr, "zero-recorder: %s: lost (0x%08lx), recording silence until it is back\n", what.c_str(), (unsigned long)hr);
     if (kind == Process && (!proc || WaitForSingleObject(proc, 0) == WAIT_OBJECT_0)) pid = 0;  // (the app ended)
     close();
     down = true;
@@ -279,7 +285,7 @@ struct Track {
   }
   void retry() {
     if (!down || now_seconds() < retry_at) return;
-    if (open()) fprintf(stderr, "arc-recorder: %s: back\n", what.c_str());
+    if (open()) fprintf(stderr, "zero-recorder: %s: back\n", what.c_str());
     else retry_at = now_seconds() + 1;
   }
   // (every 2 s) the recorded app ended (an app started again has a new process), or another default device
@@ -287,7 +293,7 @@ struct Track {
     if (down) return;
     if (kind == Process) {
       if (proc && WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) {
-        fprintf(stderr, "arc-recorder: %s: the app ended, recording silence until it runs again\n", what.c_str());
+        fprintf(stderr, "zero-recorder: %s: the app ended, recording silence until it runs again\n", what.c_str());
         close();
         pid = 0;
         down = true;
@@ -302,7 +308,7 @@ struct Track {
         SUCCEEDED(en->GetDefaultAudioEndpoint(kind == Mic ? eCapture : eRender, kind == Mic ? eCommunications : eConsole, &dev)) &&
         SUCCEEDED(dev->GetId(&id)) && id) {
       if (!dev_id.empty() && dev_id != id) {
-        fprintf(stderr, "arc-recorder: %s: another default device, opened instead\n", what.c_str());
+        fprintf(stderr, "zero-recorder: %s: another default device, opened instead\n", what.c_str());
         close();
         down = true;
         retry_at = 0;
@@ -404,8 +410,8 @@ BOOL WINAPI on_ctrl(DWORD type) {
 
 int usage() {
   fprintf(stderr,
-          "usage: arc-recorder start [--app <name.exe | pid>] [--no-mic] [--title \"...\"] [--seconds N]\n"
-          "       arc-recorder stop | status\n"
+          "usage: zero-recorder start [--app <name.exe | pid>] [--no-mic] [--title \"...\"] [--seconds N]\n"
+          "       zero-recorder stop | status\n"
           "  --app       the meeting app whose sound is the \"Others\" track (Zoom.exe, Teams.exe, chrome.exe, ...);\n"
           "              without it, everything the speakers play\n"
           "  --no-mic    no microphone track (the meeting's sound only)\n"
@@ -421,17 +427,17 @@ int main(int argc, char** argv) {
   if (argc < 2) return usage();
   const std::string cmd = argv[1];
   if (cmd == "stop") {
-    HANDLE e = OpenEventW(EVENT_MODIFY_STATE, FALSE, kStopEvent);
-    if (!e) { fprintf(stderr, "arc-recorder: no recording runs\n"); return 1; }
+    HANDLE e = open_stop(EVENT_MODIFY_STATE);
+    if (!e) { fprintf(stderr, "zero-recorder: no recording runs\n"); return 1; }
     SetEvent(e);
     CloseHandle(e);
-    fprintf(stderr, "arc-recorder: stopping\n");
+    fprintf(stderr, "zero-recorder: stopping\n");
     return 0;
   }
   if (cmd == "status") {
     std::ifstream f(state_file(), std::ios::binary);
     std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    HANDLE e = OpenEventW(SYNCHRONIZE, FALSE, kStopEvent);
+    HANDLE e = open_stop(SYNCHRONIZE);
     if (!e || s.empty()) { printf("not recording\n"); if (e) CloseHandle(e); return 0; }
     CloseHandle(e);
     printf("%s\n", s.c_str());
@@ -451,7 +457,7 @@ int main(int argc, char** argv) {
     else return usage();
   }
   HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, kStopEvent);
-  if (GetLastError() == ERROR_ALREADY_EXISTS) { fprintf(stderr, "arc-recorder: a recording already runs (arc-recorder stop ends it)\n"); return 1; }
+  if (GetLastError() == ERROR_ALREADY_EXISTS) { fprintf(stderr, "zero-recorder: a recording already runs (zero-recorder stop ends it)\n"); return 1; }
   SetConsoleCtrlHandler(on_ctrl, TRUE);
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
@@ -472,13 +478,13 @@ int main(int argc, char** argv) {
       t->app = app;
       t->pid = pid_of(app);
       t->what = app + "'s sound";
-      if (!t->pid) { fprintf(stderr, "arc-recorder: %s is not running\n", app.c_str()); return 1; }
+      if (!t->pid) { fprintf(stderr, "zero-recorder: %s is not running\n", app.c_str()); return 1; }
     }
     tracks.push_back(std::move(t));
   }
   for (auto& t : tracks)
     if (!t->open()) {
-      fprintf(stderr, "arc-recorder: cannot open %s%s\n", t->what.c_str(),
+      fprintf(stderr, "zero-recorder: cannot open %s%s\n", t->what.c_str(),
               t->kind == Track::Process ? " (process loopback needs Windows 10 2004 or later)" : "");
       return 1;
     }
@@ -511,7 +517,7 @@ int main(int argc, char** argv) {
   for (int k = 2; fs::exists(wav) || fs::exists(fs::path(wav).replace_extension(".json")); ++k)
     wav = dir / fs::path(std::string(when) + " " + clean + " (" + std::to_string(k) + ").wav");
   std::fstream f(wav, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
-  if (!f) { fprintf(stderr, "arc-recorder: cannot write %s\n", wav.string().c_str()); return 1; }
+  if (!f) { fprintf(stderr, "zero-recorder: cannot write %s\n", wav.string().c_str()); return 1; }
   const int ch = (int)tracks.size();
   wav_header(f, ch, 0);
   Json m = Json::object(), sp = Json::array();
@@ -536,7 +542,7 @@ int main(int argc, char** argv) {
     s.set("microphone", mic);
     std::ofstream(state_file(), std::ios::binary) << s.dump();
   }
-  fprintf(stderr, "arc-recorder: recording %s%s into %s (arc-recorder stop, or Ctrl+C, ends it)\n", mic ? "the microphone + " : "",
+  fprintf(stderr, "zero-recorder: recording %s%s into %s (zero-recorder stop, or Ctrl+C, ends it)\n", mic ? "the microphone + " : "",
           tracks.back()->what.c_str(), wav.string().c_str());
 
   // the loop: the packets drained as their events come; every 100 ms what is 0.3 s old written (late packets placed
@@ -576,7 +582,7 @@ int main(int argc, char** argv) {
       }
       f.write((const char*)buf.data(), (std::streamsize)(buf.size() * 2));
       written += n;
-      if (!f) { fprintf(stderr, "arc-recorder: cannot write the recording (disk full?)\n"); finishing = true; }
+      if (!f) { fprintf(stderr, "zero-recorder: cannot write the recording (disk full?)\n"); finishing = true; }
     }
     if (now - last_header >= 1 || finishing) {
       wav_header(f, ch, written);
@@ -588,7 +594,7 @@ int main(int argc, char** argv) {
   f.close();
   fs::remove(state_file(), ec);
   const double secs = (double)written / kRate;
-  fprintf(stderr, "arc-recorder: %.0f s recorded (%llu packets)\n", secs, (unsigned long long)(tracks[0]->packets + tracks.back()->packets));
+  fprintf(stderr, "zero-recorder: %.0f s recorded (%llu packets)\n", secs, (unsigned long long)(tracks[0]->packets + tracks.back()->packets));
 
   // to the server: the transcript library (the Meetings tab), or a note for its next start
   m.set("seconds", secs);
@@ -596,8 +602,8 @@ int main(int argc, char** argv) {
   std::ofstream(side, std::ios::binary) << m.dump();
   std::string reply;
   const int st = post_local("/v1/transcripts/import", m.dump(), reply);
-  if (st == 200) fprintf(stderr, "arc-recorder: handed to the server: the Meetings tab transcribes it now\n");
-  else fprintf(stderr, "arc-recorder: the server %s: it takes the recording at its next start\n",
+  if (st == 200) fprintf(stderr, "zero-recorder: handed to the server: the Meetings tab transcribes it now\n");
+  else fprintf(stderr, "zero-recorder: the server %s: it takes the recording at its next start\n",
                st ? ("said " + std::to_string(st) + " " + reply.substr(0, 200)).c_str() : "is not running");
   SetEvent(g_done);  // (after the hand-over: a closed console waits for it)
   CloseHandle(stop);

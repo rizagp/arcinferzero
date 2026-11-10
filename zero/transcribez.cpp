@@ -1,4 +1,4 @@
-// arc-transcribe: Whisper on the Arc iGPU (zero/whisper_engine.h) or the f32 CPU reference, from the command line.
+// zero-transcribe: Whisper on the Arc iGPU (zero/whisper_engine.h) or the f32 CPU reference, from the command line.
 //
 //   transcribez <file | folder | wildcard> ... [options]       (docs/whisper-native.md, "Command line")
 //

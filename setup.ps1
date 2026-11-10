@@ -9,10 +9,10 @@
 #   setup -Help                  all options
 #
 # Steps: 1 requirements (Windows, Intel Arc GPU, Visual Studio C++ compiler unless the package is prebuilt, Python for
-# 35b-gsq only, Pi)  2 build bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe, arc_recorder.exe when missing or
+# 35b-gsq only, Pi)  2 build bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe, zero_recorder.exe when missing or
 # older than the sources (a ready-to-use package, bin\PREBUILT.txt: kept as shipped)  3 GPU check (OpenCL 3.0, DP4a,
 # sub-groups, memory)  4 models (Hugging Face cache, downloaded by scripts\hf-get.ps1: no Python; 35b-gsq converted)
-# 5 Pi (pi-arc / arc-server commands, Pi's model list)  6 regression tests (-Tests).
+# 5 Pi (zero-pi / zero-server commands, Pi's model list)  6 regression tests (-Tests).
 param([string[]]$Models = @(), [switch]$Tests, [switch]$NoPi, [switch]$Yes, [switch]$Rebuild, [switch]$Help)
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -40,7 +40,7 @@ STEPS
   1 requirements   64-bit Windows, an Intel Arc GPU and its driver, the Visual Studio C++ compiler (not for a
                    ready-to-use package; vswhere, $env:ARC_VCVARS = a vcvars64.bat overrides), Python 3.10+ (only
                    for 35b-gsq), Pi (optional). Missing ones: where to get them.
-  2 build          bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe (Whisper), arc_recorder.exe (meetings)
+  2 build          bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe (Whisper), zero_recorder.exe (meetings)
                    when missing or older than their sources (a ready-to-use package keeps its own); the compiler
                    output goes to %USERPROFILE%\.inferzero\build.log (shown when a build fails). A running server
                    is stopped first if serverz.exe has to be rebuilt.
@@ -51,8 +51,8 @@ STEPS
                    converted with Python (tools\convert_gsq.py, the 4B for its tokenizer; huggingface_hub / numpy
                    installed with pip after asking). The free disk space is checked. Then: every model the server
                    finds, with its context for the current GPU memory.
-  5 Pi             scripts\install-pi.ps1: the pi-arc and arc-server commands, Pi's model list. Without Pi:
-                   asks to put this folder on PATH, for its arc-server.cmd
+  5 Pi             scripts\install-pi.ps1: the zero-pi and zero-server commands, Pi's model list. Without Pi:
+                   asks to put this folder on PATH, for its zero-server.cmd
   6 tests          with -Tests: tests\run_tests.ps1 (unit tests, templates, accuracy vs f32, MTP / DFlash2, slots, API)
 
 MODELS
@@ -66,7 +66,7 @@ MODELS
   e4b  Gemma 4 E4B (Google QAT Q4_0) + projector (images, audio) + drafter  6.2 GB
   whisper  Whisper large-v3 (faster-whisper): transcripts with words' times, live text   3.1 GB
   asr  Qwen3-ASR 1.7B Q8_0 + its projector: the default speech model                  2.4 GB
-       (both for arc-server start -Whisper auto: the web UI's Transcripts / Meetings tabs, voice messages)
+       (both for zero-server start -Whisper auto: the web UI's Transcripts / Meetings tabs, voice messages)
 
 Not installed by setup: the graphics driver, Visual Studio Build Tools, Python and Pi (vendor installers).
 '@
@@ -150,7 +150,7 @@ $newestHeader = (Get-ChildItem (Join-Path $root "src") -Filter *.h | Measure-Obj
 $newestZero = (Get-ChildItem (Join-Path $root "zero") -Filter *.h | Measure-Object LastWriteTime -Maximum).Maximum
 $need = @()
 if ($prebuilt) { Ok "ready-to-use package: the exes as shipped ($((Get-Content $prebuiltFile -TotalCount 1).Trim()); setup -Rebuild builds them)" }
-foreach ($t in $(if ($prebuilt) { @() } else { "tools\clinfo", "zero\serverz", "zero\runz", "zero\transcribez", "tools\arc_recorder" })) {
+foreach ($t in $(if ($prebuilt) { @() } else { "tools\clinfo", "zero\serverz", "zero\runz", "zero\transcribez", "tools\zero_recorder" })) {
   $name = Split-Path $t -Leaf
   $exe = Join-Path $bin "$name.exe"
   $src = Get-Item (Join-Path $root "$t.cpp")
@@ -167,7 +167,7 @@ if ($need) {
   $running = @(Get-Process server, serverz -ErrorAction SilentlyContinue | Where-Object { $_.Path -like (Join-Path $bin "server*.exe") })
   if ($running.Count -and $need -contains "zero\serverz.cpp") {
     Note "stopping the running inferzero server to rebuild it"
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\arc-server.ps1") stop | Out-Null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\zero-server.ps1") stop | Out-Null
   }
   Write-Host "  building $($need -join ', ') (about a minute)..."
   Build $need
@@ -295,16 +295,16 @@ else {
   if ($code -ne 0) { $out | ForEach-Object { Write-Host "        $_" }; Bad "connecting Pi failed" }
   $out | Where-Object { $_.Trim() } | ForEach-Object { Ok $_ }
 }
-# arc-server without Pi: this folder's arc-server.cmd, on the user's PATH when they agree (Pi's own bin folder already
-# has an arc-server.cmd)
+# zero-server without Pi: this folder's zero-server.cmd, on the user's PATH when they agree (Pi's own bin folder already
+# has an zero-server.cmd)
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $onPath = @("$userPath;$env:Path" -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ieq $root.TrimEnd('\') }).Count -gt 0
-if (-not ($hasPi -and -not $NoPi) -and -not $onPath -and (Test-Path (Join-Path $root "arc-server.cmd"))) {
-  if (Ask "Add $root to your PATH, so 'arc-server' works in every new terminal?") {
+if (-not ($hasPi -and -not $NoPi) -and -not $onPath -and (Test-Path (Join-Path $root "zero-server.cmd"))) {
+  if (Ask "Add $root to your PATH, so 'zero-server' works in every new terminal?") {
     [Environment]::SetEnvironmentVariable("Path", $(if ($userPath) { $userPath.TrimEnd(';') + ";$root" } else { $root }), "User")
-    Ok "arc-server added to PATH (new terminals; remove it in Settings > System > About > Advanced > Environment Variables)"
-  } else { Ok "arc-server: run it as $root\arc-server.cmd" }
-} elseif ($onPath) { Ok "arc-server: $root is on PATH" }
+    Ok "zero-server added to PATH (new terminals; remove it in Settings > System > About > Advanced > Environment Variables)"
+  } else { Ok "zero-server: run it as $root\zero-server.cmd" }
+} elseif ($onPath) { Ok "zero-server: $root is on PATH" }
 
 # ---------------------------------------------------------------- 6. regression tests
 Head 6 "Regression tests"
@@ -322,7 +322,7 @@ else {
                          "tests\test_office.cpp", "tests\test_pdf_scan.cpp", "tests\test_audio.cpp")
     Write-Host "  building the test tools..."
     Build $tools
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\arc-server.ps1") stop | Out-Null  # (GPU memory)
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\zero-server.ps1") stop | Out-Null  # (GPU memory)
     $g = (Get-ChildItem $hub -Recurse -Filter "gemma-4-12b-it-qat-q4_0.gguf" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
     $targs = @{ Model4B = $m4 }; if ($g) { $targs.ModelGemma = $g }
     Push-Location $root
@@ -334,10 +334,10 @@ else {
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 if ($hasPi -and -not $NoPi) {
-  Write-Host "  Open a new terminal, go to a project folder and run:  pi-arc        (pi-arc --help: all options)"
+  Write-Host "  Open a new terminal, go to a project folder and run:  zero-pi        (zero-pi --help: all options)"
 }
-Write-Host "  The easiest start: double-click arc-launcher.cmd (choose a model, Start: the web UI opens in the browser;"
+Write-Host "  The easiest start: double-click zero-launcher.cmd (choose a model, Start: the web UI opens in the browser;"
 Write-Host "  'Get models' downloads more)."
-Write-Host "  Server without Pi:  arc-server start   (web UI http://127.0.0.1:8090/, API http://127.0.0.1:8090/v1;"
-Write-Host "  not on PATH: $root\arc-server.cmd; arc-server help lists list, logs, doctor, pull, presets, -DryRun)"
+Write-Host "  Server without Pi:  zero-server start   (web UI http://127.0.0.1:8090/, API http://127.0.0.1:8090/v1;"
+Write-Host "  not on PATH: $root\zero-server.cmd; zero-server help lists list, logs, doctor, pull, presets, -DryRun)"
 Write-Host "  The first start of a model compiles its GPU kernels once (a minute or two)."

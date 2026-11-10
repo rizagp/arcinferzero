@@ -2,8 +2,8 @@
 #   - builds bin\serverz.exe if it is missing,
 #   - adds the "inferzero" provider to ~/.pi/agent/models.json: every model serverz.exe finds (Hugging Face cache and
 #     %USERPROFILE%\.inferzero\models) with its context for the current GPU memory (other providers are kept; the
-#     previous file is saved as models.json.bak). pi-arc refreshes the list on every start.
-#   - installs the `pi-arc` and `arc-server` commands into ~/.pi/agent/bin (already on PATH).
+#     previous file is saved as models.json.bak). zero-pi refreshes the list on every start.
+#   - installs the `zero-pi` and `zero-server` commands into ~/.pi/agent/bin (already on PATH).
 # Run:  powershell -ExecutionPolicy Bypass -File scripts\install-pi.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -24,12 +24,14 @@ if (-not (Test-Path $exe)) {
 $ids = @(Update-PiModels $exe "http://127.0.0.1:8090")
 $cfgPath = Join-Path $piDir "models.json"
 if ($ids.Count) { Write-Host "Pi models: $(($ids | ForEach-Object { "inferzero/$_" }) -join ', ')  ($cfgPath)" }
-else { Write-Host "Pi models: none yet (download a model, then run this again or just start pi-arc)" }
+else { Write-Host "Pi models: none yet (download a model, then run this again or just start zero-pi)" }
 
 # 3. commands on PATH
-foreach ($name in "pi-arc", "arc-server") {
-  $target = Join-Path $root "scripts\$name.ps1"
+# (pi-arc and arc-server: the names before 2026-11-10, kept as the same commands)
+$cmds = [ordered]@{ "zero-pi" = "zero-pi"; "zero-server" = "zero-server"; "pi-arc" = "zero-pi"; "arc-server" = "zero-server" }
+foreach ($name in $cmds.Keys) {
+  $target = Join-Path $root "scripts\$($cmds[$name]).ps1"
   # (set PSModulePath=: Windows PowerShell with its own modules, not a path PowerShell 7 left behind: GitHub #3)
   "@echo off`r`nset `"PSModulePath=`"`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$target`" %*`r`n" | Set-Content (Join-Path $binDir "$name.cmd") -Encoding ascii -NoNewline
 }
-Write-Host "Commands installed: pi-arc, arc-server  ($binDir)"
+Write-Host "Commands installed: zero-pi, zero-server (and their old names pi-arc, arc-server)  ($binDir)"

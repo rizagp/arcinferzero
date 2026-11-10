@@ -42,10 +42,10 @@ Paragraf ini rata kiri-kanan dan cukup panjang untuk memenuhi beberapa baris, se
 
 ### Catatan teknis
 
-Perintah yang dipakai: `arc-transcribe rapat.m4a --format docx`
+Perintah yang dipakai: `zero-transcribe rapat.m4a --format docx`
 
 ```
-arc-transcribe rapat.m4a --lang id --beam 5 --words --format docx,pdf,srt --out %USERPROFILE%\.inferzero\transcripts\rapat-26-okt
+zero-transcribe rapat.m4a --lang id --beam 5 --words --format docx,pdf,srt --out %USERPROFILE%\.inferzero\transcripts\rapat-26-okt
 ```
 
 \pagebreak
