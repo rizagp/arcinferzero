@@ -4,6 +4,8 @@
 // move ~40 MB, where bandwidth counts. Measures, for every pair of GPUs: whether the driver allows peer access, and
 // a 20 KB / 40 MB copy GPU A -> GPU B directly (peer) and through host memory, each on the compute queue and on a
 // copy-engine queue where the GPU has one. With one GPU it runs GPU 0 to itself (a check of the tool, not of a link).
+// Also host memory <-> each GPU one way (pinned / pageable, both queues) and every GPU at once: the link that MoE
+// experts streamed from RAM come over.
 //   bin\mgpu_probe.exe            all GPUs
 //   bin\mgpu_probe.exe --reps 500 more repetitions for the latencies (default 200)
 #include "ze_min.h"
@@ -149,6 +151,69 @@ int main(int argc, char** argv) {
     const double s = copy_us(gpus[0].cl, (char*)dbuf[0] + big, dbuf[0], small, reps);
     const double b = copy_us(gpus[0].cl, (char*)dbuf[0] + big, dbuf[0], big, std::max(10, reps / 20));
     printf("GPU 0 -> GPU 0 memory: 20 KB %.1f us, 40 MB %.2f ms (%.1f GB/s)\n", s, b / 1000, big / b / 1000);
+  }
+
+  // ---- host memory <-> each GPU, one way: what streaming MoE experts from RAM can get (Flash Next's 52 GB of experts
+  // on a 24 GB card come over this link). Pinned host memory (zeMemAllocHost, what the engine stages through) and
+  // ordinary pageable memory (VirtualAlloc), the compute queue and the copy engine, 40 MB and 256 MB; then every GPU
+  // at once, host -> GPU (the RAM's and the PCIe root's shared limit). Medians of 20 / 5 copies.
+  {
+    const size_t huge = (size_t)256 << 20;
+    void* pin = nullptr;
+    ze_host_mem_alloc_desc_t hd2{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
+    if (zeMemAllocHost(ctx, &hd2, huge, 64, &pin) != 0) pin = nullptr;
+    void* page = VirtualAlloc(nullptr, huge, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (pin) memset(pin, 1, huge);
+    if (page) memset(page, 1, huge);  // (touched: every page present before the copies)
+    std::vector<void*> dh(gpus.size(), nullptr);
+    for (size_t i = 0; i < gpus.size(); ++i) {
+      ze_device_mem_alloc_desc_t dd{ZE_STYPE_DEVICE_MEM_ALLOC_DESC, nullptr, 0, 0};
+      if (zeMemAllocDevice(ctx, &dd, huge, 64, gpus[i].dev, &dh[i]) != 0) dh[i] = nullptr;
+    }
+    printf("\nhost memory <-> GPU, one way (GB/s; the link: PCIe 4.0 x8 ~13, 5.0 x8 ~26, 5.0 x16 ~52 at best)\n");
+    printf("%-4s %-13s %-9s %-14s %10s %10s\n", "GPU", "queue", "host mem", "direction", "40 MB", "256 MB");
+    for (size_t i = 0; i < gpus.size(); ++i) {
+      if (!dh[i]) { printf("%-4zu cannot allocate 256 MB\n", i); continue; }
+      struct Q { const char* name; ze_command_list_handle_t cl; };
+      std::vector<Q> qs = {{"compute", gpus[i].cl}};
+      if (gpus[i].cl_copy) qs.push_back({"copy engine", gpus[i].cl_copy});
+      struct H { const char* name; void* p; };
+      std::vector<H> hs;
+      if (pin) hs.push_back({"pinned", pin});
+      if (page) hs.push_back({"pageable", page});
+      for (const Q& q : qs)
+        for (const H& h : hs)
+          for (int dir = 0; dir < 2; ++dir) {
+            void* dst = dir ? h.p : dh[i];
+            const void* src = dir ? dh[i] : h.p;
+            const double a = copy_us(q.cl, dst, src, big, 20), b = copy_us(q.cl, dst, src, huge, 5);
+            char ca[16], cb[16];
+            if (a > 0) snprintf(ca, sizeof ca, "%.1f", big / a / 1000); else snprintf(ca, sizeof ca, "failed");
+            if (b > 0) snprintf(cb, sizeof cb, "%.1f", huge / b / 1000); else snprintf(cb, sizeof cb, "failed");
+            printf("%-4zu %-13s %-9s %-14s %10s %10s\n", i, q.name, h.name, dir ? "GPU -> host" : "host -> GPU", ca, cb);
+          }
+    }
+    // every GPU at once, pinned host -> GPU, each on its copy engine (else its compute queue)
+    if (pin && gpus.size() > 1) {
+      std::vector<double> t;
+      for (int r = 0; r < 8; ++r) {
+        const double t0 = now_us();
+        bool ok = true;
+        for (size_t i = 0; i < gpus.size(); ++i)
+          if (dh[i]) ok &= zeCommandListAppendMemoryCopy(gpus[i].cl_copy ? gpus[i].cl_copy : gpus[i].cl, dh[i], pin, huge, nullptr, 0, nullptr) == 0;
+        for (size_t i = 0; i < gpus.size(); ++i)
+          if (dh[i]) ok &= zeCommandListHostSynchronize(gpus[i].cl_copy ? gpus[i].cl_copy : gpus[i].cl, UINT64_MAX) == 0;
+        if (!ok) { t.clear(); break; }
+        if (r >= 2) t.push_back(now_us() - t0);
+      }
+      size_t n = 0;
+      for (void* p : dh) n += p ? 1 : 0;
+      if (t.empty()) printf("all %zu GPUs at once, host -> GPU: failed\n", n);
+      else printf("all %zu GPUs at once, host -> GPU, 256 MB each: %.1f GB/s in total\n", n, n * huge / median(t) / 1000);
+    }
+    for (void* p : dh) if (p) zeMemFree(ctx, p);
+    if (pin) zeMemFree(ctx, pin);
+    if (page) VirtualFree(page, 0, MEM_RELEASE);
   }
 
   const bool one = gpus.size() == 1;

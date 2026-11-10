@@ -32,15 +32,32 @@ $hub = Join-Path $env:USERPROFILE ".cache\huggingface\hub"
 $pkg = Join-Path $env:USERPROFILE ".arcinferzero\zero\models"
 $inv = [Globalization.CultureInfo]::InvariantCulture
 
+# (also every folder the server reads: model-dirs.txt, e.g. C:\hf, through serverz --list-models; GitHub #4: models
+#  outside the Hugging Face cache were not found and the script stopped at its summary)
+$listed = @()
+$sz = Join-Path $root "bin\serverz.exe"
+if (Test-Path $sz) {
+  $eap = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+  try { $listed = @(& $sz --list-models 2>$null | ConvertFrom-Json | ForEach-Object { $_ } | Where-Object { $_.supported -and $_.path }) } catch {}
+  $ErrorActionPreference = $eap
+}
 if (-not $Models.Count) {
   $names = "Qwen3.5-4B-UD-Q4_K_XL.gguf", "Qwen3.5-9B-UD-Q4_K_XL.gguf", "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
-    "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", "gemma-4-E4B_q4_0-it.gguf",
+    "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf",
+    "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", "gemma-4-E4B_q4_0-it.gguf",
     "gemma-4-12b-it-qat-q4_0.gguf", "gemma-4-26b-a4b-it-qat-q4_0.gguf", "gemma-4-26B_q4_0-it.gguf"
   foreach ($n in $names) {
     $f = @(Get-ChildItem $pkg -Recurse -Filter $n -ErrorAction SilentlyContinue) + @(Get-ChildItem $hub -Recurse -Filter $n -ErrorAction SilentlyContinue) |
       Select-Object -First 1
-    if ($f) { $Models += $f.FullName }
+    if ($f) { $f = $f.FullName }
+    else { $f = $listed | Where-Object { (Split-Path $_.path -Leaf) -eq $n } | Select-Object -First 1 -ExpandProperty path }
+    if ($f -and -not ($Models | Where-Object { $_ -like "*Flash-Next*" -and $f -like "*Flash-Next*" })) { $Models += $f }
   }
+}
+if (-not $Models.Count) {
+  "No model found: none of the usual model files is in the Hugging Face cache, %USERPROFILE%\.arcinferzero\zero\models"
+  "or a folder the server reads (model-dirs.txt). Name them: .\bench\website_bench.ps1 -Models C:\path\model.gguf, ..."
+  exit 1
 }
 # DFlash2 drafters in the Hugging Face cache, by model
 $drafters = @{ "27B" = "models--z-lab--Qwen3.8-27B-DFlash2"; "35B-A3B" = "models--incoai--Qwen3.6-35B-A3B-DFlash2";
@@ -52,6 +69,9 @@ function Drafter([string]$model) {
       if ($d -and (Test-Path (Join-Path $d.FullName "config.json"))) { return $d.FullName }
     }
   }
+  # (else the drafter the server found for that model, in any folder it reads)
+  $l = $script:listed | Where-Object { $_.path -eq $model -and $_.dflash_path } | Select-Object -First 1
+  if ($l -and (Test-Path (Join-Path $l.dflash_path "config.json"))) { return $l.dflash_path }
   return $null
 }
 function WaitFree {

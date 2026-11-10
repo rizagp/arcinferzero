@@ -2,6 +2,21 @@
 
 ## 2026-11-10: website benchmark's KL for Gemma with BOS
 
+- **`run-tests.cmd`** (bench\run_tests.ps1) for testers: double-click, leave it running, drag the zip it puts on the
+  Desktop into the GitHub issue. It finds the models (Hugging Face cache, packages, and every folder the server
+  reads), runs `f33_sweep` (Qwen models) and `website_bench`, keeps the PC awake, writes the user's folder in paths as
+  %USERPROFILE%, and packs the logs. `run-tests.cmd quick` (about an hour), `run-tests.cmd quick 27B` (one model).
+- **`website_bench.ps1` found no models outside the Hugging Face cache** (issue #4: models in `C:\hf`) and then stopped
+  at its summary: it now also asks `serverz --list-models` (model-dirs.txt folders), takes DFlash2 drafters from
+  there too, and ends with a plain message when nothing is found. Flash Next's split first part is found too.
+- **`mgpu_probe`: host memory <-> GPU one way** (pinned / pageable, compute queue / copy engine, 40 / 256 MB) and every
+  GPU at once: the link that MoE experts streamed from RAM come over. The 6.6 GB/s measured on the B60s before was
+  GPU -> host -> GPU (two copies), not this. Laptop iGPU: pinned 36.8 GB/s host -> GPU, pageable 12.5, copy engine
+  20.5.
+- B60 results of 2026-11-10 (issue #4, `f33_sweep`, one GPU): `ARC_ATTN_XMX=1` bit-identical and faster where
+  attention weighs most (35B 64K prompt 1,808 -> 1,993 tok/s, +10 %; 27B +2 %; attention kernel time -5 to -15 %);
+  the chunked DeltaNet on XMX slower than `gdn_recur` (27B 4K: 900 vs 290 ms), so it stays off.
+
 - `runz --dump-ids` (used by `bench\website_bench.ps1` for its KL against f32) now puts BOS first when the model
   asks for it (`tokenizer.ggml.add_bos_token`, the Gemma models); Qwen ids are unchanged. Without it the KL measured
   a prompt the model never sees: Gemma 4 E4B 0.01644 -> **0.00273**, 26B-A4B 0.09272 -> **0.00479** (480 tokens of
