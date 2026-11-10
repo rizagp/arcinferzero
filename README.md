@@ -13,7 +13,7 @@ one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discre
 
 ## Why it is worth a look
 
-- **Prompts 2.1-4.9x faster than llama.cpp** (Vulkan / SYCL) on the same GGUF files and laptop, by building every
+- **Prompts 2.7-7.4x faster than llama.cpp** (Vulkan / SYCL) on the same GGUF files and laptop, by building every
   matrix product on the iGPU's int8 DP4a units: a 34K-token code prompt on Qwen3.8 27B takes 5.5 minutes instead
   of 40 (Vulkan).
 - **Mixture-of-experts models larger than the GPU memory**, experts streamed from the SSD into a GPU cache while
@@ -120,10 +120,13 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) run the same engine, with switches of their own in `zero/xe2/` that
 the iGPUs never take. Measured by a user on Arc Pro B60s
 ([issue #4](https://github.com/rizagp/inferzero/issues/4)):
-- Qwen3.8 27B IQ3_S, one B60: 4K prompt 764 tok/s (918 with `ARC_H8=1`), 21.5 tok/s generation; over 4 cards 1,501 (1,570).
-- Qwen3.6 35B-A3B, one B60: 4K prompt 3,232 tok/s, 77.5 tok/s generation.
+- Qwen3.8 27B IQ3_S, one B60: 4K prompt 1,024 tok/s (H8, on by default since 2026-11-08), 23.2 tok/s generation,
+  49.3 with MTP; over 2 cards 1,292, over 4 cards 1,624.
+- Qwen3.6 35B-A3B, one B60: 4K prompt 3,232 tok/s, 78.8 tok/s generation, 113.7 with MTP; over 4 cards 4,290 with
+  `ARC_TP_ATT_QSPLIT=1`.
 - **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel, sums through host memory since
-  B60s have no peer access): 27B generation 1.63x on 2 GPUs, 2.44x on 4.
+  B60s have no peer access): 27B generation 35.7 tok/s on 2 GPUs, 43 on 3, 53 on 4 (run of 2026-10-31, before the
+  newer one-card defaults).
   - Batched slots work over a split model.
   - A GPU that hangs makes the request fail and `/health` answer 503; the server itself stays up.
   - A model that cannot be split loads on one GPU.

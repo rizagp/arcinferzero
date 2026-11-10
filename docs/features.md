@@ -8,7 +8,7 @@ test laptop is a Core Ultra 5 125H (Arc iGPU, no XMX) with 32 GB of RAM. The ste
 ## 1. Fast prompts on an iGPU
 
 Every matrix product runs on the iGPU's int8 DP4a units, the weights decoded once per chunk. Prompts are processed
-2.1-4.9x faster than llama.cpp (Vulkan / SYCL) on the same GGUF files and laptop.
+2.7-7.4x faster than llama.cpp (Vulkan / SYCL) on the same GGUF files and laptop.
 
 | Same file, same laptop | inferzero | llama.cpp Vulkan | llama.cpp SYCL |
 |---|---|---|---|
@@ -130,7 +130,8 @@ chat's folder (each command allowed by the user), chats search.
   - batched slots work over the split;
   - failsafes cover a GPU that hangs.
 
-  On 4 Arc Pro B60s the 27B generates 2.44x faster ([multi-gpu.md](multi-gpu.md)).
+  On 4 Arc Pro B60s the 27B generates 53 tok/s, 2.44x one card in the same run of 2026-10-31
+  ([multi-gpu.md](multi-gpu.md)).
 - **Discrete Arc B-series cards** (B580 / Pro B60 / B70, experimental): their own switches in `zero/xe2/`, XMX for
   the prompt GEMMs after a start-up check, and scripts that measure each setting ([xe2-tuning.md](xe2-tuning.md)).
 - Xe2 / Xe3 iGPUs (Lunar Lake, Panther Lake) build the 8-lane kernels with 16 lanes; XMX engines are used after a
