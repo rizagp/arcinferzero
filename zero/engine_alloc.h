@@ -172,21 +172,22 @@
     if (dfl_) dfl_buffers();
     if (has_mtp) {
       const size_t mb = mtp_block_ ? M : 1;  // (DFlash alone: no MTP block rows)
-      mtp_x_ = buf(mb * hp.n_embd * 4);
+      const size_t hw = mtp_hw();  // (Flash Next: hc streams a row)
+      mtp_x_ = buf(mb * hw * 4);
       mtp_e_ = buf(mb * hp.n_embd * 4);
-      hfin_ = buf((mb + 1) * hp.n_embd * 4);
-      cl_buffer_region reg{(size_t)hp.n_embd * 4, mb * hp.n_embd * 4};
+      hfin_ = buf((mb + 1) * hw * 4);
+      cl_buffer_region reg{hw * 4, mb * hw * 4};
       if (!opt.dry) {
         cl_int err;
         hfin1_ = clCreateSubBuffer(hfin_, CL_MEM_READ_WRITE, CL_BUFFER_CREATE_TYPE_REGION, &reg, &err);
         CL_CHECK(err);
         mems_.push_back(hfin1_);
       }
-      hlast_ = buf((size_t)hp.n_embd * 4);
-      hpend_ = buf((size_t)max_drafts() * hp.n_embd * 4);  // (hidden states of the accepted drafts)
-      hver_ = buf((size_t)(1 + max_drafts()) * hp.n_embd * 4);
-      mtp_h_ = buf((size_t)hp.n_embd * 4);
-      fill(hlast_, (size_t)hp.n_embd * 4);
+      hlast_ = buf(hw * 4);
+      hpend_ = buf((size_t)max_drafts() * hw * 4);  // (hidden states of the accepted drafts)
+      hver_ = buf((size_t)(1 + max_drafts()) * hw * 4);
+      mtp_h_ = buf(hw * 4);
+      fill(hlast_, hw * 4);
       mtp_logits_host_.resize(hp.n_vocab);
     }
     for (int r = 0; r < kRoles; ++r)

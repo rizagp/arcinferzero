@@ -1112,3 +1112,25 @@ __kernel void mtp_concat(__global const float* e, __global const float* h, __glo
   }
 }
 
+// Qwen3.8 Flash Next's MTP head (llama.cpp qwen4exp graph_mtp): per row r and residual stream s, out row r * hc + s =
+// [rmsnorm(e[r]) * ew | rmsnorm(h[r][s]) * hw[s]] (f32, 2E wide); h rows are the hc streams side by side (hc * E), hw
+// one row of weights per stream. eh_proj then maps each out row to stream s of the MTP layer's residual row r.
+// grid (256, n * hc).
+__kernel void mtp_concat_hc(__global const float* e, __global const float* h, __global const float* ew,
+                            __global const float* hw, int E, int hc, float eps, __global float* out) {
+  const int m = get_group_id(1), l = get_local_id(0), r = m / hc, s = m % hc;
+  __global const float* er = e + (size_t)r * E;
+  __global const float* hr = h + (size_t)m * E;  // (row r's stream s: (r * hc + s) * E)
+  __global const float* ws = hw + (size_t)s * E;
+  float se = 0.0f, sh = 0.0f;
+  for (int i = l; i < E; i += get_local_size(0)) { se += er[i] * er[i]; sh += hr[i] * hr[i]; }
+  se = work_group_reduce_add(se);
+  sh = work_group_reduce_add(sh);
+  const float re = rsqrt(se / E + eps), rh = rsqrt(sh / E + eps);
+  __global float* o = out + (size_t)m * 2 * E;
+  for (int i = l; i < E; i += get_local_size(0)) {
+    o[i] = er[i] * re * ew[i];
+    o[E + i] = hr[i] * rh * ws[i];
+  }
+}
+

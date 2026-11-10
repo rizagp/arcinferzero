@@ -292,7 +292,8 @@ static std::vector<ModelInfo> scan_models() {
     (void)gsq;
     m.vision = mmproj;  // (Gemma 4 12B: gemma4uv; E2B / E4B: gemma4v)
     m.audio = audio;
-    m.mtp = (m.arch == "gemma4" && drafter) || nextn > 0;
+    // (Qwen3.8 Flash Next: its MTP head in an mtp-*.gguf next to it, QUEUE F34; the engine checks the file)
+    m.mtp = ((m.arch == "gemma4" || m.arch == "qwen4exp") && drafter) || nextn > 0;
     const auto k = known.find(m.file);
     if (k != known.end()) {
       m.alias = k->second.first;

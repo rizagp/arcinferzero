@@ -7,6 +7,8 @@
     std::vector<std::string> pre(hp.n_layer + 1);
     for (int il = 0; il <= hp.n_layer; ++il) {
       const std::string p = "blk." + std::to_string(il) + ".";
+      // (an MTP head from a file of its own is not in the model's expert file: its experts are pinned, pin_mtp_experts)
+      if (il == hp.n_layer && mtp_ext_) continue;
       if (f_.find(p + "ffn_gate_exps.weight") || f_.find(p + "ffn_gate_up_exps.weight")) pre[il] = p;
     }
     xc_->st.open_or_build(f_, path_, pre, hp.n_expert);
@@ -279,7 +281,9 @@
         const GgufTensor& t = f_.get(p + "ffn_" + names[i] + "_exps.weight");
         const uint64_t K = t.dims[0];
         if (t.dims.size() != 3 || t.dims[2] != (uint64_t)hp.n_expert || t.nelements() != per_expert * hp.n_expert ||
-            K != (i == 2 ? (uint64_t)hp.n_ff_exp : (uint64_t)E) || (K % 256 && !is_small_block_type(t.type)))
+            K != (i == 2 ? (uint64_t)hp.n_ff_exp : (uint64_t)E) ||
+            // (Q4_0 too: rows padded with zero blocks as for Gemma 4 26B's; Flash Next's MTP head file has Q4_0 experts)
+            (K % 256 && !is_small_block_type(t.type) && t.type != GGML_Q4_0))
           throw std::runtime_error("unexpected expert tensor " + t.name);
         if (!is_w8_type(t.type))
           throw std::runtime_error("unsupported expert tensor " + t.name + " (" + ggml_type_name(t.type) + ")");
@@ -300,6 +304,78 @@
       L.ex_q[i] = buf(q.nbytes, q.data);
       L.ex_s[i] = buf(s.nbytes, s.data);
     }
+  }
+
+  // The MTP head's experts (a file of its own, mtp_ext_; QUEUE F34) in one device buffer, each in the expert file's
+  // record form (rows padded to whole superblocks, gpu_raw_sb, gate | up | down, 4 KB records: ExpertStore::build),
+  // its table row fixed in the expert cache (XCache::pin). Q4_0 head: 512 x ~2.9 MB = ~1.5 GiB, counted in gpu_bytes
+  // before the cache is sized, so the cache gives the room.
+  // (the record layout of layer il's experts, as ExpertStore::open_or_build lays out a layer)
+  ExpertStore::LayerInfo pin_layout(int il, ExpertStore::Src m[3]) const {
+    const std::string p = "blk." + std::to_string(il) + ".";
+    ExpertStore::LayerInfo li;
+    uint64_t sum = 0;
+    for (int i = 0; i < 3; ++i) {
+      m[i] = ExpertStore::src(f_, p, i);
+      li.type[i] = m[i].t->type;
+      li.part[i] = m[i].rows * (uint64_t)(padded_k((int)m[i].t->dims[0]) / 256) * raw_padded_sb_bytes(m[i].t->type);
+      sum += li.part[i];
+    }
+    li.rec = (sum + ExpertStore::kAlign - 1) / ExpertStore::kAlign * ExpertStore::kAlign;
+    return li;
+  }
+  size_t pin_bytes(int il) const {  // (a dry load counts them too: --ctx auto)
+    ExpertStore::Src m[3];
+    return (size_t)hp.n_expert * pin_layout(il, m).rec + 65536;
+  }
+  void pin_mtp_experts(Layer& L) {
+    ExpertStore::Src m[3];
+    const ExpertStore::LayerInfo li = pin_layout(L.il, m);
+    if ((int)xc_->st.layers.size() <= L.il) xc_->st.layers.resize(L.il + 1);
+    xc_->st.layers[L.il] = li;  // (xoff reads the parts' offsets from here; lrec stays 0: the layer is in no pool)
+    const int NE = hp.n_expert;
+    const size_t bytes = (size_t)NE * li.rec + 65536;  // (+64 KB: the kernels' block reads past a record's end)
+    char* base = (char*)zrt::device_alloc(bytes);
+    mtp_xbuf_ = base;
+    mtp_xbytes_ = bytes;
+    gpu_bytes += bytes;
+    const int G = 32;  // (experts per batch, built in parallel into pinned host memory, then copied)
+    char* host = (char*)zrt::host_alloc((size_t)G * li.rec);
+    struct Free { void* p; ~Free() { zeMemFree(zrt::ctx, p); } } free_host{host};
+    for (int e0 = 0; e0 < NE; e0 += G) {
+      const int ne = std::min(G, NE - e0);
+      memset(host, 0, (size_t)ne * li.rec);
+#pragma omp parallel for
+      for (int j = 0; j < ne; ++j) {
+        uint8_t* dst = (uint8_t*)host + (size_t)j * li.rec;
+        for (int i = 0; i < 3; ++i) {
+          const GgufTensor& t = *m[i].t;
+          const uint32_t ty = li.type[i];
+          const size_t sbb = gguf_sb_bytes(ty), bp = raw_padded_sb_bytes(ty), nsb = li.part[i] / bp;
+          const int K = (int)t.dims[0], rows = (int)m[i].rows;
+          const size_t row1 = (size_t)(e0 + j) * m[i].per + m[i].row0;
+          const uint8_t* src;
+          std::vector<uint8_t> padded;
+          if (K % 256) {
+            int blk = 0, bb = 0;
+            ggml_block_info(ty, blk, bb);
+            padded.resize(nsb * sbb);
+            pad_small_block_rows(ty, t.data + row1 * (K / blk) * bb, rows, K, padded.data());
+            src = padded.data();
+          } else {
+            src = t.data + row1 * (K / 256) * sbb;
+          }
+          for (size_t s = 0; s < nsb; ++s) gpu_raw_sb(ty, src + s * sbb, dst + s * bp);
+          dst += li.part[i];
+        }
+      }
+      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), base + (size_t)e0 * li.rec, host, (size_t)ne * li.rec, nullptr, 0,
+                                             nullptr));
+      zrt::sync();
+    }
+    xc_->pin(L.il, base, li.rec);
+    fprintf(stderr, "arcinferzero: MTP head experts on the GPU: %.2f GiB (%s)\n", bytes / 1073741824.0,
+            ggml_type_name(li.type[0]));
   }
 
   // Gemma 4 26B-A4B experts of layer L (see layer_gemma_ffn): router rows padded to router_rows() (zeros past the

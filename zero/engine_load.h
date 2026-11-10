@@ -390,6 +390,52 @@
     return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, KP);
   }
 
+  // Qwen3.8 Flash Next's MTP head in a file of its own (QUEUE F34, GitHub #7): --mtp-model FILE, else an mtp-*.gguf next
+  // to the model of the same architecture whose blocks are this model's plus its nextn block (llama.cpp's form: the
+  // base model's head, e.g. mtp-Qwen3.8-Flash-Next-Q4_0.gguf). Its blk.N.* tensors join f_'s list, so the loaders read
+  // them as the model's own; its output / token_embd are not taken (the model's are used: drafts are verified anyway).
+  // Runs before load_hparams (no pointer into f_'s tensor list is kept yet). Without --mtp: nothing.
+  void adopt_mtp_file() {
+    const std::string a = f_.get_str("general.architecture");
+    // (--draft dflash without a DFlash2 folder still drafts with the block, as init() decides after this)
+    if (a != "qwen4exp" || !opt.mtp || (!opt.mtp_block && !opt.dflash.empty())) return;
+    const int64_t nb = f_.get_int(a + ".block_count", 0);
+    if (nb <= 0 || f_.get_int(a + ".nextn_predict_layers", 0) > 0) return;  // (a block of its own)
+    const std::string mp = "blk." + std::to_string(nb) + ".";
+    auto fits = [&](const std::string& p) {
+      try {
+        auto g = std::make_unique<GgufFile>(p);
+        if (g->get_str("general.architecture") != a || g->get_int(a + ".block_count", 0) != nb + 1 ||
+            g->get_int(a + ".nextn_predict_layers", 0) != 1 ||
+            g->get_int(a + ".embedding_length", -1) != f_.get_int(a + ".embedding_length", -2) ||
+            g->get_int(a + ".expert_count", -1) != f_.get_int(a + ".expert_count", -2) ||
+            !g->find(mp + "nextn.eh_proj.weight"))
+          return false;
+        mtp_file_ = std::move(g);
+        return true;
+      } catch (const std::exception&) {
+        return false;
+      }
+    };
+    if (!opt.mtp_model.empty()) {
+      if (!fits(opt.mtp_model))
+        throw std::runtime_error("--mtp-model " + opt.mtp_model + ": not an MTP head of this model (" + a + ", " +
+                                 std::to_string(nb) + " blocks + 1)");
+    } else {
+      namespace fs = std::filesystem;
+      std::error_code ec;
+      const fs::path dir = fs::path(path_).parent_path();
+      for (const auto& e : fs::directory_iterator(dir.empty() ? fs::path(".") : dir, ec)) {
+        const std::string n = e.path().filename().string();
+        if (n.rfind("mtp-", 0) == 0 && e.path().extension() == ".gguf" && fits(e.path().string())) break;
+      }
+    }
+    if (!mtp_file_) return;
+    const int n = f_.adopt(*mtp_file_, mp);
+    mtp_ext_ = true;
+    fprintf(stderr, "arcinferzero: MTP head %s (%d tensors)\n", mtp_file_->path.c_str(), n);
+  }
+
   void load_weights() {
     // The output head first: the GPU reads a large buffer allocated late in the load (after gigabytes of other
     // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
@@ -462,11 +508,26 @@
     if (opt.mtp && opt.mtp_block && f_.find(mp + "nextn.eh_proj.weight")) {
       has_mtp = mtp_block_ = true;
       mtp_.il = hp.n_layer;
-      mtp_.attn_norm = load_f32(mp + "attn_norm.weight");
-      mtp_.post_norm = load_f32(mp + "post_attention_norm.weight");
+      if (hp.hc) {  // (Flash Next, QUEUE F34: a layer as its others, with the mixers; no PLE)
+        for (int b = 0; b < 2; ++b) {
+          const std::string hp_ = mp + (b ? "hc_ffn" : "hc_attn");
+          mtp_.hc_norm[b] = load_f32(hp_ + "_norm.weight");
+          mtp_.hc_down[b] = load_hc_down(hp_ + "_down.weight", hp_ + "_inject.weight");
+          mtp_.hc_up[b] = load_hc_up(hp_ + "_up.weight");
+        }
+      } else {
+        mtp_.attn_norm = load_f32(mp + "attn_norm.weight");
+        mtp_.post_norm = load_f32(mp + "post_attention_norm.weight");
+      }
       load_attn(mtp_, mp);
       if (hp.moe) {
+        const uint64_t sb0 = stream_bytes_;
         load_moe(mtp_, mp);
+        if (mtp_ext_ && stream_) {  // (not in the model's expert file: all of them on the GPU)
+          stream_bytes_ = sb0;
+          if (!opt.dry) pin_mtp_experts(mtp_);
+          else gpu_bytes += pin_bytes(mtp_.il);
+        }
       } else {
         mtp_.gate = load_w(mp + "ffn_gate.weight");
         mtp_.up = load_w(mp + "ffn_up.weight");
@@ -474,8 +535,14 @@
       }
       eh_proj_ = load_w(mp + "nextn.eh_proj.weight");
       enorm_ = load_f32(mp + "nextn.enorm.weight");
-      hnorm_ = load_f32(mp + "nextn.hnorm.weight");
-      shnorm_ = load_f32(mp + "nextn.shared_head_norm.weight");
+      hnorm_ = load_f32(mp + "nextn.hnorm.weight");  // (Flash Next: one row of weights per stream, [hc][E])
+      if (hp.hc) {
+        mtp_hc_norm_ = load_f32(mp + "nextn.hc_head_norm.weight");
+        mtp_hc_down_ = load_hc_down(mp + "nextn.hc_head_down.weight", "");
+        mtp_hc_up_ = load_hc_up(mp + "nextn.hc_head_up.weight");
+      } else {
+        shnorm_ = load_f32(mp + "nextn.shared_head_norm.weight");
+      }
       clFinish(cl_.queue);
     }
     // DFlash2 (with or without the MTP block: with both, mtp_draft picks one per step; Flash Next: the features are the

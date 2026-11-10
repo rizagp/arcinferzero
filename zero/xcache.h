@@ -394,6 +394,24 @@ struct XCache {
     const Pool* big = &pools[0];
     for (auto& P : pools) if (P.rec > big->rec) big = &P;
     for (size_t i = 0; i < (size_t)(NL + 1) * NE; ++i) xaddr[i] = (uint64_t)big->addr[0];
+    for (const Pin& p : pins_) set_pin_row(p);  // (pinned layers keep their own records)
+  }
+  // A layer whose experts all sit in one device buffer of their own, `rec` bytes each from `base` (Qwen3.8 Flash Next's
+  // MTP head from a file of its own, which the expert file lacks: QUEUE F34). It is in no pool: ensure() is never called
+  // for it, prefetch skips it, its table row is fixed.
+  struct Pin { int l; char* base; uint64_t rec; };
+  std::vector<Pin> pins_;
+  bool pinned(int l) const {
+    for (const Pin& p : pins_) if (p.l == l) return true;
+    return false;
+  }
+  void set_pin_row(const Pin& p) {
+    for (int e = 0; e < NE; ++e) xaddr[(size_t)p.l * NE + e] = (uint64_t)(p.base + (size_t)e * p.rec);
+  }
+  void pin(int l, char* base, uint64_t rec) {
+    if (l < 0 || l >= NL) throw std::runtime_error("expert cache: no table row for pinned layer " + std::to_string(l));
+    pins_.push_back({l, base, rec});
+    set_pin_row(pins_.back());
   }
   int slots() const { int n = 0; for (auto& P : pools) n += P.n; return n; }
 

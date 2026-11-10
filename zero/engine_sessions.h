@@ -264,7 +264,7 @@
     if (s.S.empty())
       for (auto& L : layers_)
         if (hp.recurrent(L.il)) { s.S.push_back(buf(state_bytes())); s.conv.push_back(buf(conv_bytes())); }
-    if (has_mtp && !s.h) s.h = buf((size_t)hp.n_embd * 4);
+    if (has_mtp && !s.h) s.h = buf(mtp_hw() * 4);
     return s;
   }
   // layers with a KV cache of their own and its geometry (int8 cache: K/V blocks of 16 keys x hd bytes per kv head,
@@ -340,7 +340,7 @@
       }
       if (has_mtp) v.push_back({sn.h, 0, (size_t)hp.n_embd * 4});
     }
-    if (has_mtp) v.push_back({hlast_, 0, (size_t)hp.n_embd * 4});
+    if (has_mtp) v.push_back({hlast_, 0, mtp_hw() * 4});
     return v;
   }
   // Gemma: the device ranges of the sliding-window layers' ring slots for positions [pos - n_swa, pos) (16-key
@@ -600,6 +600,17 @@
   float d_base_ = 1e6f, d_base_swa_ = 1e4f;
   bool gemma_mtp_ = false;
   bool mtp_block_ = false;  // the model's own MTP (nextn) block is loaded (Qwen)
+  // Qwen3.8 Flash Next's MTP head from a file of its own (mtp-*.gguf, llama.cpp's form; QUEUE F34): its blk.N.*
+  // tensors are adopted into f_ (data in this file's mapping); its experts pinned in the expert cache; its head mixer
+  std::unique_ptr<GgufFile> mtp_file_;
+  bool mtp_ext_ = false;
+  cl_mem mtp_hc_norm_ = nullptr;
+  GpuWeight mtp_hc_down_, mtp_hc_up_;
+  void* mtp_xbuf_ = nullptr;  // (its experts, pinned: pin_mtp_experts; freed in release_all)
+  size_t mtp_xbytes_ = 0;
+  // floats of a hidden row the MTP block reads (hlast_ / hfin_ / hver_ / hpend_ / mtp_h_) and of its residual rows
+  // (mtp_x_): Flash Next's hc streams side by side (the residual before the head mixer), else n_embd after the norm
+  size_t mtp_hw() const { return hp.hc && mtp_block_ ? (size_t)hp.hce() : (size_t)hp.n_embd; }
   // MoE: router logits, routing, slots (token, expert pairs grouped by expert), expert activations and outputs
   std::string moe_src_;
   cl_mem gmlp_ = nullptr, gmoe_ = nullptr;  // (Gemma 4 experts, see layer_gemma_ffn)

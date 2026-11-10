@@ -288,8 +288,13 @@ reference: KL 0.0143 on 363 tokens of text, 0.0186 on a 3,584-token prompt. That
 summaries, where it does not change what is said. For work that needs exactness (code, numbers, quotes), its precise
 mode makes it more exact (0.0127 at 3.5K, under the 0.015 limit) at about half the prompt speed: `arc-server start -Model flash -Precise`
 (`pi-arc flash --precise`, the launcher's "Accuracy" box; kept on a restart and a model switch like `-Npu`,
-`-NoPrecise` turns it off; the server's own option `--precise`, or `ARC_FN_PRECISE=1`). This model has no MTP block;
-it reads images with its projector next to it (bartowski's `mmproj-Qwen3.8-Flash-Next-f16.gguf`); the packaged single
+`-NoPrecise` turns it off; the server's own option `--precise`, or `ARC_FN_PRECISE=1`). The model file has no MTP
+block, but its MTP head as a file of its own works: put `mtp-Qwen3.8-Flash-Next-Q4_0.gguf` (2.2 GB, from
+[SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF](https://huggingface.co/SC117/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF),
+the base model's head made for llama.cpp; the launcher's Get models takes the link) next to the model and MTP is on
+(`runz --mtp`, or `--mtp-model FILE` elsewhere): 3 drafts a step, 96 % accepted, +18 % on the laptop (its experts take
+1.4 GiB of GPU memory from the expert cache); with the DFlash2 drafter too, the server picks one per step. It
+reads images with its projector next to it (bartowski's `mmproj-Qwen3.8-Flash-Next-f16.gguf`); the packaged single
 file in `%USERPROFILE%\.arcinferzero\zero\models` works too.
 
 Stop the server (`arc-server stop`) before using the laptop for other heavy GPU work (games, video editing), or

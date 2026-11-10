@@ -94,7 +94,7 @@
       }
     if (has_mtp) {
       flush_mtp_pending();
-      hsnap_.h = read_buf(hlast_, (size_t)hp.n_embd * 4);
+      hsnap_.h = read_buf(hlast_, mtp_hw() * 4);
     }
     hsnap_.pos = pos;
   }
@@ -274,7 +274,13 @@
       point_to(q.slot);
       pos = q.pos;
       rope_shift = q.rs;
-      if (mtp_block_) {  // as mtp_prefill for its row: hlast_, then the row's final hidden state, then the MTP block
+      if (mtp_block_ && hp.hc) {  // (Flash Next, QUEUE F34: the row's residual streams as they are)
+        const size_t W4 = mtp_hw() * 4;
+        CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, hfin_, 0, 0, W4, 0, nullptr, nullptr));
+        CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, hfin_, (size_t)q.row * W4, W4, W4, 0, nullptr, nullptr));
+        CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hfin_, hlast_, W4, 0, W4, 0, nullptr, nullptr));
+        mtp_rows(&toks[q.row], hfin_, 1, q.pos, false);
+      } else if (mtp_block_) {  // as mtp_prefill for its row: hlast_, then the row's final hidden state, then the MTP block
         const size_t E4 = (size_t)hp.n_embd * 4;
         CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, hfin_, 0, 0, E4, 0, nullptr, nullptr));
         float eps = hp.eps;
@@ -285,7 +291,9 @@
         CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hfin_, hlast_, E4, 0, E4, 0, nullptr, nullptr));
         mtp_rows(&toks[q.row], hfin_, 1, q.pos, false);
       }
-      if (has_mtp && hlast_) {  // (as head() leaves it: the normed hidden state of the row; the drafters start there)
+      if (has_mtp && hlast_ && mtp_block_ && hp.hc) {
+        // (done above: hlast_ holds the row's streams)
+      } else if (has_mtp && hlast_) {  // (as head() leaves it: the normed hidden state of the row; the drafters start there)
         float eps = hp.eps;
         int E = hp.n_embd, M = Mp, TT = 1, r0 = q.row, wh = 1, a32 = 1;
         set_args(k_rmsnorm_, 0, x_, r0, out_norm_, E, M, TT, eps, aq_, asc_, absum_, hlast_, wh, a32);
@@ -397,11 +405,16 @@
     for (int b = 0; b < B; ++b) {  // each slot's hidden states (verify_done) and DFlash2 rows of the pass
       const BatchSeq& q = seqs[b];
       point_to(q.slot);
-      float eps = hp.eps;
-      int E = hp.n_embd, M = Mp, nn = q.n, r0 = q.row, wh = 1, a32 = 1;
-      set_args(k_rmsnorm_, 0, x_, r0, out_norm_, E, M, nn, eps, aq_, asc_, absum_, hver_, wh, a32);
-      size_t gws[2] = {256, (size_t)q.n}, lws[2] = {256, 1};
-      run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
+      if (mtp_block_ && hp.hc) {  // (Flash Next's MTP head reads the rows' residual streams, QUEUE F34)
+        const size_t W4 = mtp_hw() * 4;
+        CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, hver_, (size_t)q.row * W4, 0, (size_t)q.n * W4, 0, nullptr, nullptr));
+      } else {
+        float eps = hp.eps;
+        int E = hp.n_embd, M = Mp, nn = q.n, r0 = q.row, wh = 1, a32 = 1;
+        set_args(k_rmsnorm_, 0, x_, r0, out_norm_, E, M, nn, eps, aq_, asc_, absum_, hver_, wh, a32);
+        size_t gws[2] = {256, (size_t)q.n}, lws[2] = {256, 1};
+        run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
+      }
       if (dfl_)
         CL_CHECK(clEnqueueCopyBuffer(cl_.queue, dfl_acc_[0], dfl_vrows_, (size_t)q.row * E4, 0, (size_t)q.n * E4, 0, nullptr, nullptr));
     }
@@ -515,7 +528,7 @@
           n += state_bytes() + conv_bytes() + 2 * (size_t)(1 + kMaxDrafts) * hp.conv_dim() * 4 +
                (size_t)(1 + kMaxDrafts) * 2 * hp.ssm_nv * 4;
       }
-    if (has_mtp) n += (size_t)hp.n_embd * 4 * (1 + max_drafts() + 1 + max_drafts());  // (hlast_, hpend_, hver_)
+    if (has_mtp) n += mtp_hw() * 4 * (1 + max_drafts() + 1 + max_drafts());  // (hlast_, hpend_, hver_)
     n += dfl_l_.size() * 2 * (size_t)dfl_R_ * dfl_nkv_ * 128 * 4;
     if (dfl_) n += (size_t)batch_rows_ * hp.n_embd * 4;
     return n + snapshot_bytes();

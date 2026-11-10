@@ -610,6 +610,27 @@ Prompt order (the least changing first, so the disk prompt cache keeps the prefi
 | 32.4 | Project instructions and memory | ✅ 2026-11-02 | The project folder's AGENTS.md (or an instructions field) goes into the system prompt. The project's MEMORY.md is kept in the data folder (`projects\<folder>-<hash>\MEMORY.md`), not in the project folder, so the model's notes are never committed or shared with it. `remember` in a project chat writes there by default; "for every chat" writes to the global one |
 | 32.5 | MCP servers (the web UI as an MCP client) | ✅ 2026-11-04 night, stdio servers (docs/mcp.md, tools/server_mcp.h; 22 API checks with a test server). Left: HTTP (streamable) servers, a real blender-mcp run by the user | `%USERPROFILE%\.arcinferzero\mcp.json` in the usual `mcpServers` form (command, args, env; stdio first, HTTP later). The server runs them, lists their tools (`tools/list`), adds them to the tool list, routes calls (`tools/call`), and asks before a call that changes something. Enabled per project: every tool costs hundreds of prompt tokens, small models pick worse among many, and a changed tool list re-processes the prefix. Tool calls stay schema-constrained (`ARC_TOOL_CONSTRAINT`) |
 
+## F34: Flash Next MTP from a separate file (issue #7, started 2026-11-10)
+
+Reference: llama.cpp `src/models/qwen4exp.cpp` (`graph_mtp`). The file: `mtp-Qwen3.8-Flash-Next-Q4_0.gguf` (SC117's
+Swift repository; base Flash Next's head), arch qwen4exp, block_count 49, nextn 1, `blk.48.*` = one QSA attention
+layer (compress ratio 4, like layers 3, 7, ..., 47) + 512-expert MoE (Q4_0, down K 640) + hyper-connections, and
+`nextn.eh_proj [2E -> E]`, `nextn.enorm [E]`, `nextn.hnorm [E][hc]`, `nextn.hc_head_{norm,down,up}`; its own
+`output` / `token_embd` (the main model's are used: drafts are verified anyway).
+
+The math (per draft row): h = the main model's residual streams (hc x E, before the head mixer) of the row before;
+e = embedding(token); x_s = eh_proj([rmsnorm(e) * enorm | rmsnorm(h_s) * hnorm_s]) for each stream s; then a Flash
+Next layer on x (attention mixer, QSA attention with the MTP layer's own KV / QSA state, combine, FFN mixer, MoE,
+combine; no PLE); the next draft's h = x; logits = output(hc_head mix of x with the nextn head mixer).
+
+| # | Step | Notes |
+|---|---|---|
+| 34.1 | Load: `--mtp-model FILE` (runz / serverz; default an `mtp-*.gguf` next to the model); the file's `blk.48.*` tensors added to the main GgufFile's list (data in the second file's mapping), so the existing loaders read them; hp arrays for il = n_layer (attention, ratio 4) | ✅ 2026-11-10 |
+| 34.2 | The MTP layer's experts pinned in the expert cache: all 512 records built in memory (the expert file's layout: rows padded to superblocks, gpu_raw_sb) into one device buffer, xaddr row il = 48 fixed, never in an LRU pool; ~1.5 GB of GPU memory taken from the cache | ✅ 1.41 GiB |
+| 34.3 | Hidden rows hc-wide (hlast_ / hfin_ / hver_ / hpend_ / mtp_h_: hce() floats a row): head_rows writes x_ rows; mtp_rows for hc: enorm / per-stream hnorm, eh_proj per stream, run_layer-like hc block on mtp_, nextn head mixer, lm_head | ✅ |
+| 34.4 | Checks: plain decoding bit-identical with the file loaded and unused; `--mtp` greedy text = plain; acceptance and speed on the laptop (and 35B / 27B MTP unchanged) | ✅ +18 % at 3 drafts, 96 % accepted; text = plain; default path bit-identical (Flash Next, 35B, 4B). Left: the 27B / 35B MTP speed re-measured (their code paths changed only in buffer sizes, equal for them) |
+| 34.5 | serverz: slots / snapshots of the MTP layer's KV and QSA state; package with the head; docs | [~] serverz loads it with DFlash2 (one request checked); slots / sessions sized for it, not run with several slots yet; the B60 (experts in RAM): more drafts likely pay there |
+
 ## F33: B60 speed plan (2026-11-09)
 
 From the owner's run of 2026-11-09 (issue #4, package 2c132a9, one Pro B60; docs/xe2-tuning.md has the numbers).

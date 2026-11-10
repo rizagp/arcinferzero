@@ -254,8 +254,9 @@
     //  reading the same addresses. On by default on discrete cards, off on iGPUs: xe2_xall, zero/xe2/engine_xe2.h;
     //  not multi-GPU)
     const bool xall = xe2_xall();
-    bool skip_x = false;
-    if (xall && xc_ && T == 1 && !use_gemm && hp.moe_std && !tp_moe()) {
+    // (a pinned layer, the MTP head from a file of its own: every expert resident, its table row fixed, no ensure())
+    bool skip_x = xc_ && xc_->pinned(L.il);
+    if (!skip_x && xall && xc_ && T == 1 && !use_gemm && hp.moe_std && !tp_moe()) {
       if (L.il <= xall_prev_il_) xc_->all_in();
       xall_prev_il_ = L.il;
       skip_x = xc_->all_in_ok;

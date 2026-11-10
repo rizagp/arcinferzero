@@ -268,6 +268,8 @@ static int run_main(int argc, char** argv) {
             "  --ring-snap-test      Gemma 4: a snapshot's ring copy restored after the rings moved on (a 7,600+ token\n"
             "                        prompt), the next tokens' logits against a fresh run, bit for bit\n"
             "  --mtp                 speculative decoding (MTP block / Gemma drafter)  --mtp-drafts N  drafts per step\n"
+            "  --mtp-model F         the MTP head or drafter in a file of its own (Gemma 4 drafter; Qwen3.8 Flash Next's\n"
+            "                        mtp-*.gguf head); default: an mtp-*.gguf next to the model\n"
             "  --dflash DIR          speculative decoding with a DFlash2 block drafter (Qwen3.8 27B, Qwen3.6 35B-A3B, Flash Next)\n"
             "  --draft auto|mtp|dflash  with --dflash: both drafters picked per step (auto), the MTP block only, or\n"
             "                        DFlash2 only (the MTP block is not loaded)\n"
@@ -366,6 +368,7 @@ static int run_main(int argc, char** argv) {
       else if (d != "auto") { fprintf(stderr, "--draft: auto, mtp or dflash\n"); return 1; }
     }
     else if (a == "--mtp-drafts") eo.mtp_drafts = atoi(next());
+    else if (a == "--mtp-model") { eo.mtp_model = next(); eo.mtp = true; }  // (an MTP head / drafter file of its own)
     else if (a == "--mtp-min-p") eo.mtp_min_p = (float)atof(next());
     else if (a == "--kl-ref") kl_ref = next();
     else if (a == "--slots-check") slots_check = true;

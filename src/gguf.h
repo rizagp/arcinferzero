@@ -125,6 +125,20 @@ class GgufFile {
     if (!t) throw std::runtime_error("missing tensor " + name);
     return *t;
   }
+  // The tensors of `o` whose names start with `prefix` and that this file lacks, added to this file's list (their data
+  // stays in o's mapping: o must outlive this file's use of them). For an MTP block in a file of its own (Qwen3.8
+  // Flash Next, mtp-*.gguf): the loaders then read blk.N.* as if the model's file had them. Call it before any pointer
+  // to a tensor of this file is kept (the list may move). Returns how many were added.
+  int adopt(const GgufFile& o, const std::string& prefix) {
+    int n = 0;
+    for (const GgufTensor& t : o.tensors)
+      if (t.name.rfind(prefix, 0) == 0 && !find(t.name)) {
+        tensor_index[t.name] = tensors.size();
+        tensors.push_back(t);
+        ++n;
+      }
+    return n;
+  }
   bool has(const std::string& key) const { return kv.count(key) > 0; }
   int64_t get_int(const std::string& key, int64_t def = -1) const {
     auto it = kv.find(key);

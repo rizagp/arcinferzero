@@ -204,6 +204,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       if (*it) clReleaseMemObject(*it);
     for (void* p : host_ptrs_) zeMemFree(zrt::ctx, p);  // (weights in host memory: plan_tight)
     host_ptrs_.clear();
+    if (mtp_xbuf_) {  // (the MTP head's pinned experts; the expert cache's table row went with xc_ or goes after)
+      zeMemFree(zrt::ctx, mtp_xbuf_);
+      zrt::D().device_bytes -= mtp_xbytes_;
+      mtp_xbuf_ = nullptr;
+    }
     if (cl_.queue) clReleaseCommandQueue(cl_.queue);
     if (cl_.ctx) clReleaseContext(cl_.ctx);
     dfl_close();  // (the DFlash2 drafter's mapped safetensors file)
@@ -216,7 +221,19 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     npu_preinit();  // (ARC_NPU=1 only)
     if (!cl_.init(true)) throw std::runtime_error("OpenCL init failed");
     ctx = (o.ctx + 15) / 16 * 16;
+    adopt_mtp_file();  // (Flash Next's MTP head in a file of its own: before anything keeps a pointer into f_)
     load_hparams();
+    if (mtp_ext_) {  // (its layer, il = n_layer: full attention, QSA with the file's compress ratio)
+      hp.qsa_ratio.resize(hp.n_layer + 1, 0);
+      const auto* cr = mtp_file_->get_ints("qwen4exp.attention.compress_ratios");
+      if (cr && (int)cr->size() > hp.n_layer && f_.find("blk." + std::to_string(hp.n_layer) + ".indexer.k_proj.weight")) {
+        const int r = (int)(*cr)[hp.n_layer];
+        if (r > 0 && hp.n_qsa && r != hp.qsa_ratio[hp.full_attn_interval - 1])
+          throw std::runtime_error("MTP head: its QSA block size differs from the model's");
+        hp.qsa_ratio[hp.n_layer] = r;
+        hp.n_qsa += r > 0;
+      }
+    }
     if (opt.tp_size > 1) tp_setup();  // (this shard's heads and columns: engine_tp_shard.h)
     // (MoE, Qwen3.6 35B: 1 and 2 drafts equally fast, 20.2 vs 20.3 tok/s; 1 keeps one DeltaNet state copy less)
     // (measured on arcinferzero, server answers at temperature 0, 2026-10-16: 35B 1 -> 3 drafts 23.9 -> 26.1 tok/s,
@@ -397,7 +414,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     batch_.clear();
     dfl_cap_lo_ = dfl_cap_base_ = dfl_cap_end_ = 0;
     nc_lo_ = nc_hi_ = -1;
-    if (hlast_) fill(hlast_, (size_t)hp.n_embd * 4);
+    if (hlast_) fill(hlast_, mtp_hw() * 4);
     for (auto& L : layers_)
       if (hp.recurrent(L.il)) {
         fill(L.conv_state, conv_bytes());
@@ -726,9 +743,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         ++k;
       }
     if (has_mtp) {
-      if (!s.h) s.h = buf((size_t)hp.n_embd * 4);
+      if (!s.h) s.h = buf(mtp_hw() * 4);
       flush_mtp_pending();
-      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, s.h, 0, 0, (size_t)hp.n_embd * 4, 0, nullptr, nullptr));
+      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, s.h, 0, 0, mtp_hw() * 4, 0, nullptr, nullptr));
     }
     s.pos = pos;
     // Gemma (ring caches): the sliding-window rings' last n_swa positions, in host memory. The global layers' caches
@@ -809,7 +826,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         ++k;
       }
     if (has_mtp) {
-      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, s.h, hlast_, 0, 0, (size_t)hp.n_embd * 4, 0, nullptr, nullptr));
+      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, s.h, hlast_, 0, 0, mtp_hw() * 4, 0, nullptr, nullptr));
       pend_toks_.clear();
     }
     pos = s.pos;
@@ -1428,6 +1445,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     const int saved = cur_T_;
     cur_T_ = n;
     if (hp.hc) {  // Flash Next: the final mixer of the streams is the output norm
+      // (the MTP head reads the rows' residual streams before the mixer, hc * E floats each: QUEUE F34)
+      if (hout && mtp_block_) {
+        const size_t W4 = (size_t)hp.hce() * 4;
+        CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, hout, (size_t)r0 * W4, 0, (size_t)n * W4, 0, nullptr, nullptr));
+      }
       hc_mix(out_hc_norm_, out_hc_down_, out_hc_up_, n, 16, 1, r0);
       matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
       cur_T_ = saved;

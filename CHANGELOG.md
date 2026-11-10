@@ -11,6 +11,26 @@
 - Checked: the server's SVG is byte for byte `site/icon.svg`; both themes rendered in the browser next to
   `arc-launcher -SelfTest`'s splash picture.
 
+## 2026-11-10: Qwen3.8 Flash Next MTP from its head file (QUEUE F34, GitHub #7)
+
+- **MTP for Flash Next**: its MTP head as a file of its own, llama.cpp's form (`mtp-Qwen3.8-Flash-Next-Q4_0.gguf`,
+  base Flash Next's head, in SC117's Swift-1.5 repository), found next to the model or given with `--mtp-model FILE`
+  (runz; the server and the catalog list such a model with MTP). Its `blk.48.*` tensors join the model file's tensor
+  list (`GgufFile::adopt`), so the existing loaders read the layer; the model's expert file is not touched (the
+  layer is left out of it).
+- The head as llama.cpp's `qwen4exp` `graph_mtp`: per row and residual stream `eh_proj([rmsnorm(e) * enorm |
+  rmsnorm(h_s) * hnorm_s])` (new kernel `mtp_concat_hc`; the (row, stream) pairs as rows of one matmul), then a
+  Flash Next layer (mixers, QSA attention with its own KV and QSA state, 512-expert MoE), its next h the layer's
+  residual streams, logits through its own head mixer and the model's lm_head. The model's hidden rows for it are
+  the residual streams before the head mixer (hc x E: `mtp_hw()`, also in slots, snapshots and sessions).
+- Its 512 Q4_0 experts **pinned** in the expert cache: built in the expert file's record form into one device buffer
+  (1.41 GiB, counted before the cache is sized; a dry load counts it too), the cache's table row fixed
+  (`XCache::pin`, kept when the table is reset), no `ensure()` for that layer. Q4_0 experts with K 640 accepted.
+- Laptop, code prompt, 128 tokens: plain 6.65 tok/s, MTP 1 / 2 / **3** / 5 drafts 7.02 / 7.57 / **7.84** / 7.06
+  (96 % accepted at 3, 3.88 tokens a pass; more drafts read more experts from the SSD per pass): **3 by default**.
+  Greedy text equal to plain on every run; the default path bit-identical to the build before (Flash Next, 35B,
+  4B). serverz with DFlash2 and the head: both picked per step.
+
 ## 2026-11-10: website benchmark's KL for Gemma with BOS
 
 - **`run-tests.cmd`** (bench\run_tests.ps1) for testers: double-click, leave it running, drag the zip it puts on the

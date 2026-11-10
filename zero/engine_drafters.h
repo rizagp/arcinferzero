@@ -551,6 +551,7 @@
   // rows from `hsrc` (main-model hidden states after the output norm, one position earlier), then eh_proj, one
   // gated-attention layer and the FFN (own KV cache). With `logits`, the shared head on the last row -> logits_.
   void mtp_rows(const int* toks, cl_mem hsrc, int n, int p0, bool logits, cl_mem hout = nullptr) {
+    if (hp.hc) return mtp_rows_hc(toks, hsrc, n, p0, logits, hout);
     const int E = hp.n_embd;
     const int Mp = n >= 128 ? std::min((n + 127) / 128 * 128, max_chunk) : (n + 15) / 16 * 16;
     const int saved_T = cur_T_, saved_pos = pos;
@@ -589,9 +590,82 @@
     pos = saved_pos;
     cur_T_ = saved_T;
   }
+  // Qwen3.8 Flash Next's MTP head (QUEUE F34; llama.cpp qwen4exp graph_mtp): h rows are the main model's residual
+  // streams (hc * E, before its head mixer). Per row r and stream s: eh_proj([rmsnorm(e_r) * enorm | rmsnorm(h_r,s) *
+  // hnorm_s]) = stream s of the MTP layer's residual row r (the (r, s) pairs as rows of one matmul: hc * E side by side
+  // is the residual's own layout); then the layer as run_layer's Flash Next branch without PLE (its own KV / QSA state
+  // at positions p0..); hout = the last row's streams (the next draft's h); with `logits`, the head's own mixer of
+  // the last row and the model's lm_head -> logits_.
+  void mtp_rows_hc(const int* toks, cl_mem hsrc, int n, int p0, bool logits, cl_mem hout) {
+    const int E = hp.n_embd, HC = hp.hc_n;
+    const size_t W4 = (size_t)hp.hce() * 4;
+    const int P = std::max(1, max_chunk / HC);  // (rows per piece: each is hc rows of the eh_proj matmul)
+    if (n > P) {
+      for (int o = 0; o < n; o += P) {
+        const int k = std::min(P, n - o);
+        mtp_rows_hc(toks + o, from(hsrc, (size_t)o * W4), k, p0 + o, logits && o + k == n, hout);
+      }
+      return;
+    }
+    const int R = n * HC;
+    auto pad = [&](int t) { return t >= 128 ? std::min((t + 127) / 128 * 128, max_chunk) : (t + 15) / 16 * 16; };
+    const int Mp = pad(n), MpR = pad(R);
+    const int saved_T = cur_T_, saved_pos = pos;
+    cl_mem saved_x = x_;
+    const size_t row_bytes = tok_embd_->nbytes / hp.n_vocab;
+#pragma omp parallel for if (n > 64)
+    for (int t = 0; t < n; ++t) {
+      if (toks[t] < 0 || toks[t] >= hp.n_vocab) {
+        std::fill_n(&x_host_[(size_t)t * E], E, 0.0f);
+        continue;
+      }
+      dequant_row(tok_embd_->type, tok_embd_->data + (size_t)toks[t] * row_bytes, E, &x_host_[(size_t)t * E]);
+    }
+    CL_CHECK(clEnqueueWriteBuffer(cl_.queue, mtp_e_, CL_TRUE, 0, (size_t)n * E * 4, x_host_.data(), 0, nullptr, nullptr));
+    {
+      cl_kernel kc = kernel("ops", "", "mtp_concat_hc");
+      float eps = hp.eps;
+      int EE = E, hc = HC, F2 = 2 * E, MM = MpR, TT = R, a32 = 1, fused = 1, gelu = 0;
+      set_args(kc, 0, mtp_e_, hsrc, enorm_, hnorm_, EE, hc, eps, big_);
+      size_t gws[2] = {256, (size_t)R}, lws[2] = {256, 1};
+      run("mtp_concat", kc, 2, gws, lws);
+      set_args(k_swiglu_, 0, big_, F2, MM, TT, aq_, asc_, absum_, a32, fused, gelu);  // quantization only
+      size_t g2[2] = {256, (size_t)MpR};
+      run("mtp_concat", k_swiglu_, 2, g2, lws);
+    }
+    x_ = mtp_x_;
+    pos = p0;
+    cur_T_ = R;
+    matmul("mtp_eh_proj", eh_proj_, MpR, x_, E, 0, 0, true);  // (row r * hc + s -> stream s of residual row r)
+    cur_T_ = n;
+    Layer& L = mtp_;
+    hc_mix(L.hc_norm[0], L.hc_down[0], L.hc_up[0], n, Mp, act32_for(false), 0);
+    layer_attn(L, n, Mp);
+    hc_combine(L.hc_down[0].N, n);
+    hc_mix(L.hc_norm[1], L.hc_down[1], L.hc_up[1], n, Mp, 1, 0);
+    layer_moe(L, n, Mp);
+    hc_combine(L.hc_down[1].N, n);
+    if (hout) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, hout, (size_t)(n - 1) * W4, 0, W4, 0, nullptr, nullptr));
+    if (logits) {
+      cur_T_ = 1;
+      hc_mix(mtp_hc_norm_, mtp_hc_down_, mtp_hc_up_, 1, 16, 1, n - 1);
+      matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
+    }
+    x_ = saved_x;
+    pos = saved_pos;
+    cur_T_ = saved_T;
+  }
   // Keeps the MTP KV cache in step with a main-model chunk at positions p0..p0+T-1 (x_ holds its final residual
   // stream): row r pairs token r with the hidden state of position p0+r-1. Leaves hlast_ = hidden of the last row.
   void mtp_prefill(const int* toks, int T, int Mp, int p0) {
+    if (hp.hc) {  // (Flash Next: the rows' residual streams as they are, hc * E floats a row)
+      const size_t W4 = mtp_hw() * 4;
+      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, hfin_, 0, 0, W4, 0, nullptr, nullptr));
+      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, hfin_, 0, W4, (size_t)T * W4, 0, nullptr, nullptr));
+      CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hfin_, hlast_, (size_t)T * W4, 0, W4, 0, nullptr, nullptr));
+      mtp_rows(toks, hfin_, T, p0, false);
+      return;
+    }
     const size_t E4 = (size_t)hp.n_embd * 4;
     CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hlast_, hfin_, 0, 0, E4, 0, nullptr, nullptr));
     {
@@ -622,7 +696,11 @@
   // default MTP drafts per step (later ones chained while the block is confident, opt.mtp_min_p). With the
   // token-outer verification GEMVs (16 Oct night), code answers: 27B 3 -> 7 drafts 12.6 -> 14.7 tok/s, 35B 3 -> 5
   // 34.2 -> 38.6; Indonesian prose equal (27B 7.0, 35B 23.4 / 23.1). 9B 2, 4B 3 (not re-measured); Gemma's drafter 2.
-  int mtp_block_drafts() const { return hp.gemma ? (hp.moe ? 3 : 2) : hp.moe ? 5 : hp.n_embd >= 5120 ? 7 : hp.n_embd <= 2560 ? 3 : 2; }
+  // (Qwen3.8 Flash Next's MTP head, QUEUE F34, laptop, 128 code tokens: plain 6.65, 1 / 2 / 3 / 5 drafts 7.02 / 7.57 /
+  //  7.84 / 7.06 tok/s; a verification pass reads every row's experts, from the SSD here: 3)
+  int mtp_block_drafts() const {
+    return hp.gemma ? (hp.moe ? 3 : 2) : hp.hc ? 3 : hp.moe ? 5 : hp.n_embd >= 5120 ? 7 : hp.n_embd <= 2560 ? 3 : 2;
+  }
   int max_drafts() const { return gemma_mtp_ ? 3 : std::clamp(opt.mtp_drafts, 2, kMaxDrafts); }
   // `tok` is the next token (sampled, not yet processed; it goes to position pos). Returns up to `max_drafts` greedy
   // drafts of the MTP block for the tokens after it: the second one is chained on the block's own output and only
@@ -632,7 +710,7 @@
     if (dfl_used_) {
       if (mtp_block_) {  // the MTP block's KV row of `tok` too (and of the pending accepted drafts), as its own drafts
         // would write it: the block attends to every position once it drafts again (without the row: stale memory)
-        const size_t E4 = (size_t)hp.n_embd * 4;
+        const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
         std::vector<int> toks = pend_toks_;
         const int np = (int)toks.size();
         if (np) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hpend_, hfin_, 0, 0, np * E4, 0, nullptr, nullptr));
@@ -650,7 +728,7 @@
       if (pos + 1 + max_drafts > ctx) max_drafts = std::max(1, ctx - pos - 1);
       return gemma_draft(tok, max_drafts);
     }
-    const size_t E4 = (size_t)hp.n_embd * 4;
+    const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
     std::vector<int> toks = pend_toks_;
     const int np = (int)toks.size();
     if (np) CL_CHECK(clEnqueueCopyBuffer(cl_.queue, hpend_, hfin_, 0, 0, np * E4, 0, nullptr, nullptr));
@@ -707,7 +785,7 @@
   }
   // The first `accepted` drafts of the last verify() turned out right; the rest are dropped.
   void verify_done(int accepted) {
-    const size_t E4 = (size_t)hp.n_embd * 4;
+    const size_t E4 = mtp_hw() * 4;  // (h rows: Flash Next hc * E)
     const cl_mem dfl_src = vrows_ ? dfl_vrows_ : nullptr;  // (a batched pass: the slot's own copy of its rows)
     vrows_ = false;
     const int nd = (int)last_drafts_.size();
