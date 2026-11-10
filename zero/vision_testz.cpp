@@ -1,4 +1,4 @@
-// arcinferzero: the Gemma 4 vision encoder (gemma4v) on one image, for tools/gemma4v_ref.py (the f32 reference):
+// inferzero: the Gemma 4 vision encoder (gemma4v) on one image, for tools/gemma4v_ref.py (the f32 reference):
 // writes <image>.g4v.bin (n_tok x n_out f32 embeddings) and <image>.g4v.rgb (the resized pixels).
 // ARC_VIS_LM=file: then the model itself on "<image> Describe this image in detail." (Gemma 4 chat turns): 32 greedy
 // steps, their log-probs (f32, vocab per step) to file and the chosen tokens to file.tok; ARC_VIS_LM_FORCE=file.tok

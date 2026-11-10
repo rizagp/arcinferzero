@@ -24,7 +24,7 @@ struct ServeOpts {
   double prefix_gb = 8.0;  // all models' saved system prompts together (0 = no limit)
   int img_min = 0, img_max = 0;  // image tokens per image (0 = the encoder's default)
   bool budget_given = false;     // --budget: no automatic choice of resident weights
-  bool dflash_auto = true;       // arcinferzero, with MTP: a DFlash2 drafter found for the model drafts too (--no-dflash: not)
+  bool dflash_auto = true;       // inferzero, with MTP: a DFlash2 drafter found for the model drafts too (--no-dflash: not)
   size_t whisper_bytes = 0;      // GPU memory of the Whisper engine loaded before the model (--whisper): kept free
   Json whisper_props;            // its /props entry
   // --asr-slots: Qwen3-ASR parts decoded together (1-4; each slot past the first ~0.55 GiB of GPU memory, faster only
@@ -63,7 +63,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   auto L = std::make_unique<Loaded>();
   L->alias = alias;
   L->path = model;
-  fprintf(stderr, "arcinferzero-server: loading %s\n", model.c_str());
+  fprintf(stderr, "inferzero-server: loading %s\n", model.c_str());
   const ServeOpts so_given = so;  // (failsafe: a split that cannot load loads on one GPU with these)
   if (so.gpus > 1) {  // (what a split model does not do yet: see ServeOpts::gpus)
     so.eo.mtp = false;
@@ -165,7 +165,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   srv.whisper_props_ = so.whisper_props;
   std::string mmproj = so.mmproj;
   if (!eng.hp.gemma && mmproj != "-") {
-    // Qwen vision (dense and MoE): --mmproj, or an mmproj-*.gguf next to the model with a Qwen3-VL projector arcinferzero runs
+    // Qwen vision (dense and MoE): --mmproj, or an mmproj-*.gguf next to the model with a Qwen3-VL projector inferzero runs
     if (mmproj.empty())
       for (const auto& de : model_dir_files(model))
         if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") { mmproj = de.path().string(); break; }
@@ -263,14 +263,14 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (!eo.mtp) layout += "-std";
   if (eo.mtp && !eo.dflash.empty() && !eo.mtp_block) layout += "-nomtp";
   if (L->eng->hp.gemma) layout += "-q2";  // (Gemma 4: two-pass states; the one-pass ones of before 2026-10-22 stay unused)
-  if (so.prefix_cache && eo.attn_int8) {  // %USERPROFILE%\.arcinferzero\prefix\<model>-<size>[<layout>]
+  if (so.prefix_cache && eo.attn_int8) {  // %USERPROFILE%\.inferzero\prefix\<model>-<size>[<layout>]
     std::error_code ec;
     const std::filesystem::path mp(model);
     srv.open_prefix_cache(app_dir() + ARC_DATA "prefix/" + mp.stem().string() + "-" +
                           std::to_string(std::filesystem::file_size(mp, ec)) + layout, so.prefix_gb);
   }
   if (so.sess_gb > 0 && eo.attn_int8) {
-    // saved conversations of this model file: %USERPROFILE%\.arcinferzero\sessions\<model>-<size>
+    // saved conversations of this model file: %USERPROFILE%\.inferzero\sessions\<model>-<size>
     std::error_code ec;
     const std::filesystem::path mp(model);
     std::string dir = so.sess_dir;

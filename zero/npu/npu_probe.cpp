@@ -1,4 +1,4 @@
-// arcinferzero NPU feasibility probe (QUEUE F30): every Level Zero driver with its extensions and every device
+// inferzero NPU feasibility probe (QUEUE F30): every Level Zero driver with its extensions and every device
 // (type, name, clock, memory), so the NPU (Meteor Lake "AI Boost", device type VPU) and the graph extension it runs
 // compiled models through can be found. The engine itself initializes Level Zero for GPUs only (zeInit(1)).
 // usage: npu_probe

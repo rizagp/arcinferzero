@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>arcinferzero</title>
+<title>inferzero</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#00a884">
@@ -609,7 +609,7 @@ details[open].think > div { animation: fade-up .2s var(--ease-out); }
           <h3>Memory</h3>
           <div class="opt"><div class="lab">Use memory<small>What you asked the model to remember ("remember that…"), read by every new chat</small></div>
             <label class="switch"><input type="checkbox" id="memon"><span></span></label></div>
-          <div class="opt col"><div class="lab">Notes<small id="memhelp">MEMORY.md in the arcinferzero folder</small></div>
+          <div class="opt col"><div class="lab">Notes<small id="memhelp">MEMORY.md in the inferzero folder</small></div>
             <textarea id="memtext" placeholder="Nothing remembered yet"></textarea>
             <div><button class="fbtn" id="memsave" title="Save these notes (a chat already started keeps the notes it started with)">Save notes</button></div></div>
         </div>
@@ -623,7 +623,7 @@ details[open].think > div { animation: fade-up .2s var(--ease-out); }
         </div>
         <div class="sec">
           <h3>Data</h3>
-          <div class="opt"><div class="lab">Saved in the arcinferzero folder<small id="datasum">…</small></div></div>
+          <div class="opt"><div class="lab">Saved in the inferzero folder<small id="datasum">…</small></div></div>
           <div class="opt"><button class="fbtn danger" id="clrchats" title="Delete every chat; the files stay (Files panel)">Clear chats</button>
             <button class="fbtn danger" id="clrall" title="Delete every chat and every uploaded file">Clear chats and files</button></div>
         </div>
@@ -698,7 +698,7 @@ details[open].think > div { animation: fade-up .2s var(--ease-out); }
       <button class="fbtn" id="trstoplive" title="Stop recording: the whole recording is then transcribed again accurately" hidden>■ Stop</button>
       <button class="fbtn" id="trsum" title="Summary, decisions, tasks and open questions, by the loaded chat model" hidden>Summarize</button>
       <button class="fbtn" id="trdocx" title="Minutes as a Word document (the summary and the transcript, or the form chosen next to it)" hidden>Minutes DOCX</button>
-      <select id="trtpl" aria-label="Minutes form" title="A form of yours (a .docx in %USERPROFILE%\.arcinferzero\templates): the loaded chat model fills it from the transcript; or the plain minutes" hidden></select>
+      <select id="trtpl" aria-label="Minutes form" title="A form of yours (a .docx in %USERPROFILE%\.inferzero\templates): the loaded chat model fills it from the transcript; or the plain minutes" hidden></select>
       <button class="fbtn" id="trpdf" title="Minutes as a PDF (the summary and the transcript)" hidden>PDF</button>
       <button class="fbtn" id="trredo" title="Transcribe it again with the speech model, language, accuracy and glossary chosen in the list's options (on the left); the text now stays until the new one is done, and is kept if it is stopped" hidden>↻ Transcribe again</button>
       <button class="iconbtn" id="trcancel" title="Stop the transcription (what is done is kept)" aria-label="Stop" hidden><svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg></button>
@@ -760,7 +760,8 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } },
   del(k) { try { localStorage.removeItem(k); } catch (e) {} },
 };
-let prefs = store.get("arcinferzero-prefs", null) ?? store.get("arcinfer-prefs", {});  // (the old key: before the rename)
+// (the old keys: before the renames to arcinferzero, 2026-10-24, and to inferzero, 2026-11-10)
+let prefs = store.get("inferzero-prefs", null) ?? store.get("arcinferzero-prefs", null) ?? store.get("arcinfer-prefs", {});
 // (earlier versions: a Thinking checkbox and an Effort select)
 if (prefs.think === undefined) prefs.think = prefs.thinking === false ? "off" : (prefs.effort || "xhigh");
 function loadPrefs() {
@@ -785,7 +786,7 @@ function savePrefs() {
   prefs = { ...prefs, web: $("web").checked, ftools: $("ftools").checked, memon: $("memon").checked, term2: $("term").value, ttsrate: $("ttsrate").value, tempon: $("tempon").checked,
     temp: $("temp").value, sys: $("sys").value, tts: $("tts").value, theme: $("theme").value, speech: $("speech").value };
   if ($("thinkmode").value) prefs.think = $("thinkmode").value;
-  store.set("arcinferzero-prefs", prefs);
+  store.set("inferzero-prefs", prefs);
 }
 function applyTheme() {
   if ($("theme").value) document.documentElement.dataset.theme = $("theme").value;
@@ -793,7 +794,7 @@ function applyTheme() {
 }
 loadPrefs();
 ["web", "ftools", "memon", "term", "ttsrate", "temp", "sys", "tts", "thinkmode", "speech"].forEach((id) => $(id).addEventListener("change", savePrefs));
-// ---- memory (QUEUE F32.2, tools/server_memory.h): MEMORY.md in the arcinferzero folder, what the user asked the model
+// ---- memory (QUEUE F32.2, tools/server_memory.h): MEMORY.md in the inferzero folder, what the user asked the model
 // to remember. A chat takes the notes as they are when it starts and keeps that copy (saved with it): notes that
 // change later reach new chats only, so a chat's system text never changes and the server's prompt cache holds.
 let memory = { text: "", chars: 0, cap: 8000 }, memServed = false;  // (false: the page is not on this computer, or no server)
@@ -807,7 +808,7 @@ async function loadMemory() {
     memory = await r.json();
     memServed = true;
     $("memtext").value = memory.text || "";
-    $("memhelp").textContent = "MEMORY.md in the arcinferzero folder · " + k1(memory.chars || 0) + " of " + k1(memory.cap || 8000) +
+    $("memhelp").textContent = "MEMORY.md in the inferzero folder · " + k1(memory.chars || 0) + " of " + k1(memory.cap || 8000) +
       " characters (the model's remember stops at that; merge old notes then)";
   } catch (e) {}
 }
@@ -913,7 +914,7 @@ $("projsel").addEventListener("change", async () => {
   if (v === "+new") { $("projsel").value = curProj; return openProjDlg(); }
   curProj = v;
   prefs.proj = curProj;
-  store.set("arcinferzero-prefs", prefs);
+  store.set("inferzero-prefs", prefs);
   $("projdel").hidden = !curProj;
   await loadProjInfo(curProj);
   newChat();
@@ -924,7 +925,7 @@ $("projdel").addEventListener("click", async () => {
   try { await fetch("/v1/projects/" + p.id, { method: "DELETE" }); } catch (e) {}
   curProj = "";
   prefs.proj = "";
-  store.set("arcinferzero-prefs", prefs);
+  store.set("inferzero-prefs", prefs);
   await loadProjects();
   newChat();
 });
@@ -961,7 +962,7 @@ $("pduse").addEventListener("click", async () => {
   $("projdlg").close();
   curProj = j.id;
   prefs.proj = curProj;
-  store.set("arcinferzero-prefs", prefs);
+  store.set("inferzero-prefs", prefs);
   projInfo.set(j.id, j);
   await loadProjects();
   newChat();
@@ -1680,7 +1681,7 @@ function trimTools(h, deep = false) {
 }
 const TIME_SYSTEM = "Each user message starts with the day, date and local time it was sent, in brackets. Use it for " +
   "\"today\", \"now\", \"yesterday\" and how long ago something was said; do not repeat it in your answers. You run " +
-  "locally on arcinferzero (one word: arc + infer + zero; LLM inference on Intel Arc through Level Zero).";
+  "locally on inferzero (one word: arc + infer + zero; LLM inference on Intel Arc through Level Zero).";
 // (the name: seen only in folder paths, a model wrote it "Arc Infra Zero")
 const textOf = (c) => typeof c === "string" ? c
   : c.map((p) => p.type === "text" ? p.text : p.type === "file" ? "[file: " + (p.file?.filename || "") + "]" : p.type === "input_audio" ? "[audio]" : "[image]").join("\n");
@@ -3343,7 +3344,7 @@ function renderConvs() {
   if (!shown.length) {
     const n = document.createElement("div");
     n.className = "none";
-    n.textContent = q ? "No chat matches \"" + q + "\"." : "Your chats appear here (kept in the arcinferzero folder).";
+    n.textContent = q ? "No chat matches \"" + q + "\"." : "Your chats appear here (kept in the inferzero folder).";
     box.appendChild(n);
   }
   for (const c of shown) {
@@ -4347,7 +4348,7 @@ function trSavePrefs() {
   prefs.tr = { ...(prefs.tr || {}), lang: $("trlang").value, model: $("trmodel").value, beam: $("trbeam").value, keep: $("trkeep").value, ch: $("trch").value, terms: $("trterms").value,
     fmts: [...$("trfmts").querySelectorAll("input:checked")].map((c) => c.value),
     chars: $("trchars").value, lines: $("trlines").value, maxs: $("trmaxs").value, word: $("trword").checked };
-  store.set("arcinferzero-prefs", prefs);
+  store.set("inferzero-prefs", prefs);
 }
 ["trlang", "trmodel", "trbeam", "trkeep", "trch", "trterms", "trchars", "trlines", "trmaxs", "trword"].forEach((id) => $(id).addEventListener("change", trSavePrefs));
 $("trfmts").addEventListener("change", trSavePrefs);
@@ -4413,7 +4414,7 @@ function trClose() {  // (nothing chosen)
 }
 $("trsrc").addEventListener("change", () => {
   prefs.tr = { ...(prefs.tr || {}), src: $("trsrc").value };
-  store.set("arcinferzero-prefs", prefs);
+  store.set("inferzero-prefs", prefs);
 });
 $("trbtn").addEventListener("click", () => trMode(true, ""));
 $("mtbtn").addEventListener("click", () => trMode(true, "meeting"));
@@ -5536,7 +5537,7 @@ async function trMinutesPlain(format) {
     trNote(format.toUpperCase() + " saved (also in the Files panel)" + (m.summary ? "" : "; Summarize first for a summary at its top"), 8000);
   } catch (e) { trNote("minutes failed: " + (e.message || e), 12000); }
 }
-// ---- minutes in the user's own Word forms (%USERPROFILE%\.arcinferzero\templates\*.docx, tools/doc_template.h): the
+// ---- minutes in the user's own Word forms (%USERPROFILE%\.inferzero\templates\*.docx, tools/doc_template.h): the
 // loaded chat model reads the transcript (a long one through notes of its parts) and answers with the form's content as
 // JSON; the server fills the form's tables with it, letterhead and signature block kept
 let trForms = [];
@@ -5549,7 +5550,7 @@ async function trFormsLoad() {
   sel.innerHTML = '<option value="">plain (summary + transcript)</option>' + trForms.map((t) => '<option value="' + esc(t.name) + '">' + esc(t.name) + "</option>").join("");
   if (trForms.some((t) => t.name === keep)) sel.value = keep;
 }
-$("trtpl").addEventListener("change", () => { prefs.tr = { ...(prefs.tr || {}), form: $("trtpl").value }; store.set("arcinferzero-prefs", prefs); });
+$("trtpl").addEventListener("change", () => { prefs.tr = { ...(prefs.tr || {}), form: $("trtpl").value }; store.set("inferzero-prefs", prefs); });
 // (the chat model's context before a transcript is cut to fit it: with no model loaded yet ctxLen is 0 and the parts
 //  were cut for 8K, a 2-hour meeting in 12 parts instead of 1 on a 100K model; a one-word request loads it first)
 // (the shown transcript's summary and the others, from the server, after one is made or picked; an edit in progress kept)

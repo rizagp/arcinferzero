@@ -62,16 +62,16 @@
       h8f_defs_ = " -DH8F=" + std::to_string(h8f_off_);
     }
     if (h8_env() && q2mm_ && !opt.dry)
-      fprintf(stderr, "arcinferzero: ARC_H8 is not for a two-pass model: its prompt GEMMs stay as they are\n");
+      fprintf(stderr, "inferzero: ARC_H8 is not for a two-pass model: its prompt GEMMs stay as they are\n");
     if (h8_env() && !q2mm_ && npu_wanted() && !opt.dry)
-      fprintf(stderr, "arcinferzero: ARC_H8 is off with ARC_NPU (both convert the same weights)\n");
+      fprintf(stderr, "inferzero: ARC_H8 is off with ARC_NPU (both convert the same weights)\n");
     // (once per process: a split model's shards each init; bench/gemm_sweep.ps1 reads this line)
     static std::once_flag said;
     if (h8_ && !opt.dry) std::call_once(said, [] {
-      fprintf(stderr, "arcinferzero: H8 on for the prompt GEMMs (Hadamard-rotated int8, one scale per %s)\n",
+      fprintf(stderr, "inferzero: H8 on for the prompt GEMMs (Hadamard-rotated int8, one scale per %s)\n",
               h8_row() ? "column and token" : "256 values");
     });
-    if (h8_ && h8f_off_ && !opt.dry) { static std::once_flag f; std::call_once(f, [] { fprintf(stderr, "arcinferzero: H8 rotates the activations from f32\n"); }); }
+    if (h8_ && h8f_off_ && !opt.dry) { static std::once_flag f; std::call_once(f, [] { fprintf(stderr, "inferzero: H8 rotates the activations from f32\n"); }); }
   }
   // the rotation block for a row length K: the largest power of two up to 1024 (ARC_H8_HB) dividing it; K is a whole
   // number of 256-superblocks, so at least 256

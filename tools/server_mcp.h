@@ -1,5 +1,5 @@
 // MCP servers for the web UI's model (the server as an MCP client): programs such as blender-mcp that give the model
-// tools of another application. Configured in %USERPROFILE%\.arcinferzero\mcp.json in the usual form
+// tools of another application. Configured in %USERPROFILE%\.inferzero\mcp.json in the usual form
 //   { "mcpServers": { "blender": { "command": "uvx", "args": ["blender-mcp"], "env": { "X": "1" } } } }
 // (stdio servers: one process per server, newline-delimited JSON-RPC 2.0 on its stdin / stdout, protocol 2025-06-18).
 // A server is used only where it is switched on: in plain chats ("global") or per project (mcp-enabled.json). It is
@@ -203,7 +203,7 @@ class Client {
       p.set("protocolVersion", kProtocol);
       caps.set("roots", Json::object());
       p.set("capabilities", caps);
-      info.set("name", "arcinferzero");
+      info.set("name", "inferzero");
       info.set("version", "1.0");
       p.set("clientInfo", info);
       const Json r = request("initialize", p, 120000);  // (uvx / npx may download the server at its first start)

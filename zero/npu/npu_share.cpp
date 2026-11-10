@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment, step 5: one block of system memory seen by both the GPU's and the NPU's Level Zero
+// inferzero NPU experiment, step 5: one block of system memory seen by both the GPU's and the NPU's Level Zero
 // contexts (ZE_extension_external_memmap_sysmem: zeMemAllocHost with a descriptor that names existing memory), so the
 // GPU could write the int8 activations a graph reads and read back its output without copies. The descriptor's
 // structure type is found here (the published header is not on this machine): a candidate counts only when the

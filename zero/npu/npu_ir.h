@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment: a minimal OpenVINO IR v11 writer (the model format the NPU driver's compiler takes,
+// inferzero NPU experiment: a minimal OpenVINO IR v11 writer (the model format the NPU driver's compiler takes,
 // ZE_GRAPH_FORMAT_NGRAPH_LITE) and its serialization, enough for the matrix-product graphs of zero/npu/.
 #pragma once
 #include "ze_npu.h"

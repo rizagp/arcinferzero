@@ -2,7 +2,7 @@
 // them (multipart: file, model, language, prompt, response_format json | text | srt | verbose_json | vtt, temperature,
 // timestamp_granularities[], stream), answered by zero/whisper_engine.h (the iGPU, or the encoder on the NPU).
 //
-// Extensions: response_format also fw, captions (Remotion), full_json (arcinferzero's), sbv, srv3, ass, ttml, md,
+// Extensions: response_format also fw, captions (Remotion), full_json (inferzero's), sbv, srv3, ass, ttml, md,
 // csv, tsv; language "id,en" (detected among the listed ones per window; Qwen3-ASR: a code, or a list's first,
 // fixes it) or "auto"; beam_size 1..5 (default 5);
 // condition_on_previous_text; terms (a glossary kept before every window); dual_language (0..1, default 0.8);
@@ -693,7 +693,7 @@ class Service {
       w.replace_extension(".wav");
       if (!side["complete"].as_bool()) {
         const DWORD pid = (DWORD)side["pid"].as_number(0);
-        HANDLE ev = OpenEventW(SYNCHRONIZE, FALSE, L"Local\\arcinferzero-recorder-stop");
+        HANDLE ev = OpenEventW(SYNCHRONIZE, FALSE, L"Local\\inferzero-recorder-stop");
         HANDLE h = pid ? OpenProcess(SYNCHRONIZE, FALSE, pid) : nullptr;
         const bool running = ev && h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
         if (h) CloseHandle(h);

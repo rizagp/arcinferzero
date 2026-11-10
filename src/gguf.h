@@ -1,6 +1,6 @@
 // GGUF v3 reader: memory-maps the file and exposes metadata + tensor views. A split model (name-00001-of-0000N.gguf,
 // "split.count" > 1) is opened from its first part: the other parts are mapped too and their tensors added.
-// A tensor listed under "arcinferzero.virtual.*" (an arcinferzero package: the routed experts live in its own
+// A tensor listed under "arcinferzero.virtual.*" (an inferzero package: the routed experts live in its own
 // expert file) has its name, type and shape but no data (data == nullptr).
 #pragma once
 // (see enc_weight_bytes below: the encoders' GPU footprint for --ctx auto)
@@ -209,7 +209,7 @@ class GgufFile {
       }
     }
   }
-  // tensors without data (arcinferzero packages): names, types and shapes from the metadata
+  // tensors without data (inferzero packages): names, types and shapes from the metadata
   // bytes of tensor t of a type with blk values per bytes-byte block: its shape must not overflow and must hold whole
   // blocks (a count that is not a multiple would undercount the bytes the kernels read)
   static uint64_t tensor_bytes(const GgufTensor& t, int blk, int bytes) {

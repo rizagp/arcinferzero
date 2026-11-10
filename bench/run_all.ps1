@@ -4,7 +4,7 @@ param(
   [string]$PromptDir = "",
   [string]$Corpus = "",
   [string[]]$Models = @("4b", "9b", "27b"),
-  [string[]]$Engines = @("arcinferzero", "vulkan", "sycl"),
+  [string[]]$Engines = @("inferzero", "vulkan", "sycl"),
   [switch]$SkipTuning
 )
 $ErrorActionPreference = "Stop"

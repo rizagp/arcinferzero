@@ -4,7 +4,7 @@ The server is an MCP client. An MCP server is a program on this computer that gi
 application, for example [blender-mcp](https://github.com/ahujasid/blender-mcp) for Blender. The model in the web UI
 then calls those tools the way it calls its own tools (`web_search`, `create_file`, ...).
 
-It is not the other way round: arcinferzero itself is not an MCP server here.
+It is not the other way round: inferzero itself is not an MCP server here.
 
 ## Setting one up
 
@@ -18,7 +18,7 @@ It is not the other way round: arcinferzero itself is not an MCP server here.
    }
    ```
 
-   Save. The file is `%USERPROFILE%\.arcinferzero\mcp.json`, and you can also edit it by hand.
+   Save. The file is `%USERPROFILE%\.inferzero\mcp.json`, and you can also edit it by hand.
 
 2. Turn the server's switch on. The switch counts for the scope of the chat on screen: its project, or every chat
    outside projects. Each tool costs prompt tokens, and small models choose worse among many tools, so switch on
@@ -35,7 +35,7 @@ These steps come from blender-mcp's own instructions:
 - install [uv](https://docs.astral.sh/uv/) so that `uvx` is on the PATH;
 - in Blender, install the project's `addon.py` (Edit > Preferences > Add-ons > Install);
 - in Blender's sidebar (N), "BlenderMCP" tab, press "Connect to MCP server";
-- in arcinferzero, add the entry above.
+- in inferzero, add the entry above.
 
 The model can then read the scene, create and change objects, and run Python in Blender.
 

@@ -41,7 +41,7 @@ instead. Stages 2 and 3 are not started.
 | `scripts\install-pi.ps1` | puts `pi-arc.cmd` and `arc-server.cmd` into `~\.pi\agent\bin` | **only when Pi is installed**: without Pi, `arc-server` is not a command |
 | `scripts\make-package.ps1` | the release zip | tracked files plus nine prebuilt exes and `vcomp140.dll`; no Visual Studio, Python or runtime needed |
 
-State lives in `%USERPROFILE%\.arcinferzero`: `server.json` (pid, model, options, command line), `launcher.json`
+State lives in `%USERPROFILE%\.inferzero`: `server.json` (pid, model, options, command line), `launcher.json`
 (saved overrides), `last-model.txt`, `server.log`.
 
 ### What the testers ran into
@@ -94,7 +94,7 @@ State lives in `%USERPROFILE%\.arcinferzero`: `server.json` (pid, model, options
   listing commands.
 - **llama-server**: one long flag list, every flag also an environment variable (`LLAMA_ARG_*`). Router mode
   (`--models-dir`, `--models-preset models.ini`, `--models-max`, `--models-autoload`) serves several models from one
-  process, much like arcinferzero's own model switching. It is marked experimental.
+  process, much like inferzero's own model switching. It is marked experimental.
 - **koboldcpp**: the same flags in the GUI and on the command line. The GUI saves them as a `.kcpps` file that
   `--config` runs, and `--exportconfig` writes one from a command line. A preset is an ordinary file the user can
   copy, edit and double-click.
@@ -129,7 +129,7 @@ for the current PowerShell launcher unless noted. Ranked by value against effort
 | 8 | Log view inside the window (live tail, copy, "open folder") | **partly** | medium-high | S | today: Notepad snapshot |
 | 9 | Named presets (save / load / delete; a preset is also a `.cmd` or JSON file the CLI takes) | **partly** | medium-high | M | "Set as default" keeps one unnamed set in `launcher.json` |
 | 10 | "Doctor": driver version, GPU and its memory setting, NPU, XMX, exe present and version, port free, other `serverz` / `runz` running, folder writable | **partly** | medium-high | S-M | parts exist (`clinfo` check, missing-exe message); one report to paste into issues would have shortened #5 |
-| 11 | Update check: compare the package version (`bin\PREBUILT.txt`) with the latest GitHub release and show a link | **missing** | medium | S | read-only `api.github.com/repos/rizagp/arcinferzero/releases/latest`; no self-update in a first version |
+| 11 | Update check: compare the package version (`bin\PREBUILT.txt`) with the latest GitHub release and show a link | **missing** | medium | S | read-only `api.github.com/repos/rizagp/inferzero/releases/latest`; no self-update in a first version |
 | 12 | Tray icon: on / off state, Start last model, Stop, Open web UI, Quit window | **missing** | medium | S-M | WinForms `NotifyIcon` exists in .NET Framework |
 | 13 | Model management: show in folder, size on disk, remove (with a confirmation, to the Recycle Bin) | **partly** | medium | M | listed, no actions |
 | 14 | Live GPU memory bar and speed of the running server | **partly** | medium | S | as text with a `#####` bar; a real bar and a small tok/s line |
@@ -161,7 +161,7 @@ owner's own note in #6 is that wrong switch combinations can crash the server or
    the driver version, and whether a newer release exists (only when asked: `version -Check`).
 7. **`arc-server pull <key>`** (alias `get`): `scripts\get-models.ps1` with the catalog keys (`4b`, `35b`, `asr`...),
    plus `pull -List` for the catalog. Same names as the shortcuts.
-8. **Presets**: `arc-server start -Preset work` reads `%USERPROFILE%\.arcinferzero\presets\work.json` (the
+8. **Presets**: `arc-server start -Preset work` reads `%USERPROFILE%\.inferzero\presets\work.json` (the
    launcher's options, model included); `arc-server save-preset work -Model 35b -Ctx 65536 -Npu on` writes one.
    Command-line options override the preset. The launcher's "Set as default" becomes the preset `default`, so
    both share one format, in the way koboldcpp's `.kcpps` files work.
@@ -326,9 +326,9 @@ Local:
 - `scripts/arc-launcher.ps1`, `scripts/launcher-firstrun.ps1`, `scripts/arc-server.ps1`, `scripts/install-pi.ps1`,
   `scripts/make-package.ps1`, `scripts/model-catalog.ps1`, `setup.cmd`, `arc-launcher.cmd`, `USAGE.md` sections 1-3
   and 8, `tools/server.cpp` (routes and `--list-models`).
-- GitHub issues [#3](https://github.com/rizagp/arcinferzero/issues/3),
-  [#5](https://github.com/rizagp/arcinferzero/issues/5), [#6](https://github.com/rizagp/arcinferzero/issues/6) and
-  [#4](https://github.com/rizagp/arcinferzero/issues/4), with their comments.
+- GitHub issues [#3](https://github.com/rizagp/inferzero/issues/3),
+  [#5](https://github.com/rizagp/inferzero/issues/5), [#6](https://github.com/rizagp/inferzero/issues/6) and
+  [#4](https://github.com/rizagp/inferzero/issues/4), with their comments.
 
 Other launchers and CLIs:
 - LM Studio `lms`: https://lmstudio.ai/docs/cli, https://lmstudio.ai/blog/lms, https://github.com/lmstudio-ai/lms

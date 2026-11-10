@@ -1,5 +1,31 @@
 # Changelog
 
+## 2026-11-10: arcinferzero is now inferzero
+
+- **Why:** Intel's trademark guidelines ask third parties not to put an Intel mark, or any part of one, into a product
+  name, and "Arc" is Intel's graphics brand. The new name keeps the rest; the 4 x 4 "Z" logo stays.
+- **Renamed:** the code, the scripts, the web UI, the launcher, the website and the living docs (672 uses in 120
+  files); packages are now `inferzero-<version>-win64.zip`; the README and the website say "formerly arcinferzero"
+  and carry Intel's trademark notice.
+- **Carried over by themselves:**
+  - the data folder `%USERPROFILE%\.arcinferzero` moves once to `%USERPROFILE%\.inferzero` (the same drive: a rename,
+    instant), and the paths in `last-model.txt`, `launcher.json`, `server.json` and `zero\ctx-auto.txt` follow it;
+    if a file is held open (an older server running) the old folder is used as it is (`src/app_dir.h`,
+    `scripts/app-dir.ps1`); the bench scripts and the launcher's Downloads dialog now ask `Get-AppDir` too;
+  - Pi: the provider becomes "inferzero" (the "arcinferzero" and "arcinfer" entries are replaced), and `pi-arc`
+    takes `arcinferzero/<id>` and `arcinfer/<id>` as before;
+  - the web UI's settings in the browser (`arcinferzero-prefs` is read when `inferzero-prefs` is not there yet);
+  - a desktop shortcut `arcinferzero.lnk` counts as the launcher's shortcut;
+  - `arc-server` reads a package's `VERSION.txt` and the server log with either name.
+- **Kept on purpose:** the GGUF keys packages already carry (`arcinferzero.package`, `.virtual.*`, `.experts_file`,
+  `.expert_format`, `.source`: an older engine must still read a newer package); the `ARC_*` switches (settings
+  people have in their scripts); the command names `arc-launcher`, `arc-server`, `pi-arc`, `arc-recorder`; history
+  (older CHANGELOG entries, `docs/archive`, dated reports, `docs/before-after.md`, `BUGS.md`).
+- **Checked:** the ten package exes build; every changed PowerShell script parses; the data-folder move in a test
+  profile for the scripts and an exe (the three state files rewritten, JSON's doubled backslashes and the lower-case
+  context file included; a second start uses the new folder); `arc-launcher -SelfTest` in the real profile (it moved
+  this laptop's data folder; the state files followed).
+
 ## 2026-11-10: the logo: a 4 x 4 grid drawing a Z, everywhere
 
 - The "az" circle (two letters of a system font) becomes a drawn mark: 4 x 4 rounded tiles, ten lit, drawing a Z

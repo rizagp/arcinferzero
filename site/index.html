@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>arcinferzero: fast local LLMs on Intel Arc, laptop iGPU to Pro B60</title>
+<title>inferzero: fast local LLMs on Intel Arc, laptop iGPU to Pro B60</title>
 <meta name="description" content="A from-scratch LLM inference engine for Intel Arc on Windows. Qwen3.6 35B at 851 tok/s on a Core Ultra laptop iGPU, the 27B past 1,000 tok/s on one Arc Pro B60. Every number measured, every model checked against an f32 reference.">
 <meta name="color-scheme" content="dark light">
-<meta property="og:title" content="arcinferzero">
+<meta property="og:title" content="inferzero">
 <meta property="og:description" content="Fast local LLMs on Intel Arc, laptop iGPU to Pro B60. Every number measured, every answer checked.">
 <meta property="og:type" content="website">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -274,21 +274,21 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
 
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="#top" aria-label="arcinferzero home">
+    <a class="brand" href="#top" aria-label="inferzero home">
       <svg class="mark" width="26" height="26" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>
-      arcinferzero
+      inferzero
     </a>
     <ul>
       <li><a href="#hardware">Hardware</a></li>
       <li><a href="#results">Results</a></li>
       <li><a href="#features">Features</a></li>
       <li><a href="#agents">API</a></li>
-      <li><a href="https://github.com/rizagp/arcinferzero/blob/main/USAGE.md">Docs</a></li>
-      <li><a href="https://github.com/rizagp/arcinferzero/blob/main/CHANGELOG.md">Changelog</a></li>
+      <li><a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Docs</a></li>
+      <li><a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></li>
     </ul>
     <div class="right">
-      <a class="gh" href="https://github.com/rizagp/arcinferzero">github · 2026.11.10</a>
-      <a class="btn p sm" href="https://github.com/rizagp/arcinferzero/releases/latest">Download</a>
+      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.10</a>
+      <a class="btn p sm" href="https://github.com/rizagp/inferzero/releases/latest">Download</a>
     </div>
   </div>
 </header>
@@ -304,7 +304,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <h1>A 35B model at 851 tok/s on the Intel laptop you already own. <span>No discrete GPU, no Python.</span></h1>
         <p class="lede">An inference engine written from scratch for Intel Arc graphics. Qwen3.6 35B, Qwen3.8 27B and Flash Next's 52&nbsp;GB of experts run on a Core Ultra laptop with 32&nbsp;GB, and the same engine scales to four Arc Pro B60s. Every model is checked against an f32 reference, and the same prompt gives the same logits, bit for bit.</p>
         <div class="cta">
-          <a class="btn p" href="https://github.com/rizagp/arcinferzero/releases/latest">Download for Windows <kbd>7 MB</kbd></a>
+          <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>7 MB</kbd></a>
           <a class="btn s" href="#results">See the measurements</a>
         </div>
         <p class="req">Windows 11 · Core Ultra with Arc graphics · 16 GB RAM for 4B / E4B, 32 GB for 12B-35B<br>Arc B580 / Pro B60 / Pro B70: experimental · Apache-2.0</p>
@@ -321,7 +321,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <div><div class="eb">1× Arc Pro B60</div><b>1,024<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt. The 35B reads 3,232 tok/s and generates 88 tok/s, 114 with MTP.</p></div>
       <div><div class="eb">4× Arc Pro B60</div><b>4,290<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 16K prompt, one model split over four cards with tensor parallelism.</p></div>
     </div>
-    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, 2026-11-09. 285H and B60: measured by users on <a href="https://github.com/rizagp/arcinferzero/issues/5">issue #5</a> and <a href="https://github.com/rizagp/arcinferzero/issues/4">issue #4</a>, 2026-11-06 to 11-09.</p>
+    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, 2026-11-09. 285H and B60: measured by users on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a> and <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, 2026-11-06 to 11-09.</p>
   </div>
 </section>
 
@@ -356,7 +356,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       </div>
     </div>
     <div class="legend"><span><i class="me"></i>the reference laptop</span><span><i></i>measured by users</span><span><i class="d"></i>a shorter prompt, not comparable</span></div>
-    <p class="src">Qwen3.8 27B GSQ-RCO IQ3_S. Several cards add their partial sums through host memory, since the B60s have no peer access; 2-4 cards' generation was measured on 2026-10-31, before the newer single-card defaults. The 35B on the same ladder reads 851 tok/s on the laptop, 726 on the 285H, 3,232 on one B60 and 4,290 on four. Details: <a href="https://github.com/rizagp/arcinferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/arcinferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>.</p>
+    <p class="src">Qwen3.8 27B GSQ-RCO IQ3_S. Several cards add their partial sums through host memory, since the B60s have no peer access; 2-4 cards' generation was measured on 2026-10-31, before the newer single-card defaults. The 35B on the same ladder reads 851 tok/s on the laptop, 726 on the 285H, 3,232 on one B60 and 4,290 on four. Details: <a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/inferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>.</p>
   </div>
 </section>
 
@@ -373,32 +373,32 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
     <div class="cmp">
       <div>
         <h3>Qwen3.8 27B, 2K prompt</h3><p class="note">tok/s, higher is better</p>
-        <div class="row me"><span class="n">arcinferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">113</span></div>
+        <div class="row me"><span class="n">inferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">113</span></div>
         <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:22.1%"></span></span><span class="v">25</span></div>
         <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:20.4%"></span></span><span class="v">23</span></div>
       </div>
       <div>
         <h3>Qwen3.8 27B, 34K-token code prompt</h3><p class="note">seconds to the first token, lower is better</p>
-        <div class="row me"><span class="n">arcinferzero</span><span class="t"><span class="f" style="width:13.5%"></span></span><span class="v">327 s</span></div>
+        <div class="row me"><span class="n">inferzero</span><span class="t"><span class="f" style="width:13.5%"></span></span><span class="v">327 s</span></div>
         <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:67.2%"></span></span><span class="v">1,624 s</span></div>
         <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">2,418 s</span></div>
       </div>
       <div>
         <h3>Qwen3.5 4B, 2K prompt</h3><p class="note">tok/s, higher is better</p>
-        <div class="row me"><span class="n">arcinferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">911</span></div>
+        <div class="row me"><span class="n">inferzero</span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">911</span></div>
         <div class="row"><span class="n">llama.cpp SYCL</span><span class="t"><span class="f" style="width:37%"></span></span><span class="v">337</span></div>
         <div class="row"><span class="n">llama.cpp Vulkan</span><span class="t"><span class="f" style="width:26.6%"></span></span><span class="v">242</span></div>
       </div>
     </div>
     <div class="tbl" style="margin-top:40px">
       <table>
-        <tr><th>Perplexity, same file, lower is better</th><th class="r">arcinferzero</th><th class="r">llama.cpp Vulkan</th><th class="r">llama.cpp SYCL</th></tr>
+        <tr><th>Perplexity, same file, lower is better</th><th class="r">inferzero</th><th class="r">llama.cpp Vulkan</th><th class="r">llama.cpp SYCL</th></tr>
         <tr><td>Qwen3.5 4B</td><td class="r hl">6.056</td><td class="r">6.141</td><td class="r">6.138</td></tr>
         <tr><td>Qwen3.5 9B</td><td class="r hl">5.417</td><td class="r">5.499</td><td class="r">5.497</td></tr>
         <tr><td>Qwen3.8 27B</td><td class="r hl">4.274</td><td class="r">4.311</td><td class="r">4.310</td></tr>
       </table>
     </div>
-    <p class="src">Core Ultra 5 125H, 32 GB, 2026-10-25. After the 34K prompt the 27B generates 3.7 tok/s, against 2.1 (Vulkan) and 1.1 (SYCL). How each number was measured: <a href="https://github.com/rizagp/arcinferzero/blob/main/docs/before-after.md">docs/before-after.md</a>.</p>
+    <p class="src">Core Ultra 5 125H, 32 GB, 2026-10-25. After the 34K prompt the 27B generates 3.7 tok/s, against 2.1 (Vulkan) and 1.1 (SYCL). How each number was measured: <a href="https://github.com/rizagp/inferzero/blob/main/docs/before-after.md">docs/before-after.md</a>.</p>
   </div>
 </section>
 
@@ -487,9 +487,9 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <p>The server ships its own web UI: chats with files and projects, web search, a voice conversation, and tabs for transcripts and meetings. Through a Cloudflare Tunnel with a password it works from anywhere, installable as an app.</p>
     </div>
     <div class="uigrid">
-      <div class="ui" role="img" aria-label="The arcinferzero web UI: a list of chats on the left, a conversation on the right where the model searches the web and reads an attached PDF">
+      <div class="ui" role="img" aria-label="The inferzero web UI: a list of chats on the left, a conversation on the right where the model searches the web and reads an attached PDF">
         <div class="side">
-          <div class="sh2">arcinferzero <span>35B-A3B</span></div>
+          <div class="sh2">inferzero <span>35B-A3B</span></div>
           <div class="tabs"><b class="on">Chats</b><b>Transcripts</b><b>Meetings</b><b>Projects</b></div>
           <div class="it on"><b>Q3 report: revenue by region</b><span>The PDF's table on page 14 shows…</span></div>
           <div class="it"><b>LRU cache in Python</b><span>Here is a module with unit tests…</span></div>
@@ -586,7 +586,7 @@ arc-server start -Model 27b -Slots 2</pre>
       <article class="card">
         <div class="eb">Measure yours</div>
         <h3>Scripts that report back</h3>
-        <p><code>bench\website_bench.ps1</code>, <code>decode_try.ps1</code> and <code>f33_sweep.ps1</code> print everything needed. Post the output on <a href="https://github.com/rizagp/arcinferzero/issues/4">issue #4</a>.</p>
+        <p><code>bench\website_bench.ps1</code>, <code>decode_try.ps1</code> and <code>f33_sweep.ps1</code> print everything needed. Post the output on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>.</p>
       </article>
     </div>
   </div>
@@ -603,7 +603,7 @@ arc-server start -Model 27b -Slots 2</pre>
       <p>The launcher ticks the model that suits your RAM, downloads it with resume and a checksum, and opens the web UI when the server is ready.</p>
     </div>
     <div class="steps">
-      <div class="step"><h3>Download</h3><p>Get <code>arcinferzero-&lt;version&gt;-win64.zip</code> from the latest release and unpack it anywhere.</p></div>
+      <div class="step"><h3>Download</h3><p>Get <code>inferzero-&lt;version&gt;-win64.zip</code> from the latest release and unpack it anywhere.</p></div>
       <div class="step"><h3>Start</h3><p>Double-click <code>arc-launcher.cmd</code>. Windows may ask once: "More info", then "Run anyway".</p></div>
       <div class="step"><h3>Pick a model</h3><p>Choose one and press "Download and start". The web UI opens at <code>127.0.0.1:8090</code>.</p></div>
     </div>
@@ -613,8 +613,8 @@ arc-server start -Model 27b -Slots 2</pre>
       <div><b>Memory</b>16 GB for the 4B and E4B, 32 GB for the 12B to 35B models.</div>
     </div>
     <div class="endcta">
-      <a class="btn p" href="https://github.com/rizagp/arcinferzero/releases/latest">Download for Windows <kbd>7 MB</kbd></a>
-      <a class="btn s" href="https://github.com/rizagp/arcinferzero/blob/main/docs/install.md">Build from source</a>
+      <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>7 MB</kbd></a>
+      <a class="btn s" href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">Build from source</a>
       <span class="mono">release 2026.11.10.1</span>
     </div>
   </div>
@@ -625,12 +625,12 @@ arc-server start -Model 27b -Slots 2</pre>
 <footer>
   <div class="wrap">
     <div>
-      <a class="brand" href="#top"><svg class="mark" width="24" height="24" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>arcinferzero</a>
-      <p class="fine">Built and tuned on a Core Ultra 5 125H with 32 GB of RAM. Apache-2.0. Not affiliated with Intel.</p>
+      <a class="brand" href="#top"><svg class="mark" width="24" height="24" viewBox="0 0 64 64" aria-hidden="true"><rect class="l" x="1.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="1.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="1.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="17.5" y="17.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="17.5" width="13" height="13" rx="3"/><rect class="d" x="1.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="33.5" y="33.5" width="13" height="13" rx="3"/><rect class="d" x="49.5" y="33.5" width="13" height="13" rx="3"/><rect class="l" x="1.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="17.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="33.5" y="49.5" width="13" height="13" rx="3"/><rect class="l" x="49.5" y="49.5" width="13" height="13" rx="3"/></svg>inferzero</a>
+      <p class="fine">Built and tuned on a Core Ultra 5 125H with 32 GB of RAM. Apache-2.0. Formerly arcinferzero. An independent project, not made or endorsed by Intel; Intel and Arc are trademarks of Intel Corporation or its subsidiaries.</p>
     </div>
-    <div><h4>Project</h4><ul><li><a href="https://github.com/rizagp/arcinferzero">GitHub</a></li><li><a href="https://github.com/rizagp/arcinferzero/releases">Releases</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/CHANGELOG.md">Changelog</a></li></ul></div>
-    <div><h4>Docs</h4><ul><li><a href="https://github.com/rizagp/arcinferzero/blob/main/USAGE.md">Usage guide</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/features.md">Features</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/models.md">Models</a></li></ul></div>
-    <div><h4>Results</h4><ul><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/before-after.md">Before and after</a></li><li><a href="https://github.com/rizagp/arcinferzero/blob/main/docs/multi-gpu.md">Multi-GPU</a></li><li><a href="https://github.com/rizagp/arcinferzero/issues/4">B60 runs</a></li></ul></div>
+    <div><h4>Project</h4><ul><li><a href="https://github.com/rizagp/inferzero">GitHub</a></li><li><a href="https://github.com/rizagp/inferzero/releases">Releases</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></li></ul></div>
+    <div><h4>Docs</h4><ul><li><a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Usage guide</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/features.md">Features</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/models.md">Models</a></li></ul></div>
+    <div><h4>Results</h4><ul><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/before-after.md">Before and after</a></li><li><a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">Multi-GPU</a></li><li><a href="https://github.com/rizagp/inferzero/issues/4">B60 runs</a></li></ul></div>
   </div>
 </footer>
 

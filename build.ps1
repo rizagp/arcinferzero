@@ -1,4 +1,4 @@
-# Builds one or more arcinferzero targets with MSVC (Visual Studio Build Tools with the C++ workload).
+# Builds one or more inferzero targets with MSVC (Visual Studio Build Tools with the C++ workload).
 # Usage: .\build.ps1 tools\clinfo.cpp [bench\gemv_bench.cpp ...]
 # The compiler is found by scripts\vcvars.ps1 (vswhere, then the usual folders on every drive, then a Developer
 # prompt's own cl); $env:ARC_VCVARS = the path of a vcvars64.bat overrides it.

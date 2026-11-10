@@ -1,4 +1,4 @@
-// arcinferzero: Qwen3-ASR on the Arc iGPU from the command line (zero/asr_qwen3.h): the audio encoder against the f32
+// inferzero: Qwen3-ASR on the Arc iGPU from the command line (zero/asr_qwen3.h): the audio encoder against the f32
 // reference (tools/ref_qwen3a) and transcription with timings.
 // usage: asr_testz model.gguf mmproj.gguf audio [options]
 //   --ref F        compare the encoder output with ref_qwen3a's F (relative error per token, cosine)

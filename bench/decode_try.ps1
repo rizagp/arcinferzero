@@ -32,10 +32,10 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
-if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
+if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
 $vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF", "ARC_GV_IQ3S", "ARC_MOE_GR_GU", "ARC_MOE_GR_DN", "ARC_BATCH", "ARC_XALL")
 # (Qwen chat format, thinking off: the answer starts right away)
-$q = Join-Path ([IO.Path]::GetTempPath()) "arcinferzero-decode-try.txt"
+$q = Join-Path ([IO.Path]::GetTempPath()) "inferzero-decode-try.txt"
 $text = "<|im_start|>user`nWrite a Python module with a class LRUCache (get, put, a capacity, O(1) operations using " +
         "a dict and a doubly linked list), docstrings, and unit tests with unittest.<|im_end|>`n<|im_start|>assistant`n" +
         "<think>`n`n</think>`n`n"

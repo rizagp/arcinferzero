@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment, step 3: one MatMul graph on the NPU through Level Zero's graph extension alone (no
+// inferzero NPU experiment, step 3: one MatMul graph on the NPU through Level Zero's graph extension alone (no
 // OpenVINO runtime): an OpenVINO IR v11 model written here (C[M][N] = A[M][K] . B[N][K]^T, f16), serialized for the
 // driver's compiler (ZE_GRAPH_FORMAT_NGRAPH_LITE), compiled, run on host memory, checked against the CPU and timed.
 // usage: npu_matmul [M K N] [reps]      (default: a small check, then 2048 x 4096 x 4096)

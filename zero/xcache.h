@@ -1,4 +1,4 @@
-// arcinferzero: the routed experts stay on the SSD (expert_store.h); the GPU keeps an LRU cache of them.
+// inferzero: the routed experts stay on the SSD (expert_store.h); the GPU keeps an LRU cache of them.
 //
 // Each MoE layer has a table xaddr[NE] (host USM, read by the expert kernels built with -DXCACHE): the address of
 // every routed expert's record in the cache. After a layer's routing the engine reads the chosen expert ids and calls
@@ -307,7 +307,7 @@ struct XCache {
     const uint64_t lo = (uint64_t)base, hi = lo + bytes;
     for (size_t i = 0; i < (size_t)(NL + 1) * NE; ++i)
       if (xaddr[i] >= lo && xaddr[i] < hi) xaddr[i] = (uint64_t)big->addr[0];
-    fprintf(stderr, "arcinferzero: the GPU ran out of memory (other programs use the shared GPU memory too): expert "
+    fprintf(stderr, "inferzero: the GPU ran out of memory (other programs use the shared GPU memory too): expert "
                     "cache reduced by %.2f GiB to %.2f GiB\n", bytes / 1073741824.0, cache_bytes / 1073741824.0);
     return true;
   }
@@ -365,7 +365,7 @@ struct XCache {
       const double GiB = 1073741824.0;
       uint64_t pad = 0;
       for (int l = 0; l < NL; ++l) if (lrec[l]) pad += (G.rec[G.pool_of[l]] - lrec[l]) * nloc();
-      fprintf(stderr, "arcinferzero: %zu expert record sizes in %zu pools (records", xpools::sizes(lrec).size(), G.rec.size());
+      fprintf(stderr, "inferzero: %zu expert record sizes in %zu pools (records", xpools::sizes(lrec).size(), G.rec.size());
       for (size_t p = 0; p < G.rec.size(); ++p) fprintf(stderr, " %.2f MB x %d layers", G.rec[p] / 1e6, G.layers[p]);
       fprintf(stderr, "), padding %.2f GiB of %.2f GiB experts\n", pad / GiB, all_bytes() / GiB);
     }
@@ -376,7 +376,7 @@ struct XCache {
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / P.rec);
       for (int s0 = 0; s0 < P.n; s0 += per) {
         const int k = std::min(per, P.n - s0);
-        // (+64 KB: the expert kernels' block reads run a little past the end of an expert's last row, as arcinferzero's
+        // (+64 KB: the expert kernels' block reads run a little past the end of an expert's last row, as inferzero's
         // upload_padded allows with 256 bytes; a record that is an exact multiple of 4 KB (35B: 1409024 bytes) has no
         // padding, so the last slot of a piece read past the allocation: "device lost" now and then)
         char* b = (char*)zrt::device_alloc((size_t)k * P.rec + 65536);

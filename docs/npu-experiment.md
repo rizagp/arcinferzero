@@ -28,7 +28,7 @@ Qwen3.8 27B (agentionai Qwen3.8-27B-AP IQ4_XS), code prompts, this laptop (therm
 | 4,096 tokens | 132-140 tok/s | **153-162 tok/s (+15-20 %)** | 0.00066 -> **0.0028-0.0031** |
 | 11,240 tokens | 133.8-134.0 tok/s | **154.7 tok/s (+15.6 %)** | |
 
-Benchmark (`bench/run_bench.ps1 -Engines arcinferzero,arcinferzero-npu,arcinferzero`, 2026-10-25, off measured
+Benchmark (`bench/run_bench.ps1 -Engines inferzero,inferzero-npu,inferzero`, 2026-10-25, off measured
 before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`):
 
 | 27B-AP IQ4_XS | off | `--npu on` |
@@ -65,7 +65,7 @@ before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`)
   NPU's weight rows are not kept: per layer the GPU decodes them from its own W8 form into the shared block
   (`npu_w8rows`, once per layer and prompt segment; until 2026-10-25 a resident copy took 5.8 GiB more, same speed).
 - The first prompt with a new chunk height (multiples of 1024 rows, 2048-4096) compiles its graphs (10-30 s each
-  kind), later ones load them in milliseconds from `%USERPROFILE%\.arcinferzero\npu`.
+  kind), later ones load them in milliseconds from `%USERPROFILE%\.inferzero\npu`.
 
 ## What runs where
 

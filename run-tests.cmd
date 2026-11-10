@@ -1,5 +1,5 @@
 @echo off
-rem arcinferzero benchmarks for testers (bench\run_tests.ps1): double-click, leave it running, then drag the zip
+rem inferzero benchmarks for testers (bench\run_tests.ps1): double-click, leave it running, then drag the zip
 rem that appears on the Desktop into the GitHub issue.
 rem   run-tests.cmd          everything (overnight)
 rem   run-tests.cmd quick    a shorter round (about an hour)

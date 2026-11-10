@@ -7,7 +7,7 @@
 //    of more than 20, a pattern of up to 20 characters repeated 20 times or more);
 //  - audio over max_seconds (Qwen: 1200 s) cut near every max_seconds at the quietest 100 ms within +-5 s, each part
 //    transcribed alone.
-// arcinferzero's additions: decoding stops when the text ends in a pattern repeated 40 times (looping); optional
+// inferzero's additions: decoding stops when the text ends in a pattern repeated 40 times (looping); optional
 // parts cut at pauses (Options::part_seconds, off by default).
 #pragma once
 #include "audio_qwen3a.h"

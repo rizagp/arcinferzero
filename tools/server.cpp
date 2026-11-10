@@ -1,15 +1,15 @@
-// arcinferzero-server: OpenAI-compatible HTTP server (chat completions with streaming, reasoning and tool calls),
+// inferzero-server: OpenAI-compatible HTTP server (chat completions with streaming, reasoning and tool calls),
 // prefix reuse across requests, and a built-in web UI.
-// usage: arcinferzero-server -m model.gguf [--host 127.0.0.1] [--port 8080] [--ctx 40960] [--alias name] [--webui dir]
+// usage: inferzero-server -m model.gguf [--host 127.0.0.1] [--port 8080] [--ctx 40960] [--alias name] [--webui dir]
 //                       [--chunk N] [--budget GB] [--mtp] [--think-budget N] [--attn-f32] [--kernels dir]
 //                       [--session-cache-gb N] [--session-dir dir]   (saved conversations; default 0 = off)
-// Built as bin\serverz.exe (zero/serverz.cpp includes this file): the arcinferzero engine, zero/engine.h (Level Zero,
-// MoE experts streamed from the SSD), with its data folder %USERPROFILE%\.arcinferzero\zero (context cache, saved
+// Built as bin\serverz.exe (zero/serverz.cpp includes this file): the inferzero engine, zero/engine.h (Level Zero,
+// MoE experts streamed from the SSD), with its data folder %USERPROFILE%\.inferzero\zero (context cache, saved
 // prompts and conversations).
 #include "../zero/engine.h"
 #include "../zero/gguf_pack.h"
 #define ARC_DATA "/zero/"  // (under app_dir(), src/app_dir.h)
-#define ARC_DATA_HELP "%%USERPROFILE%%\\.arcinferzero\\zero\\"  // (the same folder, as --help prints it)
+#define ARC_DATA_HELP "%%USERPROFILE%%\\.inferzero\\zero\\"  // (the same folder, as --help prints it)
 #include "../src/tokenizer.h"
 #include "../src/chat.h"
 #include "../src/chat_gemma4.h"
@@ -54,9 +54,9 @@ static double ms_since(clk::time_point t) { return std::chrono::duration<double,
 
 // What a model takes as input, in the fields clients look for: llama-server ("modalities", and "capabilities" with
 // "multimodal" as in its Ollama-style list), Ollama ("vision"), OpenRouter ("architecture.input_modalities"),
-// LM Studio ("type": "vlm"). Only models whose image encoder arcinferzero runs are marked (Gemma 4 12B, gemma4uv).
+// LM Studio ("type": "vlm"). Only models whose image encoder inferzero runs are marked (Gemma 4 12B, gemma4uv).
 // llama-server's own model list next to "data": a "models" array (Ollama style) whose "capabilities" hold
-// "multimodal" for a model with an image encoder. Clients that treat arcinferzero as a llama.cpp server read it there.
+// "multimodal" for a model with an image encoder. Clients that treat inferzero as a llama.cpp server read it there.
 // bytes: model id -> its file size ("size"; 0 when not known).
 // The served context window in the fields clients read: llama-server's "meta" (n_ctx: the window served, n_ctx_train:
 // the trained one; Unsloth Studio takes meta.n_ctx) and vLLM's "max_model_len". served 0: not loaded, not known yet.
@@ -364,7 +364,7 @@ class Server {
       Json m = Json::object();
       m.set("id", model_id_);
       m.set("object", "model");
-      m.set("owned_by", "arcinferzero");
+      m.set("owned_by", "inferzero");
       m.set("context_length", eng_.ctx);
       set_window(m, eng_.ctx, eng_.gguf().get_int(eng_.gguf().get_str("general.architecture") + ".context_length", 0),
                  eng_.hp.n_vocab, eng_.hp.n_embd);
@@ -383,7 +383,7 @@ class Server {
       Json r = Json::object();
       r.set("model", model_id_);
       r.set("n_ctx", eng_.ctx);
-      r.set("engine", "arcinferzero");
+      r.set("engine", "inferzero");
       r.set("chunk", eng_.max_chunk);
       r.set("weights", eng_.w8_resident ? "w8-resident" : "w8-just-in-time");
       r.set("vision", has_vision());
@@ -505,7 +505,7 @@ class Server {
   std::vector<int> stop_ids_;
   std::mutex mu_;
   std::vector<int> cached_;  // tokens whose state the engine currently holds (positions 0..pos)
-  // ---- conversation slots (--slots N, arcinferzero): the engine holds N conversations (Engine::bind). A request
+  // ---- conversation slots (--slots N, inferzero): the engine holds N conversations (Engine::bind). A request
   // takes a slot for its whole run and the engine lock for each step (a piece of its prompt, a generated token or
   // verification pass). Between two steps it hands the engine to a waiting request whose engine time is behind its
   // own (take_turns), so a request's tokens do not wait behind each 8K-token piece of another's long prompt: the
@@ -627,7 +627,7 @@ class Server {
     if (cont < 0) eng_.reset_drafter_choice();  // (another conversation: its own DFlash2 / MTP choice)
     return k;
   }
-  // ---- batched generation steps (--slots, Qwen models on arcinferzero: QUEUE 20.4). A request at a generation step
+  // ---- batched generation steps (--slots, Qwen models on inferzero: QUEUE 20.4). A request at a generation step
   // (its next token, with drafts or without) while other requests are generating waits for one of them to reach its
   // own step: that one runs both in one engine pass (Engine::forward_batch / verify_batch: every slot drafts in its
   // own state, one pass verifies all rows) and hands back the rows; each request then samples and settles its drafts
@@ -1011,23 +1011,23 @@ int main(int argc, char** argv) {
     else if (a == "--expert-ram-gb") so.eo.expert_ram_gb = to_double(a, next());
     else if (a == "--driver-reserve-gb") {  // (Engine::driver_slack reads it, once, before any engine exists)
       const double g = to_double(a, next());
-      if (!(g >= 0.0 && g <= 8.0)) { fprintf(stderr, "arcinferzero-server: --driver-reserve-gb: 0 to 8 GiB\n"); return 1; }
+      if (!(g >= 0.0 && g <= 8.0)) { fprintf(stderr, "inferzero-server: --driver-reserve-gb: 0 to 8 GiB\n"); return 1; }
       _putenv_s("ARC_DRIVER_RESERVE_GB", std::to_string(g).c_str());
     }
     else if (a == "--no-stream") so.eo.stream_experts = false;
-    else if (a == "--pack") {  // make an arcinferzero package of a MoE GGUF, then exit
+    else if (a == "--pack") {  // make an inferzero package of a MoE GGUF, then exit
       const std::string src = next();
       try {
-        fprintf(stderr, "arcinferzero: making a package of %s (reads the whole model once)\n", src.c_str());
+        fprintf(stderr, "inferzero: making a package of %s (reads the whole model once)\n", src.c_str());
         const zpack::Result r = zpack::make_package(src);
-        fprintf(stderr, "arcinferzero: package ready in %.0f s\n  %s (%.2f GB)\n  %s (%.2f GB)\n"
-                        "The original GGUF is no longer needed to run this model with arcinferzero: the model list now\n"
+        fprintf(stderr, "inferzero: package ready in %.0f s\n  %s (%.2f GB)\n  %s (%.2f GB)\n"
+                        "The original GGUF is no longer needed to run this model with inferzero: the model list now\n"
                         "picks the package. The engine's own expert file for the GGUF moved into the package, so loading\n"
                         "the GGUF itself (by its path) would write that file again; keep the GGUF only as a backup.\n",
                 r.seconds, r.gguf.c_str(), r.rest_bytes / 1e9, r.experts.c_str(), r.expert_bytes / 1e9);
         return 0;
       } catch (const std::exception& e) {
-        fprintf(stderr, "arcinferzero: --pack failed: %s\n", e.what());
+        fprintf(stderr, "inferzero: --pack failed: %s\n", e.what());
         return 1;
       }
     }
@@ -1168,16 +1168,16 @@ int main(int argc, char** argv) {
     if (!word(asr_opt)) check("--asr", asr_opt, false, ".gguf");
   }
   } catch (const std::exception& e) {
-    fprintf(stderr, "arcinferzero-server: %s\n", e.what());
+    fprintf(stderr, "inferzero-server: %s\n", e.what());
     return 2;
   }
   if (model.empty() || help) {
     fprintf(stderr,
-            "usage: arcinferzero-server -m model.gguf [options]   OpenAI-compatible server (API at /v1, web UI at /)\n"
-            "       arcinferzero-server -m none [options]         speech to text only (Qwen3-ASR, --whisper auto for\n"
+            "usage: inferzero-server -m model.gguf [options]   OpenAI-compatible server (API at /v1, web UI at /)\n"
+            "       inferzero-server -m none [options]         speech to text only (Qwen3-ASR, --whisper auto for\n"
             "                                                 Whisper too); a chat request naming a model loads it later\n"
-            "       arcinferzero-server --list-models             the models it can load, as JSON (Hugging Face cache,\n"
-            "                                                 %%USERPROFILE%%\\.arcinferzero\\models, model-dirs.txt) with each one's auto context\n"
+            "       inferzero-server --list-models             the models it can load, as JSON (Hugging Face cache,\n"
+            "                                                 %%USERPROFILE%%\\.inferzero\\models, model-dirs.txt) with each one's auto context\n"
             "  -m, --model FILE      model GGUF; an mmproj-* image projector and an mtp-* drafter next to it are found\n"
             "  --host H, --port P    listen address (default 127.0.0.1:8080). A browser page of another origin (another\n"
             "                        site, or another port of this computer) reaches only the model endpoints: not the\n"
@@ -1224,7 +1224,7 @@ int main(int argc, char** argv) {
             "                        without an MTP block or drafter, e.g. Flash Next; ARC_MEDIA_PASSES=1: a pass each)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
             "MoE models (experts read from the SSD into a GPU cache; expert file next to a GGUF inside\n"
-            "%%USERPROFILE%%\\.arcinferzero, else in its own %%USERPROFILE%%\\.arcinferzero\\zero\\models\\<name>,\n"
+            "%%USERPROFILE%%\\.inferzero, else in its own %%USERPROFILE%%\\.inferzero\\zero\\models\\<name>,\n"
             "made on the first start, safe to delete):\n"
             "  --expert-cache-gb N   expert cache size in GiB (default: automatic: the GPU share Windows reports, your\n"
             "                        setting, less 0.5 GiB for the driver, less the rest of the model)\n"
@@ -1233,7 +1233,7 @@ int main(int argc, char** argv) {
             "  --expert-ram-gb N     experts read from the SSD also kept in RAM, up to N GiB, and read from there again\n"
             "                        (default: a GPU with memory of its own: the free RAM less 16 GiB; an iGPU: 0)\n"
             "  --pack FILE.gguf      make a package of a MoE model (its first part when split): the non-expert\n"
-            "                        weights + an expert file under %%USERPROFILE%%\\.arcinferzero\\zero\\models; afterwards\n"
+            "                        weights + an expert file under %%USERPROFILE%%\\.inferzero\\zero\\models; afterwards\n"
             "                        the original GGUF can be moved away (e.g. to a USB disk)\n"
             "  --no-stream           every expert on the GPU (no SSD streaming; MoE models then get less context)\n"
             "  --attn-f32            f32 attention (tests)\n"
@@ -1308,11 +1308,11 @@ int main(int argc, char** argv) {
   try {
     wh = srvsp::start(whisper_opt, whisper_dev, asr_opt, whisper_max_min, so);
   } catch (const std::exception& e) {
-    fprintf(stderr, "arcinferzero-server: --whisper: %s\n", e.what());
+    fprintf(stderr, "inferzero-server: --whisper: %s\n", e.what());
     return 1;
   }
   if (no_chat && !wh) {
-    fprintf(stderr, "arcinferzero-server: -m none with --whisper off --asr off: nothing to run\n");
+    fprintf(stderr, "inferzero-server: -m none with --whisper off --asr off: nothing to run\n");
     return 1;
   }
   // Settings can load and unload the speech models whatever the start said, unless it said off: without --whisper the
@@ -1335,7 +1335,7 @@ int main(int argc, char** argv) {
     try {  // (a model that cannot load: its reason, not a silent abort)
       cur = load_model(model, alias, so);
     } catch (const std::exception& e) {
-      fprintf(stderr, "arcinferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
+      fprintf(stderr, "inferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
       // (one that does not fit next to speech to text, models switchable: the server starts without it, as -m none,
       //  so the web UI can free memory and load it; else the reason and the end, as before)
       const bool fit = std::string(e.what()).find("does not fit in the GPU memory") != std::string::npos;
@@ -1402,9 +1402,9 @@ int main(int argc, char** argv) {
     // (the web UI installed as an app: a phone's "Add to home screen", a browser's "Install")
     if (rq.method == "GET" && rq.path == "/manifest.webmanifest")
       return rs.send(200, "application/manifest+json",
-                     R"({"name":"arcinferzero","short_name":"arcinferzero","start_url":"/","scope":"/","display":"standalone",)"
+                     R"({"name":"inferzero","short_name":"inferzero","start_url":"/","scope":"/","display":"standalone",)"
                      R"("background_color":"#111b21","theme_color":"#00a884","icons":[{"src":"/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]})");
-    // the arcinferzero mark (site/icon.svg; the launcher draws the same in its splash, window and tray icon):
+    // the inferzero mark (site/icon.svg; the launcher draws the same in its splash, window and tray icon):
     // 4 x 4 rounded tiles, the lit ones drawing a Z; Windows' default accent, 35 % lighter on a dark theme
     if (rq.method == "GET" && rq.path == "/icon.svg")
       return rs.send(200, "image/svg+xml",
@@ -2194,7 +2194,7 @@ int main(int argc, char** argv) {
         Json r = Json::object(), mod = Json::object();
         r.set("model", "");
         r.set("n_ctx", 0);
-        r.set("engine", "arcinferzero");
+        r.set("engine", "inferzero");
         mod.set("vision", false);
         mod.set("audio", false);
         r.set("modalities", mod);
@@ -2229,7 +2229,7 @@ int main(int argc, char** argv) {
         Json j = Json::object();
         j.set("id", m.alias);
         j.set("object", "model");
-        j.set("owned_by", "arcinferzero");
+        j.set("owned_by", "inferzero");
         j.set("name", m.name);
         j.set("loaded", loaded);
         if (loaded) j.set("context_length", cur->eng->ctx);
@@ -2251,7 +2251,7 @@ int main(int argc, char** argv) {
         Json j = Json::object(), d2 = Json::array();
         j.set("id", cur->alias);
         j.set("object", "model");
-        j.set("owned_by", "arcinferzero");
+        j.set("owned_by", "inferzero");
         j.set("name", cur->alias);
         j.set("loaded", true);
         j.set("context_length", cur->eng->ctx);

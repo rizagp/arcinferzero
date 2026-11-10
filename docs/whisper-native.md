@@ -3,7 +3,7 @@
 Status: built and in use (plan of 2026-10-25, W0-W9 done 2026-10-28; numbers and what is left:
 [whisper-native-status.md](whisper-native-status.md)). Since 2026-10-28 Qwen3-ASR is the default speech model next to
 it ([qwen3-asr.md](qwen3-asr.md)); Whisper large-v3 (turbo only when large-v3 is not cached) gives words with times
-and the live text. Whisper was written from scratch on arcinferzero's Level Zero engine, like the LLMs: no OpenVINO,
+and the live text. Whisper was written from scratch on inferzero's Level Zero engine, like the LLMs: no OpenVINO,
 no CTranslate2, no Python at run time. The plan below, as written then: two functions in the web UI and one on the
 command line:
 
@@ -31,7 +31,7 @@ Both web UI functions open only once the encoder, the decoder and the timestamps
 | Format | File | For |
 |---|---|---|
 | Remotion captions | `.captions.json` | `Caption[]` of `@remotion/captions` (`text`, `startMs`, `endMs`, `timestampMs`, `confidence`), one per word: `<Captions>`, `createTikTokStyleCaptions` |
-| Remotion pipeline | `.fw.json` | the JSON arcinferzero-channel's `edit.py` / `verify_cut.py` / `timeline.py` read (faster-whisper's: segments with words, `start` / `end` / `word` / `p`) |
+| Remotion pipeline | `.fw.json` | the JSON inferzero-channel's `edit.py` / `verify_cut.py` / `timeline.py` read (faster-whisper's: segments with words, `start` / `end` / `word` / `p`) |
 | SubRip | `.srt` | the common subtitle file: YouTube, video editors (Premiere, DaVinci Resolve, CapCut), VLC |
 | WebVTT | `.vtt` | web players, YouTube; with word timing (`<00:00:01.200>` cues) for karaoke-style highlighting |
 | YouTube SBV | `.sbv` | YouTube's own subtitle format (SubViewer) |
@@ -64,7 +64,7 @@ the Meeting tab during the accurate pass; on the command line a one-line bar on 
 
 ## Why, and the target
 
-Measured 2026-10-24 (arcinferzero-channel, `work/bench/hasil.md`): one 14-minute recording, Whisper large-v3-turbo
+Measured 2026-10-24 (inferzero-channel, `work/bench/hasil.md`): one 14-minute recording, Whisper large-v3-turbo
 int8, this laptop.
 
 | Engine | Transcription | x realtime | 1-hour meeting | Hard terms right | Word timestamps vs faster-whisper (mean / p90) |
@@ -73,13 +73,13 @@ int8, this laptop.
 | OpenVINO, NPU | 144 s (+ 4 min compile) | 5.9x | ~10 min | 16 / 24 | 140 / 520 ms |
 | faster-whisper, CPU, beam 5 | 247 s | 3.4x | ~17 min | 16 / 24 | (the reference) |
 
-Where OpenVINO's 52.6 s on the iGPU go, and the target here (estimates from arcinferzero's measured throughput, to
+Where OpenVINO's 52.6 s on the iGPU go, and the target here (estimates from inferzero's measured throughput, to
 be confirmed):
 
 | Part | OpenVINO | Target | Why it can be faster |
 |---|---|---|---|
-| Encoder (32 windows of 30 s) | 25.1 s (785 ms per window, ~2.9 TOPS) | <= 12 s | it is a 1,500-row prompt pass; arcinferzero's int8 DP4a GEMMs run ~7 TOPS |
-| Decoder (2,241 tokens) | 12.6 s (5.6 ms / token) | <= 9 s | ~170 MB of weights per token: 3-4 ms at the bandwidth arcinferzero reaches |
+| Encoder (32 windows of 30 s) | 25.1 s (785 ms per window, ~2.9 TOPS) | <= 12 s | it is a 1,500-row prompt pass; inferzero's int8 DP4a GEMMs run ~7 TOPS |
+| Decoder (2,241 tokens) | 12.6 s (5.6 ms / token) | <= 9 s | ~170 MB of weights per token: 3-4 ms at the bandwidth inferzero reaches |
 | Word timestamps (DTW) | 7.3 s (CPU) | <= 1 s | the alignment heads' cross-attention kept on the GPU, DTW written for it |
 | Mel + the rest | ~7.6 s | <= 3 s | |
 | **Total (greedy)** | **52.6 s** | **<= 25 s (>= 2x, ~34x realtime: 1-hour meeting ~2 min)** | |
@@ -105,7 +105,7 @@ transcript: greedy (speed matters there, the accurate pass fixes it afterwards).
 - **Weights**: the f16 CTranslate2 file already in the Hugging Face cache
   (`mobiuslabsgmbh/faster-whisper-large-v3-turbo/model.bin`, 1.62 GB, format version 6, `WhisperSpec`, 486 variables:
   name, shape, dtype, bytes), with its `tokenizer.json` and `config.json`; no download needed. Later also the
-  original `openai/whisper-large-v3-turbo` safetensors (the same tensors; arcinferzero already reads safetensors for
+  original `openai/whisper-large-v3-turbo` safetensors (the same tensors; inferzero already reads safetensors for
   DFlash2).
 - **On the GPU**: the encoder and decoder matrices as resident W8 (int8, per-32 scales, the engine's GEMM and GEMV
   forms): ~0.85 GB, plus per window the cross-attention K / V of the 4 decoder layers (1,500 x 1280 x 2 x 4, f16:
@@ -150,11 +150,11 @@ transcript: greedy (speed matters there, the accurate pass fixes it afterwards).
    from the DTW path, plus each word's probability. On by default for Transcript (video editing needs them).
 8. **Optional VAD**: silent stretches skipped before the encoder (energy + zero-crossing first; a native Silero-style
    model later if it helps). Off for exact timestamps, on for meetings.
-9. **Glossary prompt**: a list of terms or a sample sentence the decoder sees first ("arcinferzero, Qwen, GGUF, SYCL,
+9. **Glossary prompt**: a list of terms or a sample sentence the decoder sees first ("inferzero, Qwen, GGUF, SYCL,
    llama.cpp, Unsloth, SysMain"; for video narration also filler words "eh, em, hmm" so they get written and can be
    cut). Per call, or a default saved in the settings.
 
-## Accuracy and checks (as for every arcinferzero model)
+## Accuracy and checks (as for every inferzero model)
 
 - **f32 reference**: `tools/ref_whisper` (CPU, f32, from the same weights): the mel, the encoder output, the decoder
   logits per step. The GPU engine against it: KL of the next-token distributions <= 0.015 (the project's limit),
@@ -172,10 +172,10 @@ transcript: greedy (speed matters there, the accurate pass fixes it afterwards).
 
 | Folder | What |
 |---|---|
-| `%USERPROFILE%\.arcinferzero\sound-recordings\` | recordings: `<yyyy-mm-dd hh.mm> <title>\` with `others.wav` (the meeting app) and `me.wav` (the microphone), or one `.wav` / the uploaded file for a single source |
-| `%USERPROFILE%\.arcinferzero\transcripts\` | transcripts: `<same name>.json` (everything: segments, words, languages, speakers, marks), `.txt`, `.srt`, `.vtt`, `.md`, and the meeting's `summary.md` |
+| `%USERPROFILE%\.inferzero\sound-recordings\` | recordings: `<yyyy-mm-dd hh.mm> <title>\` with `others.wav` (the meeting app) and `me.wav` (the microphone), or one `.wav` / the uploaded file for a single source |
+| `%USERPROFILE%\.inferzero\transcripts\` | transcripts: `<same name>.json` (everything: segments, words, languages, speakers, marks), `.txt`, `.srt`, `.vtt`, `.md`, and the meeting's `summary.md` |
 
-Both are in arcinferzero's data folder (`C:\Users\<name>\.arcinferzero\`, since 2026-10-25; visible in Explorer), next
+Both are in inferzero's data folder (`C:\Users\<name>\.inferzero\`, since 2026-10-25; visible in Explorer), next
 to its caches and model packages. Both can be changed in the settings (and with `--out`).
 
 ## Command line: `bin\transcribez.exe`
@@ -201,7 +201,7 @@ transcribez <file | folder | wildcard> ... [options]
   --format <list>             json, fw, captions, verbose_json, srt, vtt, sbv, srv3, ass, ttml, txt, md, csv, tsv
                               (default json,srt,txt)
   --max-chars N --max-lines N --max-cue-s S   subtitle cues (42, 2, 7); --word-cues: one word per cue
-  --out <folder | file>       default %USERPROFILE%\.arcinferzero\transcripts
+  --out <folder | file>       default %USERPROFILE%\.inferzero\transcripts
   --progress                  progress and segments as JSON lines on stdout (default: a bar on stderr)
   --dump-encoder <f> --dump-logits <f>   the first window's encoder output / greedy logits (checks)
 ```
@@ -285,7 +285,7 @@ Built 2026-10-28 (W5; the status page has what it does and how it was checked). 
 [ Chat ]  [ Transkrip ]  [ Rapat ]
 Drop audio / video files here, or [Choose files]   or [● Live: mic / app sound]   Language: (•) auto ( ) id ( ) en ...
                                                            [✓] word timestamps  Beam: (•) 5 ( ) greedy
-Glossary: arcinferzero, Qwen, GGUF, ...                    [✓] write filler words (eh, em, hmm)
+Glossary: inferzero, Qwen, GGUF, ...                    [✓] write filler words (eh, em, hmm)
 ───────────────────────────────────────────────────────────────────────────
 02-clean.wav     13:58   ██████████░░  71 %   00:09:55 / 00:13:58
 03-edited.wav    13:03   queued
@@ -354,7 +354,7 @@ After the meeting: [Accurate pass] [Summarize] [Download TXT / SRT / MD]      Hi
 - Two functions, Meeting and a general Transcript (any audio / video file, e.g. for videos), plus `arc-transcribe` on
   the command line feeding the Remotion pipeline.
 - Multilingual: `auto` per window by default.
-- Folders: `%USERPROFILE%\.arcinferzero\sound-recordings\` and `%USERPROFILE%\.arcinferzero\transcripts\`.
+- Folders: `%USERPROFILE%\.inferzero\sound-recordings\` and `%USERPROFILE%\.inferzero\transcripts\`.
 - The five functions: realtime, accurate after recording, audio upload, video upload, a choice of output formats
   (Remotion, subtitles incl. YouTube's, the common standard ones); a progress bar for every transcription.
 - Beam 5 as the default for Transcript and the accurate pass, greedy for live (2026-10-27).

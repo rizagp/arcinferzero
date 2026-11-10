@@ -615,10 +615,10 @@ inline std::string docx(const std::string& md, const Options& o) {
   parts.push_back({"docProps/core.xml",
       "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" "
       "xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">"
-      "<dc:title>" + xesc(o.title) + "</dc:title><dc:creator>" + xesc(o.author.empty() ? std::string("arcinferzero") : o.author) + "</dc:creator></cp:coreProperties>"});
+      "<dc:title>" + xesc(o.title) + "</dc:title><dc:creator>" + xesc(o.author.empty() ? std::string("inferzero") : o.author) + "</dc:creator></cp:coreProperties>"});
   parts.push_back({"docProps/app.xml",
       "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\">"
-      "<Application>arcinferzero</Application></Properties>"});
+      "<Application>inferzero</Application></Properties>"});
   parts.push_back({"word/_rels/document.xml.rels", drels});
   parts.push_back({"word/document.xml", document});
   parts.push_back({"word/styles.xml", styles});
@@ -779,7 +779,7 @@ inline std::string rtf(const std::string& md, const Options& o) {
   for (int l = 1; l <= 4; ++l) head += "{" + hstyle(l) + "\\sbasedon0\\snext0 heading " + std::to_string(l) + ";}";
   head += "{\\s5\\sa80\\b\\cf2\\fs" + std::to_string((int)std::lround(o.font_size * 4.8)) + "\\sbasedon0\\snext0 Title;}"
           "{\\s6\\sa160\\cf4\\fs" + std::to_string((int)std::lround(o.font_size * 2.6)) + "\\sbasedon0\\snext0 Subtitle;}}\n";
-  head += "{\\info{\\title " + rtf_text(o.title) + "}{\\author " + rtf_text(o.author.empty() ? std::string("arcinferzero") : o.author) + "}}\n";
+  head += "{\\info{\\title " + rtf_text(o.title) + "}{\\author " + rtf_text(o.author.empty() ? std::string("inferzero") : o.author) + "}}\n";
   head += "\\paperw" + std::to_string((int)std::lround(pw * 20)) + "\\paperh" + std::to_string((int)std::lround(ph * 20)) + "\\margt" +
           std::to_string(mg[0]) + "\\margr" + std::to_string(mg[1]) + "\\margb" + std::to_string(mg[2]) + "\\margl" + std::to_string(mg[3]) +
           (o.landscape ? "\\landscape" : "") + "\\headery567\\footery567\n\\sectd\n";
@@ -1074,7 +1074,7 @@ struct Pdf {
     for (const char* f : {"Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique", "Courier", "Courier-Bold",
                           "Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic"})
       obj.push_back(std::string("<< /Type /Font /Subtype /Type1 /BaseFont /") + f + " /Encoding /WinAnsiEncoding >>");
-    obj.push_back("<< /Title (" + pesc(winansi(o.title)) + ") /Author (" + pesc(winansi(o.author)) + ") /Producer (arcinferzero) >>");
+    obj.push_back("<< /Title (" + pesc(winansi(o.title)) + ") /Author (" + pesc(winansi(o.author)) + ") /Producer (inferzero) >>");
     std::string fonts;
     for (int f = 1; f <= 10; ++f) fonts += "/F" + std::to_string(f) + " " + std::to_string(2 + f) + " 0 R ";
     const int hf = serif ? 7 : 1;

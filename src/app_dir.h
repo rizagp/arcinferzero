@@ -1,6 +1,7 @@
-// The data folder: %USERPROFILE%\.arcinferzero (kernel cache, model packages and expert files, context / session /
+// The data folder: %USERPROFILE%\.inferzero (kernel cache, model packages and expert files, context / session /
 // prefix caches, logs, model-dirs.txt, transcripts, recordings), or ARC_DATA_DIR when set: a dot folder, as the other
-// tools' folders in the user's profile (.cache, .pi, .vscode). Until 2026-10-29 it was %USERPROFILE%\arcinferzero,
+// tools' folders in the user's profile (.cache, .pi, .vscode). Until 2026-11-10 (the project's rename to inferzero) it
+// was %USERPROFILE%\.arcinferzero, until 2026-10-29 %USERPROFILE%\arcinferzero,
 // until 2026-10-25 %LOCALAPPDATA%\arcinferzero (and until 2026-10-24 %LOCALAPPDATA%\arcinfer): when only an old one
 // exists it is moved once (the same drive: a rename, instant, the packages are not copied) and the paths written in its
 // small state files (last-model.txt, launcher.json, server.json, zero\ctx-auto.txt, which holds them in lower case)
@@ -22,11 +23,12 @@ inline std::string app_dir() {
     const char* up = getenv("USERPROFILE");
     const char* la = getenv("LOCALAPPDATA");
     const fs::path home = fs::path(up ? up : ".");
-    const fs::path now = home / ".arcinferzero";
+    const fs::path now = home / ".inferzero";
     std::error_code ec;
     if (fs::exists(now, ec)) return now.string();
     // (the older places, newest first, with the text a state file may hold for them)
-    std::vector<std::pair<fs::path, std::string>> olds = {{home / "arcinferzero", (home / "arcinferzero").string()}};
+    std::vector<std::pair<fs::path, std::string>> olds = {{home / ".arcinferzero", (home / ".arcinferzero").string()},
+                                                          {home / "arcinferzero", (home / "arcinferzero").string()}};
     if (la) {
       olds.push_back({fs::path(la) / "arcinferzero", std::string(la) + "/arcinferzero"});
       olds.push_back({fs::path(la) / "arcinfer", std::string(la) + "/arcinfer"});

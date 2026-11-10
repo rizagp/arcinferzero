@@ -28,7 +28,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
-if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
+if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
 if (-not (Test-Path $Model)) { throw "model not found: $Model" }
 $vars = @("ARC_NO_XMX", "ARC_XMX_FORCE", "ARC_X8_W", "ARC_GEMM_TM", "ARC_GEMM_GRF", "ARC_GEMM_CG", "ARC_GEMM_WGY", "ARC_GEMM_RG",
           "ARC_H8", "ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_PF")

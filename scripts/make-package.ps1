@@ -1,4 +1,4 @@
-# A ready-to-use package of arcinferzero: dist\arcinferzero-<version>-win64.zip. Unpacked anywhere, setup.cmd (or
+# A ready-to-use package of inferzero: dist\inferzero-<version>-win64.zip. Unpacked anywhere, setup.cmd (or
 # arc-launcher.cmd) runs without Visual Studio or Python: the exes come built (static C++ runtime, the OpenMP
 # runtime vcomp140.dll next to them), bin\PREBUILT.txt tells setup to keep them, and models download with
 # scripts\hf-get.ps1. What it holds: every file git tracks (sources too, so setup -Rebuild still builds; nothing
@@ -21,7 +21,7 @@ $commit = (git rev-parse --short HEAD).Trim()
 $dirty = (git status --porcelain --untracked-files=no) -ne $null
 $version = (Get-Date -Format "yyyy.MM.dd") + "-" + $commit + $(if ($dirty) { "-dirty" } else { "" })
 if ($dirty) { Write-Warning "uncommitted changes go into the package (its version says -dirty): commit first for a release" }
-$name = "arcinferzero-$version-win64"
+$name = "inferzero-$version-win64"
 $dist = Join-Path $root "dist"
 $stage = Join-Path $dist $name
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
@@ -46,7 +46,7 @@ foreach ($e in $exes) {
 $omp = Join-Path $root "bin\vcomp140.dll"
 if (-not (Test-Path $omp)) { throw "bin\vcomp140.dll is missing: build.ps1 copies it from Visual Studio's Redist folder" }
 Copy-Item $omp $bin
-@("arcinferzero $version (built $(Get-Date -Format 'yyyy-MM-dd HH:mm'), commit $commit)",
+@("inferzero $version (built $(Get-Date -Format 'yyyy-MM-dd HH:mm'), commit $commit)",
   "The exes in this folder are built: setup keeps them (setup -Rebuild builds them from the sources instead).") |
   Set-Content (Join-Path $bin "PREBUILT.txt") -Encoding utf8
 # the zip

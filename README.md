@@ -1,4 +1,7 @@
-# arcinferzero
+# inferzero
+
+*Formerly arcinferzero (renamed 2026-11-10): links to the old GitHub address still lead here, and an existing data
+folder and Pi setup carry over by themselves.*
 
 **Fast local LLMs on an Intel laptop iGPU.** A from-scratch inference engine for **Intel integrated GPUs
 (Xe-LPG / Meteor Lake "Arc Graphics"; Xe2 / Xe3 such as Lunar Lake and Panther Lake's Arc B390 too)**, written in
@@ -6,7 +9,7 @@ C++ on **Level Zero**. It loads GGUF files directly, serves an **OpenAI-, Anthro
 a web UI** (web search and voice conversation included), and plugs into the [Pi](https://pi.dev) coding agent with
 one command. Built and tuned on a Core Ultra 5 125H with 32 GB of RAM: no discrete GPU, no XMX matrix engines.
 
-**[Download](https://github.com/rizagp/arcinferzero/releases/latest)** · [Features](docs/features.md) · [Usage guide](USAGE.md) · [Install and build](docs/install.md) · [Measured results](docs/before-after.md) · [Changelog](CHANGELOG.md)
+**[Download](https://github.com/rizagp/inferzero/releases/latest)** · [Features](docs/features.md) · [Usage guide](USAGE.md) · [Install and build](docs/install.md) · [Measured results](docs/before-after.md) · [Changelog](CHANGELOG.md)
 
 ## Why it is worth a look
 
@@ -51,8 +54,8 @@ You need:
 Discrete Arc B-series cards (Xe2) work too, experimentally. A user runs 1-4 Arc Pro B60s, and one model can be split
 over several of them (`--gpus N`). See [Discrete GPUs](#discrete-arc-gpus-experimental).
 
-1. Download `arcinferzero-<version>-win64.zip` (6 MB) from the
-   **[latest release](https://github.com/rizagp/arcinferzero/releases/latest)** and unpack it anywhere.
+1. Download `inferzero-<version>-win64.zip` (6 MB) from the
+   **[latest release](https://github.com/rizagp/inferzero/releases/latest)** and unpack it anywhere.
 2. Double-click `arc-launcher.cmd` (Windows may ask once: "More info", "Run anyway").
 3. Pick a model (the one that suits the laptop's RAM is ticked) and "Download and start": the web UI opens at
    `http://127.0.0.1:8090/`.
@@ -76,7 +79,7 @@ builds everything, downloads the models you pick and connects the [Pi](https://p
 | Gemma 4 31B (Google QAT, dense; 32 GB laptop: ~2K context, see docs/models.md) | ~48 tok/s (2K) | 3.6 tok/s; 7.8 with its drafter | 0.00000 (two-pass int8 activations) |
 | Gemma 4 26B-A4B (Google QAT, MoE, experts on the SSD) | 252 tok/s (4K), 210 (14K) | ~25 tok/s with its drafter; 14 after a 14K prompt without | 0.0042 (two-pass int8 activations) |
 
-| vs llama.cpp (same file, same laptop) | arcinferzero | llama.cpp Vulkan | llama.cpp SYCL |
+| vs llama.cpp (same file, same laptop) | inferzero | llama.cpp Vulkan | llama.cpp SYCL |
 |---|---|---|---|
 | Qwen3.5 4B, 2K prompt | **911 tok/s** | 242 | 337 |
 | Qwen3.8 27B, 2K prompt | **113 tok/s** | 23 | 25 |
@@ -103,7 +106,7 @@ model's details: [docs/models.md](docs/models.md).
 
 ## The engine
 
-**arcinferzero** (`zero/`, `bin\serverz.exe`, `bin\runz.exe`) runs OpenCL-compiled kernels through **Level
+**inferzero** (`zero/`, `bin\serverz.exe`, `bin\runz.exe`) runs OpenCL-compiled kernels through **Level
 Zero**. It streams mixture-of-experts weights from the SSD (only the experts in use stay in GPU memory; the next
 layer's missing experts are read while the GPU computes the current one), and drafts with the MTP block, a DFlash2
 drafter or both. The automatic context gives the 35B and Flash Next 131,072 tokens, Gemma 4 26B 90K-131K. On GPUs
@@ -114,7 +117,7 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) run the same engine, with switches of their own in `zero/xe2/` that
 the iGPUs never take. Measured by a user on Arc Pro B60s
-([issue #4](https://github.com/rizagp/arcinferzero/issues/4)):
+([issue #4](https://github.com/rizagp/inferzero/issues/4)):
 - Qwen3.8 27B IQ3_S, one B60: 4K prompt 764 tok/s (918 with `ARC_H8=1`), 21.5 tok/s generation; over 4 cards 1,501 (1,570).
 - Qwen3.6 35B-A3B, one B60: 4K prompt 3,232 tok/s, 77.5 tok/s generation.
 - **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel, sums through host memory since
@@ -151,7 +154,10 @@ its failsafes: [docs/multi-gpu.md](docs/multi-gpu.md). The plan: QUEUE.md, F31.
 
 ## License
 
-arcinferzero is licensed under the [Apache License 2.0](LICENSE).
+inferzero is licensed under the [Apache License 2.0](LICENSE).
 
 IQ codebook tables and Unicode category tables are generated from ggml / llama.cpp sources (MIT License).
 `third_party/` contains minja (MIT) and nlohmann/json (MIT).
+
+inferzero is an independent project, not made or endorsed by Intel. Intel, the Intel logo and Arc are trademarks of
+Intel Corporation or its subsidiaries.

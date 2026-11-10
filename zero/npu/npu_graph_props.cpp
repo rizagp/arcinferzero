@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment, step 2: the NPU driver's graph extension table and its device graph properties
+// inferzero NPU experiment, step 2: the NPU driver's graph extension table and its device graph properties
 // (graph extension version, compiler version, graph formats, the newest OpenVINO opset the compiler takes): sensible
 // values here mean the declarations in ze_npu.h line up with the driver. usage: npu_graph_props
 #include "ze_npu.h"

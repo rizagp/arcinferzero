@@ -505,12 +505,12 @@ inline View render(const std::string& url, int screen, int width = 1280, int hei
   {
     std::error_code e2;
     for (const auto& d : std::filesystem::directory_iterator(tmp, e2)) {
-      if (!d.is_directory(e2) || d.path().filename().string().rfind("arcinferzero-view-", 0) != 0) continue;
+      if (!d.is_directory(e2) || d.path().filename().string().rfind("inferzero-view-", 0) != 0) continue;
       const auto age = std::filesystem::file_time_type::clock::now() - d.last_write_time(e2);
       if (!e2 && age > std::chrono::minutes(30)) std::filesystem::remove_all(d.path(), e2);
     }
   }
-  const std::filesystem::path dir = tmp / ("arcinferzero-view-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(++seq));
+  const std::filesystem::path dir = tmp / ("inferzero-view-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(++seq));
   std::filesystem::create_directories(dir / "p1", ec);
   std::filesystem::create_directories(dir / "p2", ec);
   auto common = [&](const char* profile) {

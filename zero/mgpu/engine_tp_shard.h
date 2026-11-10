@@ -129,12 +129,12 @@
     opt.dflash.clear();
     opt.npu = 0;  // (slots stay: batched decoding over a split model, TpEngine::forward_batch)
     if (moe)
-      fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads%s, experts %lld-%lld of %d, %lld of %d vocabulary rows\n",
+      fprintf(stderr, "inferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads%s, experts %lld-%lld of %d, %lld of %d vocabulary rows\n",
               r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv,
               tp_att_whole_ ? " (whole on every GPU)" : tp_att_qsplit_ ? (" (q-heads " + std::to_string(tpq_.first) + "-" + std::to_string(tpq_.second - 1) + " of " + std::to_string(tpg_.nh) + ")").c_str() : "",
               (long long)tpe_.first, (long long)tpe_.second - 1, hp.n_expert, (long long)(tpv_.second - tpv_.first), tpg_.vocab);
     else
-      fprintf(stderr, "arcinferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads, %d of %d FFN columns, %lld of %d vocabulary rows\n",
+      fprintf(stderr, "inferzero: GPU %d of %d: %d of %d DeltaNet k-heads, %d of %d kv-heads, %d of %d FFN columns, %lld of %d vocabulary rows\n",
               r, N, hp.ssm_nk, tpg_.nk, hp.n_head_kv, tpg_.nkv, hp.n_ff, tpg_.ff, (long long)(tpv_.second - tpv_.first), tpg_.vocab);
   }
   bool stream_experts_ok() const { return opt.stream_experts && !getenv("ARC_ZERO_NO_STREAM"); }

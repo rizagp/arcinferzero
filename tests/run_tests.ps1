@@ -1,8 +1,8 @@
-# arcinferzero regression tests. Run from any folder (the script switches to the project folder itself).
+# inferzero regression tests. Run from any folder (the script switches to the project folder itself).
 #
 # Usage examples:
 #   .\tests\run_tests.ps1 -SkipGpu                       # model-free CPU checks only (no GPU, no model)
-#   .\tests\run_tests.ps1                                # arcinferzero, auto-detected models
+#   .\tests\run_tests.ps1                                # inferzero, auto-detected models
 #   .\tests\run_tests.ps1 -Model27B <27b.gguf> -DFlash27B <z-lab Qwen3.8-27B-DFlash2 dir>
 #   .\tests\run_tests.ps1 -Model35B <35b-a3b GSQ gguf> -Ref35B tests\data\ref_35b_capital_all.bin
 #   .\tests\run_tests.ps1 -SkipGpu -PackGguf <small.gguf>  # also round-trips a GGUF through zero/gguf_pack.h
@@ -21,9 +21,9 @@
 #   -Port <n>                  server smoke-test port (default 8091)
 #
 # Models that are not given are searched in the Hugging Face cache (HF_HUB_CACHE, HF_HOME\hub or
-# %USERPROFILE%\.cache\huggingface\hub: models--*\snapshots), in %USERPROFILE%\.arcinferzero\zero\models (MoE packages)
+# %USERPROFILE%\.cache\huggingface\hub: models--*\snapshots), in %USERPROFILE%\.inferzero\zero\models (MoE packages)
 # and \models (setup's converted 35B), and in the folders listed one per line in
-# %USERPROFILE%\.arcinferzero\model-dirs.txt (# starts a comment; missing folders, e.g. an unplugged drive, are ignored). A check whose model is missing prints [SKIP] and does not fail.
+# %USERPROFILE%\.inferzero\model-dirs.txt (# starts a comment; missing folders, e.g. an unplugged drive, are ignored). A check whose model is missing prints [SKIP] and does not fail.
 #
 # Checks: model-free unit tests (HTTP parser, API compatibility, expert-cache pools, tool-call streaming, chat
 # template rendering vs the GGUF Jinja templates, hyper-connection kernels), tokenizer vs reference ids, next-token
@@ -84,7 +84,7 @@ function Run-Exe([string]$exe, [string[]]$argv = @()) {
   return $o
 }
 function Get-KL([string]$o) {
-  $m = [regex]::Match($o, "KL\(ref \|\| arcinferzero\) = ([\d.]+)")
+  $m = [regex]::Match($o, "KL\(ref \|\| inferzero\) = ([\d.]+)")
   if (-not $m.Success) { return $null }
   return [double]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture)
 }
@@ -166,7 +166,7 @@ function Why([string]$p, [string]$what) { if ($p) { return "$what not found: $p"
 
 $engines = @("zero")
 $bins = @{ zero = @{ run = ".\bin\runz.exe"; server = ".\bin\serverz.exe" } }
-Write-Host ("arcinferzero tests: engine {0}{1}" -f ($engines -join " + "), $(if ($SkipGpu) { ", model-free CPU checks only (-SkipGpu)" } else { "" }))
+Write-Host ("inferzero tests: engine {0}{1}" -f ($engines -join " + "), $(if ($SkipGpu) { ", model-free CPU checks only (-SkipGpu)" } else { "" }))
 if (-not $SkipGpu -or $ListModels) {
   foreach ($kv in @(@("4B", $Model4B), @("27B", $Model27B), @("35B-A3B", $Model35B), @("Flash Next", $ModelFlashNext),
                     @("Gemma 4 12B", $ModelGemma), @("DFlash2 27B", $DFlash27B), @("DFlash2 35B", $DFlash35B))) {
@@ -209,7 +209,7 @@ else {
   if ($o -notmatch "ALL IDENTICAL") { Write-Host $o.TrimEnd() }
   Check "chat template (14 cases)" ($o -match "ALL IDENTICAL")
 }
-# templates arcinferzero renders with minja (Gemma 4) vs Jinja2 (needs python with jinja2)
+# templates inferzero renders with minja (Gemma 4) vs Jinja2 (needs python with jinja2)
 $tj = @("gemma4_template.jinja", "gemma4_e4b_template.jinja", "gemma4_google_template.jinja") |
   ForEach-Object { Join-Path $Data $_ } | Where-Object { Test-Path $_ }
 if (-not (Test-Path .\bin\chat_render.exe)) { Skip "minja templates" "bin\chat_render.exe not built" }
@@ -227,7 +227,7 @@ else {
 if (-not $PackGguf) { Skip "GGUF pack round trip" "no -PackGguf" }
 elseif (-not (Test-Path -LiteralPath $PackGguf)) { Skip "GGUF pack round trip" "not found: $PackGguf" }
 else {
-  $out = Join-Path $env:TEMP ("arcinferzero_pack_test_{0}.gguf" -f $PID)
+  $out = Join-Path $env:TEMP ("inferzero_pack_test_{0}.gguf" -f $PID)
   try { Unit "GGUF pack round trip ($([System.IO.Path]::GetFileName($PackGguf)))" .\bin\test_gguf_pack.exe @($PackGguf, $out) "identical" }
   finally { Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue }
 }
@@ -372,7 +372,7 @@ foreach ($eng in $engines) {
   # DFlash2 verification rows must equal plain decoding bit for bit (2026-10-24: they had drifted, 1.39 apart)
   if (-not (Have $Model27B)) { Skip "$tag 27B long prompt: MTP logits = plain" (Why $Model27B "27B model") }
   else {
-    $lt = Join-Path $env:TEMP ("arcinferzero_long_{0}.txt" -f $PID)
+    $lt = Join-Path $env:TEMP ("inferzero_long_{0}.txt" -f $PID)
     $b = [IO.File]::ReadAllBytes((Join-Path $root "README.md"))
     [IO.File]::WriteAllBytes($lt, $b[0..4499])
     $dumps = @()
@@ -380,7 +380,7 @@ foreach ($eng in $engines) {
       $runs = @(@{ name = "plain"; args = @("--n", "12") }, @{ name = "MTP"; args = @("--n", "13", "--mtp") })
       if (Have $DFlash27B) { $runs += @{ name = "DFlash2"; args = @("--n", "13", "--dflash", $DFlash27B, "--draft", "dflash") } }
       foreach ($r in $runs) {
-        $d = Join-Path $env:TEMP ("arcinferzero_long_{0}_{1}.bin" -f $PID, $r.name)
+        $d = Join-Path $env:TEMP ("inferzero_long_{0}_{1}.bin" -f $PID, $r.name)
         $dumps += $d
         $null = Run-Exe $run (@($Model27B, "--text-file", $lt) + $r.args + @("--dump-logits", $d))
       }

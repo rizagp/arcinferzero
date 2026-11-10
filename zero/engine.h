@@ -1,5 +1,5 @@
-// arcinferzero: the engine on the Level Zero runtime (zero/clrt.h); it began as a copy of the OpenCL engine's src/engine.h (removed 2026-10-20).
-// arcinferzero engine: Qwen3.5 / Qwen3.6 / Qwen3.8 dense (hybrid Gated DeltaNet + gated attention, GGUF arch
+// inferzero: the engine on the Level Zero runtime (zero/clrt.h); it began as a copy of the OpenCL engine's src/engine.h (removed 2026-10-20).
+// inferzero engine: Qwen3.5 / Qwen3.6 / Qwen3.8 dense (hybrid Gated DeltaNet + gated attention, GGUF arch
 // "qwen35"), their mixture-of-experts variant ("qwen35moe", GSQ 2-bit experts from tools/convert_gsq.py) and
 // Gemma 4 on Intel Xe-LPG integrated GPUs via OpenCL.
 //
@@ -84,9 +84,9 @@ struct EngineOptions {
                               // drafts instead of the MTP block (Qwen3.8 27B)
   bool mtp_block = true;      // with dflash: false = the MTP block is not loaded, DFlash2 drafts every step (--draft
                               // dflash); true = both, picked per step by how many DFlash2 drafts were taken
-  std::string kernel_dir = "zero/kernels";  // (arcinferzero: its own copy, with the -DXCACHE kernels)
+  std::string kernel_dir = "zero/kernels";  // (inferzero: its own copy, with the -DXCACHE kernels)
   bool dry = false;  // only add up the GPU memory a load takes (no allocations, uploads or kernels): --ctx auto
-  // arcinferzero expert streaming (standard-type MoE GGUFs): routed experts read from the SSD into an LRU cache on
+  // inferzero expert streaming (standard-type MoE GGUFs): routed experts read from the SSD into an LRU cache on
   // the GPU. Cache size: expert_cache_gb when > 0, else expert_cache_pct (0..100) of all experts when > 0, else
   // automatic: what is left after the rest of the model within the GPU's memory share less driver_slack().
   bool stream_experts = true;
@@ -236,11 +236,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }
     if (opt.tp_size > 1) tp_setup();  // (this shard's heads and columns: engine_tp_shard.h)
     // (MoE, Qwen3.6 35B: 1 and 2 drafts equally fast, 20.2 vs 20.3 tok/s; 1 keeps one DeltaNet state copy less)
-    // (measured on arcinferzero, server answers at temperature 0, 2026-10-16: 35B 1 -> 3 drafts 23.9 -> 26.1 tok/s,
+    // (measured on inferzero, server answers at temperature 0, 2026-10-16: 35B 1 -> 3 drafts 23.9 -> 26.1 tok/s,
     //  4B 2 -> 3 22.9 -> 24.8; 9B 2 and 3 alike (15.8 / 15.6); 27B 3 = 5 = 7; Gemma's drafter unchanged at 2)
     if (!opt.dflash.empty()) opt.mtp = true;
     if (!opt.mtp_block && opt.dflash.empty()) {  // (no drafter to draft instead)
-      if (opt.mtp) fprintf(stderr, "arcinferzero: --draft dflash without a DFlash2 drafter: the MTP block drafts\n");
+      if (opt.mtp) fprintf(stderr, "inferzero: --draft dflash without a DFlash2 drafter: the MTP block drafts\n");
       opt.mtp_block = true;
     }
     if (opt.mtp_drafts <= 0) opt.mtp_drafts = !opt.dflash.empty() ? 7 : mtp_block_drafts();
@@ -248,7 +248,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     plan_weights();
     stream_ = hp.moe_std && opt.stream_experts && !getenv("ARC_ZERO_NO_STREAM");
     if (f_.has("arcinferzero.package") && !stream_)  // (a package keeps its experts only in the expert file)
-      throw std::runtime_error("this is an arcinferzero package: it runs with expert streaming only (no --no-stream)");
+      throw std::runtime_error("this is an inferzero package: it runs with expert streaming only (no --no-stream)");
     if (stream_ && !opt.dry) open_experts();
     // (streamed experts: 8192-token chunks, each chunk reads a layer's missing experts once and decodes them once;
     // Qwen3.6 35B at ctx 262K, chunk 2048 / 4096 / 8192: expert cache 83 / 81 / 77 %, 32K prompt 485 / 533 / 604
@@ -278,7 +278,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     const bool sg8_igpu = cl_.sg8 && zrt::integrated();
     if (!opt.dry && cl_.xmx && sg8_igpu && !xmx_force && !p140_ && !getenv("ARC_XMX_TRY")) {
       static bool said = false;
-      if (!said) fprintf(stderr, "arcinferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
+      if (!said) fprintf(stderr, "inferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
       said = true;
     }
     if (!opt.dry && ((cl_.xmx && (!sg8_igpu || xmx_force || p140_)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
@@ -297,13 +297,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
           x2d_ = x2d_wanted();
           xmx_known = xmx_check() ? 1 : 0;
           if (x2d_ && !xmx_known && !xmx_slow_) {
-            fprintf(stderr, "arcinferzero: 2D block loads (ARC_GEMM_2D) do not build or differ: not used\n");
+            fprintf(stderr, "inferzero: 2D block loads (ARC_GEMM_2D) do not build or differ: not used\n");
             x2d_ = false;
             xmx_known = xmx_check() ? 1 : 0;
           }
           x2d_known = x2d_ && xmx_known ? 1 : 0;
           slow_known = xmx_slow_ ? 1 : 0;
-          if (xmx_known) fprintf(stderr, "arcinferzero: XMX on for the prompt GEMMs (results checked against DP4a)%s\n",
+          if (xmx_known) fprintf(stderr, "inferzero: XMX on for the prompt GEMMs (results checked against DP4a)%s\n",
                                  x2d_known ? ", with 2D block loads" : "");
         }
       }
@@ -324,7 +324,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       auto it = h8_known.find(key);
       if (it == h8_known.end()) it = h8_known.emplace(key, xmx_check(1)).first;
       if (!it->second) {
-        fprintf(stderr, "arcinferzero: the H8 XMX kernels differ from DP4a or do not build: H8 off, XMX kept (please report)\n");
+        fprintf(stderr, "inferzero: the H8 XMX kernels differ from DP4a or do not build: H8 off, XMX kept (please report)\n");
         p140_ = false;
         h8_auto_ = false;
         h8_ = false;
@@ -341,7 +341,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (p140_) {
       static std::once_flag said;
       std::call_once(said, [] {
-        fprintf(stderr, "arcinferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, DP4a below (ARC_140T=0: off)\n", kP140Min);
+        fprintf(stderr, "inferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, DP4a below (ARC_140T=0: off)\n", kP140Min);
       });
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
@@ -360,7 +360,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       load_weights();
       tp_loaded();  // (a split model: the host copies of its cut tensors freed)
       if (host_bytes_ && !opt.dry)
-        fprintf(stderr, "arcinferzero: %.2f GiB of the weights in host memory (outside the GPU share); prompt chunks of %d, "
+        fprintf(stderr, "inferzero: %.2f GiB of the weights in host memory (outside the GPU share); prompt chunks of %d, "
                         "sliding-window rings of %d rows\n", host_bytes_ / 1073741824.0, max_chunk,
                 std::min(ctx, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256));
       if (!opt.dry) loadp::step(loadp::st().what, total, total);

@@ -9,7 +9,7 @@
 #    block or a DFlash2 drafter is in the Hugging Face cache), best of 2.
 # C. KL: 480 tokens of USAGE.md through tools\ref_forward (f32 activations, dequantized weights; kept in
 #    <Out>\ref so later runs reuse it) and runz --kl-ref: mean / max KL and how often the top token agrees.
-# Without -Models: the usual models found in the Hugging Face cache and %USERPROFILE%\.arcinferzero\zero\models.
+# Without -Models: the usual models found in the Hugging Face cache and %USERPROFILE%\.inferzero\zero\models.
 # Every run checks for other GPU programs first (a second program on the GPU spoils the numbers).
 param(
   [string[]]$Models = @(),
@@ -29,7 +29,8 @@ if (-not (Test-Path $runz)) { throw "bin\runz.exe not found" }
 New-Item -ItemType Directory -Force $Out, (Join-Path $Out "ref") | Out-Null
 $jsonl = Join-Path $Out "results.jsonl"
 $hub = Join-Path $env:USERPROFILE ".cache\huggingface\hub"
-$pkg = Join-Path $env:USERPROFILE ".arcinferzero\zero\models"
+. (Join-Path $PSScriptRoot "..\scripts\app-dir.ps1")
+$pkg = Join-Path (Get-AppDir) "zero\models"  # (the data folder; an older one is moved once)
 $inv = [Globalization.CultureInfo]::InvariantCulture
 
 # (also every folder the server reads: model-dirs.txt, e.g. C:\hf, through serverz --list-models; GitHub #4: models
@@ -55,7 +56,7 @@ if (-not $Models.Count) {
   }
 }
 if (-not $Models.Count) {
-  "No model found: none of the usual model files is in the Hugging Face cache, %USERPROFILE%\.arcinferzero\zero\models"
+  "No model found: none of the usual model files is in the Hugging Face cache, %USERPROFILE%\.inferzero\zero\models"
   "or a folder the server reads (model-dirs.txt). Name them: .\bench\website_bench.ps1 -Models C:\path\model.gguf, ..."
   exit 1
 }
@@ -88,12 +89,12 @@ function Run([string[]]$a, [hashtable]$envs = @{}) {
 function Save($obj) { ($obj | ConvertTo-Json -Compress) | Add-Content -Path $jsonl -Encoding utf8 }
 function Num($o, [string]$re) { $m = [regex]::Match($o, $re); if ($m.Success) { [double]::Parse($m.Groups[1].Value, $inv) } else { $null } }
 
-$q = Join-Path ([IO.Path]::GetTempPath()) "arcinferzero-website-q.txt"
+$q = Join-Path ([IO.Path]::GetTempPath()) "inferzero-website-q.txt"
 $text = "<|im_start|>user`nWrite a Python module with a class LRUCache (get, put, a capacity, O(1) operations using " +
         "a dict and a doubly linked list), docstrings, and unit tests with unittest.<|im_end|>`n<|im_start|>assistant`n" +
         "<think>`n`n</think>`n`n"
 [IO.File]::WriteAllText($q, $text, (New-Object Text.UTF8Encoding $false))
-$kltext = Join-Path ([IO.Path]::GetTempPath()) "arcinferzero-website-kl.txt"
+$kltext = Join-Path ([IO.Path]::GetTempPath()) "inferzero-website-kl.txt"
 [IO.File]::WriteAllText($kltext, (Get-Content (Join-Path $root "USAGE.md") -Raw).Substring(0, 2600))
 
 $gpu = (& (Join-Path $root "bin\mgpu_probe.exe") 2>&1 | Select-String -Pattern "^\s+GPU 0:" | Select-Object -First 1)
@@ -160,7 +161,7 @@ foreach ($m in $Models) {
     }
     if (Test-Path $rb) {
       $o = Run @($m, "--tokens-file", $ids, "--kl-ref", $rb)
-      $kl = Num $o "KL\(ref \|\| arcinferzero\) = ([\d.]+)"
+      $kl = Num $o "KL\(ref \|\| inferzero\) = ([\d.]+)"
       $kmax = Num $o "max ([\d.]+)\)"
       $agree = [regex]::Match($o, "top token agrees (\d+) / (\d+)")
       $top = if ($agree.Success) { [math]::Round(100.0 * [int]$agree.Groups[1].Value / [int]$agree.Groups[2].Value, 1) } else { $null }
@@ -173,7 +174,7 @@ Remove-Item $q, $kltext -ErrorAction SilentlyContinue
 
 # ---- summary.md from every row of this run
 $rows = Get-Content $jsonl -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.time -eq $stamp }
-$md = @("# arcinferzero benchmarks", "", "$gpu; commit $commit; $stamp.", "")
+$md = @("# inferzero benchmarks", "", "$gpu; commit $commit; $stamp.", "")
 $md += "## Prompt processing (tok/s) and time to first token"
 $md += ""; $md += "| Model | " + (($Sizes | ForEach-Object { "$_" }) -join " | ") + " |"; $md += "|---|" + (($Sizes | ForEach-Object { "---" }) -join "|") + "|"
 foreach ($mn in ($rows | Select-Object -ExpandProperty model -Unique)) {

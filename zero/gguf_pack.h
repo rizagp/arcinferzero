@@ -1,9 +1,9 @@
-// arcinferzero model packages: a MoE model kept without its original GGUF.
+// inferzero model packages: a MoE model kept without its original GGUF.
 //
-//   %USERPROFILE%\.arcinferzero\zero\models\<name>\<name>.gguf     every tensor except the routed experts, all metadata
+//   %USERPROFILE%\.inferzero\zero\models\<name>\<name>.gguf     every tensor except the routed experts, all metadata
 //                                                              (the experts listed as virtual tensors: name, type,
 //                                                              shape) and "arcinferzero.package" = 1
-//   %USERPROFILE%\.arcinferzero\zero\models\<name>\<name>.experts the routed experts in the expert file layout
+//   %USERPROFILE%\.inferzero\zero\models\<name>\<name>.experts the routed experts in the expert file layout
 //                                                              (expert_store.h), built from the source GGUF
 //
 // make_package() reads the source GGUF (one file or split parts, from any drive: a USB disk is fine) once and writes
@@ -162,7 +162,7 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     Writer w(tmp);
     std::vector<std::string> keys;
     for (const std::string& k : src.kv_order)
-      if (k.rfind("split.", 0) != 0 && k.rfind("arcinferzero.", 0) != 0) keys.push_back(k);
+      if (k.rfind("split.", 0) != 0 && k.rfind("inferzero.", 0) != 0) keys.push_back(k);
     w.put<uint32_t>(0x46554747);
     w.put<uint32_t>(3);
     w.put<uint64_t>(keep.size());
@@ -202,7 +202,7 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   try {
     ExpertStore st;
     st.open_or_build(src, source, pre, n_exp, r.experts);
-    if (!st.built) fprintf(stderr, "arcinferzero: the expert file was already there: %s\n", r.experts.c_str());
+    if (!st.built) fprintf(stderr, "inferzero: the expert file was already there: %s\n", r.experts.c_str());
     r.expert_bytes = st.file_bytes;
   } catch (...) {
     drop_tmp();

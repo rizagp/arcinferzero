@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment, step 4: the matrix product C[M][N] = A[M][K] . B[N][K]^T on the NPU in the forms the
+// inferzero NPU experiment, step 4: the matrix product C[M][N] = A[M][K] . B[N][K]^T on the NPU in the forms the
 // engine could hand it, each timed and checked against an exact CPU computation of the same scheme:
 //   f16  A, B in f16
 //   i8   A int8 + one scale per row, B int8 + one scale per row (dequantized in the graph: Convert, Multiply)

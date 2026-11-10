@@ -1,4 +1,4 @@
-// arcinferzero tensor parallel: one model split over several GPUs (--gpus N), each GPU running an Engine shard
+// inferzero tensor parallel: one model split over several GPUs (--gpus N), each GPU running an Engine shard
 // (zero/mgpu/engine_tp_shard.h says what each holds) on a thread of its own, the shards in lockstep.
 //
 // The output projections' partial sums meet in host memory: GPUs that cannot reach each other's memory (Arc B60s on
@@ -128,7 +128,7 @@ inline void Engine::tp_reduce(int rows) {
     }();
     static std::atomic<bool> hung{false};
     if (hang.r == r && c.reduces[r] + 1 == hang.k && !hung.exchange(true)) {
-      fprintf(stderr, "arcinferzero: ARC_TP_HANG: GPU %d %s at sum %ld\n", r, hang.wait ? "gives up a wait" : "stops", hang.k);
+      fprintf(stderr, "inferzero: ARC_TP_HANG: GPU %d %s at sum %ld\n", r, hang.wait ? "gives up a wait" : "stops", hang.k);
       if (hang.wait) {
         c.fault = true;
         throw zrt::GpuWaitError("GPU " + std::to_string(r) + ": its work did not finish (ARC_TP_HANG)");
@@ -202,7 +202,7 @@ inline void Engine::tp_reduce_rs(int rows) {
   for (int k = 0; k < N; ++k) over = over || ((volatile int*)c.flags)[k] != 0;  // next sum only after the next barrier)
   if (over) {  // the one-step f32 sum in the same buffer half (no GPU reads its f16 parts any more)
     static std::atomic<long> warned{0};
-    if (r == 0 && warned++ < 3) fprintf(stderr, "arcinferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
+    if (r == 0 && warned++ < 3) fprintf(stderr, "inferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
     const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
     ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, tp_part_->ptr, n * 4, nullptr, 0, nullptr));
     barrier();
@@ -347,7 +347,7 @@ class TpEngine {
       std::string err;
       if (ClRt::open_devices(n, sim, err) != n) throw std::runtime_error("--gpus " + std::to_string(n) + ": " + err);
     }
-    fprintf(stderr, "arcinferzero: %d GPUs%s\n", n, sim ? " (ARC_TP_SIM: all on GPU 0)" : "");
+    fprintf(stderr, "inferzero: %d GPUs%s\n", n, sim ? " (ARC_TP_SIM: all on GPU 0)" : "");
     comm_.n = n;
     comm_.half.assign(n, 0);
     comm_.wait_ms.assign(n, 0.0);
@@ -504,7 +504,7 @@ class TpEngine {
       // (a line first, 30 s before giving up: a slow path between two sums can be told from a hang in the log, R9)
       if (watch && !warned && now - moved > std::chrono::duration<double>(comm_.timeout_s)) {
         warned = true;
-        fprintf(stderr, "arcinferzero: multi-GPU: no sum completed for %d s; given up on in 30 s more\n", (int)comm_.timeout_s);
+        fprintf(stderr, "inferzero: multi-GPU: no sum completed for %d s; given up on in 30 s more\n", (int)comm_.timeout_s);
       }
       const bool still = watch && now - moved > std::chrono::duration<double>(comm_.timeout_s + 30);
       if (!comm_.failed && !still) continue;
@@ -520,7 +520,7 @@ class TpEngine {
           w_[r].err = std::make_exception_ptr(std::runtime_error(
               "multi-GPU: GPU " + std::to_string(r) + (still ? " made no progress for " + std::to_string((int)comm_.timeout_s + 30) + " s" : " does not answer") +
               " (it hangs?); restart (or load the model again)"));
-          fprintf(stderr, "arcinferzero: GPU %d does not answer: given up on\n", r);
+          fprintf(stderr, "inferzero: GPU %d does not answer: given up on\n", r);
         }
       pending_ = 0;
       comm_.fault = true;

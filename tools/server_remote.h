@@ -221,7 +221,7 @@ struct Access {
   static std::string login_page() {
     return R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>arcinferzero: sign in</title>
+<title>inferzero: sign in</title>
 <style>
 :root { --bg: #f0f2f5; --card: #fff; --text: #111b21; --muted: #667781; --accent: #00a884; --line: #e9edef; --bad: #d0453f; }
 @media (prefers-color-scheme: dark) { :root { --bg: #0b141a; --card: #202c33; --text: #e9edef; --muted: #8696a0; --line: #2a3942; --bad: #f15c6d; } }
@@ -242,7 +242,7 @@ button:hover { filter: brightness(1.06); } button:active { transform: scale(.98)
 .err { color: var(--bad); font-size: 13px; min-height: 18px; margin-top: 10px; }
 .shake { animation: shake .3s; }
 </style></head><body>
-<form id="f"><h1>arcinferzero</h1><p>This server is private. Enter its password to continue.</p>
+<form id="f"><h1>inferzero</h1><p>This server is private. Enter its password to continue.</p>
 <input id="pw" type="password" autocomplete="current-password" placeholder="Password" aria-label="Password" autofocus required>
 <button id="go" type="submit">Sign in</button><div class="err" id="err" role="alert"></div></form>
 <script>

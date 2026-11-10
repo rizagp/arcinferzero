@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment (zero/npu/, separate from the engine): minimal declarations of Level Zero's NPU graph
+// inferzero NPU experiment (zero/npu/, separate from the engine): minimal declarations of Level Zero's NPU graph
 // extension (ZE_extension_graph, Intel's level-zero-npu-extensions ze_graph_ext.h), written from its published layout
 // and checked step by step against the installed driver (no copy of the header is on this machine). Only what the
 // probes and benchmarks here use.

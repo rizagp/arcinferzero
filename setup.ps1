@@ -1,4 +1,4 @@
-# arcinferzero setup: everything needed on this laptop, in one command. Safe to run again: done steps are skipped.
+# inferzero setup: everything needed on this laptop, in one command. Safe to run again: done steps are skipped.
 #
 #   setup                        check the requirements, build, choose models to download, connect Pi
 #   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq flash 9b 4b g12 g31 e4b whisper asr, all, none)
@@ -23,7 +23,7 @@ $prebuilt = (Test-Path $prebuiltFile) -and -not $Rebuild
 $Models = @(($Models -join ",") -split "[,;\s]+" | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
 if ($Help -or ($Models | Where-Object { $_ -in "--help", "-h", "help", "/?", "-?" })) {
   Write-Host @'
-setup: everything arcinferzero needs on this laptop, in one command. Safe to run again: done steps are skipped.
+setup: everything inferzero needs on this laptop, in one command. Safe to run again: done steps are skipped.
 
 USAGE
   setup                          check, build, ask which models to download, connect Pi
@@ -42,7 +42,7 @@ STEPS
                    for 35b-gsq), Pi (optional). Missing ones: where to get them.
   2 build          bin\serverz.exe, runz.exe, clinfo.exe, transcribez.exe (Whisper), arc_recorder.exe (meetings)
                    when missing or older than their sources (a ready-to-use package keeps its own); the compiler
-                   output goes to %USERPROFILE%\.arcinferzero\build.log (shown when a build fails). A running server
+                   output goes to %USERPROFILE%\.inferzero\build.log (shown when a build fails). A running server
                    is stopped first if serverz.exe has to be rebuilt.
   3 GPU check      bin\clinfo.exe: OpenCL device, DP4a (cl_khr_integer_dot_product), Intel sub-groups, GPU memory
   4 models         into the Hugging Face cache (HF_HUB_CACHE / HF_HOME respected) by scripts\hf-get.ps1: curl.exe,
@@ -84,7 +84,7 @@ function Ask($q, [bool]$def = $true) {
   return $a -match '^(y|yes|ya)$'
 }
 
-Write-Host "arcinferzero setup ($root)"
+Write-Host "inferzero setup ($root)"
 
 # ---------------------------------------------------------------- 1. requirements
 Head 1 "Requirements"
@@ -96,7 +96,7 @@ Ok "CPU: $cpu"
 $ramGb = [Math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
 if ($ramGb -lt 15) { Note "RAM $ramGb GB: enough for the 4B / E4B models only (32 GB for the 12B-35B models)" } else { Ok "RAM: $ramGb GB" }
 $gpus = @(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match "Intel" })
-if (-not $gpus) { Bad "No Intel GPU found. arcinferzero needs an Intel Core Ultra with Arc integrated graphics." }
+if (-not $gpus) { Bad "No Intel GPU found. inferzero needs an Intel Core Ultra with Arc integrated graphics." }
 foreach ($g in $gpus) { Ok "GPU: $($g.Name), driver $($g.DriverVersion)" }
 if (-not ($gpus | Where-Object { $_.Name -match "Arc" })) { Note "only Intel Arc integrated graphics (Xe-LPG tested; Xe2 / Xe3 reported to work) is supported" }
 
@@ -132,7 +132,7 @@ if ($hasPi) { Ok "Pi: $piBin" } elseif (-not $NoPi) { Note "Pi not found (option
 
 # ---------------------------------------------------------------- 2. build
 Head 2 "Build"
-# compiler output goes to %USERPROFILE%\.arcinferzero\build.log; shown only when a build fails
+# compiler output goes to %USERPROFILE%\.inferzero\build.log; shown only when a build fails
 . (Join-Path $root "scripts\app-dir.ps1")
 $buildLog = Join-Path (Get-AppDir) "build.log"
 New-Item -ItemType Directory -Force (Split-Path $buildLog) | Out-Null
@@ -146,7 +146,7 @@ function Build([string[]]$srcs) {
   Ok "built $($srcs -join ', ')"
 }
 $newestHeader = (Get-ChildItem (Join-Path $root "src") -Filter *.h | Measure-Object LastWriteTime -Maximum).Maximum
-# (arcinferzero: zero\serverz.cpp is tools\server.cpp on zero\engine.h, so it depends on both and on zero\*.h)
+# (inferzero: zero\serverz.cpp is tools\server.cpp on zero\engine.h, so it depends on both and on zero\*.h)
 $newestZero = (Get-ChildItem (Join-Path $root "zero") -Filter *.h | Measure-Object LastWriteTime -Maximum).Maximum
 $need = @()
 if ($prebuilt) { Ok "ready-to-use package: the exes as shipped ($((Get-Content $prebuiltFile -TotalCount 1).Trim()); setup -Rebuild builds them)" }
@@ -166,7 +166,7 @@ foreach ($t in $(if ($prebuilt) { @() } else { "tools\clinfo", "zero\serverz", "
 if ($need) {
   $running = @(Get-Process server, serverz -ErrorAction SilentlyContinue | Where-Object { $_.Path -like (Join-Path $bin "server*.exe") })
   if ($running.Count -and $need -contains "zero\serverz.cpp") {
-    Note "stopping the running arcinferzero server to rebuild it"
+    Note "stopping the running inferzero server to rebuild it"
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts\arc-server.ps1") stop | Out-Null
   }
   Write-Host "  building $($need -join ', ') (about a minute)..."
@@ -204,7 +204,7 @@ $catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6
 $ErrorActionPreference = "Continue"
 $listed = @(& (Join-Path $bin "serverz.exe") --list-models 2>$null | ConvertFrom-Json | ForEach-Object { $_ })
 $ErrorActionPreference = "Stop"
-# (in the Hugging Face cache, or anywhere the server finds the same file: a package in .arcinferzero\zero\models, a
+# (in the Hugging Face cache, or anywhere the server finds the same file: a package in .inferzero\zero\models, a
 #  folder of model-dirs.txt; before, a 35B kept as a package was offered for download again)
 function Present($m) {
   if ($m.key -eq "35b-gsq") { return Test-Path $gsq35 }

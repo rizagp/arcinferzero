@@ -45,7 +45,7 @@ Paragraf ini rata kiri-kanan dan cukup panjang untuk memenuhi beberapa baris, se
 Perintah yang dipakai: `arc-transcribe rapat.m4a --format docx`
 
 ```
-arc-transcribe rapat.m4a --lang id --beam 5 --words --format docx,pdf,srt --out %USERPROFILE%\.arcinferzero\transcripts\rapat-26-okt
+arc-transcribe rapat.m4a --lang id --beam 5 --words --format docx,pdf,srt --out %USERPROFILE%\.inferzero\transcripts\rapat-26-okt
 ```
 
 \pagebreak
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
   doc::Options o;
   o.title = "Notulen Rapat";
   o.subtitle = "Tim Produk · Rilis 2.4";
-  o.author = "arcinferzero";
+  o.author = "inferzero";
   o.date = "26 Oktober 2026";
   o.header = "Rahasia internal";
   o.footer = "Notulen Rapat Tim Produk";

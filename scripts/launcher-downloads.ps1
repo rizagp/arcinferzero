@@ -34,10 +34,10 @@ function Get-SplitSet([string]$p, $paths) {
   return @($paths | Where-Object { $_ -match ('^' + [regex]::Escape($m.Groups[1].Value) + '-\d{5}-of-' + $m.Groups[2].Value + '\.gguf$') })
 }
 # a catalog model already here: in the Hugging Face cache, or kept as a package (serverz --pack) in
-# %USERPROFILE%\.arcinferzero\zero\models (one GGUF for a split model: Flash Next)
+# %USERPROFILE%\.inferzero\zero\models (one GGUF for a split model: Flash Next)
 function Test-ArcHave($m, [string]$hub) {
   if (Test-ArcModel $m $hub) { return $true }
-  $pk = Join-Path $env:USERPROFILE ".arcinferzero\zero\models"
+  $pk = Join-Path (Get-AppDir) "zero\models"  # (app-dir.ps1: loaded by arc-launcher.ps1)
   if (-not (Test-Path $pk)) { return $false }
   $main = Split-Path $m.files[0] -Leaf
   $one = $main -replace "-00001-of-\d{5}\.gguf$", ".gguf"
@@ -279,7 +279,7 @@ function Show-Downloads {
       if ($want) { $dirs += Join-Path $hub ("models--" + ($st.hfRepo -replace "/", "--")) }
       if (-not $tok) { $info.Text = "Nothing to download: tick a model that is not here yet, or look up a link and tick its files."; return }
       if ($drive -and $drive.Free / 1GB -lt $disk + 5) {
-        [void][System.Windows.Forms.MessageBox]::Show(("Not enough free disk space: {0:N0} GB needed, {1:N0} GB free on {2}:." -f ($disk + 5), ($drive.Free / 1GB), $drive.Name), "arcinferzero")
+        [void][System.Windows.Forms.MessageBox]::Show(("Not enough free disk space: {0:N0} GB needed, {1:N0} GB free on {2}:." -f ($disk + 5), ($drive.Free / 1GB), $drive.Name), "inferzero")
         return
       }
       $st.tokens = $tok; $st.done = @{}; $st.fails = @(); $st.dirs = @($dirs | Sort-Object -Unique); $st.total = $total
@@ -302,7 +302,7 @@ function Show-Downloads {
   $d.Add_FormClosing({
       param($s, $e)
       if ($st.proc -and -not $st.proc.HasExited) {
-        $r = [System.Windows.Forms.MessageBox]::Show("Stop the download? (Started again later, it goes on where it stopped.)", "arcinferzero", "YesNo")
+        $r = [System.Windows.Forms.MessageBox]::Show("Stop the download? (Started again later, it goes on where it stopped.)", "inferzero", "YesNo")
         if ($r -ne "Yes") { $e.Cancel = $true; return }
         Stop-Run
       }

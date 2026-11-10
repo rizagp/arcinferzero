@@ -1,8 +1,8 @@
-// arcinferzero: the subset of the OpenCL API the engine uses (it began as an OpenCL engine), implemented on Level Zero, so that
+// inferzero: the subset of the OpenCL API the engine uses (it began as an OpenCL engine), implemented on Level Zero, so that
 // zero/engine.h (begun as a copy of the OpenCL engine's src/engine.h) runs unchanged on top of it. Buffers are device USM allocations (a sub-buffer is
 // a pointer into its parent), commands go to one in-order immediate command list (the same order as the former OpenCL engine's in-order
 // OpenCL queue, hence the same results), and kernels are the native binaries of the OpenCL compiler: built through
-// OpenCL.dll (loaded under other names) and the kernel cache (%USERPROFILE%\.arcinferzero\kernels) is the one the OpenCL engine used.
+// OpenCL.dll (loaded under other names) and the kernel cache (%USERPROFILE%\.inferzero\kernels) is the one the OpenCL engine used.
 #pragma once
 #include "../src/app_dir.h"
 #include "ze_min.h"
@@ -80,7 +80,7 @@ struct cl_buffer_region { size_t origin, size; };
   do {                                                                                       \
     cl_int _e = (expr);                                                                      \
     if (_e != CL_SUCCESS) {                                                                  \
-      fprintf(stderr, "arcinferzero error %d at %s:%d: %s\n", _e, __FILE__, __LINE__, #expr); \
+      fprintf(stderr, "inferzero error %d at %s:%d: %s\n", _e, __FILE__, __LINE__, #expr); \
       fflush(stderr);                                                                        \
       _Exit(1); /* (as ZE_CHECK: exit() runs destructors under running threads) */            \
     }                                                                                        \
@@ -180,8 +180,8 @@ inline BatchFns& batch_fns() {
       if (ext && ext(driver, "zeCommandListImmediateAppendCommandListsExp", &p) == 0) b.append = (decltype(b.append))p;
     }
     b.ok = b.create && b.close && b.reset && b.append;
-    fprintf(stderr, b.ok ? "arcinferzero: ARC_BATCH=%d: kernels recorded in lists of up to %d\n"
-                         : "arcinferzero: ARC_BATCH=%d: this driver cannot append lists to an immediate list; off\n",
+    fprintf(stderr, b.ok ? "inferzero: ARC_BATCH=%d: kernels recorded in lists of up to %d\n"
+                         : "inferzero: ARC_BATCH=%d: this driver cannot append lists to an immediate list; off\n",
             batch_max(), batch_max());
     return b;
   }();
@@ -299,7 +299,7 @@ inline ze_command_list_handle_t copy_list() {
   ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, (uint32_t)ord, (uint32_t)idx, 2 /* in order */,
                              2 /* asynchronous */, 0};
   ZE_CHECK(zeCommandListCreateImmediate(ctx, D().dev, &qd, &D().cl_copy));
-  fprintf(stderr, "arcinferzero: expert copies on a %s (queue group %d, queue %d)\n", D().cl_copy_kind, ord, idx);
+  fprintf(stderr, "inferzero: expert copies on a %s (queue group %d, queue %d)\n", D().cl_copy_kind, ord, idx);
   return D().cl_copy;
 }
 // Events the copy list signals after a batch of copies: 0 and 1 (used alternately) the main list waits on before
@@ -385,7 +385,7 @@ inline void* device_alloc(size_t n) {
     snprintf(msg, sizeof msg, "device allocation of %.1f MB failed on GPU %d (0x%x; %.2f GiB allocated)", n / 1e6,
              D().index, r, D().device_bytes / 1073741824.0);
     if (oom_throws) throw std::runtime_error(msg);
-    fprintf(stderr, "arcinferzero: %s\n", msg);
+    fprintf(stderr, "inferzero: %s\n", msg);
     fflush(stderr);
     _Exit(1);
   }
@@ -500,7 +500,7 @@ inline cl_int clEnqueueCopyBuffer(cl_command_queue, cl_mem src, cl_mem dst, size
   if (ev) *ev = nullptr;
   if (!n) return CL_SUCCESS;
   if (so + n > src->size || doff + n > dst->size) {  // (refused as OpenCL does, not copied over what follows)
-    fprintf(stderr, "arcinferzero: copy of %zu bytes past a buffer's end (source %zu + %zu of %zu, destination %zu + %zu of %zu; refused)\n",
+    fprintf(stderr, "inferzero: copy of %zu bytes past a buffer's end (source %zu + %zu of %zu, destination %zu + %zu of %zu; refused)\n",
             n, so, n, src->size, doff, n, dst->size);
     return -30;
   }
@@ -509,7 +509,7 @@ inline cl_int clEnqueueCopyBuffer(cl_command_queue, cl_mem src, cl_mem dst, size
 }
 inline bool out_of_bounds(const char* what, cl_mem b, size_t off, size_t n) {
   if (b && off + n <= b->size) return false;
-  fprintf(stderr, "arcinferzero: %s of %zu bytes at offset %zu past the end of a %zu-byte buffer (refused)\n", what, n,
+  fprintf(stderr, "inferzero: %s of %zu bytes at offset %zu past the end of a %zu-byte buffer (refused)\n", what, n,
           off, b ? b->size : (size_t)0);
   return true;
 }
@@ -756,7 +756,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
     // OpenCL would run a smaller last work-group; here the last group runs whole and its extra work-items would
     // read and write past the data. A launch like that is a bug in the caller (round the global size and give the
     // kernel a bounds check), so it fails loudly instead of corrupting memory.
-    fprintf(stderr, "arcinferzero: %s: global size %u x %u x %u is not a multiple of the work-group %u x %u x %u\n",
+    fprintf(stderr, "inferzero: %s: global size %u x %u x %u is not a multiple of the work-group %u x %u x %u\n",
             k->name.c_str(), gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
     return -54;  // (CL_INVALID_WORK_GROUP_SIZE)
   }
@@ -855,7 +855,7 @@ struct ClRt {
         for (size_t i = 0; i < ret / sizeof(size_t) && i < 8; ++i) sg8 = sg8 || sz[i] == 8;
       }
       if (getenv("ARC_NO_SG8") && atoi(getenv("ARC_NO_SG8")) != 0) sg8 = false;
-      if (!sg8) fprintf(stderr, "arcinferzero: no 8-lane sub-groups on this GPU: 16-lane kernels\n");
+      if (!sg8) fprintf(stderr, "inferzero: no 8-lane sub-groups on this GPU: 16-lane kernels\n");
     }
     {  // CL_DEVICE_EXTENSIONS: DPAS from OpenCL C (Engine::xmx_check decides whether it is used); ARC_NO_XMX=1: off
       std::string ext(16384, '\0');

@@ -1,4 +1,4 @@
-# The website (site/) on GitHub Pages: https://rizagp.github.io/arcinferzero/
+# The website (site/) on GitHub Pages: https://rizagp.github.io/inferzero/
 # Runs when site/ or this file changes on main, or by hand (Actions > Pages > Run workflow).
 name: Pages
 

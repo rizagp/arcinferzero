@@ -1,5 +1,5 @@
-// arcinferzero: minimal Level Zero (oneAPI L0) declarations + a dynamic loader for ze_loader.dll (installed with the
-// Intel graphics driver). Only what arcinferzero uses; the layouts follow ze_api.h (Level Zero spec 1.x).
+// inferzero: minimal Level Zero (oneAPI L0) declarations + a dynamic loader for ze_loader.dll (installed with the
+// Intel graphics driver). Only what inferzero uses; the layouts follow ze_api.h (Level Zero spec 1.x).
 #pragma once
 #include <cstdint>
 #include <cstddef>

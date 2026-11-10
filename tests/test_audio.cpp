@@ -131,7 +131,7 @@ int main() {
     struct F { int fmt, bits, ch, rate; };
     bool all = true;
     std::string bad;
-    const auto tmp = std::filesystem::temp_directory_path() / "arcinferzero_test_audio.wav";
+    const auto tmp = std::filesystem::temp_directory_path() / "inferzero_test_audio.wav";
     for (const F& f : {F{1, 16, 2, 48000}, F{1, 24, 1, 44100}, F{3, 32, 2, 22050}, F{1, 8, 1, 16000}, F{1, 16, 6, 96000}}) {
       std::vector<float> mono;
       const std::vector<uint8_t> b = wav(f.fmt, f.bits, f.ch, f.rate, 200003, mono);

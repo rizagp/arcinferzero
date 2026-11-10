@@ -1,4 +1,4 @@
-// Multi-GPU probe: what moving data between GPUs costs on this machine, the numbers a multi-GPU arcinferzero
+// Multi-GPU probe: what moving data between GPUs costs on this machine, the numbers a multi-GPU inferzero
 // depends on. Tensor parallel token generation syncs twice per layer (27B: ~128 small transfers per token), so the
 // latency of a ~20 KB transfer decides whether splitting the weights over GPUs speeds generation up; prompt chunks
 // move ~40 MB, where bandwidth counts. Measures, for every pair of GPUs: whether the driver allows peer access, and

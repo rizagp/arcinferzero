@@ -1,6 +1,6 @@
-# The best of arcinferzero
+# The best of inferzero
 
-A tour of what arcinferzero does well, what each feature is for, how to use it, and what it measured. The numbers
+A tour of what inferzero does well, what each feature is for, how to use it, and what it measured. The numbers
 come from [before-after.md](before-after.md) (how each was measured) and the [CHANGELOG](../CHANGELOG.md); the
 test laptop is a Core Ultra 5 125H (Arc iGPU, no XMX) with 32 GB of RAM. The step-by-step guide is
 [USAGE.md](../USAGE.md).
@@ -10,7 +10,7 @@ test laptop is a Core Ultra 5 125H (Arc iGPU, no XMX) with 32 GB of RAM. The ste
 Every matrix product runs on the iGPU's int8 DP4a units, the weights decoded once per chunk. Prompts are processed
 2.1-4.9x faster than llama.cpp (Vulkan / SYCL) on the same GGUF files and laptop.
 
-| Same file, same laptop | arcinferzero | llama.cpp Vulkan | llama.cpp SYCL |
+| Same file, same laptop | inferzero | llama.cpp Vulkan | llama.cpp SYCL |
 |---|---|---|---|
 | Qwen3.5 4B, 2K prompt | **911 tok/s** | 242 | 337 |
 | Qwen3.8 27B, 2K prompt | **113 tok/s** | 23 | 25 |

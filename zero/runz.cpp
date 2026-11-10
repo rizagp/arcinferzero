@@ -1,11 +1,11 @@
-// arcinferzero driver: feeds token ids, prints top logits and a greedy continuation; or benchmarks prefill.
+// inferzero driver: feeds token ids, prints top logits and a greedy continuation; or benchmarks prefill.
 // usage:
 //   run model.gguf (--tokens 1,2,3 | --tokens-file ids.txt) [--n 16] [--prof] [--chunk N] [--ctx N]
 //   run model.gguf --bench-pp 2048 [--prof]
 // options: --attn-f32 (f32 attention scores), --act256 (per-256 activation scales), --budget GB,
 //          --kl-ref file (KL against reference log-probs), --show (print the generated text)
 #include "../src/full_speed.h"
-#include "engine.h"  // arcinferzero (Level Zero)
+#include "engine.h"  // inferzero (Level Zero)
 #include "../src/tokenizer.h"
 #include <cstdio>
 #include <cwctype>
@@ -177,7 +177,7 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
       mxk = std::max(mxk, kl);
       agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
     }
-    printf("KL decode path (ref || arcinferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
+    printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
            sum / prompt.size(), prompt.size(), mxk, agree, prompt.size());
     return 0;
   }
@@ -428,7 +428,7 @@ static int run_main(int argc, char** argv) {
     const double GiB = 1073741824.0, share = (double)eng.device_mem(), lim = share - Engine::driver_slack();
     fflush(stdout);
     if ((double)eng.gpu_bytes > lim) {
-      fprintf(stderr, "arcinferzero: does not fit: %.2f GiB of GPU memory for a context of %d, over the %.2f GiB share "
+      fprintf(stderr, "inferzero: does not fit: %.2f GiB of GPU memory for a context of %d, over the %.2f GiB share "
                       "less %.1f for the driver; expect paging and far lower speeds (a smaller --ctx fits)\n",
               eng.gpu_bytes / GiB, eng.ctx, share / GiB, Engine::driver_slack() / GiB);
       if (must_fit) return 3;  // (--must-fit: bench\website_bench.ps1 records the size as not fitting)
@@ -924,7 +924,7 @@ static int run_main(int argc, char** argv) {
         agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
       }
       const size_t n = toks.size() - from;
-      printf("KL decode path (ref || arcinferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
+      printf("KL decode path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
              sum / n, n, mxk, agree, n);
       return 0;
     }
@@ -961,7 +961,7 @@ static int run_main(int argc, char** argv) {
     printf("top-10 next token:");
     for (auto& [id, p] : tk) printf(" %d(%.4f)", id, p);
     if (!kl_ref.empty()) {
-      // KL(reference || arcinferzero) over the full vocabulary; the reference file holds f32 log-probs of the last
+      // KL(reference || inferzero) over the full vocabulary; the reference file holds f32 log-probs of the last
       // position, or of every prompt position (then the KL is averaged over the prompt; single-chunk prompts).
       const size_t V = lg.size();
       auto kl_of = [&](const std::vector<float>& l, const float* ref) {
@@ -986,7 +986,7 @@ static int run_main(int argc, char** argv) {
       const size_t kl_from = getenv("ARC_KL_FROM") ? std::min<size_t>(atoi(getenv("ARC_KL_FROM")), toks.size() - 1) : 0,
                    kl_c0 = (toks.size() - 1) / eng.max_chunk * eng.max_chunk;
       if (ref.size() == V) {
-        printf("\nKL(ref || arcinferzero) = %.5f", kl_of(lg, ref.data()));
+        printf("\nKL(ref || inferzero) = %.5f", kl_of(lg, ref.data()));
       } else if (ref.size() == V * (toks.size() - kl_from) && kl_from >= kl_c0) {
         const std::vector<float> last(lg.begin(), lg.end());  // logits_at() overwrites the shared logits buffer
         double sum = 0, mx = 0;
@@ -1020,7 +1020,7 @@ static int run_main(int argc, char** argv) {
           agree += std::max_element(l.begin(), l.end()) - l.begin() == std::max_element(rr, rr + V) - rr;
         }
         const size_t n = toks.size() - kl_from;
-        printf("\nKL(ref || arcinferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu",
+        printf("\nKL(ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top token agrees %d / %zu",
                sum / n, n, mx, agree, n);
         printf("\nlogits against the reference: relative L2 %.3f %%, worst cosine %.6f, top-5 overlap %.3f",
                100.0 * std::sqrt(d2 / r2), worst_cos, top5 / (double)n);

@@ -1,4 +1,4 @@
-# Working on arcinferzero (for coding agents)
+# Working on inferzero (for coding agents)
 
 Read by Pi, Codex and other agents that load `AGENTS.md`; Claude Code reads it through `CLAUDE.md`. What the
 project is: [README.md](README.md). Where things stand and what is next: [QUEUE.md](QUEUE.md) ("Open now" at the top).
@@ -52,7 +52,7 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
 |---|---|
 | `zero/engine.h` | the Engine class: forward passes, dispatch; parts included in its body: setup `engine_setup.h`, `engine_load.h`, `engine_load_gemma.h`, `engine_alloc.h`, `engine_stream.h`; slots `engine_slots.h`, `engine_sessions.h`; layers `engine_qwen.h`, `engine_gemma.h`, `engine_moe.h`, `engine_drafters.h`, `engine_flashnext.h`, `engine_h8.h` |
 | `zero/kernels/ops*.cl` | non-GEMM kernels in parts (`KernelParts`, `zero/clrt.h`): `ops.cl` norms / DeltaNet, `ops_attn.cl`, `ops_attn_g.cl`, `ops_vit.cl`, `ops_flashnext.cl`, `ops_dflash.cl`, `ops_gdn.cl` (chunked DeltaNet); `decode.cl` + `decode_moe.cl` likewise; a kernel builds from its part and the ones before. Discrete-card XMX kernels in files of their own: `gdn_x.cl`, `attn_x.cl` (put in front of the ops parts for `attn_q8`), `gemm_x16.cl`, `gemm_x8.cl`, `h8.cl` |
-| `zero/clrt.h` | the OpenCL-style calls on Level Zero (kernels compiled through OpenCL, cached in `%USERPROFILE%\.arcinferzero\kernels`) |
+| `zero/clrt.h` | the OpenCL-style calls on Level Zero (kernels compiled through OpenCL, cached in `%USERPROFILE%\.inferzero\kernels`) |
 | `zero/runz.cpp` | CLI: `--bench-pp`, `--dump-logits`, `--perplexity`, `--kl-ref`, `--gpus`; `runz --help` |
 | `tools/ref_forward.cpp` | the f32 CPU reference used for KL |
 | `docs/before-after.md` | every change with its numbers; `docs/speed-progress.md`, `docs/lessons-intel-arc-igpu.md` for history and what did not work |

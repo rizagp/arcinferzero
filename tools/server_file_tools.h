@@ -129,7 +129,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
                               "read its source with read_file and call create_file again.");
       return reply(200, r);
     }
-    // Word templates of the user (%USERPROFILE%\.arcinferzero\templates\*.docx: a company's minutes forms, with their
+    // Word templates of the user (%USERPROFILE%\.inferzero\templates\*.docx: a company's minutes forms, with their
     // letterhead and signature block), tools/doc_template.h. minutes_templates {}: each one's name and what it asks
     // for (its first table's labels, its other tables' headings and columns). minutes_docx {template, data,
     // filename, chat_id}: that template filled with data ({"fields": {...}, "tables": [[[cells]...]...]}), saved

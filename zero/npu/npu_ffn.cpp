@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment, step 2: one Qwen FFN input projection pair (ffn_gate + ffn_up of a real layer) split
+// inferzero NPU experiment, step 2: one Qwen FFN input projection pair (ffn_gate + ffn_up of a real layer) split
 // between the GPU and the NPU, end to end, outside the engine:
 //   GPU  quantizes the activation rows per row (int8 + scale) straight into memory the NPU's context maps too
 //        (external memmap), then runs the engine's prompt GEMM (zero/kernels/gemm.cl, W8) on its share of the columns;

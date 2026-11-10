@@ -30,14 +30,14 @@ count. Beam 5 on the iGPU dropped one phrase the reference keeps: a near-tie, no
 
 | | Time | x realtime | Hard terms | Word differences vs faster-whisper beam 5 (hyphens joined) | Word timestamps (mean / p90) |
 |---|---|---|---|---|---|
-| **arcinferzero iGPU greedy** (2026-10-28, W1) | **25.1 s** | **33.8x** | 14 / 24 | 9.1 % | 123 / 379 ms |
-| **arcinferzero iGPU beam 5** (2026-10-28, W1) | **32.2 s** | **26.4x** | 16 / 24 | 13.3 % | 133 / 460 ms |
-| arcinferzero iGPU greedy / beam 5 before W1 | 31.8 / 39.3 s | 26.7 / 21.6x | 14 / 16 | 11.7 / 14.1 % | 124 / 400, 124 / 340 ms |
+| **inferzero iGPU greedy** (2026-10-28, W1) | **25.1 s** | **33.8x** | 14 / 24 | 9.1 % | 123 / 379 ms |
+| **inferzero iGPU beam 5** (2026-10-28, W1) | **32.2 s** | **26.4x** | 16 / 24 | 13.3 % | 133 / 460 ms |
+| inferzero iGPU greedy / beam 5 before W1 | 31.8 / 39.3 s | 26.7 / 21.6x | 14 / 16 | 11.7 / 14.1 % | 124 / 400, 124 / 340 ms |
 | OpenVINO GenAI iGPU greedy | 57 s | 14.8x | 15 / 24 | 10.1 % | 131 / 440 ms |
 | OpenVINO NPU greedy | 144 s | 5.9x | 16 / 24 | 12.2 % | 140 / 520 ms |
 
 Greedy is 2.27x OpenVINO's speed (1.8x before W1); beam 5 (as accurate on the hard terms as faster-whisper) is 1.77x
-faster than OpenVINO's greedy. faster-whisper writes "orang -orang" as two words where arcinferzero writes "orang-orang": joined
+faster than OpenVINO's greedy. faster-whisper writes "orang -orang" as two words where inferzero writes "orang-orang": joined
 before counting (the channel's compare.py counts them as errors: 13.7 / 15.1 % there).
 
 **GPU memory of large-v3 (2026-10-30)**: 4.39 -> 3.94 GiB (NPU mode 3.28): the decoder layers' cross keys / values
@@ -84,10 +84,10 @@ beam 5's words for the Indonesian pieces. Word differences:
 |---|---|---|
 | faster-whisper beam 5, language detected once | 57.3 % | 28.2 % |
 | faster-whisper beam 5, `multilingual=True` (per window) | 61.6 % | 19.1 % |
-| arcinferzero beam 5, `auto`, before W2 | 45.7 % | 43.5 % |
-| arcinferzero beam 5, `--lang en` (the English pieces at their best) | 78.0 % | 11.5 % |
-| **arcinferzero greedy or beam 5, `--lang id,en` (W2)** | **18.5 %** | **6.9 %** |
-| arcinferzero beam 5, `auto` (W2: only ambiguous windows split) | 32.8 % | 31.3 % |
+| inferzero beam 5, `auto`, before W2 | 45.7 % | 43.5 % |
+| inferzero beam 5, `--lang en` (the English pieces at their best) | 78.0 % | 11.5 % |
+| **inferzero greedy or beam 5, `--lang id,en` (W2)** | **18.5 %** | **6.9 %** |
+| inferzero beam 5, `auto` (W2: only ambiguous windows split) | 32.8 % | 31.3 % |
 
 How (`src/whisper.h` `language_runs`): with a list of languages, each window's pauses (>= 0.3 s quiet in the
 10-ms energy) cut it into utterances (>= 1.5 s); each utterance's language between the window's two likeliest
@@ -143,7 +143,7 @@ is decoded as it is read: the CLI no longer reads a video of gigabytes into memo
 hours never sit in memory at once.
 
 The transcript library (`/v1/transcripts`, for the Transcript tab): each transcript in its own folder under
-`%USERPROFILE%\.arcinferzero\transcripts\<id>\` (`meta.json`, the uploaded file, `transcript.json`); files uploaded
+`%USERPROFILE%\.inferzero\transcripts\<id>\` (`meta.json`, the uploaded file, `transcript.json`); files uploaded
 in pieces (any size the disk holds), a queue transcribed one file at a time with progress, cancel (what was done is
 kept), delete (also while running), exports in every format with the cue options, the media with byte ranges, edits
 saved over the transcript, and a restart that transcribes again what was queued or running. Checked end to end

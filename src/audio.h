@@ -423,8 +423,8 @@ inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b, doub
   for (size_t i = 2; i < pk.size(); ++i) t48 += samples(pk[i]);
   un(info, 0x2AD7B1, 1000000);  // (timestamps in ms)
   fl(info, 0x4489, (double)t48 / 48.0);
-  el(info, 0x4D80, "arcinferzero");
-  el(info, 0x5741, "arcinferzero");
+  el(info, 0x4D80, "inferzero");
+  el(info, 0x5741, "inferzero");
   fl(audio, 0xB5, 48000.0);
   un(audio, 0x9F, (uint64_t)channels);
   un(track, 0xD7, 1);

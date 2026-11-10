@@ -1,7 +1,7 @@
-# Starts / stops the arcinferzero server in the background for Pi and other OpenAI-compatible clients.
+# Starts / stops the inferzero server in the background for Pi and other OpenAI-compatible clients.
 #
 #   arc-server start                  asks which model to load: every supported GGUF model in the Hugging Face cache
-#                                     (and %USERPROFILE%\.arcinferzero\models), listed by its full name; Enter keeps the
+#                                     (and %USERPROFILE%\.inferzero\models), listed by its full name; Enter keeps the
 #                                     running one. Waits until the server is ready.
 #   arc-server start -Model 27b       the same without asking: a shortcut (27b 35b 35b-s 35b-mtp flash 9b 4b g12 e4b g26,
 #                                     with -mtp / -vision / -std / -nodf / -df for a variant), a model id, part of a model's
@@ -29,7 +29,7 @@
 # 3 not ready within 10 minutes, 4 the port is used by another program.
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
-# Log: %USERPROFILE%\.arcinferzero\server.log (written anew at each start; the previous ones in
+# Log: %USERPROFILE%\.inferzero\server.log (written anew at each start; the previous ones in
 #      logs\server_<date>_<time>.log, e.g. server_2026-11-09_14-13-48.log, the newest 10)
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
@@ -104,10 +104,10 @@ if ($args.Count) {
 }
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot "app-dir.ps1")
-$stateDir = Get-AppDir  # (%USERPROFILE%\.arcinferzero; renamed from arcinfer once)
+$stateDir = Get-AppDir  # (%USERPROFILE%\.inferzero; renamed from arcinfer once)
 New-Item -ItemType Directory -Force $stateDir | Out-Null
 
-# ---- presets: %USERPROFILE%\.arcinferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
+# ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json, {"Model": "35b", "Ctx": "65536", "Npu": "on", "NoMtp": true}:
 # arc-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;
 # an option given on the command line wins over the preset's.
 $presetDir = Join-Path $stateDir "presets"
@@ -184,13 +184,13 @@ $Asr = Speech-Value "Asr" $Asr $false
 $Ctx = "$Ctx".Trim().ToLower()
 if ($Ctx -eq "0") { $Ctx = "" }
 if ($Ctx -and $Ctx -ne "auto" -and $Ctx -notmatch '^\d+$') { throw "-Ctx: a number of tokens or auto (got '$Ctx')" }
-# the engine: arcinferzero (Level Zero); -NoStream keeps every expert on the GPU
+# the engine: inferzero (Level Zero); -NoStream keeps every expert on the GPU
 $Engine = if ($NoStream) { "zero-nostream" } else { "zero" }
 # ($moe: the model has routed experts, from serverz --list-models; only those keep their experts on the SSD)
 function Engine-Text([string]$e, [bool]$moe = $false) {
   switch ($e) {
-    "zero" { if ($moe) { "arcinferzero (Level Zero; experts on the SSD with a GPU cache)" } else { "arcinferzero (Level Zero)" } }
-    "zero-nostream" { "arcinferzero without the SSD cache (Level Zero; every weight on the GPU)" }
+    "zero" { if ($moe) { "inferzero (Level Zero; experts on the SSD with a GPU cache)" } else { "inferzero (Level Zero)" } }
+    "zero-nostream" { "inferzero without the SSD cache (Level Zero; every weight on the GPU)" }
     default { "an older server ($e)" }
   }
 }
@@ -201,7 +201,7 @@ $base = "http://127.0.0.1:$Port"
 # saved conversations (server --session-cache-gb, default 8 GB)
 $sessDir = if ($SessionDir) { $SessionDir } else { Join-Path $stateDir "zero\sessions" }  # (status / clear-cache: -SessionDir's folder)
 
-# The models come from `serverz.exe --list-models` (Hugging Face cache + %USERPROFILE%\.arcinferzero\models): name, file,
+# The models come from `serverz.exe --list-models` (Hugging Face cache + %USERPROFILE%\.inferzero\models): name, file,
 # alias (= the model id of the API and Pi), shortcut, the context --ctx auto chose for the current GPU memory. The
 # context is auto unless -Ctx is given: the largest that fits the GPU memory currently set less 0.5 GiB for the
 # driver, at most the trained one (Intel Graphics Software can change the GPU memory; it is then
@@ -244,25 +244,25 @@ function Stop-Arc {
     Where-Object { $_.ExecutablePath -like "$root\bin\serverz.exe" -and $_.CommandLine -match "--port\s+$Port\b" } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $stopped = $true }
   # A new server that allocates its GPU memory while Windows is still releasing the old one's can run at half speed
-  # for its whole life (measured: Qwen3.6 35B on arcinferzero 26.4 -> 11.9 tok/s when started at once, normal with
+  # for its whole life (measured: Qwen3.6 35B on inferzero 26.4 -> 11.9 tok/s when started at once, normal with
   # 5 s in between): the process ends first, then a short pause.
   if ($stopped) {
     Get-Process -Name server, serverz -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$root\bin\server*.exe" } |
       Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 5
-    Say "arcinferzero server stopped."
+    Say "inferzero server stopped."
   }
   return $stopped
 }
 
-# The models serverz.exe finds (Hugging Face cache + arcinferzero's model folder), with their alias.
+# The models serverz.exe finds (Hugging Face cache + inferzero's model folder), with their alias.
 function Get-Models {
   $all = @(& $exe --list-models | ConvertFrom-Json | ForEach-Object { $_ })  # (Windows PowerShell: unroll the array)
   foreach ($m in $all) { $m | Add-Member ctx 0 -Force }  # (only -Ctx sets a fixed context here)
   return $all
 }
 
-# Pi's model list (~/.pi/agent/models.json, provider "arcinferzero") follows what is on disk: a model deleted from the
+# Pi's model list (~/.pi/agent/models.json, provider "inferzero") follows what is on disk: a model deleted from the
 # Hugging Face cache leaves Pi's /model, a new one appears; each with its context (the running one's from the server)
 function Sync-PiModels {
   if (-not (Test-Path (Join-Path $env:USERPROFILE ".pi\agent"))) { return }
@@ -292,7 +292,7 @@ function Pick-Model($models, $runningPath, $runningAlias) {
     Write-Host ("   {0}  [{1}]{2}" -f $m.file, ($tags -join ", "), $mark)
   }
   $skip = @($models | Where-Object { -not $_.supported })
-  if ($skip.Count) { Write-Host ("  (not supported by arcinferzero: " + (($skip | ForEach-Object { "$($_.name) [$($_.arch)]" }) -join ", ") + ")") }
+  if ($skip.Count) { Write-Host ("  (not supported by inferzero: " + (($skip | ForEach-Object { "$($_.name) [$($_.arch)]" }) -join ", ") + ")") }
   $prompt = if ($runningPath) { "Model number (Enter = keep the running model)" } else { "Model number" }
   while ($true) {
     $a = Read-Host $prompt
@@ -305,7 +305,7 @@ function Pick-Model($models, $runningPath, $runningAlias) {
 
 if ($Action -in "help", "--help", "-h") {
   $short = @"
-arc-server: the arcinferzero server in the background (port $Port), for Pi, the web UI and other OpenAI-compatible
+arc-server: the inferzero server in the background (port $Port), for Pi, the web UI and other OpenAI-compatible
 clients. Options take one dash or two, any case.
 
   arc-server start [-Model <shortcut|id|file>] [options]   start, or switch the model; waits until ready
@@ -332,7 +332,7 @@ More: arc-server help options (every option) | help writing (values, paths) | he
       | help all. Exit codes: 0 ok, 1 wrong option, 2 the server stopped while loading, 3 timeout, 4 port in use.
 "@
   $full = @"
-arc-server: the arcinferzero server in the background (port $Port), for Pi and other OpenAI-compatible clients.
+arc-server: the inferzero server in the background (port $Port), for Pi and other OpenAI-compatible clients.
 Options take one dash or two, any case (-Whisper auto, --whisper auto); WRITING OPTIONS below says how to write
 values and paths, WHEN IT FAILS what an error means.
 
@@ -343,12 +343,12 @@ values and paths, WHEN IT FAILS what an error means.
   arc-server status              running model, its context and chunk size, saved conversations
   arc-server stop                stop the server and free the GPU memory
   arc-server clear-cache         delete saved conversations (session cache). Saved system prompts (per project
-                                 folder, 8 GB in all, reused across restarts) are in %USERPROFILE%\.arcinferzero\zero\prefix;
+                                 folder, 8 GB in all, reused across restarts) are in %USERPROFILE%\.inferzero\zero\prefix;
                                  deleting that folder is safe while the server is stopped.
   arc-server record [-App Zoom.exe] [-NoMic] [-Title "weekly"]
                                  record a meeting in the background (bin\arc_recorder.exe): your microphone as
                                  "Me", the app's sound (Zoom.exe, Teams.exe, chrome.exe...; without -App: all the
-                                 speakers play) as "Others", into %USERPROFILE%\.arcinferzero\recordings\. It goes on
+                                 speakers play) as "Others", into %USERPROFILE%\.inferzero\recordings\. It goes on
                                  if the server stops or restarts.
   arc-server record-stop         end it: the server transcribes it (Me / Others) in the Meetings tab, now or
                                  at its next start
@@ -362,7 +362,7 @@ values and paths, WHEN IT FAILS what an error means.
   arc-server version [-Check]    this package's version and commit; -Check asks GitHub for the latest release
   arc-server pull <key,key>      download models of the catalog into the Hugging Face cache (no Python):
                                  4b 9b 35b 27b g12 g31 e4b asr whisper; pull alone lists them (also get)
-  arc-server presets [-Json]     the saved presets (%USERPROFILE%\.arcinferzero\presets\<name>.json)
+  arc-server presets [-Json]     the saved presets (%USERPROFILE%\.inferzero\presets\<name>.json)
   arc-server save-preset -Preset <name> [options]   save the options given (the model too) as a preset;
                                  start -Preset <name> uses them. Delete one: delete its .json file.
   arc-server help [options|writing|errors|all]   help (also --help, -h)
@@ -419,7 +419,7 @@ Options for start / restart:
                                  experts (MTP layer included) on the SSD and the most used ones in a GPU cache
                                  and read the next layer's missing experts while the GPU computes (35B and Flash
                                  Next: 131,072 tokens of context by default, up to 262,144 with -Ctx). The first start writes the expert file (35B: 16 GB, ~2.5 min; Flash Next:
-                                 56 GB, ~9.5 min; Gemma 4 26B: 13 GB, ~1 min) to %USERPROFILE%\.arcinferzero\zero (safe
+                                 56 GB, ~9.5 min; Gemma 4 26B: 13 GB, ~1 min) to %USERPROFILE%\.inferzero\zero (safe
                                  to delete: it is written again).
   -Vision on|off                 image / audio input (default on). off: the projector (mmproj) is not loaded and
                                  --ctx auto keeps no GPU memory for it, so the context is longer
@@ -439,7 +439,7 @@ Options for start / restart:
   -NoPrefixCache                 do not keep system prompts on disk;  -PrefixCacheGb <N>  their disk space (8)
   -NoSwap                        the server keeps its model (requests for another model do not switch)
   -ListenHost <addr>             listen address (default 127.0.0.1; 0.0.0.0 = other computers too)
-  -SessionDir <folder>           where saved conversations go (default %USERPROFILE%\.arcinferzero\zero\sessions)
+  -SessionDir <folder>           where saved conversations go (default %USERPROFILE%\.inferzero\zero\sessions)
   -Quiet                         no messages
 A running server is kept when the model and every option given match; otherwise it is restarted with them.
 
@@ -458,7 +458,7 @@ WRITING OPTIONS
                                 -Asr         a Qwen3-ASR .gguf FILE (its mmproj-*.gguf next to it)
                                 -SessionDir  a folder (made when it is missing)
                                 Usually none is needed: shortcuts (-Model 35b) and auto find them in the Hugging Face
-                                cache, %USERPROFILE%\.arcinferzero\models and the folders in model-dirs.txt.
+                                cache, %USERPROFILE%\.inferzero\models and the folders in model-dirs.txt.
 
 WHEN IT FAILS (the message, then what to do)
   -Whisper: no folder / holds no model.bin / is a file
@@ -533,7 +533,7 @@ function Get-Version {
   $v = [ordered]@{ version = ""; commit = ""; built = ""; prebuilt = (Test-Path $pb); folder = $root }
   if ($v.prebuilt) {
     $l = (Get-Content $pb -TotalCount 1).Trim()
-    if ($l -match '^arcinferzero (\S+) \(built ([^,]+), commit (\w+)\)') { $v.version = $Matches[1]; $v.built = $Matches[2]; $v.commit = $Matches[3] }
+    if ($l -match '^(?:arc)?inferzero (\S+) \(built ([^,]+), commit (\w+)\)') { $v.version = $Matches[1]; $v.built = $Matches[2]; $v.commit = $Matches[3] }
   } else {
     try {
       $c = (& git -C $root rev-parse --short HEAD 2>$null)
@@ -548,7 +548,7 @@ function Get-Version {
 # the latest release on GitHub against this package: up to date when its zip is this commit (or, in a git clone, an
 # ancestor of HEAD), newer when it came out after this package was built
 function Get-UpdateInfo($v) {
-  $r = Invoke-RestMethod "https://api.github.com/repos/rizagp/arcinferzero/releases/latest" -TimeoutSec 10 -Headers @{ "User-Agent" = "arcinferzero-arc-server" }
+  $r = Invoke-RestMethod "https://api.github.com/repos/rizagp/inferzero/releases/latest" -TimeoutSec 10 -Headers @{ "User-Agent" = "inferzero-arc-server" }
   $names = @($r.assets | ForEach-Object { $_.name })
   $relCommit = ""
   foreach ($n in $names) { if ($n -match '-([0-9a-f]{7,})-win64\.zip$') { $relCommit = $Matches[1] } }
@@ -564,7 +564,7 @@ function Get-UpdateInfo($v) {
 }
 switch ($Action) {
   { $_ -in "list", "ls" } {
-    if (-not (Test-Path $exe)) { throw "$exe not found: unpack the ready package from https://github.com/rizagp/arcinferzero/releases (or build it: setup.cmd)" }
+    if (-not (Test-Path $exe)) { throw "$exe not found: unpack the ready package from https://github.com/rizagp/inferzero/releases (or build it: setup.cmd)" }
     $all = Get-ModelsListed
     if ($Json) { Out-Json $all; return }
     $run = Get-Running
@@ -590,7 +590,7 @@ switch ($Action) {
     $v = Get-Version
     if ($Check) { try { $v.update = Get-UpdateInfo $v } catch { $v.update = [ordered]@{ error = $_.Exception.Message } } }
     if ($Json) { Out-Json $v; return }
-    Write-Host "arcinferzero $($v.version)$(if ($v.commit -and $v.version -notmatch $v.commit) { ", commit $($v.commit)" })$(if ($v.built) { " ($($v.built))" })"
+    Write-Host "inferzero $($v.version)$(if ($v.commit -and $v.version -notmatch $v.commit) { ", commit $($v.commit)" })$(if ($v.built) { " ($($v.built))" })"
     Write-Host "  folder: $($v.folder)   bin\serverz.exe: $($v.serverz)"
     if ($v.update) {
       if ($v.update.error) { Write-Host "  could not ask GitHub: $($v.update.error)" }
@@ -653,7 +653,7 @@ switch ($Action) {
     $rep = New-Object System.Collections.Generic.List[object]
     function Add-Check([string]$what, [string]$state, [string]$text) { $rep.Add([pscustomobject]@{ check = $what; state = $state; text = $text }) }
     $v = Get-Version
-    Add-Check "package" "ok" "arcinferzero $($v.version)$(if ($v.commit) { ", commit $($v.commit)" }), folder $root"
+    Add-Check "package" "ok" "inferzero $($v.version)$(if ($v.commit) { ", commit $($v.commit)" }), folder $root"
     try { $os = Get-CimInstance Win32_OperatingSystem; Add-Check "windows" "ok" "$($os.Caption) build $($os.BuildNumber), $([math]::Round($os.TotalVisibleMemorySize / 1MB)) GB RAM ($([math]::Round($os.FreePhysicalMemory / 1MB, 1)) GB free)" } catch {}
     Add-Check "powershell" "ok" "$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
     foreach ($n in "serverz", "runz", "transcribez", "arc_recorder", "clinfo") {
@@ -663,7 +663,7 @@ switch ($Action) {
         try { $blocked = [bool](Get-Item -LiteralPath $p -Stream Zone.Identifier -ErrorAction Stop) } catch {}
         Add-Check "bin\$n.exe" $(if ($blocked) { "warn" } else { "ok" }) ("{0:yyyy-MM-dd HH:mm}" -f (Get-Item $p).LastWriteTime + $(if ($blocked) { " (marked as downloaded: run arc-launcher.cmd once, or Unblock-File)" } else { "" }))
       } elseif ($n -in "serverz", "clinfo") {
-        Add-Check "bin\$n.exe" "FAIL" "missing: a copy from git has no exes; take the package from https://github.com/rizagp/arcinferzero/releases or run setup.cmd"
+        Add-Check "bin\$n.exe" "FAIL" "missing: a copy from git has no exes; take the package from https://github.com/rizagp/inferzero/releases or run setup.cmd"
       }
     }
     try {
@@ -723,7 +723,7 @@ switch ($Action) {
       foreach ($e in $errs) { Add-Check "log" "warn" $e }
     }
     if ($Json) { Out-Json $rep.ToArray(); return }  # (@($rep) on a List: "Argument types do not match" in PowerShell 5.1)
-    Write-Host "arcinferzero doctor ($(Get-Date -Format 'yyyy-MM-dd HH:mm')): paste this into a GitHub issue"
+    Write-Host "inferzero doctor ($(Get-Date -Format 'yyyy-MM-dd HH:mm')): paste this into a GitHub issue"
     foreach ($r in $rep) {
       $c = switch ($r.state) { "FAIL" { "Red" } "warn" { "Yellow" } default { "Gray" } }
       Write-Host ("  {0,-5} {1,-14} {2}" -f $r.state, $r.check, $r.text) -ForegroundColor $c
@@ -747,7 +747,7 @@ switch ($Action) {
     }
     if ($id) {
       $p = Invoke-RestMethod "$base/props" -TimeoutSec 2
-      Say "arcinferzero server running on $base : model $id"
+      Say "inferzero server running on $base : model $id"
       if (Test-Path $lastFile) { Say ("  " + (Get-Content $lastFile -Raw).Trim()) }  # (also after switching in Pi)
       Say ("  " + ($p | ConvertTo-Json -Compress -Depth 3))
       if ((Test-Path $stateFile) -and "$((Get-Content $stateFile -Raw | ConvertFrom-Json).extra)" -match "--npu on") {
@@ -757,7 +757,7 @@ switch ($Action) {
         Say "  precise mode: on (-Precise; Flash Next; kept like -Npu, -NoPrecise turns it off)"
       }
       if ((Test-Path $stateFile) -and ($c = (Get-Content $stateFile -Raw | ConvertFrom-Json).cmd)) { Say "  command: $c" }
-    } else { Say "arcinferzero server is not running." }
+    } else { Say "inferzero server is not running." }
     $files = @(Get-ChildItem $sessDir -Recurse -Filter *.arcs -ErrorAction SilentlyContinue)
     Say ("Saved conversations: {0} ({1:N1} GiB) in {2}" -f $files.Count, (($files | Measure-Object Length -Sum).Sum / 1GB), $sessDir)
     return
@@ -773,7 +773,7 @@ switch ($Action) {
     Say ("Deleted {0} saved conversations ({1:N1} GiB)." -f $n, ($bytes / 1GB))
     return
   }
-  "stop" { if (-not (Stop-Arc)) { Say "arcinferzero server is not running." }; return }
+  "stop" { if (-not (Stop-Arc)) { Say "inferzero server is not running." }; return }
   "record" {
     $rec = Join-Path $root "bin\arc_recorder.exe"
     if (-not (Test-Path $rec)) { throw "$rec not found: build it with .\build.ps1 tools\arc_recorder.cpp (or run setup)" }
@@ -888,7 +888,7 @@ if ($MtpDrafts -gt 0) { $extra += @("--mtp-drafts", $MtpDrafts) }
 # fine-tuned variant the model list does not pair with one; -DFlash off: no drafter
 if ($DFlash -eq "off") { $extra += "--no-dflash" }
 elseif ($DFlash) {
-  # (an absolute path: the server starts in the arcinferzero folder, where a relative one would point elsewhere; and not
+  # (an absolute path: the server starts in the inferzero folder, where a relative one would point elsewhere; and not
   #  with -NoMtp, since a drafter turns speculative decoding on. Self audit 2026-11-08)
   if ($NoMtp) { throw "-DFlash with -NoMtp: a drafter means speculative decoding (use -DFlash off for none)" }
   if (-not (Test-Path -LiteralPath (Join-Path $DFlash "config.json"))) { throw "-DFlash: no config.json in $DFlash (give the drafter's snapshot folder)" }
@@ -997,7 +997,7 @@ if ($running) {
 }
 elseif ($Action -eq "restart") { Stop-Arc | Out-Null }
 
-Say "Starting $(if ($NoStream) { 'arcinferzero (no SSD cache)' } else { 'arcinferzero' }): $($m.name) as $($m.alias), context $ctxArg, port $Port$(if ($useMtp) { ', speculative decoding' })"
+Say "Starting $(if ($NoStream) { 'inferzero (no SSD cache)' } else { 'inferzero' }): $($m.name) as $($m.alias), context $ctxArg, port $Port$(if ($useMtp) { ', speculative decoding' })"
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
 if (-not $NoStream) {
   Say "  (MoE models: the first start writes the expert file next to a GGUF inside $stateDir, else to $stateDir\zero\models\<name>, 35B: 16 GB / ~2.5 min, Flash Next: 56 GB / ~9.5 min, once)"
@@ -1085,9 +1085,9 @@ Say ("Ready after {0:N0} s: {1}, context {2:N0} (web UI {3}/)" -f ((Get-Date) - 
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
 if ($true) {
   # the engine's own lines: the expert cache (MoE) or that the model has no experts to stream
-  $zl = @(Get-Content $log -ErrorAction SilentlyContinue | Where-Object { $_ -match "^arcinferzero: (expert cache|cache filled|expert file written|memory limit)" })
+  $zl = @(Get-Content $log -ErrorAction SilentlyContinue | Where-Object { $_ -match "^(?:arc)?inferzero: (expert cache|cache filled|expert file written|memory limit)" })
   if ($zl.Count) {
-    foreach ($l in $zl) { Say ("  " + ($l -replace "^arcinferzero: ", "") -replace ", file .*$", "") }
+    foreach ($l in $zl) { Say ("  " + ($l -replace "^(?:arc)?inferzero: ", "") -replace ", file .*$", "") }
   } elseif (-not $NoStream) {
     Say "  dense model: no MoE experts, so no SSD cache"
   }

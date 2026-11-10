@@ -1,7 +1,7 @@
 // A part of class Engine (zero/engine.h), included inside the class body at the place it was cut from (the
 // class is the same text), not a header of its own: expert streaming (mixture-of-experts weights read from the SSD into an expert cache).
 
-  // ---------------------------------------------------------------- arcinferzero expert streaming
+  // ---------------------------------------------------------------- inferzero expert streaming
   void open_experts() {
     xc_ = std::make_unique<XCache>();
     std::vector<std::string> pre(hp.n_layer + 1);
@@ -16,7 +16,7 @@
     xc_->init(hp.n_layer + 1, hp.n_expert, getenv("ARC_XSTAGE") ? atoi(getenv("ARC_XSTAGE")) : 64);
     if (tp_moe()) xc_->set_range((int)tpe_.first, (int)tpe_.second);  // (multi-GPU: this GPU's experts only)
     if (xc_->st.built)
-      fprintf(stderr, "arcinferzero: expert file written in %.1f s\n", xc_->st.build_ms / 1000);
+      fprintf(stderr, "inferzero: expert file written in %.1f s\n", xc_->st.build_ms / 1000);
     // (ARC_XRAM_GB overrides the option)
     const double ram_gb = getenv("ARC_XRAM_GB") ? atof(getenv("ARC_XRAM_GB")) : opt.expert_ram_gb;
     uint64_t ram = 0;
@@ -38,7 +38,7 @@
       };
       xc_->st.ram_free = [](char* p) { zeMemFree(zrt::ctx, p); };
       xc_->st.set_ram(ram);
-      fprintf(stderr, "arcinferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
+      fprintf(stderr, "inferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
     }
   }
   void size_expert_cache() {
@@ -62,7 +62,7 @@
       // (+ kernels and host side, the server's state snapshots, and what the caller keeps for its encoders)
       const uint64_t used = gpu_bytes + xc_->stage_bytes + (uint64_t)(0.1 * GiB) + snapshot_bytes() * std::max(opt.slots, 1) + opt.stream_reserve;
       want = limit > used ? limit - used : 0;
-      fprintf(stderr, "arcinferzero: memory limit %.2f GiB (GPU share %.2f - %.1f for the driver), model + buffers %.2f GiB\n",
+      fprintf(stderr, "inferzero: memory limit %.2f GiB (GPU share %.2f - %.1f for the driver), model + buffers %.2f GiB\n",
               limit / GiB, share / GiB, driver_slack() / GiB, used / GiB);
     }
     want = std::min(want, all);
@@ -80,10 +80,10 @@
                       (tp_moe() ? ".gpu" + std::to_string(opt.tp_rank) + "of" + std::to_string(opt.tp_size) : std::string()) + ".lru";
     if (!getenv("ARC_XWARM") || atoi(getenv("ARC_XWARM")) != 0) {
       xc_->warm();
-      fprintf(stderr, "arcinferzero: cache filled from the SSD: %.2f GB in %.1f s\n", xc_->warm_bytes / 1e9, xc_->warm_ms / 1000);
+      fprintf(stderr, "inferzero: cache filled from the SSD: %.2f GB in %.1f s\n", xc_->warm_bytes / 1e9, xc_->warm_ms / 1000);
     }
     zrt::print_memory();
-    fprintf(stderr, "arcinferzero: expert cache %.2f GiB (%.0f %% of %.2f GiB experts, %d slots), staging %.0f MiB, file %s\n",
+    fprintf(stderr, "inferzero: expert cache %.2f GiB (%.0f %% of %.2f GiB experts, %d slots), staging %.0f MiB, file %s\n",
             xc_->cache_bytes / GiB, 100.0 * xc_->cache_bytes / all, all / GiB, xc_->slots(), xc_->stage_bytes / 1048576.0,
             xc_->st.path.c_str());
   }
@@ -374,7 +374,7 @@
       zrt::sync();
     }
     xc_->pin(L.il, base, li.rec);
-    fprintf(stderr, "arcinferzero: MTP head experts on the GPU: %.2f GiB (%s)\n", bytes / 1073741824.0,
+    fprintf(stderr, "inferzero: MTP head experts on the GPU: %.2f GiB (%s)\n", bytes / 1073741824.0,
             ggml_type_name(li.type[0]));
   }
 

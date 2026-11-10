@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment, accuracy study (CPU only): how far an NPU-friendly int8 matrix product (one scale per
+// inferzero NPU experiment, accuracy study (CPU only): how far an NPU-friendly int8 matrix product (one scale per
 // activation row, one per weight row, as a FakeQuantize / dequantize graph can express) lands from f32, against the
 // engine's int8 scheme (one scale per 32 values for both activations and the W8 weights), on real weights of a GGUF
 // layer and realistic inputs: normalized rows times the layer's own norm weights (their large channels are the

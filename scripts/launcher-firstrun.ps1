@@ -24,21 +24,21 @@ function Test-GpuDriver {
   $out = (& $ci 2>&1 | Out-String)
   if ($LASTEXITCODE -eq 0 -and $out -match "device:") { return $true }
   $r = [System.Windows.Forms.MessageBox]::Show(
-    "No Intel Arc GPU was found through its driver.`n`narcinferzero needs a laptop with an Intel Core Ultra (Arc graphics) and Intel's graphics driver. Open Intel's driver page now? (Install it, restart, then open arcinferzero again.)",
-    "arcinferzero", "YesNo", "Warning")
+    "No Intel Arc GPU was found through its driver.`n`ninferzero needs a laptop with an Intel Core Ultra (Arc graphics) and Intel's graphics driver. Open Intel's driver page now? (Install it, restart, then open inferzero again.)",
+    "inferzero", "YesNo", "Warning")
   if ($r -eq "Yes") { Start-Process "https://www.intel.com/content/www/us/en/download/785597/intel-arc-iris-xe-graphics-windows.html" }
   return $false
 }
 
 # ---- a desktop shortcut to this window
 function New-DesktopShortcut {
-  $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "arcinferzero.lnk"
+  $lnk = Join-Path ([Environment]::GetFolderPath("Desktop")) "inferzero.lnk"
   $ws = New-Object -ComObject WScript.Shell
   $s = $ws.CreateShortcut($lnk)
   $s.TargetPath = Join-Path $root "arc-launcher.cmd"
   $s.WorkingDirectory = $root
   $s.WindowStyle = 7  # (minimized: the .cmd only starts the window)
-  $s.Description = "arcinferzero: local AI on the Intel Arc GPU"
+  $s.Description = "inferzero: local AI on the Intel Arc GPU"
   $s.Save()
 }
 
@@ -56,7 +56,7 @@ function Show-GetModels([bool]$first) {
   $rec = if ($ramGb -ge 30) { "35b" } else { "4b" }
 
   $d = New-Object System.Windows.Forms.Form
-  $d.Text = $(if ($first) { "Welcome to arcinferzero: get a model" } else { "Get models" })
+  $d.Text = $(if ($first) { "Welcome to inferzero: get a model" } else { "Get models" })
   $d.AutoScaleMode = "None"
   $d.Size = New-Object System.Drawing.Size((S 760), (S 560))
   $d.StartPosition = "CenterParent"
@@ -69,7 +69,7 @@ function Show-GetModels([bool]$first) {
   $p.Padding = New-Object System.Windows.Forms.Padding(14, 10, 14, 10)
   $intro = New-Object System.Windows.Forms.Label
   $intro.AutoSize = $true; $intro.MaximumSize = New-Object System.Drawing.Size((S 700), 0)
-  $intro.Text = $(if ($first) { "arcinferzero runs AI models on this laptop's own GPU: nothing goes to the internet. First it needs a model. " } else { "" }) +
+  $intro.Text = $(if ($first) { "inferzero runs AI models on this laptop's own GPU: nothing goes to the internet. First it needs a model. " } else { "" }) +
     "This laptop has $ramGb GB of RAM; the model that suits it is ticked. Free disk space: " +
     $(if ($drive) { "{0:N0} GB" -f ($drive.Free / 1GB) } else { "?" }) + ". You can add more models later (Get models)."
   $p.Controls.Add($intro)
@@ -94,8 +94,10 @@ function Show-GetModels([bool]$first) {
   $sp.Checked = -not $first -and $false
   $p.Controls.Add($sp)
   $sc = New-Object System.Windows.Forms.CheckBox
-  $sc.AutoSize = $true; $sc.Text = "Put an arcinferzero shortcut on the desktop"; $sc.Margin = New-Object System.Windows.Forms.Padding(3, 8, 3, 0)
-  $sc.Checked = $first -and -not (Test-Path (Join-Path ([Environment]::GetFolderPath("Desktop")) "arcinferzero.lnk"))
+  $sc.AutoSize = $true; $sc.Text = "Put an inferzero shortcut on the desktop"; $sc.Margin = New-Object System.Windows.Forms.Padding(3, 8, 3, 0)
+  # (a shortcut from before the rename, arcinferzero.lnk, counts: it still opens the launcher)
+  $desk = [Environment]::GetFolderPath("Desktop")
+  $sc.Checked = $first -and -not ((Test-Path (Join-Path $desk "inferzero.lnk")) -or (Test-Path (Join-Path $desk "arcinferzero.lnk")))
   $sc.Visible = $sc.Checked
   $p.Controls.Add($sc)
   $bar = New-Object System.Windows.Forms.ProgressBar
@@ -154,7 +156,7 @@ function Show-GetModels([bool]$first) {
       # (disk: the download and what the first start writes, Flash Next's 56 GB expert file)
       $disk = ($ms | Where-Object { -not (Test-ArcModel $_ $hub) } | ForEach-Object { if ($_.disk) { $_.disk } else { $_.gb } } | Measure-Object -Sum).Sum
       if ($drive -and $drive.Free / 1GB -lt $disk + 5) {
-        [void][System.Windows.Forms.MessageBox]::Show(("Not enough free disk space: {0:N0} GB needed, {1:N0} GB free on {2}:." -f ($disk + 5), ($drive.Free / 1GB), $drive.Name), "arcinferzero")
+        [void][System.Windows.Forms.MessageBox]::Show(("Not enough free disk space: {0:N0} GB needed, {1:N0} GB free on {2}:." -f ($disk + 5), ($drive.Free / 1GB), $drive.Name), "inferzero")
         return
       }
       if ($sc.Checked) { try { New-DesktopShortcut } catch {} }
@@ -177,7 +179,7 @@ function Show-GetModels([bool]$first) {
   $d.Add_FormClosing({
       param($s, $e)
       if ($state.proc -and -not $state.proc.HasExited) {
-        $r = [System.Windows.Forms.MessageBox]::Show("Stop the download? (Started again later, it goes on where it stopped.)", "arcinferzero", "YesNo")
+        $r = [System.Windows.Forms.MessageBox]::Show("Stop the download? (Started again later, it goes on where it stopped.)", "inferzero", "YesNo")
         if ($r -ne "Yes") { $e.Cancel = $true; return }
         try { Stop-Process -Id $state.proc.Id -Force } catch {}
         Get-CimInstance Win32_Process -Filter "ParentProcessId = $($state.proc.Id)" -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }

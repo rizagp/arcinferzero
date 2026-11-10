@@ -1,18 +1,18 @@
-# arcinferzero review: how the speed developed
+# inferzero review: how the speed developed
 
-arcinferzero is a from-scratch LLM inference engine for Intel's integrated Arc graphics, built on one laptop to shorten
+inferzero is a from-scratch LLM inference engine for Intel's integrated Arc graphics, built on one laptop to shorten
 the wait before a model starts answering a long prompt. It runs Qwen3.5, Qwen3.6 and Qwen3.8 (dense and mixture of
 experts) and Gemma 4 with image and audio input (Flint, added on 24 October, was removed again on 25 October), serves an OpenAI-, Anthropic- and Ollama-compatible API, and plugs into the Pi coding agent. This page
 tells the story of the build from the first working forward pass to 24 October 2026, with the emphasis on how
 prompt and generation speed developed and what caused each step.
 
-The work up to 15 October was done on an OpenCL engine (`src/`). **arcinferzero** (`zero/`) runs the same kernels
+The work up to 15 October was done on an OpenCL engine (`src/`). **inferzero** (`zero/`) runs the same kernels
 through Level Zero, gave bit-identical logits to the OpenCL engine on every model, streams mixture-of-experts weights
 from the SSD, and became the default on 16 October; the OpenCL engine was removed on 20 October. Measurements dated
 before 14 October below are from the OpenCL engine.
 
 Sources: [CHANGELOG.md](../CHANGELOG.md), [review_notes.md](archive/review_notes.md) (working notes),
-[arcinferzero-log.md](archive/arcinferzero-log.md), [speed-progress.md](speed-progress.md) (the speed tables by date),
+[inferzero-log.md](archive/inferzero-log.md), [speed-progress.md](speed-progress.md) (the speed tables by date),
 [lessons-intel-arc-igpu.md](lessons-intel-arc-igpu.md), [QUEUE.md](../QUEUE.md),
 the README, `bench/results/results.jsonl` and the git log. Every figure below comes from one of them.
 
@@ -62,9 +62,9 @@ CHANGELOG.md and the working notes. The first ten stages are recorded only as "b
 | 11 Oct | Working in Pi all day | session cache, system prompt kept on disk per project folder, Esc cancels within a layer, `setup.cmd` |
 | 12 Oct | Bandwidth work, images | GEMV raw blocks regrouped for vector loads, E4B 17.2 → 21.2 tok/s, JIT decoding 2.7x faster, Google's QAT Q4_0 Gemma files, Qwen3.5 images on the GPU, 35B from standard GGUFs |
 | 13 Oct | Qwen3.6 35B | experts through the int8 GEMM (prompt 476 → 642 tok/s), MTP for the MoE (19.7 → 22.3 tok/s), Q8_0 stored once (context 61K → 209K) |
-| 14 Oct | arcinferzero | OpenCL kernels on Level Zero (35B TTFT 6.45 → 4.07 s), experts streamed from the SSD: 35B at 262K context with MTP |
+| 14 Oct | inferzero | OpenCL kernels on Level Zero (35B TTFT 6.45 → 4.07 s), experts streamed from the SSD: 35B at 262K context with MTP |
 | 15 Oct | Full API; overnight Level Zero tests | Anthropic / Ollama / Responses formats, structured output, constrained tool calls; Level Zero baseline for every model, MTP up to 7 drafts |
-| 16 Oct | arcinferzero default; Flash Next; DFlash2 | register-spill fixes, GEMM with 16 tokens side by side (27B prompt 2K 110 → 130 tok/s), Qwen3.8 Flash Next running, DFlash2 block drafter (27B code 4.85 → 11.5 tok/s), token-outer verification GEMVs |
+| 16 Oct | inferzero default; Flash Next; DFlash2 | register-spill fixes, GEMM with 16 tokens side by side (27B prompt 2K 110 → 130 tok/s), Qwen3.8 Flash Next running, DFlash2 block drafter (27B code 4.85 → 11.5 tok/s), token-outer verification GEMVs |
 | 17 Oct | Speculative decoding and MoE prompts | more drafts by default (27B 7, 35B 5), DFlash2 drafter in Q4_0, `moe_rg`, Flash Next 7.3 tok/s and 8K prompt 165 tok/s, kernel warm-up |
 | 18 Oct | Long contexts and MoE prompts | automatic context 131,072 for the MoE models, 35B prompt chunks 8,192 (32K prompt 533 → 604 tok/s), deep expert prefetch (Flash Next 4K prompt 107 → 166 tok/s), `qsa_score_rt`, `--v4`, drafter variants `-nodf` / `-df` |
 | 19 Oct | Two conversations at once; Gemma 4 26B-A4B | conversation slots (`--slots N`): a question during another slot's 46K-token prompt answered after 9.6 s; batched decoding over slots (27B prose 7.3 → 10.5 tok/s together, 35B 20.2 → 24.7, Gemma 26B 19.8 → 26.2); Gemma 4 26B-A4B with its experts on the SSD (prompt 450 tok/s, generation ~20 tok/s) and images |
@@ -112,7 +112,7 @@ All milestones:
 | 12 Oct | JIT decoding per 11K prompt 5.8 → 2.2 s | 4.3 → 4.7 (65 → 72 % of the bandwidth) | `decode_w8_sb` vector loads; raw blocks regrouped for aligned vector loads |
 | 13 Oct | — | 4.75 → 4.8–5.0; MTP on code 4.5 → 7.9 (2 drafts, 91 % accepted) | DeltaNet qkv + z in one GEMV |
 | 13 Oct | — | MTP on code 7.8 → 9.5 (+21 %) | 3 MTP drafts (the OpenCL engine allowed 2) |
-| 15 Oct (Level Zero) | 2K 110, 16K 103, 65K 80 tok/s | 5.1 / 4.7 / 4.0; server 5.0, MTP 9.1 (code) | arcinferzero, bit-identical to OpenCL |
+| 15 Oct (Level Zero) | 2K 110, 16K 103, 65K 80 tok/s | 5.1 / 4.7 / 4.0; server 5.0, MTP 9.1 (code) | inferzero, bit-identical to OpenCL |
 | 16 Oct | — | 5 drafts 3.8 → 9.2 | verification GEMVs load each token's activations where used (no register spill) |
 | 16 Oct | 2K 110 → 130, 16K 103 → 125 tok/s | — | GEMM: activation words of 16 tokens loaded first, their DP4a chains side by side (gate 8.05 → 8.30 TOPS, down 6.62 → 7.0) |
 | 16 Oct | attention, last 4K chunk at 64K: 1,515 → 1,335 ms per layer | — | P·V divisions once per sub-group, DP4a accumulating in place |
@@ -167,7 +167,7 @@ in a 2,048-token chunk each expert sees only ~64 tokens, which is hard on the GE
 Current numbers: [before-after.md](before-after.md).
 
 Context with MTP: 40,960 tokens on the OpenCL engine (4,096 with images as well); 262,144 with images and MTP on
-arcinferzero, with Windows keeping 14 GB of RAM. Since 17 October the automatic context gives the expert cache
+inferzero, with Windows keeping 14 GB of RAM. Since 17 October the automatic context gives the expert cache
 priority instead (32,768 tokens with images, MTP and DFlash2, cache 77 %): at 253,952 tokens the cache was 60 % and
 generation paused for SSD reads (10-15 tok/s); 262K is still available with `--ctx`. **Later (18 Oct):** the
 automatic context reserves 128K before sizing the expert cache, so the 35B gets 131,072 tokens (cache ~76-81 %);
@@ -247,7 +247,7 @@ norm (an int8 router gave KL 0.079 instead of 0.073). The experts are streamed f
 | 22 Oct | 4K ~200 tok/s | ~17 (25 with its drafter) | accurate mode only (the user's KL limit 0.015): float attention, two int8 passes per matmul input; KL 0.073 → 0.0042 |
 | 23–24 Oct | 4K 252 tok/s, 14K 210 | ~25 with its drafter, 14.0 after a 14K prompt | kernels rebuilt for the two passes (fused GEMV passes, `attn_fa_gh`, 2 key blocks per step in the sliding layers, a tiled f32 router) |
 
-### Qwen3.8 Flash Next (ISTA-DASLab GSQ-RCO IQ3_S, arcinferzero only)
+### Qwen3.8 Flash Next (ISTA-DASLab GSQ-RCO IQ3_S, inferzero only)
 
 A new architecture (`qwen4exp`): 4 hyper-connection residual streams with mixers before every block, Gated DeltaNet
 with a sigmoid gate, gated attention with QSA sparse attention, 512 experts (10 active) streamed from the SSD, and a
@@ -289,16 +289,16 @@ needs `GGML_SYCL_ENABLE_VMM=0` on this driver). The prompts are scans of two loc
 for the Qwen tokenizer (13,921 and 35,957 for Gemma's), sent with the same token ids. llama.cpp SYCL on Gemma 4 12B,
 Gemma's Vulkan perplexity and a llama.cpp reference for the 35B (Unsloth's UD-IQ2_M) were not run: llama.cpp's long
 prompts on this iGPU would have taken hours more (the 27B's 34K prompt alone took 40 minutes on Vulkan). llama.cpp
-was not measured again after that day, while arcinferzero kept getting faster (the tables above).
+was not measured again after that day, while inferzero kept getting faster (the tables above).
 
 The tables are written by `bench/review_data.py` from `bench/results/results.jsonl`.
 
 <!-- DATA-BEGIN -->
-Measured 2026-10-10 with the OpenCL engine; best of the repeated runs per engine. llama.cpp cannot load the GSQ 2-bit Qwen3.6 35B-A3B, so its row has arcinferzero only.
+Measured 2026-10-10 with the OpenCL engine; best of the repeated runs per engine. llama.cpp cannot load the GSQ 2-bit Qwen3.6 35B-A3B, so its row has inferzero only.
 
 Time to first token (seconds) on the code prompts, and generation speed right after the prompt (tok/s):
 
-| Model | Prompt | Tokens | arcinferzero TTFT | llama.cpp Vulkan TTFT | llama.cpp SYCL TTFT | arcinferzero gen | llama.cpp Vulkan gen | llama.cpp SYCL gen |
+| Model | Prompt | Tokens | inferzero TTFT | llama.cpp Vulkan TTFT | llama.cpp SYCL TTFT | inferzero gen | llama.cpp Vulkan gen | llama.cpp SYCL gen |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | Qwen3.5 4B | code 11K | 11,240 | 14.3 | 69.0 | 41.7 | 16.13 | 13.62 | 12.77 |
 | Qwen3.5 4B | code 34K | 33,937 | 57.5 | 376.1 | 162.9 | 15.71 | 10.64 | 8.15 |
@@ -313,7 +313,7 @@ Time to first token (seconds) on the code prompts, and generation speed right af
 
 Synthetic throughput (llama-bench style; tok/s): prompt processing over 512 and 2,048 tokens, generation of 64 tokens after a short prompt:
 
-| Model | arcinferzero pp512 | llama.cpp Vulkan pp512 | llama.cpp SYCL pp512 | arcinferzero pp2048 | llama.cpp Vulkan pp2048 | llama.cpp SYCL pp2048 | arcinferzero tg64 | llama.cpp Vulkan tg64 | llama.cpp SYCL tg64 |
+| Model | inferzero pp512 | llama.cpp Vulkan pp512 | llama.cpp SYCL pp512 | inferzero pp2048 | llama.cpp Vulkan pp2048 | llama.cpp SYCL pp2048 | inferzero tg64 | llama.cpp Vulkan tg64 | llama.cpp SYCL tg64 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | Qwen3.5 4B | 919.2 | 263.9 | 295.3 | 911.3 | 241.6 | 337.4 | 17.6 | 16.2 | 17.9 |
 | Qwen3.5 9B | 317.0 | 158.4 | 161.5 | 401.6 | 150.8 | 189.0 | 10.3 | 9.5 | 11.1 |
@@ -323,7 +323,7 @@ Synthetic throughput (llama-bench style; tok/s): prompt processing over 512 and 
 
 Perplexity (40 chunks of 512 tokens of llama.cpp documentation, second half of each chunk scored; lower is better). Gemma 4's raw-text perplexity is not a usable accuracy metric on this corpus (see Accuracy); the 35B row is the GSQ file, which llama.cpp cannot load:
 
-| Model | arcinferzero | llama.cpp Vulkan | llama.cpp SYCL |
+| Model | inferzero | llama.cpp Vulkan | llama.cpp SYCL |
 |---|---:|---:|---:|
 | Qwen3.5 4B | 6.0562 | 6.1410 | 6.1380 |
 | Qwen3.5 9B | 5.4172 | 5.4987 | 5.4969 |
@@ -340,12 +340,12 @@ generated 3.7 tok/s at 34K tokens against 2.06 (Vulkan) and 1.09 (SYCL).
 
 ## Speculative decoding
 
-All drafting in arcinferzero keeps the output: the drafts are verified in one main-model pass and the next token is still
+All drafting in inferzero keeps the output: the drafts are verified in one main-model pass and the next token is still
 taken from the main model's distribution. Every change was accepted only with greedy answers identical to plain
 decoding.
 
 **MTP (Qwen).** Qwen GGUFs carry a multi-token-prediction block. On the OpenCL engine it drafted up to 2, later 3
-tokens per pass, with the DeltaNet states copied for the rollback after a rejected draft. arcinferzero (15 October)
+tokens per pass, with the DeltaNet states copied for the rollback after a rejected draft. inferzero (15 October)
 replaced the copies: a verification pass writes its states to a second buffer and keeps its inputs, and a rejection
 replays the recurrence over the accepted tokens only (one state copy instead of one per draft, no 150 MB copies per
 step). That allowed up to 7 drafts, but at first more than 3 were slower, because the 8-token verification GEMVs held
@@ -402,7 +402,7 @@ Speed only counted if the answers stayed the same. The checks:
 - Greedy continuations identical to llama.cpp on the 4B, 9B, Gemma 4 12B and E4B test prompts; tokenizer output
   identical to `llama-tokenize`; chat templates rendered exactly like the GGUF Jinja templates.
 - Kernel changes either bit-identical to the previous kernel (checked by dumping logits) or measured against the
-  reference. arcinferzero produces bit-identical logits to the OpenCL engine on every model (the 35B with the same
+  reference. inferzero produces bit-identical logits to the OpenCL engine on every model (the 35B with the same
   prompt chunking); images and audio give the same answers.
 - Speculative decoding only accepted when the output equals plain decoding. This caught a real bug: the 35B's
   two-token verification used an attention kernel that split the keys differently from the single-token kernel, so
@@ -423,13 +423,13 @@ Mean KL against the f32 reference:
 | Qwen3.8 Flash Next | 337-token raw text | 0.15 | the reference with int8 activations gives 0.13 |
 | Qwen3.8 Flash Next | 3,566 tokens, QSA | 0.020 | against the CPU reference with QSA (dense attention 0.043) |
 
-Generation path on arcinferzero (`runz --kl-decode`, ~250-token texts; old decode attention vs the new split
+Generation path on inferzero (`runz --kl-decode`, ~250-token texts; old decode attention vs the new split
 kernel): 4B 0.00064 / 0.00067 vs 0.00062 / 0.00064, 9B 0.00069 vs 0.00060, 35B 0.00774 / 0.00444 vs 0.00811 /
 0.00436, 27B 0.00030–0.00034 vs 0.00032–0.00040. Changing only the rounding of the 27B's scores moved its KL
 0.000355 → 0.000414, so these differences are within noise.
 
 The audit that mattered most: on Gemma 4 the drift from the reference grew with the context, up to complete flips of
-the predicted token. Re-running the f32 reference with each piece of arcinferzero's int8 rounding simulated in turn
+the predicted token. Re-running the f32 reference with each piece of inferzero's int8 rounding simulated in turn
 pointed at the V cache: Gemma's V rows hold a few large values, and one scale per row left the rest with too few
 levels. One scale per 64 dims removed the flips and halved the drift, at 1.5–1.8x the attention time for Gemma only.
 Gemma 4 is about 7x more sensitive to int8 activations than Qwen3.5 (activations rounded to int8 alone, in the f32
@@ -439,9 +439,9 @@ the Gemma 4 26B encoder's matrix products run on two int8 passes (value and roun
 model's KL against an exact encoder at ~0.001.
 
 Perplexity in the 10 October benchmark (see the comparison tables) was 6.06 / 5.42 / 4.27 for the 4B / 9B / 27B on
-arcinferzero against 6.14 / 5.50 / 4.31 on llama.cpp Vulkan. On the 4B, int8 attention and requantized Q4_K together
+inferzero against 6.14 / 5.50 / 4.31 on llama.cpp Vulkan. On the 4B, int8 attention and requantized Q4_K together
 changed perplexity by less than 0.06 % (5.4749 f32 attention, 5.4779 the default). Gemma's raw-text perplexity is not
-usable on this corpus: on 4 chunks the f32 CPU build of llama.cpp gives 130, Vulkan 120, SYCL 113, arcinferzero 111.
+usable on this corpus: on 4 chunks the f32 CPU build of llama.cpp gives 130, Vulkan 120, SYCL 113, inferzero 111.
 
 ## What did not work
 
@@ -465,13 +465,13 @@ The ones that shaped the design:
   (deep prefetch, 18 Oct, see the 35B section): instead of a guess it reads every missing expert of the next layer,
   copies them on the copy engine, and the kernels wait on an event.
 - **`attn_dsplit` for Qwen on the OpenCL engine**: up to 2x faster verification, but not bit-identical to
-  single-token decoding, which the MTP test requires (on arcinferzero a variant with fixed key splits is used).
+  single-token decoding, which the MTP test requires (on inferzero a variant with fixed key splits is used).
 
 ## Open issues
 
 - **The original goal was not reached**: an 11,000-token prompt on the 27B in under a minute. On the OpenCL engine it
   took ~90 s on a cool laptop (97 s in the benchmark); the GEMMs alone took ~70 s, and 60 s would need more than 90 %
-  of the DP4a peak. The 11K prompt has not been timed again on arcinferzero since its faster GEMM.
+  of the DP4a peak. The 11K prompt has not been timed again on inferzero since its faster GEMM.
 - **Slow-run variance**: about one run in five on the 35B, every dense-weight kernel runs ~2x slower with identical
   work (the expert cache stays at full speed); a server started right after another one stops sometimes ran at half
   speed for its whole life (`arc-server stop` now waits 5 s). Suspected: physical page placement of the weight

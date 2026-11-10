@@ -1,4 +1,4 @@
-// arcinferzero feasibility probe: an OpenCL C kernel compiled by the OpenCL driver, its native binary loaded into
+// inferzero feasibility probe: an OpenCL C kernel compiled by the OpenCL driver, its native binary loaded into
 // Level Zero; GPU read bandwidth of host / device / shared USM; and how much host memory the GPU can read beyond the
 // "GPU memory" share of the Intel driver (the question SSD streaming of MoE experts depends on).
 // usage: ze_probe [host GiB to try = 22]

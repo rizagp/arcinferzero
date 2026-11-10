@@ -1,4 +1,4 @@
-// CPU-only check of the GGUF writer used by arcinferzero packages (zero/gguf_pack.h): a GGUF is written again with
+// CPU-only check of the GGUF writer used by inferzero packages (zero/gguf_pack.h): a GGUF is written again with
 // every key (stored types kept) and tensor, read back, and compared. Usage: test_gguf_pack <in.gguf> <out.gguf>
 #include "../zero/gguf_pack.h"
 #include <cstdio>

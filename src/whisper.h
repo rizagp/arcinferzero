@@ -1,4 +1,4 @@
-// Whisper (openai large-v3 / large-v3-turbo) for arcinferzero, the parts every backend shares: the model files as
+// Whisper (openai large-v3 / large-v3-turbo) for inferzero, the parts every backend shares: the model files as
 // faster-whisper ships them (CTranslate2 model.bin, f16; tokenizer.json; config.json), the log-mel features, the
 // tokenizer, and the transcription itself (30-s windows, the previous text as prompt, language detection per window,
 // greedy / beam search / sampling with temperature fallback, the timestamp rules, segments), after openai/whisper's

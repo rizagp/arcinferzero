@@ -1,7 +1,7 @@
-// arcinferzero: the routed experts of a MoE GGUF in a file of their own on the SSD, laid out for streaming:
-//   <gguf name>-<fingerprint>.experts next to the GGUF when it is inside %USERPROFILE%\.arcinferzero, else in
-//   %USERPROFILE%\.arcinferzero\zero\models\<gguf name>\ (open_or_build; before 2026-11-09 all in ...\zero\)
-// Every (layer, expert) is one record: its gate, up and down rows one after the other in the GPU raw form arcinferzero
+// inferzero: the routed experts of a MoE GGUF in a file of their own on the SSD, laid out for streaming:
+//   <gguf name>-<fingerprint>.experts next to the GGUF when it is inside %USERPROFILE%\.inferzero, else in
+//   %USERPROFILE%\.inferzero\zero\models\<gguf name>\ (open_or_build; before 2026-11-09 all in ...\zero\)
+// Every (layer, expert) is one record: its gate, up and down rows one after the other in the GPU raw form inferzero
 // uploads (src/quants.h gpu_raw_sb: regrouped / padded superblocks), the record padded to a multiple of 4 KB, so one
 // unbuffered read (FILE_FLAG_NO_BUFFERING: no Windows file cache in RAM) brings a whole expert, ready for the GPU.
 // The file is made from the GGUF when missing or when it does not match the GGUF (size, time, name: the fingerprint),
@@ -66,7 +66,7 @@ struct ExpertStore {
 
   // Where the engine keeps a GGUF's expert file `file` (2026-11-09; before, every one went loose into zero\, and a
   // deleted GGUF's stayed there unnoticed: a Gemma 4 26B's 12.3 GB):
-  //   a GGUF inside the data folder (%USERPROFILE%\.arcinferzero\models, zero\models): next to it, so deleting the
+  //   a GGUF inside the data folder (%USERPROFILE%\.inferzero\models, zero\models): next to it, so deleting the
   //     model's file or folder is where its expert file is too;
   //   a GGUF elsewhere (the Hugging Face cache, another drive, which the engine does not write into):
   //     zero\models\<name>\, a folder of its own, with source.txt naming the GGUF (see note_orphans).
@@ -95,7 +95,7 @@ struct ExpertStore {
       if (!e2) {
         const std::string lru_old = old_path.substr(0, old_path.size() - 8) + ".lru";
         if (fs::exists(lru_old, ec)) fs::rename(lru_old, path.substr(0, path.size() - 8) + ".lru", ec);
-        fprintf(stderr, "arcinferzero: the expert file %s moved to %s\n", old_path.c_str(), path.c_str());
+        fprintf(stderr, "inferzero: the expert file %s moved to %s\n", old_path.c_str(), path.c_str());
       } else {
         path = old_path;  // (could not move it: used where it is)
       }
@@ -133,13 +133,13 @@ struct ExpertStore {
         std::error_code e3;
         if (f.is_regular_file(e3)) bytes += f.file_size(e3);
       }
-      fprintf(stderr, "arcinferzero: %s (%.1f GB) holds the expert file of %s, which no longer exists: the folder can be deleted\n",
+      fprintf(stderr, "inferzero: %s (%.1f GB) holds the expert file of %s, which no longer exists: the folder can be deleted\n",
               d.path().string().c_str(), bytes / 1e9, src.c_str());
     }
     for (const auto& f : fs::directory_iterator(fs::path(app_dir()) / "zero", ec)) {
       std::error_code e2;
       if (f.is_regular_file(e2) && f.path().extension() == ".experts")
-        fprintf(stderr, "arcinferzero: %s (%.1f GB): an expert file from before 2026-11-09; it moves next to its model when "
+        fprintf(stderr, "inferzero: %s (%.1f GB): an expert file from before 2026-11-09; it moves next to its model when "
                         "that is loaded, and can be deleted if that model is gone\n",
                 f.path().string().c_str(), f.file_size(e2) / 1e9);
     }
@@ -211,7 +211,7 @@ struct ExpertStore {
           const std::string lru = def_path.substr(0, def_path.size() - 8) + ".lru";
           std::error_code ec2;
           if (fs::exists(lru, ec2)) fs::rename(lru, fixed_path.substr(0, fixed_path.size() - 8) + ".lru", ec2);
-          fprintf(stderr, "arcinferzero: the expert file %s moved into the package\n", def_path.c_str());
+          fprintf(stderr, "inferzero: the expert file %s moved into the package\n", def_path.c_str());
         }
       }
       path = fixed_path;
@@ -412,7 +412,7 @@ struct ExpertStore {
   }
   void build(const GgufFile& f, const std::vector<std::string>& prefixes, uint64_t fp) {
     const auto t0 = std::chrono::steady_clock::now();
-    fprintf(stderr, "arcinferzero: writing the expert file %s (%.1f GB, once per model)\n", path.c_str(), file_bytes / 1e9);
+    fprintf(stderr, "inferzero: writing the expert file %s (%.1f GB, once per model)\n", path.c_str(), file_bytes / 1e9);
     const std::string tmp = path + ".tmp";
     // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
     // RAM (3.9 GB left, paging) on the 32 GB laptop

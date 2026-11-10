@@ -1,4 +1,4 @@
-# arcinferzero launcher: a window with every model (and variant) serverz.exe finds, what each supports, how its automatic
+# inferzero launcher: a window with every model (and variant) serverz.exe finds, what each supports, how its automatic
 # context was counted (GPU memory by part) and whether the options as set fit, every server option, presets, and the
 # running server (state, GPU memory, requests and speeds, its log). Start / Stop go through arc-server.ps1, so the server
 # keeps running after the window closes. Minimized, it waits in the tray.
@@ -42,9 +42,9 @@ function S([double]$px) { [int][math]::Round($px * $script:dpiK) }
 $root = Split-Path $PSScriptRoot -Parent
 $arcServer = Join-Path $PSScriptRoot "arc-server.ps1"
 . (Join-Path $PSScriptRoot "app-dir.ps1")
-$stateDir = Get-AppDir  # (%USERPROFILE%\.arcinferzero; renamed from arcinfer once)
+$stateDir = Get-AppDir  # (%USERPROFILE%\.inferzero; renamed from arcinfer once)
 New-Item -ItemType Directory -Force $stateDir | Out-Null
-# the engine: arcinferzero (bin\serverz.exe; MoE experts streamed from the SSD); the model list and its contexts come
+# the engine: inferzero (bin\serverz.exe; MoE experts streamed from the SSD); the model list and its contexts come
 # from it
 function Exe { Join-Path $root "bin\serverz.exe" }
 $exe = Exe
@@ -86,7 +86,7 @@ $Pal.accent = $accent
 # (the mark's dim tiles: the same greys as site/icon.svg)
 $markDim = if ($dark) { RGB 43 52 64 } else { RGB 201 211 222 }
 
-# ---- the arcinferzero mark: 4 x 4 rounded tiles, the lit ones drawing a Z (site/icon.svg, the web UI's /icon.svg).
+# ---- the inferzero mark: 4 x 4 rounded tiles, the lit ones drawing a Z (site/icon.svg, the web UI's /icon.svg).
 # Small sizes snap the tiles to whole pixels, so a 16 / 32-pixel icon stays sharp.
 function Draw-ArcMark($g, [single]$x, [single]$y, [single]$size, $lit, $dim) {
   if ($size -le 48) {
@@ -118,11 +118,11 @@ try {
   $sp.FormBorderStyle = "None"; $sp.StartPosition = "CenterScreen"; $sp.ShowInTaskbar = $false; $sp.TopMost = $true
   $sp.AutoScaleMode = "None"; $sp.Size = New-Object System.Drawing.Size((S 440), (S 190))
   $sp.BackColor = $Pal.line; $sp.Padding = New-Object System.Windows.Forms.Padding(1)  # (a 1-pixel frame in the line colour)
-  $sp.Text = "arcinferzero"
+  $sp.Text = "inferzero"
   $sp.Add_HandleCreated({ param($s) [void][ArcWin]::Dwm($s.Handle, 33, 2); [void][ArcWin]::Dwm($s.Handle, 20, [int]$dark) })
   $in = New-Object System.Windows.Forms.Panel; $in.Dock = "Fill"; $in.BackColor = $Pal.bg
   $sp.Controls.Add($in)
-  # the logo: the arcinferzero mark in the accent colour, drawn into a picture (no Paint event needed)
+  # the logo: the inferzero mark in the accent colour, drawn into a picture (no Paint event needed)
   $n = S 72
   $bmp = New-Object System.Drawing.Bitmap($n, $n)
   $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = "AntiAlias"
@@ -130,7 +130,7 @@ try {
   $g.Dispose()
   $pic = New-Object System.Windows.Forms.PictureBox; $pic.Image = $bmp; $pic.Size = New-Object System.Drawing.Size($n, $n)
   $pic.Location = New-Object System.Drawing.Point((S 30), (S 40))
-  $t1 = New-Object System.Windows.Forms.Label; $t1.AutoSize = $true; $t1.Text = "arcinferzero"; $t1.ForeColor = $Pal.text
+  $t1 = New-Object System.Windows.Forms.Label; $t1.AutoSize = $true; $t1.Text = "inferzero"; $t1.ForeColor = $Pal.text
   $t1.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 20); $t1.Location = New-Object System.Drawing.Point((S 120), (S 38))
   $t2 = New-Object System.Windows.Forms.Label; $t2.AutoSize = $true; $t2.Text = "Local AI on the Intel Arc GPU"; $t2.ForeColor = $Pal.sub
   $t2.Font = New-Object System.Drawing.Font("Segoe UI", 10); $t2.Location = New-Object System.Drawing.Point((S 123), (S 82))
@@ -175,7 +175,7 @@ $script:jobs = New-Object System.Collections.ArrayList
 
 Set-Splash "Building the window..."
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "arcinferzero"
+$form.Text = "inferzero"
 $form.AutoScaleMode = "None"  # (sizes are scaled by S here)
 $form.Size = New-Object System.Drawing.Size((S 1240), (S 820))
 $form.MinimumSize = New-Object System.Drawing.Size((S 960), (S 620))
@@ -405,7 +405,7 @@ $opt.Controls.Add($advChk); $opt.SetColumnSpan($advChk, 2)
 [void](Add-Opt "Image tokens min / max" $imgMinBox -Advanced)
 [void](Add-Opt "" $imgMaxBox -Advanced)
 [void](Add-Opt "Resident W8 weights (GB)" $budgetBox "0 = chosen with the context" -Advanced)
-[void](Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\.arcinferzero\zero\sessions" -Advanced)
+[void](Add-Opt "Session cache folder" $sessDirBox "empty = %USERPROFILE%\.inferzero\zero\sessions" -Advanced)
 [void](Add-Opt "Prefix cache (GB on disk)" $prefixBox "system prompts per project" -Advanced)
 [void](Add-Opt "" $noPrefixChk -Advanced)
 [void](Add-Opt "" $noSwapChk -Advanced)
@@ -641,7 +641,7 @@ function Show-Detail {
   $L = New-Object System.Collections.Generic.List[string]
   $L.Add("$($m.name)")
   $L.Add(("file    $($m.file)  ({0:N1} GB)" -f ($m.bytes / 1e9)))
-  $L.Add("arch    $($m.arch)  -  " + $(if ($m.supported) { "supported by arcinferzero" } else { "NOT supported by arcinferzero" }))
+  $L.Add("arch    $($m.arch)  -  " + $(if ($m.supported) { "supported by inferzero" } else { "NOT supported by inferzero" }))
   $L.Add("id      $($m.alias)" + $(if ($m.short) { "   (shortcut: pi-arc $($m.short))" } else { "" }))
   $L.Add("variant $(if ($m.tags) { $m.tags } else { '-' })")
   $L.Add("MTP / drafter: $(if ($m.mtp) { 'yes (drafts checked by the main model: same output, faster)' } else { 'no' })")
@@ -782,13 +782,13 @@ function Show-NoExe {
   $setup = Join-Path $root "setup.cmd"
   $msg.Text = "bin\serverz.exe not found."
   Show-Bar "bin\serverz.exe is missing, so no model can be listed or started. Take the ready package from the releases page, or build it with setup.cmd." "error" `
-    -ActionText "Releases page" -Action { Start-Process "https://github.com/rizagp/arcinferzero/releases" }
+    -ActionText "Releases page" -Action { Start-Process "https://github.com/rizagp/inferzero/releases" }
   $detail.Text = (@(
       "bin\serverz.exe is missing, so the model list is empty.",
       "",
       "A copy from git has no exes. Two ways:",
       "  1. Download the ready package (exes built) from",
-      "     https://github.com/rizagp/arcinferzero/releases",
+      "     https://github.com/rizagp/inferzero/releases",
       "     unpack it and run arc-launcher.cmd from there.",
       "  2. Build them here: run setup.cmd in",
       "     $root",
@@ -798,7 +798,7 @@ function Show-NoExe {
     $script:askedSetup = $true
     $q = "bin\serverz.exe is missing, so no model can be listed or started.`n`n" +
       "Run setup.cmd now to build it? (It needs Visual Studio's C++ tools; the ready package from the GitHub releases page has the exes built.)"
-    if ([System.Windows.Forms.MessageBox]::Show($q, "arcinferzero", "YesNo") -eq "Yes") {
+    if ([System.Windows.Forms.MessageBox]::Show($q, "inferzero", "YesNo") -eq "Yes") {
       Start-Process -FilePath $setup -WorkingDirectory $root
       $msg.Text = "setup.cmd is running in its own window: press Refresh list (More) when it has finished."
     }
@@ -890,7 +890,7 @@ function Get-StartArgs([switch]$Speech) {
   } else {
     if ($grid.SelectedRows.Count -eq 0) { return $null }
     $m = $grid.SelectedRows[0].Tag
-    if (-not $m.supported) { Show-Bar "arcinferzero does not support this model yet (architecture $($m.arch))." "warn"; return $null }
+    if (-not $m.supported) { Show-Bar "inferzero does not support this model yet (architecture $($m.arch))." "warn"; return $null }
   }
   $a = @("start", "-Model", $m.alias)
   foreach ($k in @($script:over.Keys)) {
@@ -955,7 +955,7 @@ function Copy-StartCommand {
   $msg.Text = "Start command copied to the clipboard."
 }
 
-# ---- presets: %USERPROFILE%\.arcinferzero\presets\<name>.json in arc-server's option names ({"Model": "35b", "Ctx":
+# ---- presets: %USERPROFILE%\.inferzero\presets\<name>.json in arc-server's option names ({"Model": "35b", "Ctx":
 # "65536", "Npu": "on", "NoMtp": true}), so arc-server start -Preset <name> starts the same
 $paramToField = [ordered]@{ Ctx = "ctx"; Chunk = "chunk"; MtpDrafts = "drafts"; ThinkBudget = "think"; ImageMinTokens = "img_min"
   ImageMaxTokens = "img_max"; BudgetGb = "budget"; SessionCacheGb = "prompt_cache"; SessionDir = "prompt_cache_dir"
@@ -1039,7 +1039,7 @@ $presetSave.Add_Click({
     if ($script:over.ContainsKey("port")) { $o["Port"] = [int]$portBox.Value }
     $pp = Join-Path $presetDir "$name.json"
     if ((Test-Path -LiteralPath $pp) -and $name -ne $script:presetName) {
-      if ([System.Windows.Forms.MessageBox]::Show("A preset '$name' exists. Replace it?", "arcinferzero", "YesNo") -ne "Yes") { return }
+      if ([System.Windows.Forms.MessageBox]::Show("A preset '$name' exists. Replace it?", "inferzero", "YesNo") -ne "Yes") { return }
     }
     New-Item -ItemType Directory -Force $presetDir | Out-Null
     [IO.File]::WriteAllText($pp, (ConvertTo-Json -InputObject $o -Depth 4))
@@ -1050,7 +1050,7 @@ $presetSave.Add_Click({
 $presetDel.Add_Click({
     if ($presetBox.SelectedIndex -le 0) { return }
     $name = [string]$presetBox.SelectedItem
-    if ([System.Windows.Forms.MessageBox]::Show("Delete the preset '$name'? (Only its settings file; the model stays.)", "arcinferzero", "YesNo") -ne "Yes") { return }
+    if ([System.Windows.Forms.MessageBox]::Show("Delete the preset '$name'? (Only its settings file; the model stays.)", "inferzero", "YesNo") -ne "Yes") { return }
     Remove-Item -LiteralPath (Join-Path $presetDir "$name.json") -ErrorAction SilentlyContinue
     $script:presetName = ""
     Load-PresetList
@@ -1111,7 +1111,7 @@ function Check-Update([switch]$Manual) {
   }
 }
 function Show-UpdateBar {
-  Show-Bar "A newer arcinferzero package is out: $($script:upd.latest). Unpack it into a new folder; your models and settings stay where they are." "info" `
+  Show-Bar "A newer inferzero package is out: $($script:upd.latest). Unpack it into a new folder; your models and settings stay where they are." "info" `
     -ActionText "Download page" -Action { Start-Process $script:upd.url }
 }
 
@@ -1133,7 +1133,7 @@ function Show-TextDialog([string]$title, [string]$text) {
 }
 function Run-Doctor {
   $msg.Text = "Checking this PC (arc-server doctor)..."
-  Start-Job2 @("doctor", "-Port", [int]$portBox.Value) { param($code, $text) $msg.Text = "Doctor report ready."; Show-TextDialog "arcinferzero doctor" ($text.Trim() -replace "(?<!`r)`n", "`r`n") }
+  Start-Job2 @("doctor", "-Port", [int]$portBox.Value) { param($code, $text) $msg.Text = "Doctor report ready."; Show-TextDialog "inferzero doctor" ($text.Trim() -replace "(?<!`r)`n", "`r`n") }
 }
 
 # ---- meeting recording (arc-server record / record-stop; only with bin\arc_recorder.exe): App = the meeting app whose
@@ -1165,9 +1165,9 @@ function New-ArcIcon([bool]$on) {
 $iconOn = New-ArcIcon $true; $iconOff = New-ArcIcon $false
 $form.Icon = $iconOff
 $tray = New-Object System.Windows.Forms.NotifyIcon
-$tray.Icon = $iconOff; $tray.Text = "arcinferzero"; $tray.Visible = -not $SelfTest
+$tray.Icon = $iconOff; $tray.Text = "inferzero"; $tray.Visible = -not $SelfTest
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip; $trayMenu.Font = $form.Font
-$trayState = New-Object System.Windows.Forms.ToolStripMenuItem("arcinferzero"); $trayState.Enabled = $false
+$trayState = New-Object System.Windows.Forms.ToolStripMenuItem("inferzero"); $trayState.Enabled = $false
 $trayShow = New-Object System.Windows.Forms.ToolStripMenuItem("Show the window")
 $trayStart = New-Object System.Windows.Forms.ToolStripMenuItem("Start the default model")
 $trayStop = New-Object System.Windows.Forms.ToolStripMenuItem("Stop the server")
@@ -1196,7 +1196,7 @@ function Update-Tray($id, $busy) {
   $script:trayWas = $key
   $tray.Icon = if ($id) { $iconOn } else { $iconOff }
   $form.Icon = $tray.Icon
-  $t = if ($id) { "arcinferzero: $id" } elseif ($busy) { "arcinferzero: loading..." } else { "arcinferzero: off" }
+  $t = if ($id) { "inferzero: $id" } elseif ($busy) { "inferzero: loading..." } else { "inferzero: off" }
   $tray.Text = $t.Substring(0, [math]::Min(63, $t.Length))
   $trayState.Text = $t
   $trayStop.Enabled = [bool]$id -and -not $busy
@@ -1211,7 +1211,7 @@ $script:trayHint = $false
 $form.Add_Resize({
     if ($form.WindowState -eq "Minimized" -and $tray.Visible) {
       $form.Hide()
-      if (-not $script:trayHint) { $script:trayHint = $true; $tray.ShowBalloonTip(3000, "arcinferzero", "The launcher is in the tray; the server keeps running.", "Info") }
+      if (-not $script:trayHint) { $script:trayHint = $true; $tray.ShowBalloonTip(3000, "inferzero", "The launcher is in the tray; the server keeps running.", "Info") }
     }
   })
 
@@ -1245,7 +1245,7 @@ $webBtn.Add_Click({ Start-Process "$(Base)/" })
 $grid.Add_CellDoubleClick({ param($s, $e) if ($e.RowIndex -ge 0) { Start-Selected } })
 $grid.Add_SelectionChanged({ Show-Detail; Fill-Defaults; $startBtn.Enabled = -not ($script:actProc -and -not $script:actProc.HasExited) -and $grid.SelectedRows.Count -gt 0 })
 $stopBtn.Add_Click({
-    if ([System.Windows.Forms.MessageBox]::Show("Stop the server ($($script:running))? Its GPU memory is freed.", "arcinferzero", "YesNo") -eq "Yes") {
+    if ([System.Windows.Forms.MessageBox]::Show("Stop the server ($($script:running))? Its GPU memory is freed.", "inferzero", "YesNo") -eq "Yes") {
       $msg.Text = "Stopping the server..."
       Start-Action @("stop")
     }
@@ -1322,7 +1322,7 @@ function Show-ActionFailed([int]$code) {
     default { $(if ($first) { "$first".Trim() } else { "Failed (exit code $code)." }) }
   }
   Show-Bar $what "error" -Details $details -ActionText "Show log" -Action { Select-Tab "Log" }
-  if ($form.Visible -eq $false -and $tray.Visible) { $tray.ShowBalloonTip(5000, "arcinferzero", $what, "Error") }
+  if ($form.Visible -eq $false -and $tray.Visible) { $tray.ShowBalloonTip(5000, "inferzero", $what, "Error") }
 }
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 500
@@ -1349,7 +1349,7 @@ $timer.Add_Tick({
           $script:sync.poke = $true
           if ($code -ne 0) { Show-ActionFailed $code }
           elseif ($what -eq "start") {
-            if ($form.Visible -eq $false -and $tray.Visible) { $tray.ShowBalloonTip(3000, "arcinferzero", "Ready: $last", "Info") }
+            if ($form.Visible -eq $false -and $tray.Visible) { $tray.ShowBalloonTip(3000, "inferzero", "Ready: $last", "Info") }
             if ($openWebChk.Checked -or $script:openWeb) {
               $script:openWeb = $false
               Start-Process "$(Base)/"  # (the web UI, in the default browser)

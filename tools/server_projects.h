@@ -92,7 +92,7 @@ inline std::string refuse(const fs::path& f) {
     return !y.empty() && x.compare(0, y.size(), y) == 0 && (x.size() == y.size() || x[y.size()] == L'\\');
   };
   const fs::path data = fs::weakly_canonical(fs::path(app_dir()), ec);
-  if (under(f, data) || under(data, f)) return "the arcinferzero data folder (its chats, caches and memory) cannot be a project folder, nor a folder that holds it";
+  if (under(f, data) || under(data, f)) return "the inferzero data folder (its chats, caches and memory) cannot be a project folder, nor a folder that holds it";
   for (const char* v : {"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"})
     if (const char* d = getenv(v); d && *d && under(f, fs::path(d))) return std::string("a system folder (") + d + ")";
   if (under(f, f.root_path() / "Windows")) return "a Windows folder";

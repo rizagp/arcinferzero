@@ -25,12 +25,12 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
-if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the arcinferzero folder)" }
+if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
 if ($Quick) { $Sizes = @(512, 4096) }
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $vars = @("ARC_GDN_CHUNK", "ARC_GDN_XEMU", "ARC_ATTN_XMX", "ARC_ATTN_XEMU")
 $text = Join-Path $root "USAGE.md"
-$tmp = Join-Path $env:TEMP "arcinferzero-f33"
+$tmp = Join-Path $env:TEMP "inferzero-f33"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 # (a second program on the GPU spoils the numbers and has caused device-lost errors: wait for them to end)
 if (Get-Process serverz, runz -ErrorAction SilentlyContinue) {

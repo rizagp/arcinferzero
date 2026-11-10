@@ -1,6 +1,6 @@
 // CPU reference forward for Qwen3.5 (f32 activations, dequantized weights), mirroring llama.cpp's graph.
-// Used to measure how close arcinferzero and llama.cpp are to the unquantized-activation result.
-// usage: ref_forward model.gguf 1,2,3|@ids_file [arcinferzero_top_logits_file]
+// Used to measure how close inferzero and llama.cpp are to the unquantized-activation result.
+// usage: ref_forward model.gguf 1,2,3|@ids_file [inferzero_top_logits_file]
 #include "../src/gguf.h"
 #include "../src/quants.h"
 #include <cmath>
@@ -16,7 +16,7 @@
 static GgufFile* F;
 static std::string A;
 
-// An arcinferzero package (zero/gguf_pack.h) holds its routed experts in the expert file next to it, in the GPU raw
+// An inferzero package (zero/gguf_pack.h) holds its routed experts in the expert file next to it, in the GPU raw
 // form of zero/expert_store.h (per expert one record: gate, up, down; each superblock as src/quants.h gpu_raw_sb
 // writes it, rows of small-block types padded to a multiple of 256). The matrices of one layer are turned back into
 // GGUF blocks once and kept until the next layer.
@@ -124,7 +124,7 @@ static bool name_sel(const char* var, const std::string& name) {
 }
 
 // Optional fake-quantization of matmul inputs (env REF_Q = "all" or substrings of tensor names, REF_QX = names left
-// out, REF_QB = block size): int8 absmax per block, as arcinferzero does with 256-element blocks. REF_Q2 = "1" or names:
+// out, REF_QB = block size): int8 absmax per block, as inferzero does with 256-element blocks. REF_Q2 = "1" or names:
 // two int8 passes for those.
 static std::vector<float> fake_quant(const std::string& name, const std::vector<float>& X, int K) {
   if (!name_sel("REF_Q", name) || name_sel("REF_QX", name)) return X;
@@ -316,7 +316,7 @@ static float bf16f(uint16_t h) {
 // Standard GGUF expert tensors ([n_expert][N][K] of any type with a dequantizer): row by row.
 static void expert_mv(const std::string& name, int e, int N, int K, const float* x0, float* y) {
   const GgufTensor& q = F->get(name + ".weight");
-  // (REF_Q: the expert inputs rounded as arcinferzero rounds them, like matmul's)
+  // (REF_Q: the expert inputs rounded as inferzero rounds them, like matmul's)
   const std::vector<float> xq = fake_quant(name, std::vector<float>(x0, x0 + K), K);
   const float* x = xq.data();
   if (!q.data && PX) {  // (a package: the expert file)
@@ -374,7 +374,7 @@ static float gelu_tanh(float x) { return 0.5f * x * (1.0f + std::tanh(0.79788456
 // Gemma 4 decoder (f32 activations, dequantized weights), mirroring llama.cpp's gemma4 graph: embeddings * sqrt(E),
 // sandwich norms, q/k RMS norms, V = RMS-normed V (or raw K) without weight, NEOX RoPE (global layers: rope_freqs),
 // attention scale 1, sliding window, shared KV layers, GeGLU FFN, layer output scale. Leaves the residual stream in x.
-// REF_ATTQ: q, k and v rows rounded to int8 with a per-row absmax scale, as arcinferzero's attention stores them.
+// REF_ATTQ: q, k and v rows rounded to int8 with a per-row absmax scale, as inferzero's attention stores them.
 // REF_ATTQB = block size of the scales (default: the whole row).
 // REF_ATTQ_HD = a head size: only the layers with that head size are rounded (Gemma 4: 512 global, 256 sliding).
 // round to f16 (nearest even at 10 mantissa bits; the values here stay in f16's range)
@@ -510,7 +510,7 @@ static void gemma4_layers(const std::vector<int>& toks, std::vector<float>& x) {
         }
         double z = 0;
         for (int u = u0; u <= t; ++u) { sc[u] = std::exp(sc[u] - mx); z += sc[u]; }
-        // REF_ATTP: P * vscale rounded to 8 bits per 16-key tile and 64-dim block, as arcinferzero's P*V does
+        // REF_ATTP: P * vscale rounded to 8 bits per 16-key tile and 64-dim block, as inferzero's P*V does
         const bool pq = getenv("REF_ATTP") != nullptr;
         for (int i = 0; i < hd; ++i) {
           double acc = 0;

@@ -1,6 +1,6 @@
 # Qwen3-ASR on the Arc iGPU
 
-Qwen3-ASR 1.7B (speech recognition, 30 languages) runs on arcinferzero's Level Zero engine next to Whisper: the
+Qwen3-ASR 1.7B (speech recognition, 30 languages) runs on inferzero's Level Zero engine next to Whisper: the
 server's `/v1/audio/transcriptions` and the Transcripts tab can use it instead of Whisper (added 2026-10-28).
 
 Why: on the user's noisy recording of mixed Indonesian and English, Whisper turbo and large-v3 repeated words, chose

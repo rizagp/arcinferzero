@@ -39,7 +39,7 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr int kRate = 48000;
-const wchar_t* kStopEvent = L"Local\\arcinferzero-recorder-stop";
+const wchar_t* kStopEvent = L"Local\\inferzero-recorder-stop";
 
 fs::path state_file() { return fs::path(app_dir()) / "recorder.json"; }
 
@@ -410,7 +410,7 @@ int usage() {
           "              without it, everything the speakers play\n"
           "  --no-mic    no microphone track (the meeting's sound only)\n"
           "  --seconds   stop by itself after N seconds\n"
-          "Writes %%USERPROFILE%%\\.arcinferzero\\recordings\\<date> <title>.wav; when it stops, the server transcribes it\n"
+          "Writes %%USERPROFILE%%\\.inferzero\\recordings\\<date> <title>.wav; when it stops, the server transcribes it\n"
           "(the Meetings tab), now or at its next start.\n");
   return 1;
 }

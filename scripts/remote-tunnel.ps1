@@ -36,7 +36,7 @@ if (-not $Name -and -not ($cfg.hosts -contains "*.trycloudflare.com")) {
   exit 1
 }
 try { $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "http://127.0.0.1:$Port/health" } catch {
-  Write-Host "No arcinferzero server answers on port $Port." -ForegroundColor Yellow
+  Write-Host "No inferzero server answers on port $Port." -ForegroundColor Yellow
   exit 1
 }
 Write-Host "Tunnel to http://127.0.0.1:$Port (Ctrl+C closes it). Sign in with the remote password; the address stays private" -ForegroundColor Cyan

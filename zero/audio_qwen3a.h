@@ -1,4 +1,4 @@
-// arcinferzero: the Qwen3-ASR audio encoder (mmproj audio projector type qwen3a), built on zero/engine.h (Level Zero).
+// inferzero: the Qwen3-ASR audio encoder (mmproj audio projector type qwen3a), built on zero/engine.h (Level Zero).
 // Matches Hugging Face Qwen3-ASR (modeling_qwen3_asr.py, the Qwen3-Omni audio encoder) and llama.cpp tools/mtmd
 // (models/qwen3a.cpp, mtmd_audio_preprocessor_qwen3a):
 //  - CPU: 16 kHz samples -> Whisper's log-mel without padding (src/whisper.h log_mel: 400-sample Hann window, hop 160,

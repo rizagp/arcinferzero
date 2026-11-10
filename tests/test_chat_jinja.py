@@ -1,4 +1,4 @@
-"""Compares minja rendering in arcinferzero (chat_render.exe --jinja) with jinja2 for GGUF chat templates that arcinferzero
+"""Compares minja rendering in inferzero (chat_render.exe --jinja) with jinja2 for GGUF chat templates that inferzero
 renders through minja (Gemma 4). usage: python test_chat_jinja.py chat_render.exe template.jinja [template ...]"""
 import json
 import os

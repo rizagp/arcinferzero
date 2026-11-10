@@ -18,7 +18,7 @@ static void check(const char* name, bool ok, const std::string& got = "") {
 
 int main() {
   namespace fs = std::filesystem;
-  const fs::path root = fs::temp_directory_path() / ("arcinferzero_store_test_" + std::to_string(GetCurrentProcessId()));
+  const fs::path root = fs::temp_directory_path() / ("inferzero_store_test_" + std::to_string(GetCurrentProcessId()));
   std::error_code ec;
   fs::remove_all(root, ec);
   fs::create_directories(root, ec);

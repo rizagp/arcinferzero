@@ -1,5 +1,6 @@
-# The data folder %USERPROFILE%\.arcinferzero (kernel cache, model packages, caches, logs, settings, transcripts,
-# recordings), or $env:ARC_DATA_DIR, as the exes find it (src/app_dir.h). Until 2026-10-29 it was
+# The data folder %USERPROFILE%\.inferzero (kernel cache, model packages, caches, logs, settings, transcripts,
+# recordings), or $env:ARC_DATA_DIR, as the exes find it (src/app_dir.h). Until 2026-11-10 (the project's rename to
+# inferzero) it was %USERPROFILE%\.arcinferzero, until 2026-10-29
 # %USERPROFILE%\arcinferzero, until 2026-10-25 %LOCALAPPDATA%\arcinferzero (until 2026-10-24 %LOCALAPPDATA%\arcinfer):
 # when only an old one exists it is moved once (the same drive: instant) and the paths in last-model.txt /
 # launcher.json / server.json / zero\ctx-auto.txt (in lower case there) follow it. If the move fails (a file held
@@ -7,9 +8,9 @@
 # tests\run_tests.ps1.
 function Get-AppDir {
   if ($env:ARC_DATA_DIR) { return $env:ARC_DATA_DIR }
-  $now = Join-Path $env:USERPROFILE ".arcinferzero"
+  $now = Join-Path $env:USERPROFILE ".inferzero"
   if (Test-Path -LiteralPath $now) { return $now }
-  $olds = @(@{ path = (Join-Path $env:USERPROFILE "arcinferzero"); mixed = "" })
+  $olds = @(@{ path = (Join-Path $env:USERPROFILE ".arcinferzero"); mixed = "" }, @{ path = (Join-Path $env:USERPROFILE "arcinferzero"); mixed = "" })
   if ($env:LOCALAPPDATA) {
     foreach ($name in "arcinferzero", "arcinfer") { $olds += @{ path = (Join-Path $env:LOCALAPPDATA $name); mixed = "$env:LOCALAPPDATA/$name" } }
   }

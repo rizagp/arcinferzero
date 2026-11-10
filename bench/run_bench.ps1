@@ -1,7 +1,7 @@
-# Benchmarks arcinferzero against llama.cpp (official Vulkan and SYCL builds) on the same models, prompts and text.
+# Benchmarks inferzero against llama.cpp (official Vulkan and SYCL builds) on the same models, prompts and text.
 # Every measurement is appended as one JSON object per line to $Out.
 #
-#   .\bench\run_bench.ps1 -Model <gguf> -Name 4b -Engines arcinferzero,vulkan,sycl -Tests pp,ttft,ppl -Out results.jsonl
+#   .\bench\run_bench.ps1 -Model <gguf> -Name 4b -Engines inferzero,vulkan,sycl -Tests pp,ttft,ppl -Out results.jsonl
 #
 # Tests:  pp   = synthetic prompt processing (pp512, pp2048) + token generation (tg64), llama-bench style
 #         ttft = time to first token on real code prompts (token-id files) + generation speed at that context
@@ -9,7 +9,7 @@
 param(
   [Parameter(Mandatory)] [string]$Model,
   [Parameter(Mandatory)] [string]$Name,
-  [string[]]$Engines = @("arcinferzero", "vulkan", "sycl"),  # (also arcinferzero-npu)
+  [string[]]$Engines = @("inferzero", "vulkan", "sycl"),  # (also inferzero-npu)
   [string[]]$Tests = @("pp", "ttft", "ppl"),
   [string[]]$PromptFiles = @(),
   [string]$Corpus = "",
@@ -54,9 +54,9 @@ function Start-LlamaServer($engine, $ctx, $port) {
 
 foreach ($engine in $Engines) {
   Write-Host "=== $Name / $engine ==="
-  # (arcinferzero-npu: arcinferzero with the NPU next to the GPU for prompt chunks, --npu on)
-  $isArc = $engine -like "arcinferzero*"
-  $npuArgs = if ($engine -eq "arcinferzero-npu") { @("--npu", "on") } else { @() }
+  # (inferzero-npu: inferzero with the NPU next to the GPU for prompt chunks, --npu on)
+  $isArc = $engine -like "inferzero*"
+  $npuArgs = if ($engine -eq "inferzero-npu") { @("--npu", "on") } else { @() }
   # ---------------------------------------------------------------- synthetic pp / tg
   if ($Tests -contains "pp") {
     if ($isArc) {

@@ -3,10 +3,10 @@
 // own. Split out of tools/server.cpp unchanged on 2026-10-24 (QUEUE item 11).
 
 // ---------------------------------------------------------------- model catalog
-// The GGUF models in the Hugging Face cache and in arcinferzero's model folder: name (org/repo), file, path, size (a
+// The GGUF models in the Hugging Face cache and in inferzero's model folder: name (org/repo), file, path, size (a
 // split file: all its parts), architecture, trained context, whether an image projector (mmproj-*, with or without
 // a Gemma 4 audio encoder) or a Gemma drafter (mtp-*) sits next to it, Qwen MTP layers, and the model id clients use
-// (the alias; the six models arcinferzero was tuned on keep their short ids). Projectors, drafters and the later parts
+// (the alias; the six models inferzero was tuned on keep their short ids). Projectors, drafters and the later parts
 // of split files are not models.
 struct ModelInfo {
   std::string name, file, path, arch, alias, shortcut;
@@ -16,9 +16,9 @@ struct ModelInfo {
   // once per combination (expand_variants): the full one under the file's id, the others with -mtp (MTP, no
   // vision), -vision (vision, no MTP) and -std (neither). base: the file's id; tags: "MTP + vision", ...
   bool supported = false, vision = false, mtp = false;
-  bool moe = false;  // routed experts (arcinferzero streams them from the SSD)
+  bool moe = false;  // routed experts (inferzero streams them from the SSD)
   bool audio = false;  // the image projector also holds a Gemma 4 audio encoder (loaded with it: vision variants only)
-  // arcinferzero, a file with a DFlash2 drafter: 0 both drafters, picked per step (the file's id); 1 the MTP block
+  // inferzero, a file with a DFlash2 drafter: 0 both drafters, picked per step (the file's id); 1 the MTP block
   // only (-nodf); 2 DFlash2 only, the MTP block not loaded (-df)
   int draft = 0;
   std::string base, tags;
@@ -45,7 +45,7 @@ static std::string hf_hub_dir() {
   if (const char* u = getenv("USERPROFILE")) return std::string(u) + "/.cache/huggingface/hub";
   return "";
 }
-// extra model folders (e.g. a second drive): ARC_MODEL_DIRS (';'-separated) and %USERPROFILE%\.arcinferzero\model-dirs.txt
+// extra model folders (e.g. a second drive): ARC_MODEL_DIRS (';'-separated) and %USERPROFILE%\.inferzero\model-dirs.txt
 // (one folder per line, '#' comments); each in the Hugging Face cache layout or with .gguf files directly in it
 static std::vector<std::string> extra_model_dirs() {
   std::vector<std::string> extra;
@@ -128,7 +128,7 @@ static std::vector<std::filesystem::directory_entry> dir_list(const std::filesys
 static std::vector<ModelInfo> scan_models() {
   namespace fs = std::filesystem;
   const std::string hub = hf_hub_dir();
-  // (prio: 0 the Hugging Face cache and arcinferzero's own folders, 1+ the extra model folders in their order, so a model
+  // (prio: 0 the Hugging Face cache and inferzero's own folders, 1+ the extra model folders in their order, so a model
   //  kept in both places loads from the first)
   struct Cand { std::string name, file; fs::path path; fs::file_time_type t; int prio = 0; };
   std::vector<Cand> cands;
@@ -175,12 +175,12 @@ static std::vector<ModelInfo> scan_models() {
     }
   }
   for (const auto& e : dir_list(fs::path(app_dir()) / "models"))
-    if (is_model(e.path())) cands.push_back({"arcinferzero/" + e.path().stem().string(), e.path().filename().string(), e.path(), e.last_write_time(ec)});
-  // arcinferzero packages (zero/gguf_pack.h): %USERPROFILE%\.arcinferzero\zero\models\<name>\<name>.gguf
+    if (is_model(e.path())) cands.push_back({"inferzero/" + e.path().stem().string(), e.path().filename().string(), e.path(), e.last_write_time(ec)});
+  // inferzero packages (zero/gguf_pack.h): %USERPROFILE%\.inferzero\zero\models\<name>\<name>.gguf
   for (const auto& d : dir_list(zpack::packages_dir())) {
     const fs::path g = d.path() / (d.path().filename().string() + ".gguf");
     if (d.is_directory(ec) && fs::exists(g, ec))
-      cands.push_back({"arcinferzero/" + d.path().filename().string(), g.filename().string(), g, fs::last_write_time(g, ec)});
+      cands.push_back({"inferzero/" + d.path().filename().string(), g.filename().string(), g, fs::last_write_time(g, ec)});
   }
   // the same file in several snapshots (revisions) or folders: the first folder, then the newest
   std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
@@ -236,7 +236,7 @@ static std::vector<ModelInfo> scan_models() {
       // a UD-Q3_K_M or GSQ file also downloaded, the first one found keeps the shortcut)
       {"Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", {"qwen3.6-35b-a3b-mtp", "35b"}},
       {"Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", {"qwen3.8-flash-next-gsq-rco", "flash"}},
-      // (its arcinferzero package keeps the id and the shortcut; with both on disk the GGUF's entry comes first)
+      // (its inferzero package keeps the id and the shortcut; with both on disk the GGUF's entry comes first)
       {"Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", {"qwen3.8-flash-next-gsq-rco", "flash"}},
       {"Qwen3.5-9B-UD-Q4_K_XL.gguf", {"qwen3.5-9b", "9b"}},
       {"Qwen3.5-4B-UD-Q4_K_XL.gguf", {"qwen3.5-4b", "4b"}},
@@ -269,7 +269,7 @@ static std::vector<ModelInfo> scan_models() {
     for (const auto& s : dir_list(c.path.parent_path())) {
       const std::string f = lower(s.path().filename().string());
       if (s.path().extension() != ".gguf") continue;
-      if (f.find("mmproj") != std::string::npos && !mmproj) {  // images: a projector arcinferzero reads
+      if (f.find("mmproj") != std::string::npos && !mmproj) {  // images: a projector inferzero reads
         try {
           const GgufFile g(s.path().string());
           const std::string pt = g.get_str("clip.vision.projector_type", "");
@@ -288,7 +288,7 @@ static std::vector<ModelInfo> scan_models() {
       drafter = drafter || f.rfind("mtp-", 0) == 0;
     }
     m.supported = m.arch == "qwen35" || m.arch == "qwen35moe" || m.arch == "gemma4";  // (MoE: GSQ or standard experts)
-    m.supported = m.supported || m.arch == "qwen4exp";  // (Qwen3.8 Flash Next: arcinferzero only, experts streamed)
+    m.supported = m.supported || m.arch == "qwen4exp";  // (Qwen3.8 Flash Next: inferzero only, experts streamed)
     (void)gsq;
     m.vision = mmproj;  // (Gemma 4 12B: gemma4uv; E2B / E4B: gemma4v)
     m.audio = audio;
@@ -447,7 +447,7 @@ static std::string find_dflash(const std::string& model) {
 // The largest context (a multiple of 4096, at most the trained one) for which the server's GPU memory, the ~0.22 GiB
 // the driver adds and ~0.95 GiB for the desktop and other apps fit the device's global memory. A dry load (the
 // engine adds up its allocations without making them: seconds, no GPU memory) gives what does not depend on the
-// context; the result is remembered per model file, chunk size, MTP setting and device memory in %USERPROFILE%\.arcinferzero\ctx-auto.txt.
+// context; the result is remembered per model file, chunk size, MTP setting and device memory in %USERPROFILE%\.inferzero\ctx-auto.txt.
 static uint64_t device_global_mem() {
   static uint64_t dev = 0;
   if (!dev) {

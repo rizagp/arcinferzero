@@ -7,7 +7,7 @@
 ```powershell
 .\bin\serverz.exe -m C:\path\to\model.gguf --port 8080 --ctx auto --mtp --alias qwen3.8-27b
 .\bin\serverz.exe --help           # every option with its default
-.\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.arcinferzero\models, model-dirs.txt), as JSON
+.\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.inferzero\models, model-dirs.txt), as JSON
 ```
 
 - **Speech to text only**: `serverz -m none` (`arc-server start -Model none`, the launcher's More >
@@ -118,7 +118,7 @@
   prompt blocks that were complete stay processed. A reply the client drops after an abort or error costs nothing
   on the next request: the resume point sits at the start of the reply's turn header.
 - System-prompt cache: the state after a client's system prompt (Pi: ~4K tokens; it contains the project folder
-  and its `AGENTS.md`, so each project has its own) is saved to `%USERPROFILE%\.arcinferzero\zero\prefix\<model>` the first
+  and its `AGENTS.md`, so each project has its own) is saved to `%USERPROFILE%\.inferzero\zero\prefix\<model>` the first
   time it is processed, written in the background, and loaded when a request starts with it while the server holds
   something else: after a server start, a model switch or another project's conversation. Pi's are kept per project
   folder (read from the `<cwd>` section of its system prompt): each folder keeps its 2 latest versions, which other
@@ -129,7 +129,7 @@
   chunk's matrix products while the GPU computes the rest, through Level Zero alone (Qwen3.8 27B and Gemma 4 12B;
   generation unchanged). Where it pays off, how it is turned on and off, and the results:
   [docs/npu-experiment.md](npu-experiment.md).
-- Conversation slots (`--slots N`, arcinferzero): the server holds N conversations, each with its own KV cache and
+- Conversation slots (`--slots N`, inferzero): the server holds N conversations, each with its own KV cache and
   states; requests in different slots take turns step by step (by GPU time), so two clients answer at the same
   time. When several are generating, their next tokens and drafts run in one engine pass (Qwen dense and MoE, Gemma
   4, and Flash Next without a drafter; logits bit-identical to each slot alone; `ARC_NO_BATCH=1`: turns only). Each
@@ -137,7 +137,7 @@
   fails ends its requests and starts their conversations over. Use and speeds:
   [USAGE.md, section 3](../USAGE.md#3-managing-the-server).
 - Session cache: when a request belongs to another conversation (a new Pi session, or switching back to an older
-  one), the server saves the conversation it holds to disk (KV cache, DeltaNet states; `%USERPROFILE%\.arcinferzero\zero\sessions`)
+  one), the server saves the conversation it holds to disk (KV cache, DeltaNet states; `%USERPROFILE%\.inferzero\zero\sessions`)
   and loads a saved one that matches the request, instead of processing its whole prompt again. New conversations
   resume after the system prompt they share (Qwen: a recurrent-state snapshot there, kept in host memory). Saving
   and loading take about a second; outputs are identical to never switching. `--session-cache-gb N` (the server's default 0 = off; arc-server / pi-arc and the launcher start it with 8 GB,
@@ -145,7 +145,7 @@
   saved conversations go first (oldest first), then this model's least recently used ones; `arc-server clear-cache` deletes them all. `arc-server stop` /
   `restart` and a model switch save the conversation the server holds first (`POST /sessions/save`), so it is
   loaded afterwards instead of processed again; only a server that is killed loses it.
-- Qwen turn snapshot (arcinferzero): the Qwen templates drop the reasoning of earlier turns as soon as the user
+- Qwen turn snapshot (inferzero): the Qwen templates drop the reasoning of earlier turns as soon as the user
   writes again, so the server also snapshots the start of the last assistant turn and a new message only processes
   that turn again, not the whole conversation. `--preserve-thinking` (Qwen3.6; Qwen3.8 always does) keeps earlier
   reasoning in the prompt instead: nothing is processed again, the context fills faster.
@@ -153,9 +153,9 @@
   (`nextn` tensors). Gemma 4: the assistant drafter `mtp-*.gguf` next to the model (found automatically), which
   reads the main model's KV cache. The drafts are verified in one main-model pass and the next token is still
   sampled from the model's distribution, so the output is unchanged (checked: identical answers at every draft
-  count). `--mtp-drafts N`: arcinferzero 1–7 (default 7 for the 27B and whenever DFlash2 drafts, 5 for the 35B,
+  count). `--mtp-drafts N`: inferzero 1–7 (default 7 for the 27B and whenever DFlash2 drafts, 5 for the 35B,
   3 for the 4B and Gemma 4 26B, 2 for the 9B and the other Gemma models).
-- `--dflash DIR` (arcinferzero: `serverz`, `runz`): speculative decoding with a DFlash2 block drafter, `DIR` being
+- `--dflash DIR` (inferzero: `serverz`, `runz`): speculative decoding with a DFlash2 block drafter, `DIR` being
   the folder with its `config.json` and `model.safetensors` (the snapshot folder of `hf download
   z-lab/Qwen3.8-27B-DFlash2` for the 27B, `hf download incoai/Qwen3.6-35B-A3B-DFlash2` for the 35B). It drafts a
   block of 7 tokens per pass from the main model's hidden states. The model's MTP block stays loaded and each step
@@ -172,7 +172,7 @@
   keys); the content stays the model's choice. `ARC_TOOL_CONSTRAINT=0` turns it off; `ARC_LOG_TOOLCALLS=file.jsonl`
   logs the raw text of every tool call.
 - During a long prompt, streaming responses carry `: prefill N/M` progress comments (also shown in the web UI).
-- Qwen3.8 Flash Next (arcinferzero only): pass the first part (`...-IQ3_S-00001-of-00002.gguf`) with `-m`; part 2
+- Qwen3.8 Flash Next (inferzero only): pass the first part (`...-IQ3_S-00001-of-00002.gguf`) with `-m`; part 2
   must sit next to it (or use the packaged single file); context up to 262,144 with `--ctx`; `ARC_FN_PRECISE=1`
   (opt-in) is the more exact, slower mode. Its speed and KL: the tables above and "Supported models"; running it:
   [USAGE.md, section 3](../USAGE.md#3-managing-the-server); where its time goes and what was tried: QUEUE F21.13 /
@@ -190,10 +190,10 @@ Manual configuration, if you prefer: add a provider to `~/.pi/agent/models.json`
 ```json
 {
   "providers": {
-    "arcinferzero": {
+    "inferzero": {
       "baseUrl": "http://127.0.0.1:8090/v1",
       "api": "openai-completions",
-      "apiKey": "arcinferzero",
+      "apiKey": "inferzero",
       "models": [
         { "id": "qwen3.8-27b", "reasoning": true, "input": ["text"], "contextWindow": 86016, "maxTokens": 86016,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
@@ -205,7 +205,7 @@ Manual configuration, if you prefer: add a provider to `~/.pi/agent/models.json`
 }
 ```
 
-then `pi --model arcinferzero/qwen3.8-27b --thinking low` (Pi sends the reasoning effort and budget; without an
+then `pi --model inferzero/qwen3.8-27b --thinking low` (Pi sends the reasoning effort and budget; without an
 effort the Qwen3.8 template thinks at `xhigh`, which can take very long on a laptop).
 
 ## CLI

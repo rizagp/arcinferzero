@@ -25,7 +25,7 @@ function Run-Step([string]$name, [scriptblock]$what) {
   finally { $ErrorActionPreference = $eap }
 }
 
-Say "arcinferzero tests, $(Get-Date -Format 'yyyy-MM-dd HH:mm'), mode: $(if ($quick) { 'quick' } else { 'full' })"
+Say "inferzero tests, $(Get-Date -Format 'yyyy-MM-dd HH:mm'), mode: $(if ($quick) { 'quick' } else { 'full' })"
 # ---- no sleep while this runs (released when the window closes)
 try {
   Add-Type -Name Pw -Namespace ArcTests -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f);'
@@ -39,17 +39,18 @@ $gpus = @(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 
 Say "CPU: $cpu; RAM: $ram GB"
 foreach ($g in $gpus) { Say "GPU: $g" }
 $probe = Join-Path $root "bin\mgpu_probe.exe"
-if (Test-Path $probe) { & $probe 2>&1 | Select-String -Pattern "^\s+GPU \d+:" | ForEach-Object { Say ("arcinferzero sees " + $_.Line.Trim()) } }
+if (Test-Path $probe) { & $probe 2>&1 | Select-String -Pattern "^\s+GPU \d+:" | ForEach-Object { Say ("inferzero sees " + $_.Line.Trim()) } }
 
 # ---- the server must be off: a second GPU program spoils the numbers
 if (Get-Process serverz, runz -ErrorAction SilentlyContinue) {
-  Say ""; Say "The arcinferzero server (or another test) is running. Stop it (launcher: Stop server), then this goes on by itself."
+  Say ""; Say "The inferzero server (or another test) is running. Stop it (launcher: Stop server), then this goes on by itself."
   while (Get-Process serverz, runz -ErrorAction SilentlyContinue) { Start-Sleep 10 }
 }
 
 # ---- the models on this PC (the same names website_bench looks for)
 $hub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE } elseif ($env:HF_HOME) { Join-Path $env:HF_HOME "hub" } else { Join-Path $env:USERPROFILE ".cache\huggingface\hub" }
-$pkg = Join-Path $env:USERPROFILE ".arcinferzero\zero\models"
+. (Join-Path $PSScriptRoot "..\scripts\app-dir.ps1")
+$pkg = Join-Path (Get-AppDir) "zero\models"  # (the data folder; an older one is moved once)
 $names = "Qwen3.5-4B-UD-Q4_K_XL.gguf", "Qwen3.5-9B-UD-Q4_K_XL.gguf", "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
   "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
   "gemma-4-E4B_q4_0-it.gguf", "gemma-4-12b-it-qat-q4_0.gguf", "gemma-4-26b-a4b-it-qat-q4_0.gguf", "gemma-4-26B_q4_0-it.gguf"
@@ -93,7 +94,7 @@ Run-Step "2/2  bench\website_bench.ps1 (speeds from short to long prompts, KL)" 
 
 # ---- one zip on the Desktop: the user's folder in paths written as %USERPROFILE%, no f32 reference files (large)
 Say ""; Say "==== Packing the results"
-$pack = Join-Path $env:TEMP "arcinferzero-results-$stamp"
+$pack = Join-Path $env:TEMP "inferzero-results-$stamp"
 Remove-Item $pack -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $pack | Out-Null
 Get-ChildItem $out -Recurse -File | Where-Object { $_.Extension -in ".log", ".md", ".jsonl", ".txt" -and $_.FullName -notmatch "\\ref\\" } | ForEach-Object {
@@ -105,7 +106,7 @@ Get-ChildItem $out -Recurse -File | Where-Object { $_.Extension -in ".log", ".md
   [IO.File]::WriteAllText($dst, $t, (New-Object Text.UTF8Encoding $false))
 }
 $desk = [Environment]::GetFolderPath("Desktop")
-$zip = Join-Path $desk "arcinferzero-results-$stamp.zip"
+$zip = Join-Path $desk "inferzero-results-$stamp.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $pack "*") -DestinationPath $zip
 Remove-Item $pack -Recurse -Force -ErrorAction SilentlyContinue

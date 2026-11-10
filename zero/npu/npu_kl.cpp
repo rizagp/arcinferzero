@@ -1,4 +1,4 @@
-// arcinferzero NPU experiment: KL divergence between two files of next-token log-probabilities (T x V floats, as
+// inferzero NPU experiment: KL divergence between two files of next-token log-probabilities (T x V floats, as
 // tools/ref_forward writes them with REF_ALL=1): mean and largest KL(a || b) over the positions, and how often the
 // most likely token is the same. usage: npu_kl a.bin b.bin vocab
 #include <algorithm>

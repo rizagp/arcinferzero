@@ -1,10 +1,10 @@
-# Qwen3.8 Flash Next (qwen4exp) — implementation spec for arcinferzero
+# Qwen3.8 Flash Next (qwen4exp) — implementation spec for inferzero
 
 Source: `ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF`, IQ3_S, 2 parts (C: Hugging Face cache; backup on D:).
 Reference: llama.cpp `src/models/qwen4exp.cpp` + `conversion/qwen4exp.py` (read 2026-10-16). Notes written before any
 code, so the implementation can be checked against them.
 
-Status 2026-10-24: implemented in arcinferzero ([models.md](models.md)). KL against the f32 reference 0.0143
+Status 2026-10-24: implemented in inferzero ([models.md](models.md)). KL against the f32 reference 0.0143
 prompt / 0.0147 decode on 363 tokens, 0.0186 / 0.0177 on a 3,584-token prompt with QSA; `ARC_FN_PRECISE=1` (opt-in:
 BF16 hyper-connection rows and router, two int8 passes everywhere) 0.0127 / 0.0132 at about half the prompt speed;
 the user keeps the fast default (QUEUE.md, "Flash Next KL"); prompts ~164 tok/s at 4K (F21.15);
@@ -94,7 +94,7 @@ IQ2_S for dense and expert gate/up; **IQ4_NL (20)** and **Q2_0 (42)** for expert
 
 ## Risks / design points
 
-1. **K = 640** for every `ffn_down` (expert and shared): arcinferzero assumes K % 256 == 0 (superblocks, activation scales
+1. **K = 640** for every `ffn_down` (expert and shared): inferzero assumes K % 256 == 0 (superblocks, activation scales
    per 256 or 32). Decision (2026-10-16): treat consecutive small blocks as a 256-element "superblock" (IQ4_NL: 8 x 18
    = 144 bytes; Q2_0: 4 x 18 = 72 bytes; both multiples of 8 for block reads) and pad each down row from K = 640 to 768
    with zero blocks (scale 0) when the experts are copied into the GPU cache: +20 % for the down projections only
