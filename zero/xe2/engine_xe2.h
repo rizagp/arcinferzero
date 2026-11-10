@@ -103,6 +103,17 @@
     const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated() && !hp.moe) : pf == 1;
     return on ? std::string(" -DGEMV_PF") : std::string();
   }
+  // ARC_GEMV_SMALL_WG: the single-token GEMV (gemv) of a matrix with few rows, at most 512 sub-groups (DeltaNet's
+  // alpha / beta projection, 96 rows; MoE routers, 256-512 rows), in work-groups of 4 sub-groups instead of 16, so
+  // they spread over more Xe cores: a Pro B60's 27B ran gemm_ab's 96 rows in 6 work-groups at 60 GB/s, 14 % of its
+  // bandwidth (issue #4, 2026-11-09; urakozz's engine gained 1.9 ms a token on the same matrix by splitting it over
+  // more sub-groups). Each row's sums are the same: bit-identical. On by default on discrete cards since 2026-11-10,
+  // not measured yet (bench\decode_try.ps1 has the row); iGPUs keep 256. ARC_GEMV_SMALL_WG=0 / 1
+  size_t xe2_gemv_wg(size_t subgroups) const {
+    static const int e = getenv("ARC_GEMV_SMALL_WG") ? (atoi(getenv("ARC_GEMV_SMALL_WG")) != 0 ? 1 : 0) : -1;
+    const bool on = e < 0 ? !zrt::integrated() : e == 1;
+    return on && subgroups <= 512 ? 64 : 256;
+  }
   // ARC_XALL (zero/engine_moe.h): a token's MoE layers skip reading their experts' ids and the cache's ensure() when
   // every expert is cached (XCache::all_in, checked at each token's first MoE layer). On by default on discrete cards
   // since 2026-11-09: a Pro B60 holding the 35B's 14.7 GiB of experts, package 2c132a9, 78.77 -> 88.05 tok/s, host
@@ -148,14 +159,18 @@
   // attention's two integer dot products per 16-key tile as int8 DPAS, the rest attn_q8's; bit-identical. Discrete
   // Xe2 / Xe3 cards (16-lane DPAS), Qwen (one scale per row), up to 4 q heads per sub-group; ARC_ATTN_XEMU=1: DPAS
   // emulated on any GPU (tests). Checked once per device and shape at start against attn_q8 bit for bit on random data;
-  // any difference keeps attn_q8 and says so.
+  // any difference keeps attn_q8 and says so. On by default on discrete cards since 2026-11-10: a Pro B60's prompts,
+  // 64K tokens, 4B 2,017 -> 2,253, 9B 1,871 -> 2,028, 27B 605 -> 618, 35B 1,814 -> 2,000 tok/s, 4K +0.2-1 %, logits
+  // bit-identical (issue #4, package bb8952f, bench\f33_sweep.ps1). iGPUs with 16-lane XMX keep it off (not
+  // measured on one). ARC_ATTN_XMX=0 / 1
   std::string attnx_src_, attn_q8_defs_;
   static bool attn_xemu() {
     static const bool e = getenv("ARC_ATTN_XEMU") && atoi(getenv("ARC_ATTN_XEMU")) != 0;
     return e;
   }
   bool attnx_wanted() const {
-    static const bool on = getenv("ARC_ATTN_XMX") && atoi(getenv("ARC_ATTN_XMX")) != 0;
+    static const int e = getenv("ARC_ATTN_XMX") ? (atoi(getenv("ARC_ATTN_XMX")) != 0 ? 1 : 0) : -1;
+    const bool on = e < 0 ? !zrt::integrated() : e == 1;
     return on && ((cl_.xmx && !cl_.sg8) || attn_xemu()) && !hp.gemma && !hp.swa_rings && attn_hs() <= 4 &&
            !attn_q8_defs_.empty();
   }

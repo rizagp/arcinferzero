@@ -212,7 +212,7 @@ def main():
     # ---- metadata
     kv = [kv_str("general.architecture", "qwen35moe"),
           kv_str("general.name", "Qwen3.6-35B-A3B GSQ 2-bit (ISTA-DASLab), inferzero"),
-          kv_str("arcinferzero.expert_format", "gsq2-v1")]
+          kv_str("inferzero.expert_format", "gsq2-v1")]
     a = "qwen35moe."
     kv += [kv_u32(a + "block_count", nl), kv_u32(a + "context_length", tc.get("max_position_embeddings", 262144)),
            kv_u32(a + "embedding_length", E), kv_u32(a + "attention.head_count", nh),

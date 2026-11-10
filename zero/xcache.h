@@ -198,7 +198,7 @@ struct XCache {
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / std::max<uint64_t>(1, P.rec));
       for (size_t c = 0; c < P.chunks.size(); ++c) {
         const int k = std::min(per, P.n - (int)c * per);
-        zeMemFree(zrt::ctx, P.chunks[c]);
+        zrt::mem_free(zrt::ctx, P.chunks[c]);
         zrt::D().device_bytes -= (size_t)std::max(0, k) * P.rec + 65536;
       }
       P.chunks.clear();
@@ -206,10 +206,10 @@ struct XCache {
     for (cl_mem m : xtab) clReleaseMemObject(m);
     xtab.clear();
     for (char*& s : stage)
-      if (s) { zeMemFree(zrt::ctx, s); s = nullptr; }
+      if (s) { zrt::mem_free(zrt::ctx, s); s = nullptr; }
     for (char*& s : verify_buf_)
-      if (s) { zeMemFree(zrt::ctx, s); s = nullptr; }
-    if (xaddr) { zeMemFree(zrt::ctx, xaddr); xaddr = nullptr; }
+      if (s) { zrt::mem_free(zrt::ctx, s); s = nullptr; }
+    if (xaddr) { zrt::mem_free(zrt::ctx, xaddr); xaddr = nullptr; }
   }
   static XCache*& active() { static XCache* a = nullptr; return a; }
   // the layer of the last ensure() and the experts it set: kernels of that layer may still be launched
@@ -297,7 +297,7 @@ struct XCache {
     P->prev.resize(s0);
     P->next.resize(s0);
     P->chunks.pop_back();
-    zeMemFree(zrt::ctx, base);
+    zrt::mem_free(zrt::ctx, base);
     zrt::D().device_bytes -= bytes;
     cache_bytes -= bytes - 65536;
     shrunk_bytes += bytes;

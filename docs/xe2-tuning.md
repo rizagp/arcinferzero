@@ -30,7 +30,9 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMV_PF=1` | on on discrete cards for dense models since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s); off for MoE models since 2026-11-09 (B60 35B 78.77 with it, 85.15 without); off on iGPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
 | `ARC_GDN_CHUNK=1` / `2` / `3` | off (`gdn_recur`) | the DeltaNet of prompt passes (32+ tokens) in chunks of 32 (QUEUE F33.1, 2026-11-09): `1` `gdn_chunk` (vector, 4 work-items per state row, any GPU), `2` its 16-float local reads, `3` on XMX: `gdn_chunk_x` (16-lane DPAS) or `gdn_chunk_x8` (8 lanes, the 140T), checked at start against `gdn_chunk`. Not bit-identical: KL (`bench\f33_sweep.ps1`) | 9 |
 | `ARC_GDN_XEMU=1` / `8` / `16` | off | with `ARC_GDN_CHUNK=3`: DPAS emulated on any GPU, in its own / the 8- / 16-lane form (tests) | 9 |
-| `ARC_ATTN_XMX=1` | off | the prompt attention's integer dot products (`attn_q8`) as int8 DPAS, bit-identical, checked at start bit for bit (QUEUE F33.2, 2026-11-09; 16-lane DPAS, Qwen); `ARC_ATTN_XEMU=1`: emulated (tests) | 9 |
+| `ARC_ATTN_XMX=0` | on on discrete cards since 2026-11-10 (B60, 64K prompts: 4B +11.7 %, 9B +8.4 %, 27B +2.1 %, 35B +10.2 %), off on iGPUs; `=1` forces it | the prompt attention's integer dot products (`attn_q8`) as int8 DPAS, bit-identical, checked at start bit for bit (QUEUE F33.2, 2026-11-09; 16-lane DPAS, Qwen); `ARC_ATTN_XEMU=1`: emulated (tests) | 9 |
+| `ARC_GEMV_SMALL_WG=0` | on on discrete cards since 2026-11-10 (not measured yet), off on iGPUs; `=1` forces it | the single-token GEMV of a matrix with at most 512 sub-groups (DeltaNet's alpha / beta, 96 rows; MoE routers) in work-groups of 4 sub-groups instead of 16, spread over more Xe cores; bit-identical |10 |
+| `ARC_WIDE_ROWS=0` | on (every GPU) since 2026-11-10 | the 1-8 token row kernels that quantize for the next GEMV (`swiglu_quant` on the Qwen and MoE paths, `rmsnorm_quant`, `gated_norm_quant`, `attn_gate_quant`) in one work-group per row, as before; by default their superblocks spread over many work-groups; bit-identical |10 |
 | `ARC_XALL=0` | on on discrete cards since 2026-11-09, off on iGPUs; `=1` forces it | MoE models, one token: with every expert in the GPU's cache, the layers skip reading their experts' ids on the host (the same tokens; a B60's 35B 78.77 -> 88.05 tok/s, host waits 43 -> 3 a token) | 5 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
 | `ARC_TP_*` | | the multi-GPU sums and split (`ARC_TP_SUM`, `ARC_TP_RS_MIN`, `ARC_TP_RG_GU`, `ARC_TP_TIMEOUT`, `ARC_TP_ATT_QSPLIT`) | [multi-gpu.md](multi-gpu.md) |
@@ -572,3 +574,38 @@ The B60's 27B 4K prompt spent 290 ms in `gdn_recur` and 198 ms in `attention` (2
 - XMX for the 2-8 token verification passes of MTP / DFlash2 (now the GEMV-style kernels).
 - Several models' worth of GPUs as replicas (one engine per GPU, requests spread over them) and pipeline
   parallelism for prompts.
+
+## 10. Small kernels and matrices of few rows in a generation step (2026-11-10)
+
+A Pro B60's 27B (issue #4, package 2c132a9, `decode_try.ps1`'s `--prof-gen`) against the bytes of each matrix role
+in its GGUF (their sum is the 11,321 MB a token runz reports):
+
+| Role | MB a token | ms a token | GB/s | % of 431 GB/s |
+|---|---|---|---|---|
+| `lm_head` (Q4_K) | 715 | 1.67 | 429 | 99 |
+| `ffn_down` | 2,597 | 7.85 | 331 | 77 |
+| `ffn_gate` / `ffn_up` (mostly IQ3_XXS, IQ3_S, IQ2) | 2,390 / 2,410 | 8.60 / 8.60 | 278 / 280 | 64 / 65 |
+| DeltaNet qkv + z, `ssm_out`, `attn_q`, `attn_output` | 3,098 | 11.03 | 275-301 | 64-70 |
+| `attn_k` / `attn_v` (1,024 rows) | 43 / 42 | 0.22 / 0.22 | 194 / 193 | 45 |
+| DeltaNet alpha / beta (96 rows, Q8_0) | 25 | 0.42 | 60 | 14 |
+| every GEMV | 11,321 | 38.60 | 293 | 68 |
+
+- The GEMV reads at full bandwidth where decoding is cheap and the matrix tall (the Q4_K head): what holds the rest
+  back is the codebook formats' decoding, and the matrices with few rows.
+- The other kernels took 3.59 ms a token, and the GPU idled ~2.9 ms (a step 45.1 ms, its kernels 42.2).
+  `swiglu_quant` took 15 us each (64 a token) and `rmsnorm_quant` 7 us (129 a token): one work-group per row, so one
+  Xe core of 20 did each row.
+- urakozz's engine (a B70, a W4A16 27B) reaches 78 % of its card's measured bandwidth by the same means: its GEMVs at
+  89-97 % per shape, split-K for the matrices with few rows, and its small kernels spread over more sub-groups
+  (its norm 16 -> 320 sub-groups, -2.2 ms a token; its alpha / beta GEMV over 128 sub-groups, -1.9 ms).
+
+Since 2026-11-10, both bit-identical:
+- **`ARC_WIDE_ROWS`** (every GPU): a 1-8 token pass's `swiglu_quant`, `gated_norm_quant` and `attn_gate_quant` run one
+  sub-group per superblock, as Gemma's `swiglu_quant` already did; `rmsnorm_quant` one work-group per 16 superblocks,
+  each summing the whole row's squares the same way. `=0` as before.
+- **`ARC_GEMV_SMALL_WG`** (discrete cards): the single-token GEMV of a matrix with at most 512 sub-groups in
+  work-groups of 64 instead of 256 (alpha / beta: 6 -> 24 work-groups). `=0` as before.
+
+`decode_try.ps1` has rows for both off (`WIDE_ROWS=0`, `SMALL_WG=0`, `both off`), their tokens checked against plain.
+Not measured on a B60 yet. Left: `attn_k` / `attn_v` (1,024 sub-groups, rows of 20 superblocks), `attn_prep` (23 us
+each: its RoPE's `pow` / `cos` / `sin` in 4 lanes), and the codebook GEMVs themselves.

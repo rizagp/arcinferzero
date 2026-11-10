@@ -207,11 +207,12 @@ $ErrorActionPreference = "Stop"
 # (in the Hugging Face cache, or anywhere the server finds the same file: a package in .inferzero\zero\models, a
 #  folder of model-dirs.txt; before, a 35B kept as a package was offered for download again)
 function Present($m) {
-  if ($m.key -eq "35b-gsq") { return Test-Path $gsq35 }
+  # (a file from before 2026-11-10, keyed arcinferzero.*, is listed as unsupported: converted again)
+  if ($m.key -eq "35b-gsq") { return (Test-Path $gsq35) -and -not ($listed | Where-Object { $_.path -and $_.path -ieq $gsq35 -and -not $_.supported }) }
   if (Test-ArcModel $m $hub) { return $true }
   $main = Split-Path $m.files[0] -Leaf
   $pkg = $main -replace "-00001-of-\d{5}\.gguf$", ".gguf"  # (a split model kept as a package: one GGUF, Flash Next)
-  return [bool]($listed | Where-Object { $_.file -in $main, $pkg -or ($_.path -and (Split-Path $_.path -Leaf) -in $main, $pkg) })
+  return [bool]($listed | Where-Object { $_.supported -and ($_.file -in $main, $pkg -or ($_.path -and (Split-Path $_.path -Leaf) -in $main, $pkg)) })
 }
 foreach ($m in $catalog) { $m | Add-Member have (Present $m) }
 foreach ($m in $catalog) {

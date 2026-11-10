@@ -469,6 +469,36 @@ if (-not $SkipGpu) {
     Check "error paths: failed passes end their requests, the slots start over" ($o -match "error paths: all passed") (($o -split "`r?`n" | Where-Object { $_ -match "^\[FAIL\]" }) -join "; ")
   }
 }
+
+# 7. Qwen3-ASR's encoder after a short clip, then a long one (bin\asr_testz.exe --warm): the server warms the encoder up
+#    on 1 s at start, so a recording's first long part grows its buffers; a buffer freed and made again at the same
+#    address once left a kernel argument naming the freed allocation, and the process ended inside the driver
+#    (0xC0000005, 2026-11-10; zero/clrt.h mem_free). A generated 300-s clip: what it holds does not matter here
+if (-not $SkipGpu) {
+  Section "Qwen3-ASR encoder: a short clip, then a long one"
+  $asrGguf = Find-Gguf @("Qwen3-ASR-1.7B-Q8_0.gguf", "Qwen3-ASR-*.gguf")
+  $asrMm = if ($asrGguf) { Get-ChildItem -LiteralPath (Split-Path $asrGguf) -Filter "mmproj*.gguf" -File -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName } else { "" }
+  if (-not (Have $asrGguf) -or -not (Have $asrMm)) { Skip "Qwen3-ASR encoder after a warm-up" "no Qwen3-ASR GGUF with its mmproj" }
+  elseif (-not (Test-Path .\bin\asr_testz.exe)) { Skip "Qwen3-ASR encoder after a warm-up" "bin\asr_testz.exe not built" }
+  else {
+    $wav = Join-Path $env:TEMP ("inferzero_asr_long_{0}.wav" -f $PID)
+    try {
+      $n = 300 * 16000 * 2
+      $h = New-Object byte[] 44
+      [Text.Encoding]::ASCII.GetBytes("RIFF").CopyTo($h, 0); [BitConverter]::GetBytes([uint32](36 + $n)).CopyTo($h, 4)
+      [Text.Encoding]::ASCII.GetBytes("WAVEfmt ").CopyTo($h, 8); [BitConverter]::GetBytes([uint32]16).CopyTo($h, 16)
+      [BitConverter]::GetBytes([uint16]1).CopyTo($h, 20); [BitConverter]::GetBytes([uint16]1).CopyTo($h, 22)
+      [BitConverter]::GetBytes([uint32]16000).CopyTo($h, 24); [BitConverter]::GetBytes([uint32]32000).CopyTo($h, 28)
+      [BitConverter]::GetBytes([uint16]2).CopyTo($h, 32); [BitConverter]::GetBytes([uint16]16).CopyTo($h, 34)
+      [Text.Encoding]::ASCII.GetBytes("data").CopyTo($h, 36); [BitConverter]::GetBytes([uint32]$n).CopyTo($h, 40)
+      [IO.File]::WriteAllBytes($wav, $h + (New-Object byte[] $n))
+      $o = Run-Exe .\bin\asr_testz.exe @($asrGguf, $asrMm, $wav, "--warm", "--no-text")
+      $ok = $script:exitCode -eq 0 -and $o -match "encoder: \d+ tokens"
+      if (-not $ok) { Write-Host ($o.TrimEnd() -split "`r?`n" | Select-Object -Last 5) }
+      Check "Qwen3-ASR encoder: a 300-s clip after a 1-s one (grown buffers)" $ok ("exit {0}" -f $script:exitCode)
+    } finally { Remove-Item -LiteralPath $wav -ErrorAction SilentlyContinue }
+  }
+}
 } finally {
   Pop-Location
 }

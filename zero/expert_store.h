@@ -146,12 +146,12 @@ struct ExpertStore {
   }
 
   // prefixes[i]: the GGUF tensor prefix of layer i ("blk.7.") when it has routed experts, else "".
-  // fixed_path: write / use the expert file there (a package being made). A package GGUF ("arcinferzero.package")
+  // fixed_path: write / use the expert file there (a package being made). A package GGUF ("inferzero.package")
   // has no expert data: its expert file next to it is used as it is (never rebuilt).
   void open_or_build(const GgufFile& f, const std::string& gguf_path, const std::vector<std::string>& prefixes, int n_exp,
                      const std::string& fixed_path = "") {
     n_expert = n_exp;
-    const bool package = f.has("arcinferzero.package");
+    const bool package = f.has("inferzero.package");
     namespace fs = std::filesystem;
     std::error_code ec;
     const uint64_t gsize = fs::file_size(gguf_path, ec);
@@ -172,9 +172,9 @@ struct ExpertStore {
     const std::string def_path = !fixed_path.empty() && !fs::exists(path, ec) && fs::exists(old_path, ec) ? old_path : path;
     if (!fixed_path.empty()) path = fixed_path;
     if (package) {  // (a file name next to the package, never a path the GGUF chooses)
-      const std::string xf = f.get_str("arcinferzero.experts_file");
+      const std::string xf = f.get_str("inferzero.experts_file");
       if (xf.empty() || xf.find_first_of("/\\:") != std::string::npos || xf == "." || xf == "..")
-        throw std::runtime_error("package: arcinferzero.experts_file must be a file name next to the GGUF");
+        throw std::runtime_error("package: inferzero.experts_file must be a file name next to the GGUF");
       path = (fs::path(gguf_path).parent_path() / xf).string();
     }
 

@@ -21,6 +21,11 @@
 #   XALL=0         MoE models: without skipping the host's per-layer reads of expert ids when every expert is
 #                  cached (ARC_XALL: on by default on discrete cards since 2026-11-09, a B60's 35B 78.8 -> 88.1);
 #                  also with GEMV_PF=1 (both as before 2026-11-09) and "mtp XALL=0". Their tokens are checked against plain.
+#   WIDE_ROWS=0    plain, the row kernels that quantize for the next GEMV (swiglu_quant, rmsnorm_quant,
+#                  gated_norm_quant, attn_gate_quant) in one work-group per row, as before 2026-11-10
+#                  (ARC_WIDE_ROWS=0); tokens checked against plain
+#   SMALL_WG=0     plain, the GEMV of matrices with few rows (DeltaNet's alpha / beta, MoE routers) in work-groups
+#                  of 256 as before 2026-11-10 (ARC_GEMV_SMALL_WG=0); also both off; tokens checked against plain
 #   (at the end, per model: a --prof-gen table, the GPU time of a generation step by kernel)
 #   MOE_GR_GU=2/4, MOE_GR_DN=2/8   MoE models: rows per sub-group of the experts' gate / up and down GEMVs for one
 #                  token (ARC_MOE_GR_GU, default 1; ARC_MOE_GR_DN, default 4)
@@ -33,7 +38,8 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
-$vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF", "ARC_GV_IQ3S", "ARC_MOE_GR_GU", "ARC_MOE_GR_DN", "ARC_BATCH", "ARC_XALL")
+$vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF", "ARC_GV_IQ3S", "ARC_MOE_GR_GU", "ARC_MOE_GR_DN", "ARC_BATCH", "ARC_XALL",
+          "ARC_WIDE_ROWS", "ARC_GEMV_SMALL_WG")
 # (Qwen chat format, thinking off: the answer starts right away)
 $q = Join-Path ([IO.Path]::GetTempPath()) "inferzero-decode-try.txt"
 $text = "<|im_start|>user`nWrite a Python module with a class LRUCache (get, put, a capacity, O(1) operations using " +
@@ -85,6 +91,10 @@ foreach ($model in $Models) {
   $null = Invoke-Run $model @("--n", "8") @{}  # (warm-up: the first run after a start is slower)
   $plain = Invoke-Run $model @() @{}
   Line "plain" $plain
+  # (2026-11-10: the wide row kernels and the small GEMV work-groups, on by default on discrete cards: without them)
+  Same "WIDE_ROWS=0" (Invoke-Run $model @() @{ ARC_WIDE_ROWS = "0" }) $plain
+  Same "SMALL_WG=0" (Invoke-Run $model @() @{ ARC_GEMV_SMALL_WG = "0" }) $plain
+  Same "both off" (Invoke-Run $model @() @{ ARC_WIDE_ROWS = "0"; ARC_GEMV_SMALL_WG = "0" }) $plain
   Line "mtp" (Invoke-Run $model @("--mtp") @{})
   Line "mtp7" (Invoke-Run $model @("--mtp", "--mtp-drafts", "7") @{})
   if ($DFlash) { Line "dflash" (Invoke-Run $model @("--dflash", $DFlash, "--draft", "auto") @{}) }

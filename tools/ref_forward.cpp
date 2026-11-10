@@ -30,8 +30,8 @@ struct PackExperts {
 };
 static PackExperts* PX = nullptr;
 static void open_package(const std::string& gguf) {
-  if (!F->has("arcinferzero.package")) return;
-  const std::string path = (std::filesystem::path(gguf).parent_path() / F->get_str("arcinferzero.experts_file")).string();
+  if (!F->has("inferzero.package")) return;
+  const std::string path = (std::filesystem::path(gguf).parent_path() / F->get_str("inferzero.experts_file")).string();
   PX = new PackExperts;
   PX->f = fopen(path.c_str(), "rb");
   if (!PX->f) { fprintf(stderr, "cannot open %s\n", path.c_str()); exit(1); }

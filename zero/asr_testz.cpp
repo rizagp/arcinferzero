@@ -13,6 +13,7 @@
 //   --chunk N      prompt rows per step (default 512)
 //   --max-part S   parts of at most S seconds (default 1200, Qwen's; the server: 240)
 //   --slots N      decode up to N parts together, a slot each (default 1: one part after another)
+//   --warm         first encode 1 s of silence, as the server does at start (its encoder buffers start small)
 //   --kl-files P   (one part) P.ids: the prompt and the answer, P.emb: the encoder rows with REF_EMB's header, for
 //                  tools/ref_forward (REF_EMB=P.emb REF_ALL=1): the encoder's effect on the text model's KL
 //   (ARC_ASR_Q2=1: the encoder's matrix products on two int8 passes, zero/audio_qwen3a.h)
@@ -24,7 +25,7 @@ int main(int argc, char** argv) {
   if (argc < 4) { fprintf(stderr, "usage: asr_testz model.gguf mmproj.gguf audio [--ref F] [--enc-out F] [--seconds S] [--lang L] [--context T] [--no-text]\n"); return 1; }
   std::string ref, enc_out, lang, context, save_wav, kl_files;
   double seconds = 0, start = 0, parts = 0, max_part = 1200;
-  bool text = true;
+  bool text = true, warm = false;
   int ctx = 0, chunk = 512, slots = 1;
   double budget = 0;  // (as the server: the GEMM form just in time, docs/qwen3-asr.md)
   for (int i = 4; i < argc; ++i) {
@@ -43,6 +44,7 @@ int main(int argc, char** argv) {
     else if (a == "--chunk") chunk = atoi(next().c_str());
     else if (a == "--max-part") max_part = atof(next().c_str());
     else if (a == "--slots") slots = atoi(next().c_str());
+    else if (a == "--warm") warm = true;
     else if (a == "--no-text") text = false;
     else if (a == "--kl-files") kl_files = next();
     else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 1; }
@@ -94,6 +96,7 @@ int main(int argc, char** argv) {
            eng.max_chunk, eng.w8_resident ? "GEMM form resident" : "GEMM form just in time", q3asr::batch_parts(eng),
            eng.gpu_bytes / 1073741824.0);
     int n_tok = 0;
+    if (warm) enc.encode(std::vector<float>(16000, 0.0f), n_tok);
     std::vector<float> e = enc.encode(s, n_tok);  // (the first run builds the kernels)
     eng.profile = getenv("ARC_PROF") != nullptr;
     e = enc.encode(s, n_tok);

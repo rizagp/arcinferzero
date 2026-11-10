@@ -202,10 +202,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);
-    for (void* p : host_ptrs_) zeMemFree(zrt::ctx, p);  // (weights in host memory: plan_tight)
+    for (void* p : host_ptrs_) zrt::mem_free(zrt::ctx, p);  // (weights in host memory: plan_tight)
     host_ptrs_.clear();
     if (mtp_xbuf_) {  // (the MTP head's pinned experts; the expert cache's table row went with xc_ or goes after)
-      zeMemFree(zrt::ctx, mtp_xbuf_);
+      zrt::mem_free(zrt::ctx, mtp_xbuf_);
       zrt::D().device_bytes -= mtp_xbytes_;
       mtp_xbuf_ = nullptr;
     }
@@ -247,7 +247,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     auto t0 = std::chrono::steady_clock::now();
     plan_weights();
     stream_ = hp.moe_std && opt.stream_experts && !getenv("ARC_ZERO_NO_STREAM");
-    if (f_.has("arcinferzero.package") && !stream_)  // (a package keeps its experts only in the expert file)
+    if (f_.has("inferzero.package") && !stream_)  // (a package keeps its experts only in the expert file)
       throw std::runtime_error("this is an inferzero package: it runs with expert streaming only (no --no-stream)");
     if (stream_ && !opt.dry) open_experts();
     // (streamed experts: 8192-token chunks, each chunk reads a layer's missing experts once and decodes them once;
@@ -1033,7 +1033,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
                            vk ? "gemv_v" : "gemv");
       q2_fused_ = q2_fuse_;
       set_args(k, 0, w.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a);
-      size_t g1 = ((size_t)(N + grows - 1) / grows * 16 + 255) / 256 * 256, l1 = 256;
+      // (gemv_v stages its tables with the first 64 items of a work-group: it keeps 256)
+      const size_t sgs = (size_t)(N + grows - 1) / grows, l1 = vk ? 256 : xe2_gemv_wg(sgs);
+      size_t g1 = (sgs * 16 + l1 - 1) / l1 * l1;
       run(name, k, 1, &g1, &l1);
       return;
     }
@@ -1127,6 +1129,10 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     int wh = 0;
     set_args(k_rmsnorm_, 0, x, row_off, w, K, Mp, T, eps, aq_, asc_, absum_, big_, wh, act32);
     size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
+    if (wide_rows(T)) {  // (a work-group per 16 superblocks, each summing the row itself; the valid rows only)
+      gws[0] = 256 * (size_t)((K / 256 + 15) / 16);
+      gws[1] = (size_t)T;
+    }
     run("rmsnorm_quant", k_rmsnorm_, 2, gws, lws);
   }
 
@@ -1262,6 +1268,20 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     set_args(k_add_nq_, 0, x_, big_, w, E, eps, sc, w2, nrm, MM, aq_, asc_, absum_, a32);
     size_t gws[2] = {256, (size_t)T}, lws[2] = {256, 1};
     run("add_rmsnorm", k_add_nq_, 2, gws, lws);
+  }
+  // A 1-8 token pass's row kernels that quantize for the next GEMV (swiglu_quant on the Qwen and MoE paths,
+  // rmsnorm_quant, gated_norm_quant, attn_gate_quant): their superblocks over many work-groups, the valid rows only
+  // (the GEMVs read only those), instead of one work-group per padded row, where one Xe core did a whole row: a Pro
+  // B60's 27B spent 15 us on each of 64 swiglu_quant a token and 7 us on each of 129 rmsnorm_quant (issue #4,
+  // 2026-11-09). The same arithmetic per superblock: bit-identical. ARC_WIDE_ROWS=0: as before 2026-11-10
+  bool wide_rows(int T) const {
+    static const bool on = !getenv("ARC_WIDE_ROWS") || atoi(getenv("ARC_WIDE_ROWS")) != 0;
+    return on && T <= 8 && cur_T_ <= 8;
+  }
+  // a row kernel of K columns (arguments set) with one sub-group per superblock of the T valid rows
+  void run_rows_wide(const char* name, cl_kernel k, int K, int T) {
+    size_t gws[2] = {(size_t)16 * (K / 256), (size_t)T}, lws[2] = {16, 1};
+    run(name, k, 2, gws, lws);
   }
   // launches k_swiglu_ (arguments set) over K columns: a work-group per padded row for prompt chunks, one sub-group
   // per superblock of the T valid rows for single-token passes (the GEMVs read only those rows)

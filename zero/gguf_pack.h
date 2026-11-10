@@ -2,7 +2,7 @@
 //
 //   %USERPROFILE%\.inferzero\zero\models\<name>\<name>.gguf     every tensor except the routed experts, all metadata
 //                                                              (the experts listed as virtual tensors: name, type,
-//                                                              shape) and "arcinferzero.package" = 1
+//                                                              shape) and "inferzero.package" = 1
 //   %USERPROFILE%\.inferzero\zero\models\<name>\<name>.experts the routed experts in the expert file layout
 //                                                              (expert_store.h), built from the source GGUF
 //
@@ -162,7 +162,7 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     Writer w(tmp);
     std::vector<std::string> keys;
     for (const std::string& k : src.kv_order)
-      if (k.rfind("split.", 0) != 0 && k.rfind("arcinferzero.", 0) != 0) keys.push_back(k);  // (the package keys keep their old name, below)
+      if (k.rfind("split.", 0) != 0 && k.rfind("inferzero.", 0) != 0) keys.push_back(k);  // (the package keys are written below)
     w.put<uint32_t>(0x46554747);
     w.put<uint32_t>(3);
     w.put<uint64_t>(keep.size());
@@ -171,12 +171,12 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
       const auto& ty = src.kv_types.at(k);
       put_kv(w, k, ty.first, ty.second, src.kv.at(k));
     }
-    put_kv(w, "arcinferzero.package", 4, 0, GgufValue((int64_t)1));
-    put_kv(w, "arcinferzero.experts_file", 8, 0, GgufValue(fs::path(r.experts).filename().string()));
-    put_kv(w, "arcinferzero.source", 8, 0, GgufValue(fs::path(source).filename().string()));
-    put_kv(w, "arcinferzero.virtual.names", 9, 8, GgufValue(vnames));
-    put_kv(w, "arcinferzero.virtual.types", 9, 4, GgufValue(vtypes));
-    put_kv(w, "arcinferzero.virtual.dims", 9, 11, GgufValue(vdims));
+    put_kv(w, "inferzero.package", 4, 0, GgufValue((int64_t)1));
+    put_kv(w, "inferzero.experts_file", 8, 0, GgufValue(fs::path(r.experts).filename().string()));
+    put_kv(w, "inferzero.source", 8, 0, GgufValue(fs::path(source).filename().string()));
+    put_kv(w, "inferzero.virtual.names", 9, 8, GgufValue(vnames));
+    put_kv(w, "inferzero.virtual.types", 9, 4, GgufValue(vtypes));
+    put_kv(w, "inferzero.virtual.dims", 9, 11, GgufValue(vdims));
     uint64_t off = 0;
     for (const GgufTensor* t : keep) {
       w.str(t->name);

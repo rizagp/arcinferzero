@@ -190,7 +190,10 @@ __kernel void attn_gate_quant(__global const float* att, __global const float* q
   const int m = get_group_id(1);
   const bool valid = m < M_valid;
   const int lane = get_sub_group_local_id();
-  for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
+  // (superblocks over every sub-group of the grid: grid (256, M) is one work-group per row as before; a 1-8 token
+  //  pass may launch several along dim 0 (zero/engine.h wide_rows), the same arithmetic per superblock)
+  for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < K / 256;
+       s += get_num_groups(0) * get_num_sub_groups()) {
     const int base = s * 256 + 16 * lane, h = base / 256, d = base % 256;
     float v[16];
     if (valid) {  // (the row flag tested once, vector loads; the same arithmetic)

@@ -86,7 +86,8 @@
     {
       set_args(k_gnorm_, 0, o_, zc, L.ssm_norm, Di, Mp, T, eps, aq_, asc_, absum_, a_out);
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
-      run("gated_norm_quant", k_gnorm_, 2, gws, lws);
+      if (wide_rows(T)) run_rows_wide("gated_norm_quant", k_gnorm_, Di, T);
+      else run("gated_norm_quant", k_gnorm_, 2, gws, lws);
     }
     if (hp.hc) matmul("gemm_ssm_out", L.ssm_out, Mp, hco_, E, 0, 0, a_out);
     else tp_out("gemm_ssm_out", L.ssm_out, Mp, a_out);
@@ -368,7 +369,8 @@
       int K = nh * hd;
       set_args(k_attn_gate_, 0, o_, big_, ldq, K, Mp, T, aq_, asc_, absum_, a_out);
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
-      run("attn_gate_quant", k_attn_gate_, 2, gws, lws);
+      if (wide_rows(T)) run_rows_wide("attn_gate_quant", k_attn_gate_, K, T);
+      else run("attn_gate_quant", k_attn_gate_, 2, gws, lws);
     }
     if (hp.hc) matmul("gemm_o", L.wo, Mp, hco_, E, 0, 0, a_out);
     else tp_out("gemm_o", L.wo, Mp, a_out);
@@ -395,7 +397,8 @@
       int gelu = 0;
       set_args(k_swiglu_, 0, big_, F, Mp, T, aq_, asc_, absum_, a_dn, fused, gelu);
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
-      run("swiglu_quant", k_swiglu_, 2, gws, lws);
+      if (wide_rows(T)) run_rows_wide("swiglu_quant", k_swiglu_, F, T);
+      else run("swiglu_quant", k_swiglu_, 2, gws, lws);
     }
     tp_out("gemm_down", L.down, Mp, a_dn);
   }

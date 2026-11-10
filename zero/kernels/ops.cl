@@ -102,7 +102,8 @@ inline void quant_store16(const float* v, int s, int m, int M, int K, __global c
 }
 
 // y = rmsnorm(x[row_off + m]) * w, quantized for the next GEMM. Optionally also stores y as f32.
-// Work-group: 256 items per row; grid (256, M).
+// Work-group: 256 items per row; grid (256, M), or (256 * G, T) for a 1-8 token pass: each of the G work-groups
+// sums the whole row's squares the same way (bit-identical r) and quantizes its share of the superblocks.
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void rmsnorm_quant(__global const float* x, int row_off, __global const float* w, int K, int M, int M_valid,
                             float eps, __global char* aq, __global float* asc, __global ushort* absum,
@@ -116,7 +117,10 @@ __kernel void rmsnorm_quant(__global const float* x, int row_off, __global const
   ss = work_group_reduce_add(ss);
   const float r = rsqrt(ss / K + eps);
   const int lane = get_sub_group_local_id();
-  for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
+  // (superblocks over every sub-group of the grid: grid (256, M) is one work-group per row as before; a 1-8 token
+  //  pass may launch several along dim 0 (zero/engine.h wide_rows), the same arithmetic per superblock)
+  for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < K / 256;
+       s += get_num_groups(0) * get_num_sub_groups()) {
     const int base = s * 256 + 16 * lane;
     float v[16];
     if (valid) {  // (one vector load per lane and array, the row flag tested once; the same arithmetic)
@@ -508,7 +512,10 @@ __kernel void gated_norm_quant(__global const float* o, __global const float* z,
   const int m = get_group_id(1);
   const bool valid = m < M_valid;
   const int lane = get_sub_group_local_id();
-  for (int s = get_sub_group_id(); s < K / 256; s += get_num_sub_groups()) {
+  // (superblocks over every sub-group of the grid: grid (256, M) is one work-group per row as before; a 1-8 token
+  //  pass may launch several along dim 0 (zero/engine.h wide_rows), the same arithmetic per superblock)
+  for (int s = get_group_id(0) * get_num_sub_groups() + get_sub_group_id(); s < K / 256;
+       s += get_num_groups(0) * get_num_sub_groups()) {
     const int base = s * 256 + 16 * lane, d0 = (16 * lane) & 127;
     float v[16];
     if (valid) {  // (the row flag tested once, vector loads; the same arithmetic. `valid` is the work-group's)

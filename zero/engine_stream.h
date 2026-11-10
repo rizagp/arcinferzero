@@ -36,7 +36,7 @@
         void* p = nullptr;
         return zeMemAllocHost(zrt::ctx, &hd, n, 4096, &p) == 0 ? (char*)p : nullptr;
       };
-      xc_->st.ram_free = [](char* p) { zeMemFree(zrt::ctx, p); };
+      xc_->st.ram_free = [](char* p) { zrt::mem_free(zrt::ctx, p); };
       xc_->st.set_ram(ram);
       fprintf(stderr, "inferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
     }
@@ -341,7 +341,7 @@
     gpu_bytes += bytes;
     const int G = 32;  // (experts per batch, built in parallel into pinned host memory, then copied)
     char* host = (char*)zrt::host_alloc((size_t)G * li.rec);
-    struct Free { void* p; ~Free() { zeMemFree(zrt::ctx, p); } } free_host{host};
+    struct Free { void* p; ~Free() { zrt::mem_free(zrt::ctx, p); } } free_host{host};
     for (int e0 = 0; e0 < NE; e0 += G) {
       const int ne = std::min(G, NE - e0);
       memset(host, 0, (size_t)ne * li.rec);

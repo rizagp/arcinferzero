@@ -316,7 +316,7 @@ shortens a long conversation (the details it drops are gone for the model).
       Write-Host "zero-pi: $a takes off, minimal, low, medium, high, xhigh or max (got '$thinking')" -ForegroundColor Red; exit 1
     }
   }
-  elseif ($a -in "--zero-model", "--arc-model", "-Model", "--model-name", "--model") {  # (--model: Pi's own option, taken here so
+  elseif ($a -in "--zero-model", "-Model", "--model-name", "--model") {  # (--model: Pi's own option, taken here so
     $model = (Need-Value $args $i $a "a shortcut, a model id or name, or a .gguf file") -replace '^(arcinfer|arcinferzero|inferzero)/', ''; $i++
   }  # (that Pi gets only the one zero-pi sets)
   elseif ($a -in "--ctx", "-Ctx") {

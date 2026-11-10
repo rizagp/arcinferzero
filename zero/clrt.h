@@ -46,7 +46,9 @@ struct ZKernel {
   uint32_t gx = 0, gy = 0, gz = 0;  // group size last set
   // the value each argument was last given (as passed to Level Zero: a buffer as its device pointer then, which the
   // engine's slots repoint): the same value again is not set again (a launch keeps the arguments it was appended with)
-  struct Arg { uint8_t sz = 0; bool set = false; unsigned char v[16]; };
+  // (gen: zrt::mem_gen when it was set. Level Zero takes a buffer argument's allocation when it is set, not only its
+  //  address: after a free, a new buffer at the same address must be set again, see zrt::mem_free)
+  struct Arg { uint8_t sz = 0; bool set = false; uint32_t gen = 0; unsigned char v[16]; };
   std::vector<Arg> args;
 };
 struct ZProg { ze_module_handle_t m; bool indirect = false; std::string opts; };  // indirect: built with -DXCACHE (see kernel())
@@ -138,6 +140,18 @@ inline thread_local bool tp_guarded = false;
 inline thread_local bool oom_throws = false;
 inline thread_local bool oom_test = false;
 inline Dev& D() { return cur ? *cur : dev0; }
+// Every free of Level Zero memory the engine makes goes through mem_free, which counts it: clSetKernelArg's cache
+// takes an argument as unchanged only within the same count. Level Zero keeps the allocation a buffer argument was
+// set with, so a buffer freed and another made at the same address (the allocator reuses them) left a kernel whose
+// cached argument still named the freed allocation: the next launch read it inside zeCommandListAppendLaunchKernel
+// and the process ended, 0xC0000005 in ze_intel_gpu64.dll (2026-11-04, and three times on 2026-11-10 at the start of a
+// meeting's transcription: Qwen3-ASR's encoder grows its buffers after the server's 1-s warm-up clip)
+inline std::atomic<uint32_t> mem_gen{1};
+inline ze_result_t mem_free(ze_context_handle_t c, void* p) {
+  const ze_result_t r = zeMemFree(c, p);
+  mem_gen.fetch_add(1, std::memory_order_relaxed);
+  return r;
+}
 // Called when the GPU runs out of memory (the share is shared with every other program: a browser or the desktop
 // taking more makes a launch or allocation fail): frees some memory (the engine shrinks its expert cache) and returns
 // true, or false when it cannot; the failed call is then retried.
@@ -366,7 +380,7 @@ inline char* staging(size_t n) {
     //  the old buffer in place)
     const size_t sz = std::max(n, (size_t)1 << 22);
     char* p = (char*)host_alloc(sz);
-    if (D().stage) { sync(); zeMemFree(ctx, D().stage); }
+    if (D().stage) { sync(); mem_free(ctx, D().stage); }
     D().stage = p;
     D().stage_n = sz;
   }
@@ -560,7 +574,7 @@ inline cl_int clEnqueueUnmapMemObject(cl_command_queue, cl_mem b, void* p, cl_ui
     if (zrt::maps()[i].host == p && zrt::maps()[i].m == b) {
       ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), b->ptr + zrt::maps()[i].off, p, zrt::maps()[i].n, nullptr, 0, nullptr));
       zrt::sync();
-      zeMemFree(zrt::ctx, p);
+      zrt::mem_free(zrt::ctx, p);
       zrt::maps().erase(zrt::maps().begin() + i);
       return CL_SUCCESS;
     }
@@ -587,7 +601,7 @@ inline cl_mem clCreateSubBuffer(cl_mem parent, cl_mem_flags, cl_buffer_create_ty
 inline cl_int clReleaseMemObject(cl_mem m) {
   if (!m) return CL_SUCCESS;
   zrt::Dev& d = m->d ? *m->d : zrt::D();
-  if (m->owner) { zeCommandListHostSynchronize(zrt::imm(d), UINT64_MAX); zeMemFree(zrt::ctx, m->ptr); d.device_bytes -= m->size; }
+  if (m->owner) { zeCommandListHostSynchronize(zrt::imm(d), UINT64_MAX); zrt::mem_free(zrt::ctx, m->ptr); d.device_bytes -= m->size; }
   d.mems.erase(m);
   delete m;
   return CL_SUCCESS;
@@ -713,11 +727,12 @@ inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
   //  server lost it with the cache off too, at a GPU timeout (TDR, LiveKernelEvent 141))
   static const bool cache = !(getenv("ARC_ARG_CACHE") && atoi(getenv("ARC_ARG_CACHE")) == 0);
   ZKernel::Arg* a = nullptr;
+  const uint32_t gen = zrt::mem_gen.load(std::memory_order_relaxed);  // (read before the set: a free meanwhile counts)
   // (the values are kept with the cache on, and with ARC_ZE_WATCH for its launch ring, where they are only recorded)
   if ((cache || zrt::watch_ms > 0) && v && sz <= sizeof(ZKernel::Arg::v) && i < 64) {  // (local memory, v null: set each time)
     if (k->args.size() <= i) k->args.resize(i + 1);
     a = &k->args[i];
-    if (cache && a->set && a->sz == sz && memcmp(a->v, v, sz) == 0) return CL_SUCCESS;
+    if (cache && a->set && a->sz == sz && a->gen == gen && memcmp(a->v, v, sz) == 0) return CL_SUCCESS;
   }
   if (zeKernelSetArgumentValue(k->k, i, sz, v) != ZE_RESULT_SUCCESS) {
     if (a) a->set = false;
@@ -725,11 +740,36 @@ inline cl_int clSetKernelArg(cl_kernel k, cl_uint i, size_t sz, const void* v) {
   }
   if (a) {
     a->sz = (uint8_t)sz;
+    a->gen = gen;
     memcpy(a->v, v, sz);
     a->set = true;
   }
   return CL_SUCCESS;
 }
+namespace zrt {
+// the launch this thread is appending (src/crash_log.h prints it when the process crashes inside the driver's
+// append: its kernel, sizes and arguments, and which 8-byte arguments lie in no live buffer of this GPU)
+inline thread_local const ZKernel* last_k = nullptr;
+inline thread_local uint32_t last_gs[3]{}, last_ls[3]{};
+inline void print_last_launch() {
+  if (!last_k) return;
+  fprintf(stderr, "  the launch this thread was appending: %s, global %u x %u x %u, local %u x %u x %u\n   arguments: %s\n",
+          last_k->name.c_str(), last_gs[0], last_gs[1], last_gs[2], last_ls[0], last_ls[1], last_ls[2],
+          watch_args(last_k->args).c_str());
+  for (size_t i = 0; i < last_k->args.size(); ++i) {
+    const ZKernel::Arg& a = last_k->args[i];
+    if (!a.set || a.sz != 8) continue;
+    uint64_t v;
+    memcpy(&v, a.v, 8);
+    if (!v) continue;
+    bool in = false;
+    for (const ZMem* m : D().mems)
+      if (v >= (uint64_t)m->ptr && v < (uint64_t)m->ptr + m->size) { in = true; break; }
+    if (!in) fprintf(stderr, "   argument %zu (0x%llx) lies in no live buffer of this GPU\n", i, (unsigned long long)v);
+  }
+  fflush(stderr);
+}
+}  // namespace zrt
 inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim, const size_t*, const size_t* g,
                                      const size_t* l, cl_uint, const cl_event*, cl_event* ev) {
   zrt::LaunchTimer lt{zrt::launch_ns};
@@ -760,6 +800,8 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
             k->name.c_str(), gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
     return -54;  // (CL_INVALID_WORK_GROUP_SIZE)
   }
+  zrt::last_k = k;
+  for (int d = 0; d < 3; ++d) zrt::last_gs[d] = gs[d], zrt::last_ls[d] = ls[d];
   ze_event_handle_t sig = ev || zrt::watch_ms > 0 ? zrt::ev_get() : nullptr;
   if (ev) *ev = (cl_event)sig;
   // (ARC_BATCH: recorded, see zrt::batch_max; a kernel with an event, ARC_ZE_SYNC_EACH or ARC_FAKE_OOM: as before)

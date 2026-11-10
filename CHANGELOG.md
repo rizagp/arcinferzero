@@ -1,5 +1,82 @@
 # Changelog
 
+## 2026-11-10: prompt attention on XMX by default on discrete cards; website_bench in a package
+
+- **`ARC_ATTN_XMX` is on by default on discrete cards** (Xe2 / Xe3 with 16-lane DPAS; iGPUs unchanged, `=1`
+  forces it, `=0` turns it off): a Pro B60's 64K-token prompts 4B +11.7 %, 9B +8.4 %, 27B +2.1 %, 35B-A3B +10.2 %,
+  4K prompts +0.2-1 %, logits bit-identical (issue #4, package bb8952f; docs/before-after.md).
+- **`bench\website_bench.ps1` ran nowhere but in a git folder:** it asked git for the commit, and in a package
+  (no `.git`) Windows PowerShell stopped the whole benchmark at git's error (issue #4). The commit now comes from the
+  package's `bin\PREBUILT.txt`, else from git when there is one.
+- Found while testing: `tests\run_tests.ps1`'s Gemma 4 12B KL fails (10.75, every position) with the last commit's
+  runz too, so not from today; its f32 reference (2026-10-12) is older than E4B's and 26B's (which pass) and is to be
+  made again (QUEUE).
+
+## 2026-11-10: the server's crash at the start of a meeting's transcription, found and fixed
+
+- **What happened:** an 83-minute meeting (two tracks) recorded fine with its live text, then the server ended at
+  the start of its accurate pass, every time it was started again (three times), with nothing in its log: an access
+  violation in `ze_intel_gpu64.dll` (0xC0000005, offset 0x386975; the same as a crash on 2026-11-04).
+- **Why:** the engine's argument cache (`zero/clrt.h`) skipped setting a kernel argument whose value was the same
+  as at its last launch. Level Zero keeps the *allocation* an argument was set with, not only its address. The
+  server warms Qwen3-ASR's encoder up on 1 s of silence at start, so a recording's first long part grows the
+  encoder's buffers (freed, made again); a new buffer at the address of a freed one kept the kernel's argument on
+  the freed allocation, and the next launch (`q3a_gather`) read it inside `zeCommandListAppendLaunchKernel`.
+  Reproduced outside the server with `asr_testz --warm` (a 1-s clip, then 5 minutes): it crashed with the cache on
+  and ran with `ARC_ARG_CACHE=0`.
+- **Fix:** every free of Level Zero memory the engine makes goes through `zrt::mem_free`, which counts it; a cached
+  argument counts as unchanged only within the same count, so after any free each kernel sets its arguments again
+  once. The case that crashed runs (twice, and with its text: the same as without the warm-up); the 4B's logits are
+  bit-identical, plain and with MTP; the meeting was transcribed to its end.
+- **A crash now names itself in the log** (`src/crash_log.h`, the server): the exception and the address it read,
+  the launch the thread was appending (kernel, sizes, arguments, any argument in no live buffer), and the stack
+  with module!function (file:line with a .pdb next to the exe).
+- `asr_testz --warm` encodes 1 s of silence first, as the server; `tests\run_tests.ps1` runs it on a generated
+  300-s clip (section 7).
+
+## 2026-11-10: small kernels and matrices of few rows in a generation step
+
+- **Measured first:** a Pro B60's 27B GEMVs read 68 % of its bandwidth over all; the Q4_K output head 99 %, the
+  codebook FFN 64-77 %, the 1,024-row K / V projections 45 % and DeltaNet's 96-row alpha / beta 14 % (issue #4's
+  per-kernel profile against each matrix's bytes in the GGUF; docs/xe2-tuning.md section 10). `swiglu_quant` (15 us
+  x 64 a token) and `rmsnorm_quant` (7 us x 129) ran one work-group per row.
+- **`ARC_WIDE_ROWS`** (on, every GPU): a 1-8 token pass's `swiglu_quant` (Qwen and MoE paths), `gated_norm_quant`
+  and `attn_gate_quant` run one sub-group per superblock (as Gemma's `swiglu_quant` did), `rmsnorm_quant` one
+  work-group per 16 superblocks; the same arithmetic. `=0`: as before.
+- **`ARC_GEMV_SMALL_WG`** (on, discrete cards, `zero/xe2/`): the single-token GEMV of a matrix with at most 512
+  sub-groups in work-groups of 64 instead of 256; the same sums. `=0`: as before.
+- `bench\decode_try.ps1` has rows for both off, their tokens checked against plain. Not measured yet: the laptop's
+  check (bit-identical logits, speed) waits for a free GPU; the B60's speed for its owner.
+
+## 2026-11-10: the GGUF keys are inferzero.*
+
+- **The metadata keys inferzero writes into a GGUF** are `inferzero.package`, `inferzero.experts_file`,
+  `inferzero.source`, `inferzero.virtual.names` / `.types` / `.dims` (a package, `zero/gguf_pack.h`) and
+  `inferzero.expert_format` (a GSQ conversion, `tools/convert_gsq.py`). The old names `arcinferzero.*` (and
+  `arcinfer.expert_format`) are no longer read: a package or a GSQ model made before this is refused when opened,
+  with the way out in the message. A package: delete its folder under `%USERPROFILE%\.inferzero\zero\models`,
+  then load the original GGUF (its first start writes the expert file again: 15 GB for the 35B, 52 GB for Flash
+  Next) or make the package again with `serverz --pack <the original GGUF>`. A GSQ model: convert it again
+  (`setup -Models 35b-gsq`). The server's model list shows such a file as unsupported and the log says why, once
+  per file; setup no longer counts it as downloaded. The expert file format (`.experts`) is unchanged.
+- **The desktop shortcut from before the rename** (`arcinferzero.lnk`, which opened the removed
+  `arc-launcher.cmd`) counts as a shortcut only while its target exists, and a new `inferzero.lnk` replaces it.
+- `tools/gguf_dump` prints why a file is refused (an old package, a truncated file) instead of aborting.
+- Metadata names only: the logits are bit-identical (Qwen3.5 4B, `runz --dump-logits` before and after).
+
+## 2026-11-10: the old command names are gone
+
+- **Removed:** `arc-launcher.cmd`, `arc-server.cmd`, `scripts\arc-launcher.ps1`, `scripts\arc-server.ps1` and
+  `scripts\pi-arc.ps1` (the aliases kept at the rename earlier today), zero-pi's `--arc-model`, and the `pi-arc` /
+  `arc-server` shims `install-pi` wrote into Pi's bin folder (`install-pi` now deletes them). The commands are
+  `zero-launcher`, `zero-server`, `zero-pi` and `zero-recorder` only; scripts and shortcuts that used the old names
+  need the new ones.
+- **Pi's command shims hold the folder's path:** after the repository folder is moved or renamed (this laptop's was,
+  with the project), `zero-pi` and `zero-server` in a terminal fail with a missing-file error until `install-pi` (or
+  `setup`) runs again; `install-pi` says so now.
+- Also: three stale git worktrees from the old folder pruned; `.gitignore`'s comment names the data folder
+  `%USERPROFILE%\.inferzero`.
+
 ## 2026-11-10: self audit of the website, logo and renames ([docs/self-audit-2026-11-10.md](docs/self-audit-2026-11-10.md))
 
 - **The package's key filter** (`zero/gguf_pack.h`) is `arcinferzero.` again: the rename had made it `inferzero.`,

@@ -99,7 +99,19 @@ $kltext = Join-Path ([IO.Path]::GetTempPath()) "inferzero-website-kl.txt"
 
 $gpu = (& (Join-Path $root "bin\mgpu_probe.exe") 2>&1 | Select-String -Pattern "^\s+GPU 0:" | Select-Object -First 1)
 $gpu = if ($gpu) { $gpu.Line.Trim() } else { "unknown GPU" }
-$commit = (git rev-parse --short HEAD 2>$null)
+# (the commit: a package's bin\PREBUILT.txt names it; a git folder asks git. A package has no .git, and Windows
+#  PowerShell 5.1 stops the script at git's "not a git repository" on stderr: issue #4, 2026-11-10)
+$commit = ""
+$pre = Join-Path $root "bin\PREBUILT.txt"
+if (Test-Path -LiteralPath $pre) {
+  $mc = [regex]::Match((Get-Content -LiteralPath $pre -Raw), 'commit ([0-9a-f]+)')
+  if ($mc.Success) { $commit = $mc.Groups[1].Value }
+}
+if (-not $commit -and (Test-Path -LiteralPath (Join-Path $root ".git")) -and (Get-Command git -ErrorAction SilentlyContinue)) {
+  $eap = $ErrorActionPreference
+  try { $ErrorActionPreference = "Continue"; $commit = (& git -C $root rev-parse --short HEAD 2>$null | Select-Object -First 1) } catch {} finally { $ErrorActionPreference = $eap }
+}
+if (-not $commit) { $commit = "unknown" }
 $stamp = Get-Date -Format s
 "# website benchmark $stamp, commit $commit, $gpu" | Add-Content (Join-Path $Out "log.txt")
 

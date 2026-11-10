@@ -27,11 +27,12 @@ if ($ids.Count) { Write-Host "Pi models: $(($ids | ForEach-Object { "inferzero/$
 else { Write-Host "Pi models: none yet (download a model, then run this again or just start zero-pi)" }
 
 # 3. commands on PATH
-# (pi-arc and arc-server: the names before 2026-11-10, kept as the same commands)
-$cmds = [ordered]@{ "zero-pi" = "zero-pi"; "zero-server" = "zero-server"; "pi-arc" = "zero-pi"; "arc-server" = "zero-server" }
-foreach ($name in $cmds.Keys) {
-  $target = Join-Path $root "scripts\$($cmds[$name]).ps1"
+# (the shims hold this folder's path: run this again after moving or renaming the folder. The old names pi-arc and
+#  arc-server, from before 2026-11-10, are removed if an earlier run installed them)
+foreach ($old in "pi-arc", "arc-server") { Remove-Item (Join-Path $binDir "$old.cmd") -ErrorAction SilentlyContinue }
+foreach ($name in "zero-pi", "zero-server") {
+  $target = Join-Path $root "scripts\$name.ps1"
   # (set PSModulePath=: Windows PowerShell with its own modules, not a path PowerShell 7 left behind: GitHub #3)
   "@echo off`r`nset `"PSModulePath=`"`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$target`" %*`r`n" | Set-Content (Join-Path $binDir "$name.cmd") -Encoding ascii -NoNewline
 }
-Write-Host "Commands installed: zero-pi, zero-server (and their old names pi-arc, arc-server)  ($binDir)"
+Write-Host "Commands installed: zero-pi, zero-server  ($binDir)"

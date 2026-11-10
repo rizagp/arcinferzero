@@ -464,8 +464,8 @@ class TpEngine {
       return;
     }
     shards_.clear();  // (after a failure: whatever is left, freed here)
-    if (comm_.host) zeMemFree(zrt::ctx, comm_.host);
-    if (comm_.flags) zeMemFree(zrt::ctx, comm_.flags);
+    if (comm_.host) zrt::mem_free(zrt::ctx, comm_.host);
+    if (comm_.flags) zrt::mem_free(zrt::ctx, comm_.flags);
     comm_.flags = nullptr;
     comm_.host = nullptr;
   }

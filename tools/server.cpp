@@ -39,6 +39,7 @@
 #include "xlsx.h"
 #include "server_terminal.h"
 #include "server_remote.h"
+#include "../src/crash_log.h"  // (a crash names its stack in the log)
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
@@ -934,6 +935,8 @@ class Server {
 #include "server_mcp.h"         // (MCP servers' tools for the model, /v1/mcp)
 
 int main(int argc, char** argv) {
+  crashlog::install();
+  crashlog::extra = [] { zrt::print_last_launch(); };  // (a crash inside a launch: which kernel, with what)
   full_speed_process();
   for (int i = 1; i < argc; ++i)
     if (std::string(argv[i]) == "--list-models") return list_models();

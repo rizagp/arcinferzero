@@ -10,7 +10,7 @@ bin/
 # Claude Code session files
 .claude/
 
-# Models and data that live outside the repository (Hugging Face cache, %LOCALAPPDATA%\inferzero)
+# Models and data that live outside the repository (Hugging Face cache, %USERPROFILE%\.inferzero)
 *.gguf
 *.experts
 *.lru

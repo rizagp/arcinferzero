@@ -308,7 +308,8 @@
       int a32 = 1, gelu = 0;
       set_args(k_swiglu_, 0, gu, Fs, Mp, T, aq_, asc_, absum_, a32, fused, gelu);
       size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
-      run("swiglu_quant", k_swiglu_, 2, gws, lws);
+      if (wide_rows(T)) run_rows_wide("swiglu_quant", k_swiglu_, Fs, T);
+      else run("swiglu_quant", k_swiglu_, 2, gws, lws);
       matmul("gemm_down_sh", L.down_sh, Mp, msh_, E, 0, 0, true);
     }
     if (rg_down) {

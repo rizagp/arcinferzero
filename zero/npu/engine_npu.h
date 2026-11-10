@@ -68,7 +68,7 @@ void npu_teardown() {
   npu_->wait();
   if (npu_shm_) {
     zeMemFree(npu_->ctx, npu_shm_);
-    zeMemFree(zrt::ctx, npu_shm_);
+    zrt::mem_free(zrt::ctx, npu_shm_);
   }
   npu_graphs_.clear();
   npu_graphs16_.clear();
@@ -146,7 +146,7 @@ void npu_setup() {
   npu_shm_bytes_ = total;
   const bool gm = npu_shm_ && npu::import_memory(zrt::ctx, npu_shm_, total) == npu_shm_;
   if (!gm || npu::import_memory(npu_->ctx, npu_shm_, total) != npu_shm_) {
-    if (gm) zeMemFree(zrt::ctx, npu_shm_);
+    if (gm) zrt::mem_free(zrt::ctx, npu_shm_);
     if (npu_shm_) VirtualFree(npu_shm_, 0, MEM_RELEASE);
     npu_shm_ = nullptr;
     throw std::runtime_error("ARC_NPU: cannot map the shared memory into the GPU's and the NPU's contexts");

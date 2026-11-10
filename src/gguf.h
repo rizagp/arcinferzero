@@ -1,6 +1,6 @@
 // GGUF v3 reader: memory-maps the file and exposes metadata + tensor views. A split model (name-00001-of-0000N.gguf,
 // "split.count" > 1) is opened from its first part: the other parts are mapped too and their tensors added.
-// A tensor listed under "arcinferzero.virtual.*" (an inferzero package: the routed experts live in its own
+// A tensor listed under "inferzero.virtual.*" (an inferzero package: the routed experts live in its own
 // expert file) has its name, type and shape but no data (data == nullptr).
 #pragma once
 // (see enc_weight_bytes below: the encoders' GPU footprint for --ctx auto)
@@ -107,6 +107,10 @@ class GgufFile {
       parse();
       open_parts();
       add_virtual();
+      // (a package or a GSQ conversion from before 2026-11-10, keyed arcinferzero.*: refused with the way out,
+      //  not loaded without its experts' format or with experts that are not there)
+      if (has("arcinferzero.package") || has("arcinferzero.expert_format") || has("arcinfer.expert_format"))
+        throw std::runtime_error("gguf: " + path + " was made before the project's rename (2026-11-10): its arcinferzero.* keys are no longer read. A package: delete its folder under %USERPROFILE%\\.inferzero\\zero\\models, then load the original GGUF, or make the package again with serverz --pack <the original GGUF>. A GSQ model: convert it again with tools\\convert_gsq.py (setup -Models 35b-gsq does)");
     } catch (...) {
       close();
       throw;
@@ -224,13 +228,13 @@ class GgufFile {
     return ne / blk * bytes;
   }
   void add_virtual() {
-    const auto* names = get_strs("arcinferzero.virtual.names");
-    const auto* types = get_ints("arcinferzero.virtual.types");
-    const auto* dims = get_ints("arcinferzero.virtual.dims");  // 4 per tensor (unused trailing dims = 0)
+    const auto* names = get_strs("inferzero.virtual.names");
+    const auto* types = get_ints("inferzero.virtual.types");
+    const auto* dims = get_ints("inferzero.virtual.dims");  // 4 per tensor (unused trailing dims = 0)
     if (!names || !types || !dims || types->size() != names->size() || dims->size() != names->size() * 4) return;
     // (only a package's experts, which the expert file holds: any other tensor without data would be read at
     //  address 0 by a loader that expects bytes)
-    if (!has("arcinferzero.package")) return;
+    if (!has("inferzero.package")) return;
     for (size_t i = 0; i < names->size(); ++i) {
       if (tensor_index.count((*names)[i]) || (*names)[i].find("_exps.weight") == std::string::npos) continue;
       GgufTensor t;

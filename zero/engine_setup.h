@@ -30,8 +30,8 @@
       hp.n_ff_exp = I("expert_feed_forward_length");
       hp.n_ff_shexp = I("expert_shared_feed_forward_length");
       // experts: GSQ 2-bit (tools/convert_gsq.py, zero/kernels/moe.cl) or standard GGUF types (decode.cl moe_*_q)
-      // (the key is arcinferzero.expert_format; files converted before the rename, 2026-10-24, have arcinfer.)
-      hp.moe_std = f_.get_str("arcinferzero.expert_format", f_.get_str("arcinfer.expert_format", "")) != "gsq2-v1";
+      // (the key is inferzero.expert_format; a file converted before 2026-11-10 is refused when opened, src/gguf.h)
+      hp.moe_std = f_.get_str("inferzero.expert_format", "") != "gsq2-v1";
       hp.n_ff_exp_pad = padded_k(hp.n_ff_exp);
       // (Flash Next: FFN widths of 640, its down projections padded to 768 and its shared expert to 768 rows)
       if (hp.hc) hp.n_ff_shexp = padded_k(hp.n_ff_shexp);

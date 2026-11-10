@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <map>
 
-int main(int argc, char** argv) {
+static int dump(int argc, char** argv) {
   if (argc < 2) { fprintf(stderr, "usage: gguf_dump model.gguf [max_layer]\n"); return 1; }
   int max_layer = argc > 2 ? atoi(argv[2]) : 4;
   GgufFile f(argv[1]);
@@ -44,4 +44,14 @@ int main(int argc, char** argv) {
   printf("--- %zu tensors, %.2f GiB\n", f.tensors.size(), total / 1073741824.0);
   for (auto& [k, v] : bytes_by_type) printf("  %-6s %8.1f MiB (%.1f%%)\n", k.c_str(), v / 1048576.0, 100.0 * v / total);
   return 0;
+}
+
+// (a file the reader refuses, e.g. a package from before the key rename: its reason, not an abort)
+int main(int argc, char** argv) {
+  try {
+    return dump(argc, argv);
+  } catch (const std::exception& e) {
+    fprintf(stderr, "gguf_dump: %s\n", e.what());
+    return 1;
+  }
 }

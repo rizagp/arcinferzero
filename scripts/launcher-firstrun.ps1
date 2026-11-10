@@ -40,6 +40,8 @@ function New-DesktopShortcut {
   $s.WindowStyle = 7  # (minimized: the .cmd only starts the window)
   $s.Description = "inferzero: local AI on the Intel Arc GPU"
   $s.Save()
+  # (the shortcut from before the rename to inferzero opened arc-launcher.cmd, removed since)
+  Remove-Item (Join-Path ([Environment]::GetFolderPath("Desktop")) "arcinferzero.lnk") -ErrorAction SilentlyContinue
 }
 
 # ---- what the dialog downloaded: started when the model list shows it
@@ -95,9 +97,13 @@ function Show-GetModels([bool]$first) {
   $p.Controls.Add($sp)
   $sc = New-Object System.Windows.Forms.CheckBox
   $sc.AutoSize = $true; $sc.Text = "Put an inferzero shortcut on the desktop"; $sc.Margin = New-Object System.Windows.Forms.Padding(3, 8, 3, 0)
-  # (a shortcut from before the rename, arcinferzero.lnk, counts: it still opens the launcher)
+  # (a shortcut from before the rename, arcinferzero.lnk, counts only while what it opens is still there: a git
+  #  folder no longer has arc-launcher.cmd, an older package's folder does)
   $desk = [Environment]::GetFolderPath("Desktop")
-  $sc.Checked = $first -and -not ((Test-Path (Join-Path $desk "inferzero.lnk")) -or (Test-Path (Join-Path $desk "arcinferzero.lnk")))
+  $oldLnk = Join-Path $desk "arcinferzero.lnk"
+  $oldOk = $false
+  if (Test-Path $oldLnk) { try { $oldOk = Test-Path -LiteralPath (New-Object -ComObject WScript.Shell).CreateShortcut($oldLnk).TargetPath } catch {} }
+  $sc.Checked = $first -and -not ((Test-Path (Join-Path $desk "inferzero.lnk")) -or $oldOk)
   $sc.Visible = $sc.Checked
   $p.Controls.Add($sc)
   $bar = New-Object System.Windows.Forms.ProgressBar

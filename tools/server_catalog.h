@@ -189,7 +189,7 @@ static std::vector<ModelInfo> scan_models() {
   // A copy of a file listed elsewhere too (the same name and size, e.g. a backup of the C: model on an external drive):
   // listed once, from the place that keeps the id below (a package, then the Hugging Face cache, then the extra
   // folders), within one place from the Windows drive first; a file of the same name with another size stays. The
-  // GGUF a package was made from (its arcinferzero.source) is not listed either: the package is the same model with
+  // GGUF a package was made from (its inferzero.source) is not listed either: the package is the same model with
   // its expert file already written (loading the source would write that file again).
   {
     std::error_code e2;
@@ -216,7 +216,7 @@ static std::vector<ModelInfo> scan_models() {
       is_pack[i] = true;
       try {
         const GgufFile g(cands[i].path.string());
-        const std::string src = g.get_str("arcinferzero.source", "");
+        const std::string src = g.get_str("inferzero.source", "");
         if (!src.empty()) packed.insert(lower(src));
       } catch (const std::exception&) {
       }
@@ -259,11 +259,18 @@ static std::vector<ModelInfo> scan_models() {
     try {
       GgufFile g(m.path);
       m.arch = g.get_str("general.architecture", "?");
-      gsq = g.get_str("arcinferzero.expert_format", g.get_str("arcinfer.expert_format", "")) == "gsq2-v1";  // (old name too)
+      gsq = g.get_str("inferzero.expert_format", "") == "gsq2-v1";
       m.ctx_train = g.get_int(m.arch + ".context_length", 0);
       nextn = g.get_int(m.arch + ".nextn_predict_layers", 0);
       m.moe = g.get_int(m.arch + ".expert_count", 0) > 0;
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+      // (a file from before the rename, keyed arcinferzero.*: listed as unsupported, and the log says why)
+      static std::mutex told_mu;
+      static std::set<std::string> told;
+      if (std::string(e.what()).find("arcinferzero") != std::string::npos) {
+        std::lock_guard<std::mutex> lk(told_mu);
+        if (told.insert(m.path).second) fprintf(stderr, "inferzero: %s\n", e.what());
+      }
     }
     bool mmproj = false, drafter = false, audio = false;
     for (const auto& s : dir_list(c.path.parent_path())) {
