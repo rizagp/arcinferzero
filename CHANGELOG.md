@@ -15,7 +15,7 @@
   laptop's 3.9).
 - **`ARC_FA_QB=2`** (opt-in): the query of each head read two 16-dim chunks at a time in the scores (half the reads
   of the query). Bit-identical. 16 % faster in the benchmark, 4.5 % less attention time in the 12B's 8K prompt, but
-  slower in the 12B's 32K prompt (attention 133 -> 162 s, one run each), so it stays off until that is understood.
+  slower in the 12B's 32K prompt (attention 133 -> 162 s; in the reverse order 133.7 against 139.1 s, still 4 % slower), so it stays off.
 - Tried and dropped: one lane per (query row, q head) so keys and values are read once for all lanes, without the
   per-multiply broadcast (bit-identical, but 23-60 % slower: more reads per key than before).
 

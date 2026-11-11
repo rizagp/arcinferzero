@@ -107,8 +107,8 @@
         const int fa_kb = fa_kb_env ? fa_kb_env : hd < 512 && hpg * fa_gr <= 8 ? 2 : 1;
         // (ARC_FA_QB=2 / 4, opt-in: chunks of 16 dims per query read in the scores, one key block per step only;
         //  bit-identical. bench\gattn_bench, the 12B's global layers: 32K deep, 512 / 4096 queries 574 -> 484 / 4,067 ->
-        //  3,432 ms; but the engine's 32K prompt measured attn_global 133.3 -> 162.2 s with it (2026-11-11, one run
-        //  each, the new one second): not the default until that is understood. The 26B's 8 q heads per kv head:
+        //  3,432 ms; but the engine's 32K prompt measured attn_global 133.3 -> 162.2 s with it, and in the reverse
+        //  order 133.7 against 139.1 s (2026-11-11): not the default. The 26B's 8 q heads per kv head:
         //  565 -> 636 ms in the bench)
         static const int fa_qb_env = getenv("ARC_FA_QB") ? atoi(getenv("ARC_FA_QB")) : 1;
         const int fa_qb = fa_kb == 1 && (fa_qb_env == 2 || fa_qb_env == 4) ? fa_qb_env : 1;
