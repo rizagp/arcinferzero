@@ -239,8 +239,9 @@
     h8_act(Mp, w.K, act32);
     // (the 140T preset: 32 tokens, 2 column groups, 128 registers on XMX)
     const bool pt = p140_take(w, Mp) && !h8_env();
-    // (ARC_GEMM_XW=1: wider XMX tiles, the same results; zero/xe2/engine_xw.h. A shape it does not take: below)
-    if (xw_ && !pt && xw_matmul(name, wq, hh, Mp, w.N, w.K, C, ldc, c_off, a)) return;
+    // (ARC_GEMM_XW=1: wider XMX tiles, the same results; zero/xe2/engine_xw.h. On 8-lane GPUs the 140T preset's
+    //  chunks (pt) too: gemm_xw8 instead of gemm_x8. A shape it does not take: below)
+    if (xw_ && (cl_.sg8 || !pt) && xw_matmul(name, wq, hh, Mp, w.N, w.K, C, ldc, c_off, a)) return;
     const int cg = pt ? 2 : h8_cg_for(w.N);
     cl_kernel k = pt ? gemm_kernel(h8_qtype(), false, 1, 2, 32, 1) : gemm_kernel(h8_qtype(), false, -1, cg);
     int M = Mp, N = w.N, K = w.K;

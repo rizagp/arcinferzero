@@ -1,36 +1,52 @@
-// The H8R prompt GEMM on XMX with a wider tile per sub-group (QUEUE 33.4, kernels/gemm_xw.cl): a part of class
-// Engine (zero/engine.h), included inside the class body after zero/xe2/engine_xe2.h and engine_h8.h; not a header of
-// its own. Discrete-card code (zero/xe2/): the iGPU path is unchanged, and so is every GPU without the switch.
+// The H8R prompt GEMM on XMX with a wider tile per sub-group (QUEUE 33.4 / 33.4b, kernels/gemm_xw.cl and
+// gemm_xw8.cl): a part of class Engine (zero/engine.h), included inside the class body after zero/xe2/engine_xe2.h
+// and engine_h8.h; not a header of its own. Off unless asked for: every path is unchanged without the switch.
 //
-// ARC_GEMM_XW=1: on GPUs with 16-lane XMX where H8R runs (h8_ with per-column scales: the Qwen dense models on
-// discrete cards by default, ARC_H8=1 elsewhere), the H8 GEMMs whose shape it takes (M a multiple of XW_TM, N of
-// 16 * XW_NC) go through gemm_xw instead of gemm.cl; the others stay on gemm.cl. Off until a B60 measures it.
-//   ARC_GEMM_XW_TM=16 / 32 (32): tokens per sub-group; ARC_GEMM_XW_NC=1 / 2 / 4 (4): 16-column groups per sub-group;
-//   ARC_GEMM_XW_GRF=128: the default register file (32 x 64 needs 256: its accumulators alone are 128 registers).
-//   ARC_GEMM_XW_TRY=1: on any GPU with H8R, DPAS emulated where there is no 16-lane XMX (tests; no speed meaning;
-//   on an iGPU H8 needs ARC_H8=1 too).
+// ARC_GEMM_XW=1: where H8R runs on XMX (h8_ with per-column scales: the Qwen dense models on discrete cards by
+// default, the Arc 140T preset's chunks of 512+ tokens, ARC_H8=1 elsewhere), the H8 GEMMs whose shape it takes (M a
+// multiple of XW_TM, N of 16 * XW_NC) go through the wide-tile kernel instead of gemm.cl / gemm_x8.cl; the others
+// stay. Off until a B60 / a 140T measures it.
+//   16-lane XMX (Xe2 / Xe3): gemm_xw.cl, XW_TM tokens x XW_NC 16-column groups (32 x 4 = 32 x 64).
+//   8-lane XMX (the 140T, Alchemist-kind): gemm_xw8.cl, coalesced loads (a group's weights in 4 block reads, an
+//   activation row in one), XW_TM x XW_NC (16 x 1 = 16 x 16, both halves, 128 registers).
+//   ARC_GEMM_XW_TM=16 / 32 (32 on 16 lanes, 16 on 8): tokens per sub-group; ARC_GEMM_XW_NC=1 / 2 / 4 (4 on 16 lanes, 1 on 8; 4 is
+//   16-lane only); ARC_GEMM_XW_GRF=128 / 256: the register file (256 on 16 lanes, 128 on 8, where 32 tokens spill).
+//   ARC_GEMM_XW_TRY=1: on any GPU with H8R, DPAS emulated where the GPU has none of its kind (tests; no speed
+//   meaning; on an iGPU H8 needs ARC_H8=1, or the 140T preset with ARC_140T=1 ARC_XMX_TRY=2).
+//   ARC_GEMM_XW_LANES=16: the 16-lane kernel on an 8-lane GPU, DPAS emulated (tests).
 // Checked once per device at start against gemm.cl without XMX, bit for bit (xw_check); a difference or a build
-// that fails leaves gemm.cl and says so.
+// that fails leaves the old kernels and says so.
 
   bool xw_ = false, xw_emu_ = false;
-  std::string xw_src_;
-  static int xw_tm() {
-    static const int v = [] {
-      const int t = getenv("ARC_GEMM_XW_TM") ? atoi(getenv("ARC_GEMM_XW_TM")) : 32;
-      if (t == 16 || t == 32) return t;
-      fprintf(stderr, "inferzero: ARC_GEMM_XW_TM=%d not supported (16 or 32): 32\n", t);
-      return 32;
-    }();
-    return v;
+  std::string xw_src_, xw8_src_;
+  // 8 or 16: which kernel (8: gemm_xw8 on GPUs with 8-lane sub-groups, the 140T and the 125H)
+  int xw_lanes() const {
+    static const int e = getenv("ARC_GEMM_XW_LANES") ? atoi(getenv("ARC_GEMM_XW_LANES")) : 0;
+    return cl_.sg8 && e != 16 ? 8 : 16;
   }
-  static int xw_nc() {
-    static const int v = [] {
-      const int c = getenv("ARC_GEMM_XW_NC") ? atoi(getenv("ARC_GEMM_XW_NC")) : 4;
-      if (c == 1 || c == 2 || c == 4) return c;
-      fprintf(stderr, "inferzero: ARC_GEMM_XW_NC=%d not supported (1, 2 or 4): 4\n", c);
-      return 4;
-    }();
-    return v;
+  // (8 lanes: 16 x 16 at the default register file by default, the shape that does not spill there (ocloc arl-h,
+  //  2026-11-11): the 140T's XMX GEMM gained 108 -> 165 tok/s from 128 registers' occupancy; 16 lanes: 32 x 64 at 256)
+  int xw_tm() const {
+    static const int e = getenv("ARC_GEMM_XW_TM") ? atoi(getenv("ARC_GEMM_XW_TM")) : 0;
+    const int def = xw_lanes() == 8 ? 16 : 32;
+    if (e == 16 || e == 32) return e;
+    if (e) { static std::once_flag said; std::call_once(said, [&] { fprintf(stderr, "inferzero: ARC_GEMM_XW_TM=%d not supported (16 or 32): %d\n", e, def); }); }
+    return def;
+  }
+  bool xw_grf256() const {
+    static const char* e = getenv("ARC_GEMM_XW_GRF");
+    if (e && std::string(e) == "128") return false;
+    if (e && std::string(e) == "256") return true;
+    return xw_lanes() == 16;
+  }
+  int xw_nc() const {
+    static const int e = getenv("ARC_GEMM_XW_NC") ? atoi(getenv("ARC_GEMM_XW_NC")) : 0;
+    const int def = xw_lanes() == 8 ? 1 : 4;
+    if (e == 0) return def;
+    if (e == 1 || e == 2 || (e == 4 && xw_lanes() == 16)) return e;
+    static std::once_flag said;
+    std::call_once(said, [&] { fprintf(stderr, "inferzero: ARC_GEMM_XW_NC=%d not supported here: %d\n", e, def); });
+    return def;
   }
   static bool xw_try() {
     static const bool t = getenv("ARC_GEMM_XW_TRY") && atoi(getenv("ARC_GEMM_XW_TRY")) != 0;
@@ -39,26 +55,24 @@
   // (h8_ and xmx_ known: after the XMX and H8 checks of the constructor)
   bool xw_wanted() const {
     const bool on = getenv("ARC_GEMM_XW") && atoi(getenv("ARC_GEMM_XW")) != 0;
-    // (16-lane DPAS only: not the 140T's 8-lane XMX; emulated, any GPU with 16-lane sub-groups, the 125H too)
-    return h8_ && h8_row() && (xw_try() || (on && xmx_ && !cl_.sg8));
+    return h8_ && h8_row() && (xw_try() || (on && xmx_));
   }
   cl_kernel xw_kernel() {
-    static const bool g128 = getenv("ARC_GEMM_XW_GRF") && std::string(getenv("ARC_GEMM_XW_GRF")) == "128";
-    return kernel("xw", std::string(g128 ? "" : "-cl-intel-256-GRF-per-thread ") + "-DXW_TM=" + std::to_string(xw_tm()) +
-                            " -DXW_NC=" + std::to_string(xw_nc()) + (xw_emu_ ? " -DXW_EMU" : "") +
-                            (x2d_ && !xw_emu_ ? " -DX2D" : ""),
-                  "gemm_xw");
+    const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
+                             std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(xw_nc()) + (xw_emu_ ? " -DXW_EMU" : "");
+    if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
+    return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : ""), "gemm_xw");
   }
-  // one piece [s0, s1) of K: the grid of gemm_xw.cl's header
+  // one piece [s0, s1) of K: the grid of gemm_xw.cl's / gemm_xw8.cl's header (a sub-group of 16 or 8 work-items)
   void xw_run(const char* name, cl_kernel k, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K, cl_mem C,
               int ldc, int c_off, int a, int rgroup, int s0, int s1, int wgy) {
-    const int tm = xw_tm(), nb = N / (16 * xw_nc());
-    size_t gws[2] = {(size_t)16 * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {16, (size_t)wgy};
+    const int tm = xw_tm(), nb = N / (16 * xw_nc()), ln = xw_lanes();
+    size_t gws[2] = {(size_t)ln * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)ln, (size_t)wgy};
     set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1);
     run(name, k, 2, gws, lws);
   }
-  // h8_matmul's GEMM through gemm_xw, with gemm.cl's split-K pieces and row groups; false: a shape it does not take
-  // (gemm.cl runs it)
+  // h8_matmul's GEMM through gemm_xw / gemm_xw8, with gemm.cl's split-K pieces and row groups; false: a shape it does
+  // not take (the old kernel runs it)
   bool xw_matmul(const char* name, cl_mem wq, cl_mem hh, int Mp, int N, int K, cl_mem C, int ldc, int c_off, int a) {
     const int tm = xw_tm();
     if (Mp % tm || N % (16 * xw_nc()) || K % 256) return false;
@@ -76,22 +90,24 @@
   }
   void xw_init() {
     if (!xw_wanted()) return;
-    // (emulated without XMX, and on 8-lane XMX (the 140T, Alchemist): its DPAS is not the 16-lane one gemm_xw calls)
-    xw_emu_ = !xmx_ || cl_.sg8;
+    // (8 lanes: emulated where the GPU has no XMX at all (the 125H, ARC_XMX_TRY=2); 16 lanes: where it has no 16-lane
+    //  XMX, the 140T's 8-lane DPAS included)
+    xw_emu_ = xw_lanes() == 8 ? !cl_.xmx : (!xmx_ || cl_.sg8);
     static std::mutex mu;
     static std::map<std::string, bool> known;
-    const std::string key = cl_.device_id + "|" + std::to_string(xw_tm()) + "x" + std::to_string(xw_nc()) +
-                            (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "");
+    const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
+                            std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "");
     std::lock_guard<std::mutex> g(mu);
     auto it = known.find(key);
     if (it == known.end()) {
       const bool ok = xw_check();
       it = known.emplace(key, ok).first;
       if (ok)
-        fprintf(stderr, "inferzero: the H8 GEMMs on XMX with %d x %d tiles (gemm_xw, results checked bit for bit)%s\n",
-                xw_tm(), 16 * xw_nc(), xw_emu_ ? " (DPAS emulated: tests)" : "");
+        fprintf(stderr, "inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s\n",
+                xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "");
       else
-        fprintf(stderr, "inferzero: gemm_xw differs from gemm.cl or does not build: not used (please report)\n");
+        fprintf(stderr, "inferzero: %s differs from gemm.cl or does not build: not used (please report)\n",
+                xw_lanes() == 8 ? "gemm_xw8" : "gemm_xw");
     }
     xw_ = it->second;
   }

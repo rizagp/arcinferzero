@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-11: the 140T's H8 GEMM with coalesced loads and a wider tile, opt-in (QUEUE 33.4b)
+
+- **`ARC_GEMM_XW=1` on a GPU with 8-lane XMX** (Arrow Lake H's Arc 140T): the H8 prompt GEMMs, the 140T preset's
+  chunks of 512+ tokens included, run through `zero/kernels/gemm_xw8.cl` instead of `gemm_x8.cl`. A 16-column
+  group's weights come in 4 block reads instead of 32 single-word ones, an activation row in one instead of two, and a
+  sub-group holds 16 tokens x 16 columns (both 8-column halves). ocloc for the 140T (`arl-h`): 90 instructions and
+  6.3 memory reads per DPAS instead of 110 and 13.3, no spills at the default register file. Larger shapes
+  (`ARC_GEMM_XW_TM=32`, `_NC=2`) need `ARC_GEMM_XW_GRF=256`.
+- Bit for bit gemm_x8's results: checked on the laptop with the 140T preset emulated (the 27B at four shapes) and
+  at start against gemm.cl. Off until a 140T measures it; `bench\xw_sweep.ps1` finds the 8-lane shapes by itself.
+
 ## 2026-11-11: self audit of gemm_xw and the fused GEMV; the 140T's XMX described
 
 - **gemm_xw's start-up check** built its gemm.cl reference with `ARC_GEMM_TM`'s tokens: with `ARC_GEMM_TM=32` and

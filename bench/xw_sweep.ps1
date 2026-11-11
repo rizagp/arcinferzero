@@ -1,5 +1,6 @@
-# The H8 prompt GEMMs with wider XMX tiles (gemm_xw, ARC_GEMM_XW=1, QUEUE 33.4) against the default, on a GPU with
-# 16-lane XMX (made for the Arc Pro B60). Paste the whole output into the GitHub issue.
+# The H8 prompt GEMMs with wider XMX tiles (ARC_GEMM_XW=1, QUEUE 33.4 / 33.4b) against the default: gemm_xw on GPUs
+# with 16-lane XMX (made for the Arc Pro B60), gemm_xw8 on the Arc 140T (8 lanes; its own shapes, found by a first
+# run). Paste the whole output into the GitHub issue.
 #   .\bench\xw_sweep.ps1 -Model <Qwen3.8 27B or another Qwen dense gguf> [-Tokens 512,4096,16384]
 # For each tile shape (tokens x columns per sub-group: 32 x 64 the default, 32 x 32, 16 x 64, 32 x 16) and the
 # default path: the prompt speed at each length (runz --bench-pp, the best of its 3 runs), and the logits of a real
@@ -46,6 +47,18 @@ $sets = [ordered]@{
   "xw 32x32" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 2 }
   "xw 16x64" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 16 }
   "xw 32x16" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 1 }
+}
+# (an 8-lane GPU, the Arc 140T, runs gemm_xw8: its own shapes, 16 x 16 at 128 registers by default, the larger ones
+#  at 256; its H8 GEMMs are the 140T preset's prompt chunks of 512+ tokens)
+$probe = Invoke-Runz @{ ARC_GEMM_XW = 1 } @("--bench-pp", "512", "--n", "1")
+if ($probe -match "gemm_xw8, 8 lanes") {
+  $sets = [ordered]@{
+    "default"          = @{}
+    "xw8 16x16"        = @{ ARC_GEMM_XW = 1 }
+    "xw8 32x16 256reg" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 32; ARC_GEMM_XW_GRF = 256 }
+    "xw8 16x32 256reg" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 2; ARC_GEMM_XW_GRF = 256 }
+    "xw8 32x32 256reg" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 32; ARC_GEMM_XW_NC = 2; ARC_GEMM_XW_GRF = 256 }
+  }
 }
 "inferzero xw_sweep: $(Split-Path $Model -Leaf), $(Get-Date -Format s)"
 $res = @{}

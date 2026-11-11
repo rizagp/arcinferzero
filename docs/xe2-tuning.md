@@ -647,7 +647,7 @@ Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, 
   DPAS; `X8W`: 100 and 11), against `gemm_xw.cl` on a B60 (`bmg`): ~60 instructions and 3.7 sends per DPAS of twice
   the work. The weights go in with one 4-byte read per lane per word (gemm.cl's 16-lane layout read by 8 lanes: 16
   reads per column half and 64 values), the activations with two 32-byte reads per row.
-- **Next (QUEUE 33.4b):** an 8-lane form of the wide tile for H8R: the weights of both column halves by
+- **Built 2026-11-11 (QUEUE 33.4b, `ARC_GEMM_XW=1`, `gemm_xw8.cl`; 16 x 16 at 128 registers: 90 instructions and 6.3 sends per DPAS):** an 8-lane form of the wide tile for H8R: the weights of both column halves by
   `block_read8` (4 words of both halves a read: 4 reads instead of 32), each activation row by one `block_read2`, and
   more column halves per sub-group. The same values into the same registers: bit-identical. Checked with ocloc
   `arl-h` (spills, sends per DPAS) and on the laptop with DPAS emulated (`ARC_XMX_TRY=2`), its speed on a 140T.

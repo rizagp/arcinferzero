@@ -312,6 +312,10 @@
       xw_src_ = read_file(opt.kernel_dir + "/gemm_xw.cl");
       if (xw_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gemm_xw.cl");
     }
+    if (which == "xw8" && xw8_src_.empty()) {  // (its 8-lane form, the 140T: zero/xe2/engine_xw.h)
+      xw8_src_ = read_file(opt.kernel_dir + "/gemm_xw8.cl");
+      if (xw8_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gemm_xw8.cl");
+    }
     if (which == "x8" && x8_src_.empty()) {  // (the XMX prompt GEMM of GPUs with 8-lane sub-groups, gemm_kernel)
       x8_src_ = read_file(opt.kernel_dir + "/gemm_x8.cl");
       if (x8_src_.empty()) throw std::runtime_error("kernel file not found: " + opt.kernel_dir + "/gemm_x8.cl");
@@ -331,7 +335,7 @@
     }
     const std::string& src = which == "gemm" ? gemm_src_ : which == "decode" ? dec_.for_kernel(name) : which == "moe" ? moe_src_
                              : which == "asr" ? asr_src_ : which == "x16" ? x16_src_ : which == "h8" ? h8_src_ : which == "x8" ? x8_src_
-                             : which == "gdnx" ? gdnx_src_ : which == "attnx" ? attnx_src_ : which == "xw" ? xw_src_
+                             : which == "gdnx" ? gdnx_src_ : which == "attnx" ? attnx_src_ : which == "xw" ? xw_src_ : which == "xw8" ? xw8_src_
                              : ops_.for_kernel(name);
     auto p = cl_.build(src, "-cl-std=CL3.0 -cl-mad-enable " + defs + (which == "ops" || which == "attnx" ? q2_defs_ : std::string()) +
                             (cl_.sg8 ? "" : " -DNO_SG8"));
