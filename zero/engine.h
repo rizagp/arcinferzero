@@ -749,10 +749,11 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     TP_MIRROR(snapshot(slot), TpMirror::kNone, 0);
     if (slot >= (int)snaps_.size()) snaps_.resize(slot + 1);
     Snap& s = snaps_[slot];
-    // (DeepSeek-V4.1: its window rings, pending compressor rows and Engram history are not in a snapshot yet: none is
-    //  taken, so the server starts such a conversation again instead of resuming on a later one's state)
+    // (DeepSeek-V4.1: its compressed rows are position-indexed like a KV cache; the window rings, the pending
+    //  compressor rows and the Engram history are copied, ~10 MB on the real model)
     if (hp.ds41) {
-      s.pos = -1;
+      ds_save(s.ds, s.dsh);
+      s.pos = pos;
       return;
     }
     const size_t sb = (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4, cb = conv_bytes();
@@ -804,6 +805,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }
   }
   int ring_cap() const { return swa_cap_; }  // (Gemma: the sliding-window rings' positions)
+  int ds_window() const { return hp.ds41 ? ds_.W : 0; }  // (DeepSeek-V4.1: its window ring's rows)
   int snapshot_pos(int slot) const { return slot < (int)snaps_.size() ? snaps_[slot].pos : -1; }
   // a snapshot restore() can use (Gemma: with its rings' copy; one of a loaded conversation has none)
   bool snapshot_usable(int slot) const {
@@ -821,8 +823,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   }
   bool restore(int slot) {
     TP_MIRROR(restore(slot), TpMirror::kNone, 0);
-    if (snapshot_pos(slot) < 0 || hp.ds41) return false;  // (DeepSeek-V4.1: its caches are not in snapshots yet)
+    if (snapshot_pos(slot) < 0) return false;
     Snap& s = snaps_[slot];
+    if (hp.ds41) {  // (see snapshot())
+      ds_load(s.ds, s.dsh);
+      pos = s.pos;
+      return true;
+    }
     if (hp.swa_rings && !s.ring_ok) {  // (no copy taken yet: the rings still hold its window, or it cannot be used)
       if (!s.ring_want || !rewind(s.pos)) return false;
       last_drafts_.clear();

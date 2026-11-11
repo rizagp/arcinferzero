@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-11: DeepSeek-V4.1-Flash in the server's prompt cache
+
+- **The server's snapshots now cover DeepSeek-V4.1** (`zero/engine_ds41.h` ds_save / ds_load): a follow-up
+  request or a new conversation sharing the system prompt resumes from the cached prefix instead of processing it
+  again. A snapshot copies what a step leaves besides the position-indexed compressed rows: every layer's window
+  ring, the pending compressor rows, the Engram token history (~10 MB on the real model). Checked with the new
+  `runz --snap-test` (a snapshot at an odd position, 100 other tokens fed, the snapshot restored, the next tokens'
+  logits against a fresh run): bit-identical, device and host snapshots, in one chunk and in chunks of 128; the
+  Qwen3.5 4B passes it too. Saved conversations (to disk) are still not for this model.
+
 ## 2026-11-11: the Arc 140T's prompts about 40 % faster (gemm_xw8 by default)
 
 - **On the Arc 140T (its preset), the H8 prompt GEMMs now run through `gemm_xw8` with 32 x 16 tiles at 256

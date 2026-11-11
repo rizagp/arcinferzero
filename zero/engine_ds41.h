@@ -6,8 +6,8 @@
 // sqrt(softplus) routing with the selection bias (moe.cl -DROUTE_DS) and clamped SwiGLU (-DSWI_CLAMP).
 // New (zero/kernels/ops_ds41.cl): the hyper-connection mixes with Sinkhorn, collapse / expand of the 4 streams,
 // Engram, the window + compressed-row attention with sinks, the compressor, the indexer and its top-k.
-// First version: f32 caches and plain kernels, checked against tools/ref_forward; no snapshots, sessions, slots or
-// drafters for this architecture yet.
+// First version: f32 caches and plain kernels, checked against tools/ref_forward; the server's snapshots (ds_save),
+// not yet saved conversations, slots or drafters for this architecture.
 
   struct DsHp {
     int QL = 0, G = 0, OL = 0, W = 0, IH = 0, ID = 0, TOPK = 0, HC = 4, MIX = 24, iters = 20;
@@ -220,7 +220,7 @@
         S.cap = ctx / S.rt + 2;
         S.cc = buf((size_t)S.cap * D * 4);
         S.ic = buf((size_t)S.cap * d.ID * 4);
-        S.pend = buf((size_t)2 * D * 4 * std::max(1, S.rt - 1));
+        S.pend = buf(ds_pend_bytes(S));
       }
       if (S.ix_own) {
         S.ix_qb = load_w(p + "indexer.attn_q_b.weight");
@@ -346,6 +346,29 @@
     }
     ds_hist_ = h;
   }
+
+  // A snapshot of what a step leaves besides the position-indexed compressed rows and index keys (rows below
+  // pos / ratio stay as they are until a later pass at those positions writes them again, which the server's dropping
+  // of later snapshots on a restore covers, as for a KV cache): every layer's window ring, every KV source's pending
+  // compressor rows, the Engram token history.
+  void ds_save(std::vector<std::vector<uint8_t>>& v, std::vector<int>& h) {
+    clFinish(cl_.queue);
+    v.clear();
+    for (DsLayer& L : dsl_) {
+      v.push_back(read_buf(L.ring, (size_t)ds_.W * hp.head_dim * 4));
+      if (L.kv_own) v.push_back(read_buf(L.pend, ds_pend_bytes(L)));
+    }
+    h = ds_hist_;
+  }
+  void ds_load(const std::vector<std::vector<uint8_t>>& v, const std::vector<int>& h) {
+    size_t k = 0;
+    for (DsLayer& L : dsl_) {
+      write_buf(L.ring, v.at(k++));
+      if (L.kv_own) write_buf(L.pend, v.at(k++));
+    }
+    ds_hist_ = h;
+  }
+  size_t ds_pend_bytes(const DsLayer& L) const { return (size_t)2 * hp.head_dim * 4 * std::max(1, L.rt - 1); }
 
   void ds_mix(cl_mem fn, cl_mem base, cl_mem scale, int T, cl_mem out) {
     cl_kernel k = kernel("ops", "", "ds_mix");

@@ -267,7 +267,9 @@ static int run_main(int argc, char** argv) {
             "  --dump-logits F       write the prompt logits and every generation step's (f32) to F, to compare runs bitwise\n"
             "  --ring-snap-test      Gemma 4: a snapshot's ring copy restored after the rings moved on (a 7,600+ token\n"
             "                        prompt), the next tokens' logits against a fresh run, bit for bit\n"
-            "  --mtp                 speculative decoding (MTP block / Gemma drafter)  --mtp-drafts N  drafts per step\n"
+            "  --snap-test           a snapshot (device, then host) restored after other tokens, the next tokens' logits\n"
+            "                        against a fresh run, bit for bit (DeepSeek-V4.1's rings and pending rows)\n"
+            "  --mtp               speculative decoding (MTP block / Gemma drafter)  --mtp-drafts N  drafts per step\n"
             "  --mtp-model F         the MTP head or drafter in a file of its own (Gemma 4 drafter; Qwen3.8 Flash Next's\n"
             "                        mtp-*.gguf head); default: an mtp-*.gguf next to the model\n"
             "  --dflash DIR          speculative decoding with a DFlash2 block drafter (Qwen3.8 27B, Qwen3.6 35B-A3B, Flash Next)\n"
@@ -320,6 +322,7 @@ static int run_main(int argc, char** argv) {
   bool prof = false, show = false, prof_gen = false, kl_decode = false, slots_check = false, must_fit = false;
   int bench_batch = 0;
   bool ring_snap_test = false;  // Gemma: a snapshot's ring copy restored after the rings moved on, logits bitwise
+  bool snap_test = false;       // (--snap-test: a snapshot restored after other tokens, logits bitwise)
   std::string dump_logits;  // every generation step's logits (f32), to compare two builds / settings bitwise
   for (int i = 2; i < argc; ++i) {
     std::string a = argv[i];
@@ -374,6 +377,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--slots-check") slots_check = true;
     else if (a == "--bench-batch") bench_batch = atoi(next());
     else if (a == "--ring-snap-test") ring_snap_test = true;
+    else if (a == "--snap-test") snap_test = true;
     else if (a == "--kl-decode") kl_decode = true;  // with --kl-ref of every position: feed the prompt token by token
     else if (a == "--perplexity") ppl_file = next();
     else if (a == "--ppl-dump") ppl_dump = next();
@@ -491,6 +495,44 @@ static int run_main(int argc, char** argv) {
            same ? "bit-identical" : "DIFFER", below ? "ACCEPTED (stale slots)" : "refused", snap_ms, before,
            host / 1048576.0, mid, mid_ms, rest_ms);
     return same && !below && before == 0 && host > 0 ? 0 : 1;
+  }
+  // --snap-test (DeepSeek-V4.1, or any model with snapshots; Gemma: the device snapshot only, as the server): the prompt
+  // to an odd position a, a snapshot (the device one, then the host one), an even number of other tokens fed past it,
+  // at least a window's worth (they overwrite every window-ring slot, the pending compressor rows, the token history),
+  // the snapshot restored, then the prompt's next tokens: their logits against the same pieces fed after a fresh
+  // start, bit for bit
+  if (snap_test) {
+    const int n = (int)toks.size(), a = std::max(1, n / 3) | 1;
+    const int mid = std::max(n / 3, eng.ds_window() + 2) / 2 * 2, tail = n - a - mid;
+    if (tail < 4) { fprintf(stderr, "--snap-test: a prompt of at least %d tokens\n", a + mid + 4); return 1; }
+    auto feed = [&](const int* t, int n) {
+      std::vector<float> l;
+      for (int p = 0; p < n;) {
+        const int k = std::min(eng.max_chunk, n - p);
+        l = eng.forward(t + p, k);
+        p += k;
+      }
+      return l;
+    };
+    std::vector<int> other(toks.rbegin(), toks.rbegin() + mid);  // (other tokens: the prompt's end reversed)
+    eng.reset();
+    feed(toks.data(), a);
+    const std::vector<float> want = feed(toks.data() + a, tail);
+    bool all = true;
+    for (int host = 0; host < (eng.hp.swa_rings ? 1 : 2); ++host) {
+      eng.reset();
+      feed(toks.data(), a);
+      if (host) eng.snapshot_host(); else eng.snapshot(0);
+      feed(other.data(), mid);
+      const bool ok = (host ? eng.restore_host() : eng.restore(0)) && eng.pos == a;
+      const std::vector<float> got = ok ? feed(toks.data() + a, tail) : std::vector<float>();
+      const bool same = ok && got.size() == want.size() && memcmp(got.data(), want.data(), got.size() * 4) == 0;
+      printf("%s snapshot at %d, %d other tokens, restore %s; the next %d tokens' logits %s\n", host ? "host" : "device", a,
+             mid, ok ? "ok" : "FAILED", tail, same ? "bit-identical" : "DIFFER");
+      all = all && same;
+      if (host) eng.drop_host_snapshot(); else eng.drop_snapshot(0);
+    }
+    return all ? 0 : 1;
   }
   if (bench_batch > 1) {  // batched decoding (forward_batch) over 1..N slots holding the prompt, against one slot alone
     const int NS = bench_batch;
