@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-12: DeepSeek-V4.1's indexer scores faster, the same results
+
+- The indexer's scores take a lane per compressed row: each row's index key is read once for all its heads (the
+  real-widths test model's 1,200-token prompt: 318 -> 21 ms, 763 -> 986 tok/s), bit-identical. It matters more with
+  long prompts, where the scores grow with rows x queries. `ARC_DS_IX1=1`: the previous kernel.
+
 ## 2026-11-12: DeepSeek-V4.1 prompts nearly twice as fast on the test model
 
 - **Prompt attention takes 16 heads at a time** (`ds_attn_gh`: a lane per key, the 16 heads' queries broadcast, as

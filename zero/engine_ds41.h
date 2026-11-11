@@ -650,12 +650,16 @@
       for (int q0 = 0; q0 < T; q0 += ds_sc_q_) {
         const int Tq = std::min(ds_sc_q_, T - q0);
         if (nrows > 0) {
-          cl_kernel k = kernel("ops", ds_kv_defs(), "ds_ix_scores");
+          // (ds_ix_scores16: a lane per row, the key read once for all heads; ARC_DS_IX1=1: one work-item per score)
+          static const bool ix1 = getenv("ARC_DS_IX1") && atoi(getenv("ARC_DS_IX1")) != 0;
+          const bool ix16 = !ix1 && d.IH <= 32 && d.ID % 16 == 0;
+          cl_kernel k = ix16 ? kernel("ops", ds_kv_defs() + " -DDS_IH=" + std::to_string(d.IH), "ds_ix_scores16")
+                             : kernel("ops", ds_kv_defs(), "ds_ix_scores");
           int ih = d.IH, id = d.ID, nr = nrows, p0 = pos, r = rt, tq = q0, l2 = ld, uc = use_cand ? 1 : 0,
               nb = ds_nbmax_, bs = d.cand_bs;
           set_args(k, 0, ds_iq_, ds_iw_, K.ic, ih, id, nr, p0, r, tq, ds_sc_, l2, ds_cand_, uc, nb, bs);
           size_t gws[2] = {(size_t)ld, (size_t)Tq}, lws[2] = {64, 1};
-          run("ds_ix_scores", k, 2, gws, lws);
+          run(ix16 ? "ds_ix_scores16" : "ds_ix_scores", k, 2, gws, lws);
         }
         auto topk = [&](cl_mem sc, int ldsc, int kk, int bs_div, cl_mem sel, cl_mem nsel, int ldsel) {
           cl_kernel k = kernel("ops", "", "ds_topk");

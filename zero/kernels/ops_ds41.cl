@@ -325,6 +325,45 @@ __kernel void ds_ix_scores(__global const float* iq, __global const float* iw, _
   sc[(size_t)tl * ld + j] = s;
 }
 
+// ds_ix_scores with a lane per row (16 rows a sub-group, one query): each row's index key read once, 16 values at a
+// time, for all IH heads; each head's query from a block read, broadcast. Per score the same operations in the same
+// order as ds_ix_scores (d over the ID dims in order, then the heads in order). IH <= 32, ID % 16 == 0.
+// grid (rows padded to 64, Tq), local (64, 1).
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ds_ix_scores16(__global const float* iq, __global const float* iw, __global const DSKV_T* ik, int IH,
+                             int ID, int nrows, int pos, int rt, int tq0, __global float* sc, int ld,
+                             __global const uchar* cand, int use_cand, int nbmax, int bs) {
+  const int j = get_global_id(0), tl = get_global_id(1), t = tq0 + tl;
+  const int nv = (pos + t + 1) / rt;
+  const bool live = j < nrows && j < nv && (!use_cand || cand[(size_t)t * nbmax + j / bs]);
+  __global const DSKV_T* kr = ik + (size_t)(live ? j : 0) * ID;
+  __global const float* qb = iq + (size_t)t * IH * ID;
+  float d[32];
+  for (int h = 0; h < 32; ++h) d[h] = 0.0f;
+  for (int c = 0; c < ID / 16; ++c) {
+    const float16 kv = live ? DSKV_LD16(kr, c) : (float16)0.0f;
+    const float kk[16] = {kv.s0, kv.s1, kv.s2, kv.s3, kv.s4, kv.s5, kv.s6, kv.s7, kv.s8, kv.s9, kv.sa, kv.sb, kv.sc, kv.sd, kv.se, kv.sf};
+#ifdef DS_IH  // (the head count at build time: the loop unrolled, d[] in registers)
+#pragma unroll
+    for (int h = 0; h < DS_IH; ++h) {
+#else
+    for (int h = 0; h < IH; ++h) {
+#endif
+      const float qc = as_float(intel_sub_group_block_read((__global const uint*)(qb + (size_t)h * ID + 16 * c)));
+#pragma unroll
+      for (int i = 0; i < 16; ++i) d[h] += BC16(qc, i) * kk[i];
+    }
+  }
+  if (j >= nrows) return;
+  float s = -INFINITY;
+  if (live) {
+    s = 0.0f;
+    const float wsc = rsqrt((float)(ID * IH));
+    for (int h = 0; h < IH; ++h) s += iw[(size_t)t * IH + h] * wsc * fmax(d[h], 0.0f);
+  }
+  sc[(size_t)tl * ld + j] = s;
+}
+
 // Block maxima of the scores (blocks of bs rows), the block of the query's newest visible row +inf.
 // grid (nbmax, Tq).
 __kernel void ds_block_max(__global const float* sc, int ld, int pos, int rt, int tq0, int bs, __global float* bsc, int ldb) {
