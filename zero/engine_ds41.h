@@ -687,9 +687,15 @@
     }
     // attention over the window and the selected compressed rows
     // (1-8 rows: the keys of each (row, head) split over 8 sub-groups, combined after: ds_attn_split / ds_attn_comb;
-    //  ARC_DS_ATTN1=1: one sub-group per (row, head) as for prompt chunks)
+    //  ARC_DS_ATTN1=1: ds_attn, one sub-group per (row, head), for every pass; prompt chunks: ds_attn_gh below)
     static const bool attn1 = getenv("ARC_DS_ATTN1") && atoi(getenv("ARC_DS_ATTN1")) != 0;
+    static const bool attn_gh = !getenv("ARC_DS_ATTN_GH") || atoi(getenv("ARC_DS_ATTN_GH")) != 0;
     constexpr int kRows = 8, S = 8;  // (rows of the split path, splits per (row, head))
+    // (heads per work-group: the 64 heads share one KV head, so a work-group of several heads of a row keeps its key
+    //  reads on one Xe core; ARC_DS_ATTN_HPW=n, default 16; the same arithmetic per head at any n)
+    static const int hpw0 = getenv("ARC_DS_ATTN_HPW") ? atoi(getenv("ARC_DS_ATTN_HPW")) : 16;
+    int hpw = std::clamp(hpw0, 1, 32);  // (at most 512 work-items)
+    while (H % hpw) --hpw;
     if (T <= kRows && !attn1) {
       if (!ds_apart_) ds_apart_ = buf((size_t)kRows * H * S * (D + 2) * 4);
       const DsLayer* K = L.rt ? &dsl_[L.kvs] : nullptr;
@@ -698,7 +704,7 @@
         int W = d.W, us = L.rt ? 1 : 0, ls = std::max(1, d.TOPK), p0 = pos, HH = H, SS = S;
         set_args(k, 0, ds_q_, ds_kvh_, L.ring, W, K ? K->cc : L.ring, ds_sel_, ds_nsel_, us, ls, L.sinks, p0, HH, SS,
                  ds_apart_);
-        size_t gws[3] = {(size_t)16 * H, (size_t)T, (size_t)S}, lws[3] = {16, 1, 1};
+        size_t gws[3] = {(size_t)16 * H, (size_t)T, (size_t)S}, lws[3] = {(size_t)16 * hpw, 1, 1};
         run("ds_attn", k, 3, gws, lws);
       }
       {
@@ -708,6 +714,16 @@
         size_t gws[2] = {(size_t)16 * H, (size_t)T}, lws[2] = {16, 1};
         run("ds_attn", k, 2, gws, lws);
       }
+    } else if (H % 16 == 0 && hp.n_rot % 4 == 0 && !attn1 && attn_gh) {
+      // (prompt chunks: 16 heads a work-group, lane = key, ops_ds41.cl ds_attn_gh; ARC_DS_ATTN_GH=0: ds_attn)
+      cl_kernel k = kernel("ops", ds_kv_defs() + " -cl-intel-256-GRF-per-thread", "ds_attn_gh");
+      const DsLayer* K = L.rt ? &dsl_[L.kvs] : nullptr;
+      int W = d.W, us = L.rt ? 1 : 0, ls = std::max(1, d.TOPK), R = hp.n_rot, po = kDsPad, p0 = pos, HH = H,
+          hpg = H / d.G, MM = Mp;
+      set_args(k, 0, ds_q_, ds_kvh_, L.ring, W, K ? K->cc : L.ring, ds_sel_, ds_nsel_, us, ls, L.sinks, ds_rt_[ty], R, po,
+               p0, HH, hpg, MM, ds_att_);
+      size_t gws[3] = {(size_t)16 * 8, (size_t)H / 16, (size_t)T}, lws[3] = {(size_t)16 * 8, 1, 1};
+      run("ds_attn", k, 3, gws, lws);
     } else {
       cl_kernel k = kernel("ops", ds_kv_defs(), "ds_attn");
       const DsLayer* K = L.rt ? &dsl_[L.kvs] : nullptr;
@@ -715,7 +731,7 @@
           hpg = H / d.G, MM = Mp;
       set_args(k, 0, ds_q_, ds_kvh_, L.ring, W, K ? K->cc : L.ring, ds_sel_, ds_nsel_, us, ls, L.sinks, ds_rt_[ty], R, po,
                p0, HH, hpg, MM, ds_att_);
-      size_t gws[2] = {(size_t)16 * H, (size_t)T}, lws[2] = {16, 1};
+      size_t gws[2] = {(size_t)16 * H, (size_t)T}, lws[2] = {(size_t)16 * hpw, 1};
       run("ds_attn", k, 2, gws, lws);
     }
     {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-12: DeepSeek-V4.1 prompts nearly twice as fast on the test model
+
+- **Prompt attention takes 16 heads at a time** (`ds_attn_gh`: a lane per key, the 16 heads' queries broadcast, as
+  Gemma's head-512 prompt attention does), instead of one sub-group per head that read the keys again for each head
+  and paid a reduction and an exp per key and head. The real-widths test model's 1,200-token prompt: attention 1,756
+  -> 275 ms, the prompt 407 -> 765 tok/s on the laptop. KL against f32 as before (16-head test model 0.00308 against
+  0.00304). `ARC_DS_ATTN_GH=0`: the old kernel. `tools/make_tiny_deepseek41.py --heads N` for such test models.
+
 ## 2026-11-12: DeepSeek-V4.1 generation 28 % faster on the test model
 
 - The hyper-connection mixes of a token now run over 16 work-groups instead of one (`ds_mix` 99 -> 18 ms on the

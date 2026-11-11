@@ -14,7 +14,7 @@
 # candidate pool; an index layer using it), an expert FFN of 256 instead of 2304 and a vocabulary of 2048 to keep the
 # file at ~3.5 GB (experts in Q4_0). Its data are written tensor by tensor.
 #
-# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N] [--real]
+# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N] [--heads N] [--real]
 import struct, sys
 import numpy as np
 
@@ -169,6 +169,9 @@ def main():
     seed = int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else 41
     if "--real" in sys.argv:
         real_config()
+    global H  # (--heads N: q heads; 16 or more for the 16-head prompt attention, ds_attn_gh)
+    if "--heads" in sys.argv:
+        H = int(sys.argv[sys.argv.index("--heads") + 1])
     global NU  # (--nu N: experts per token; --nu 16 = every expert, no selection to flip on near-ties)
     if "--nu" in sys.argv:
         NU = int(sys.argv[sys.argv.index("--nu") + 1])

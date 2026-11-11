@@ -15,11 +15,13 @@
 #define DSKV_LD(p, i) vload_half((i), (p))
 #define DSKV_ST(v, p, i) vstore_half((v), (i), (p))
 #define DSKV_LD16(p, i) vload_half16((i), (p))
+#define DSKV_LD4(p, i) vload_half4((i), (p))
 #else
 #define DSKV_T float
 #define DSKV_LD(p, i) ((p)[i])
 #define DSKV_ST(v, p, i) ((p)[i] = (v))
 #define DSKV_LD16(p, i) vload16((i), (p))
+#define DSKV_LD4(p, i) vload4((i), (p))
 #endif
 // ds_norm_rope's destination: a cache (-DDS_DST_KV) or f32 rows
 #ifdef DS_DST_KV
@@ -458,7 +460,7 @@ __kernel void ds_attn(__global const float* q, __global const DSKV_T* kv, __glob
                       __global const DSKV_T* cc, __global const int* sel, __global const int* nsel, int use_sel, int ldsel,
                       __global const float* sinks, __global const float2* tab, int R, int poff, int pos, int H, int hpg,
                       int Mp, __global float* att) {
-  const int h = get_group_id(0), t = get_group_id(1), l = get_sub_group_local_id();
+  const int h = get_global_id(0) / 16, t = get_group_id(1), l = get_sub_group_local_id();  // (16 lanes a head: any heads per work-group)
   const int D = 512, p = pos + t;
   float qv[32], o[32];
   __global const float* qr = q + ((size_t)t * H + h) * D + l * 32;
@@ -514,7 +516,7 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void ds_attn_split(__global const float* q, __global const DSKV_T* kv, __global const DSKV_T* ring, int W,
                             __global const DSKV_T* cc, __global const int* sel, __global const int* nsel, int use_sel,
                             int ldsel, __global const float* sinks, int pos, int H, int S, __global float* part) {
-  const int h = get_group_id(0), t = get_group_id(1), s = get_group_id(2), l = get_sub_group_local_id();
+  const int h = get_global_id(0) / 16, t = get_group_id(1), s = get_group_id(2), l = get_sub_group_local_id();
   const int D = 512, p = pos + t;
   float qv[32], o[32];
   __global const float* qr = q + ((size_t)t * H + h) * D + l * 32;
@@ -555,7 +557,7 @@ __kernel void ds_attn_split(__global const float* q, __global const DSKV_T* kv, 
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void ds_attn_comb(__global const float* part, int S, __global const float2* tab, int R, int poff, int H,
                            int hpg, int Mp, __global float* att) {
-  const int h = get_group_id(0), t = get_group_id(1), l = get_sub_group_local_id();
+  const int h = get_global_id(0) / 16, t = get_group_id(1), l = get_sub_group_local_id();  // (16 lanes a head: any heads per work-group)
   const int D = 512;
   __global const float* pb = part + ((size_t)t * H + h) * S * (D + 2);
   float M = -INFINITY;
@@ -583,6 +585,116 @@ __kernel void ds_attn_comb(__global const float* part, int S, __global const flo
   const int g = h / hpg;
   __global float* out = att + ((size_t)g * Mp + t) * (hpg * D) + (h % hpg) * D + l * 32;
   for (int i = 0; i < 32; ++i) out[i] = o[i];
+}
+
+// Prompt chunks: ds_attn's arithmetic arranged as Gemma's attn_fa_gh (ops_attn_g.cl), for 16 heads at once: a
+// work-group = one row x 16 heads, GH_FS sub-groups. Per step each sub-group takes a block of 16 keys of the row's
+// list (window then selected rows, ds_attn's order), lane = key: its score for the 16 heads (each head's query
+// broadcast from a block read), into local memory; then every sub-group runs the blocks' softmax updates in order for
+// the 16 heads and P.V (V = K) for its 512 / GH_FS dims. The sink starts each head's running max and lane 0's sum.
+// One sub-group per (row, head) re-read the keys for each head and paid a 16-lane reduction and an exp per key and
+// head (ds_attn: 0.23 TFLOPS at the real widths on the laptop). grid (16 * GH_FS, H / 16, T), local (16 * GH_FS, 1, 1).
+#define GH_FS 8
+#define GH_GD (512 / GH_FS / 16)  // output dims per lane and head (4)
+inline __global const DSKV_T* ds_keyrow(int i, int nw, int s0, int p, int pos, int W, __global const DSKV_T* kv,
+                                     __global const DSKV_T* ring, __global const DSKV_T* cc, __global const int* selr) {
+  const int D = 512;
+  if (i < nw) {
+    const int kk = s0 + i;
+    return kk >= pos ? kv + (size_t)(kk - pos) * D : ring + (size_t)(kk % W) * D;
+  }
+  return cc + (size_t)selr[i - nw] * D;
+}
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ds_attn_gh(__global const float* q, __global const DSKV_T* kv, __global const DSKV_T* ring, int W,
+                         __global const DSKV_T* cc, __global const int* sel, __global const int* nsel, int use_sel,
+                         int ldsel, __global const float* sinks, __global const float2* tab, int R, int poff, int pos,
+                         int H, int hpg, int Mp, __global float* att) {
+  __local float sc[GH_FS][16][16];  // [block of the step][head][key]
+  const int lane = get_sub_group_local_id(), sgi = get_sub_group_id(), hg = get_group_id(1), t = get_group_id(2);
+  const int D = 512, p = pos + t, s0 = max(0, p - W + 1), nw = p - s0 + 1;
+  const int n = nw + (use_sel ? nsel[t] : 0), nb = (n + 15) / 16;
+  __global const int* selr = sel + (size_t)t * ldsel;
+  __global const float* qb = q + ((size_t)t * H + hg * 16) * D;
+  const float scale = rsqrt((float)D);
+  float mx[16], lp[16];
+  float4 o[16];
+#pragma unroll
+  for (int h = 0; h < 16; ++h) {
+    mx[h] = sinks[hg * 16 + h];
+    lp[h] = lane == 0 ? 1.0f : 0.0f;  // (the sink's exp(sink - mx) = 1, scaled with the rest from here on)
+    o[h] = 0.0f;
+  }
+  for (int bs = 0; bs < nb; bs += GH_FS) {
+    {  // scores of block bs + sgi, lane = key
+      const int b = bs + sgi, i = b * 16 + lane;
+      const bool valid = b < nb && i < n;
+      __global const DSKV_T* kr = valid ? ds_keyrow(i, nw, s0, p, pos, W, kv, ring, cc, selr) : kv;
+      float s[16];
+#pragma unroll
+      for (int h = 0; h < 16; ++h) s[h] = 0.0f;
+      if (b < nb)
+        for (int c = 0; c < D / 16; ++c) {
+          const float16 kk = valid ? DSKV_LD16(kr, c) : (float16)0.0f;
+#pragma unroll
+          for (int h = 0; h < 16; ++h) {
+            const float qc = as_float(intel_sub_group_block_read((__global const uint*)(qb + (size_t)h * D + 16 * c)));
+            float a = s[h];
+            a = fma(BC16(qc, 0), kk.s0, a);  a = fma(BC16(qc, 1), kk.s1, a);
+            a = fma(BC16(qc, 2), kk.s2, a);  a = fma(BC16(qc, 3), kk.s3, a);
+            a = fma(BC16(qc, 4), kk.s4, a);  a = fma(BC16(qc, 5), kk.s5, a);
+            a = fma(BC16(qc, 6), kk.s6, a);  a = fma(BC16(qc, 7), kk.s7, a);
+            a = fma(BC16(qc, 8), kk.s8, a);  a = fma(BC16(qc, 9), kk.s9, a);
+            a = fma(BC16(qc, 10), kk.sa, a); a = fma(BC16(qc, 11), kk.sb, a);
+            a = fma(BC16(qc, 12), kk.sc, a); a = fma(BC16(qc, 13), kk.sd, a);
+            a = fma(BC16(qc, 14), kk.se, a); a = fma(BC16(qc, 15), kk.sf, a);
+            s[h] = a;
+          }
+        }
+#pragma unroll
+      for (int h = 0; h < 16; ++h) sc[sgi][h][lane] = valid ? s[h] * scale : -INFINITY;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int ib = 0; ib < GH_FS && bs + ib < nb; ++ib) {
+      const int b = bs + ib;
+      const bool valid = b * 16 + lane < n;
+      float pr[16];
+#pragma unroll
+      for (int h = 0; h < 16; ++h) {
+        const float sv = sc[ib][h][lane];
+        const float mn = fmax(mx[h], sub_group_reduce_max(sv));  // (mx starts at the sink: always finite)
+        const float corr = exp(mx[h] - mn);
+        pr[h] = valid ? exp(sv - mn) : 0.0f;
+        lp[h] = lp[h] * corr + pr[h];
+        o[h] *= corr;
+        mx[h] = mn;
+      }
+      for (int j = 0; j < 16; ++j) {
+        const int i = b * 16 + j;
+        if (i >= n) break;  // (the same for every lane)
+        const float4 vv = DSKV_LD4(ds_keyrow(i, nw, s0, p, pos, W, kv, ring, cc, selr) + sgi * (D / GH_FS), lane);
+#pragma unroll
+        for (int h = 0; h < 16; ++h) o[h] = fma((float4)sub_group_broadcast(pr[h], j), vv, o[h]);
+      }
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+  }
+  const int r0 = D - R, e0 = sgi * (D / GH_FS) + GH_GD * lane;  // (this lane's 4 dims)
+#pragma unroll
+  for (int h = 0; h < 16; ++h) {
+    const float L = sub_group_reduce_add(lp[h]);
+    float4 v = o[h] / L;
+    if (e0 >= r0) {  // (the inverse RoPE of the rotated dims: pairs (e0, e0+1), (e0+2, e0+3))
+      const float2 c0 = tab[(size_t)(t + poff) * (R / 2) + (e0 - r0) / 2], c1 = tab[(size_t)(t + poff) * (R / 2) + (e0 - r0) / 2 + 1];
+      const float a0 = v.s0, b0 = v.s1, a1 = v.s2, b1 = v.s3;
+      v.s0 = a0 * c0.x + b0 * c0.y;
+      v.s1 = -a0 * c0.y + b0 * c0.x;
+      v.s2 = a1 * c1.x + b1 * c1.y;
+      v.s3 = -a1 * c1.y + b1 * c1.x;
+    }
+    const int hh = hg * 16 + h, g = hh / hpg;
+    vstore4(v, 0, att + ((size_t)g * Mp + t) * (hpg * D) + (hh % hpg) * D + e0);
+  }
 }
 
 // The window ring after a chunk: positions max(pos, pos + T - W) .. pos + T - 1 into slots p % W. grid (D, n).
