@@ -234,6 +234,10 @@ inferzero notes:
   `mmproj` file next to the package for images. The model list then uses the package, and the original GGUF can be
   moved to a backup disk. The package gives bit-identical logits and the same image answers (checked on the 26B,
   20 Oct; the 35B and Flash Next run from packages too).
+  The launcher does it from **More > Pack the selected MoE model**, or `scripts\zero-server.ps1 pack -Model <name or
+  path>`: it packs the model and copies its own `mmproj` / `mtp-` files into the package. Then it offers to delete
+  the original GGUF (`zero-server remove-original -Model ...`, only once the package is complete). A package runs in
+  inferzero only: to use the model in another program you would download it again.
 - GPU kernels are compiled once and then saved (`%USERPROFILE%\.inferzero\kernels`): the first request of a model on
   zero, the first image, or the first use after an Intel driver update feels slower, after that it is normal.
 

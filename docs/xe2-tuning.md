@@ -4,7 +4,7 @@ All the switches (environment variables; each is read once per process):
 
 | Switch | Default | What it does | Section |
 |---|---|---|---|
-| `ARC_GEMM_GRF=256` | 128 on discrete cards | the dense prompt GEMM's register file | 1 |
+| `ARC_GEMM_GRF=256` | 128 on GPUs with 16-lane XMX (discrete cards, Lunar / Panther Lake) | the dense prompt GEMM's register file | 1 |
 | `ARC_MOE_GRF=128` | 256 | the MoE expert GEMMs' register file | 1 |
 | `ARC_MOE_CG` / `ARC_MOE_WY` | 1 / 1 | sub-groups per work-group of the MoE expert GEMM (prompt chunks of 1,280+ tokens): along a tile's columns (its activation rows shared through L1) / along the tiles, mostly one expert's (its weights shared). Bit-identical at every shape. A B60's 35B 16K prompt spent 1.55 s of 5.08 in these GEMMs (+0.26 s `decode_w8`), about 21 TOPS against ~50 for the dense GEMMs; laptop: no gain (2026-11-07) | 1 |
 | `ARC_GEMM_TM` / `_RG` / `_WGY` / `_SPLIT` / `_CG` | 16 / 4 / 8 / 17 / 1 | the int8 prompt GEMM's tiles | 1 |
@@ -25,7 +25,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GV_IQ3S=1` | off | single-token IQ3_S weights through `gemv_v` (straight into registers) instead of `gemv`'s local window; bit-identical; the 125H 6 % slower (27B step 210 -> 223 ms), a B60 to measure (2026-11-08) | 2 |
 | `ARC_MOE_GR_GU` / `ARC_MOE_GR_DN` | 1 / 4 | rows per sub-group of the experts' gate / up and down GEMVs for one token (`bench\decode_try.ps1` rows for MoE models) | 2 |
-| `ARC_GEMV_MT_GRF=256` | 128 on discrete cards | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
+| `ARC_GEMV_MT_GRF=256` | 128 on GPUs with 16-lane XMX (discrete cards, Lunar / Panther Lake) | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
 | `ARC_GEMV_PF=1` | on on discrete cards for dense models since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s); off for MoE models since 2026-11-09 (B60 35B 78.77 with it, 85.15 without); off on iGPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
 | `ARC_GDN_CHUNK=1` / `2` / `3` | off (`gdn_recur`) | the DeltaNet of prompt passes (32+ tokens) in chunks of 32 (QUEUE F33.1, 2026-11-09): `1` `gdn_chunk` (vector, 4 work-items per state row, any GPU), `2` its 16-float local reads, `3` on XMX: `gdn_chunk_x` (16-lane DPAS) or `gdn_chunk_x8` (8 lanes, the 140T), checked at start against `gdn_chunk`. Not bit-identical: KL (`bench\f33_sweep.ps1`) | 9 |

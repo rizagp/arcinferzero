@@ -1368,9 +1368,26 @@ int main(int argc, char** argv) {
   auto find_model = [&](const std::string& want0) -> const ModelInfo* {
     // (the data folder's models were "arcinferzero/<name>" before the rename to inferzero, 2026-11-10)
     const std::string want = want0.rfind("arcinferzero/", 0) == 0 ? want0.substr(3) : want0;
+    // (an entry made stale since the scan: its file deleted, or a GGUF packed since (zero-server pack while this server
+    //  ran another model): loaded from the catalog as it was, the original's expert file would be written again next
+    //  to the package, or the load fails once the original is gone. The scan again lists the package under its id)
+    auto stale = [](const ModelInfo& m) {
+      namespace fs = std::filesystem;
+      std::error_code ec;
+      if (!fs::exists(m.path, ec)) return true;
+      const std::string pk = lower_ascii(fs::weakly_canonical(zpack::packages_dir(), ec).string()) + "\\";
+      if (lower_ascii(fs::weakly_canonical(m.path, ec).string()).rfind(pk, 0) == 0) return false;  // (a package)
+      std::string stem = fs::path(m.path).stem().string();
+      if (const size_t sp = stem.find("-00001-of-"); sp != std::string::npos) stem.resize(sp);
+      const fs::path d = fs::path(zpack::packages_dir()) / stem;
+      return fs::exists(d / (stem + ".gguf"), ec) && fs::exists(d / (stem + ".experts"), ec);
+    };
     for (int pass = 0; pass < 2; ++pass) {
       for (const ModelInfo& m : catalog)
-        if (m.supported && (m.alias == want || m.name == want || m.file == want)) return &m;
+        if (m.supported && (m.alias == want || m.name == want || m.file == want)) {
+          if (pass == 0 && stale(m)) break;
+          return &m;
+        }
       if (pass == 0) catalog = scan_models();
     }
     return nullptr;

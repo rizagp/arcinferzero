@@ -418,8 +418,14 @@ static int run_main(int argc, char** argv) {
     return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref, bench_batch);
   }
   Engine eng(model, eo);
-  // (every position's logits are read after the prompt: no 8-token passes, see Engine::keep_rows)
-  eng.keep_rows = !kl_ref.empty() || !ppl_file.empty();
+  // (every position's logits are read after the prompt: no 8-token passes, see Engine::keep_rows; a reference of
+  //  the last position only, or --kl-decode, keeps the passes the server takes)
+  if (!ppl_file.empty()) eng.keep_rows = true;
+  if (!kl_ref.empty() && !kl_decode) {
+    std::error_code ec;
+    const uintmax_t rb = std::filesystem::file_size(kl_ref, ec);
+    eng.keep_rows = !ec && rb != (uintmax_t)eng.hp.n_vocab * 4;
+  }
   Vocab vocab(eng.gguf());
   printf("loaded: %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB | W8 %s | chunk %d | ctx %d | load %.0f ms\n",
          eng.hp.n_layer, eng.hp.n_embd, eng.hp.n_vocab, eng.gpu_bytes / 1073741824.0,

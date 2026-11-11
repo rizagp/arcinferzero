@@ -160,13 +160,19 @@ static std::vector<std::filesystem::path> model_mmprojs(const std::filesystem::p
   int models = 0;
   for (const auto& de : dir_list(model.parent_path())) {
     const fs::path& p = de.path();
-    if (p.extension() != ".gguf") continue;
     const std::string f = lower_ascii(p.filename().string());
+    if (f.size() < 5 || f.compare(f.size() - 5, 5, ".gguf") != 0) continue;
     if (f.find("mmproj") != std::string::npos) {
       mm.push_back(p);
     } else if (f.rfind("mtp-", 0) != 0) {  // (a model: a split one counted once, by its first part)
-      const size_t k = f.find("-of-");
-      if (k == std::string::npos || k < 6 || f.compare(k - 5, 5, "00001") == 0) ++models;
+      // (a part is "-NNNNN-of-NNNNN.gguf" at the end: "Mixture-of-Experts-Q4_K_M.gguf" is a model; as zero-server's pack)
+      const auto dig = [&](size_t a, size_t n) {
+        for (size_t i = a; i < a + n; ++i) if (f[i] < '0' || f[i] > '9') return false;
+        return true;
+      };
+      const size_t L = f.size();  // ("-00002-of-00003.gguf": 20 characters)
+      const bool part = L >= 20 && f[L - 20] == '-' && dig(L - 19, 5) && f.compare(L - 14, 4, "-of-") == 0 && dig(L - 10, 5);
+      if (!part || f.compare(L - 19, 5, "00001") == 0) ++models;
     }
   }
   const std::string ml = lower_ascii(model.string());
@@ -176,7 +182,13 @@ static std::vector<std::filesystem::path> model_mmprojs(const std::filesystem::p
   std::vector<fs::path> own;
   for (const fs::path& p : mm) {
     const std::string k = mmproj_key(p.filename().string());
-    if (!k.empty() && !mk.empty() && (mk.rfind(k, 0) == 0 || k.rfind(mk, 0) == 0)) own.push_back(p);
+    // (the same name, or one the other's start followed by '-' / '_': "qwen3" is not "qwen3.5-4b"'s, "gemma-4-26b-it"
+    //  is "gemma-4-26b"'s)
+    const std::string& lo = k.size() >= mk.size() ? k : mk;
+    const std::string& sh = k.size() >= mk.size() ? mk : k;
+    if (!sh.empty() && lo.compare(0, sh.size(), sh) == 0 &&
+        (lo.size() == sh.size() || lo[sh.size()] == '-' || lo[sh.size()] == '_'))
+      own.push_back(p);
   }
   return own;
 }
@@ -325,7 +337,7 @@ static std::vector<ModelInfo> scan_models() {
       static std::set<std::string> told;
       if (std::string(e.what()).find("arcinferzero") != std::string::npos) {
         m.note = "made before 2026-11-10 (its keys are arcinferzero.*): a package: delete its folder, then load the original "
-                 "GGUF or pack it again (serverz --pack); a GSQ conversion: convert it again (setup -Models 35b-gsq)";
+                 "GGUF or pack it again (the launcher: More > Pack; or zero-server pack -Model <it>); a GSQ conversion: convert it again (setup -Models 35b-gsq)";
         std::lock_guard<std::mutex> lk(told_mu);
         if (told.insert(m.path).second) fprintf(stderr, "inferzero: %s\n", e.what());
       }

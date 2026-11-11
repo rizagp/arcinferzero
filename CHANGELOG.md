@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-11-11: packing a MoE model from the launcher, and deleting its original
+
+- **More > Pack the selected MoE model** in the launcher (or `scripts\zero-server.ps1 pack -Model <name or path>`)
+  makes the package `serverz --pack` makes (the GGUF's experts are kept once, not twice) and copies the model's own
+  `mmproj` / `mtp-` files into it. It refuses a dense model, a package, a model the running server has loaded (or
+  a server that does not say which it has), and a disk without room. The default model (`last-model.txt`) moves to
+  the package. Run again on a packed model, it only copies the side files that are missing.
+- Then it offers to **delete the original GGUF** (`zero-server remove-original`), with a warning: deleted for good,
+  and the package runs in inferzero only. It deletes nothing unless the package's GGUF and expert file are both
+  there and the package was made from that very file: a package now holds `package-source.txt`, its source's full path
+  (two folders' models of one file name make one package folder). Every part of a split model goes, and in a
+  Hugging Face cache the file the snapshot links to; a link whose file is missing stops it before anything goes.
+
+### Self audit of the 2026-11-11 changes
+
+- **`"cache_prompt": false` could make a later answer wrong:** the system prompt's saved state (the hybrid Qwen
+  models: the DeltaNet states at its end) stayed after the request dropped the rest, and a later request that shared
+  the start of the `cache_prompt: false` prompt got it restored under its own tokens. It is dropped now, and the
+  conversation the server held is saved to the session cache first (it was lost).
+- **Projector names** match at a `-` / `_` only: `mmproj-qwen3` is no longer Qwen3.5-4B's in a shared folder. The
+  launcher's copy uses the same rules, independent of Windows' language.
+- **`runz --kl-ref`** takes the prompt in one chunk only with a reference of every position: a last-position
+  reference (and `--kl-decode`) checks the passes the server takes, as before 2026-11-11.
+
+### Second self audit (pack and remove-original)
+
+- **A running server picked the original after a pack:** its model list was from its start, so switching to the
+  packed model loaded the original GGUF and wrote its whole expert file again next to the package (or failed once
+  the original was gone). A model that has a package since, or whose file is gone, now makes it read the list again.
+- **The package's record of its source is a file of its own** (`package-source.txt`): the folder's `source.txt` is
+  the expert store's, rewritten whenever a same-named GGUF from another folder runs, so it could name a file the
+  package was not made from. Packing again a package of another same-named file is refused too.
+- **remove-original deletes nothing when any part is open** (a server, another program) and moves the default model
+  first: before, it could stop halfway with the default model pointing at deleted files. The launcher's own model
+  list being read, or a pack running, no longer counts as a running server; the launcher passes its port; it reads
+  the list again only after the delete question; it does not start the model being packed. The free-space check
+  leaves out an expert file the engine wrote before (it moves into the package).
+
 ## 2026-11-11: Gemma 4 12B's every-position KL check fixed (it was the check, not the model)
 
 - **Why `tests\run_tests.ps1`'s Gemma 4 12B KL read 10.75:** with weights decoded just in time, a prompt of up to

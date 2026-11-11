@@ -33,7 +33,7 @@
 #      logs\server_<date>_<time>.log, e.g. server_2026-11-09_14-13-48.log, the newest 10)
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
-    "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "help", "--help", "-h")] [string]$Action = "start",
+    "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "pack", "remove-original", "help", "--help", "-h")] [string]$Action = "start",
   [string]$Model = "",
   [string]$Ctx = "",
   [int]$Chunk = 0,
@@ -367,6 +367,10 @@ values and paths, WHEN IT FAILS what an error means.
   zero-server version [-Check]    this package's version and commit; -Check asks GitHub for the latest release
   zero-server pull <key,key>      download models of the catalog into the Hugging Face cache (no Python):
                                  4b 9b 35b 27b g12 g31 e4b asr whisper; pull alone lists them (also get)
+  zero-server pack -Model <m>     an inferzero package of a MoE model (its experts in a file of their own, in
+                                 %USERPROFILE%\.inferzero\zero\models; inferzero reads it, other programs do not); its
+                                 mmproj / mtp- files are copied in. remove-original -Model <.gguf> then deletes the
+                                 original GGUF (every part) once the package is complete
   zero-server presets [-Json]     the saved presets (%USERPROFILE%\.inferzero\presets\<name>.json)
   zero-server save-preset -Preset <name> [options]   save the options given (the model too) as a preset;
                                  start -Preset <name> uses them. Delete one: delete its .json file.
@@ -568,6 +572,158 @@ function Get-UpdateInfo($v) {
   return [ordered]@{ latest = $r.tag_name; published = $r.published_at; url = $r.html_url; commit = $relCommit; newer = $newer }
 }
 switch ($Action) {
+  # ---- pack -Model <id, name or .gguf>: an inferzero package of a MoE model (serverz --pack): the non-expert weights
+  #  and an expert file in %USERPROFILE%\.inferzero\zero\models\<name>, read by inferzero only; the original GGUF is no
+  #  longer needed to run it. The model's projector (mmproj*.gguf) and MTP head file (mtp-*.gguf) next to it are copied
+  #  into the package, so they stay when the original goes. remove-original -Model <.gguf>: deletes the original GGUF
+  #  (every part; in the Hugging Face cache the blob it links to as well) once its package is complete.
+  { $_ -in "pack", "remove-original" } {
+    if (-not $Model) { throw "${Action}: -Model <id, name or .gguf file> of a MoE model" }
+    if (-not (Test-Path $exe)) { throw "$exe not found (setup.cmd builds it)" }
+    $pkgRoot = Join-Path $stateDir "zero\models"
+    $src = $null
+    $all = @()
+    if (Test-Path -LiteralPath $Model -PathType Leaf) {
+      $src = (Resolve-Path -LiteralPath $Model).Path
+    } else {
+      $all = Get-ModelsListed
+      $hit = @($all | Where-Object { $_.supported -and ($_.alias -eq $Model.ToLower() -or ($_.short -and $_.short -eq $Model.ToLower())) }) +
+             @($all | Where-Object { $_.supported -and ($_.name + " " + $_.file) -like "*$Model*" })
+      if ($hit.Count) { $src = [IO.Path]::GetFullPath($hit[0].path) }
+    }
+    if (-not $src) { throw "${Action}: no model matches '$Model' (zero-server list)" }
+    if ($src -notlike "*.gguf") { throw "${Action}: $src is no .gguf file" }
+    if ([IO.Path]::GetFullPath($src).StartsWith([IO.Path]::GetFullPath($pkgRoot) + "\", [StringComparison]::OrdinalIgnoreCase)) {
+      throw "${Action}: $src is a package already (in $pkgRoot)"
+    }
+    # (the parts of a split model, by its first part's name)
+    $leaf = Split-Path $src -Leaf
+    $dirOf = Split-Path $src -Parent
+    $parts = @($src)
+    $name = [IO.Path]::GetFileNameWithoutExtension($leaf)
+    $ms = [regex]::Match($leaf, '^(.*)-00001-of-(\d{5})\.gguf$', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($ms.Success) {
+      $name = $ms.Groups[1].Value
+      $parts = @(Get-ChildItem -LiteralPath $dirOf -File | Where-Object { $_.Name -match ('^' + [regex]::Escape($ms.Groups[1].Value) + '-\d{5}-of-' + $ms.Groups[2].Value + '\.gguf$') } | ForEach-Object { $_.FullName })
+    } elseif ($leaf -match '-\d{5}-of-\d{5}\.gguf$') {
+      throw "${Action}: give the first part of a split model (its -00001-of-... file)"
+    }
+    $pkgDir = Join-Path $pkgRoot $name
+    $pkgGguf = Join-Path $pkgDir "$name.gguf"
+    $pkgExp = Join-Path $pkgDir "$name.experts"
+    # (a server that has this model loaded reads it, and its expert file moves into the package: stopped first.
+    #  Refused when the server has it loaded now (it may have switched since it started), was started with it, or does
+    #  not answer which model it has. A serverz reading the model list (the launcher's) or packing is no server)
+    $servers = @(Get-CimInstance Win32_Process -Filter "Name='serverz.exe'" -ErrorAction SilentlyContinue |
+                 Where-Object { "$($_.CommandLine)" -notmatch '\s--(list-models|pack)(\s|$)' })
+    if ($servers.Count) {
+      $cur = if (Test-Path $stateFile) { try { Get-Content $stateFile -Raw | ConvertFrom-Json } catch { $null } } else { $null }
+      $run = Get-Running
+      if ($all.Count -eq 0) { $all = Get-ModelsListed }
+      $ids = @($all | Where-Object { Same-Path $_.path $src } | ForEach-Object { $_.alias })
+      if (-not $run -or ($ids -contains $run) -or ($cur -and (Same-Path $cur.path $src))) {
+        throw "${Action}: a server is running with this model loaded, or did not answer which model it has: zero-server stop first"
+      }
+    }
+    # (a part's file and size: in the Hugging Face cache a snapshot's file is a link to blobs\<hash>, whose size
+    #  Get-Item of the link does not give; a link whose file cannot be found stops everything before anything goes)
+    $real = { param([string]$p)
+      $it = Get-Item -LiteralPath $p -Force
+      if ($it.LinkType -ne "SymbolicLink") { return [pscustomobject]@{ path = $p; target = $null; bytes = $it.Length } }
+      $t = @($it.Target)[0]
+      if (-not $t) { throw "${Action}: cannot tell where the link $p points: nothing done" }
+      $t = if ([IO.Path]::IsPathRooted($t)) { $t } else { [IO.Path]::GetFullPath((Join-Path (Split-Path $p -Parent) $t)) }
+      if (-not (Test-Path -LiteralPath $t -PathType Leaf)) { throw "${Action}: the link $p points to $t, which is not there: nothing done" }
+      [pscustomobject]@{ path = $p; target = $t; bytes = (Get-Item -LiteralPath $t).Length } }
+    # (the default model, last-model.txt, follows the model into its package: else the next start without a model
+    #  would load the original, or after remove-original find nothing)
+    $toPackage = {
+      if ((Test-Path -LiteralPath $lastFile) -and (Test-Path -LiteralPath $pkgGguf)) {
+        $l = "$(Get-Content -LiteralPath $lastFile -Raw)".Trim()
+        if ($l -and (Same-Path $l $src)) { Set-Content -LiteralPath $lastFile $pkgGguf -Encoding utf8; Say "the default model is now its package" }
+      } }
+    # (the file the package was made from, written by serverz --pack (zero/gguf_pack.h); not the folder's source.txt,
+    #  which names the GGUF whose expert file is kept there and is rewritten by any same-named one loaded from elsewhere)
+    $madeFrom = {
+      $rec = Join-Path $pkgDir "package-source.txt"
+      if (Test-Path -LiteralPath $rec) { "$(Get-Content -LiteralPath $rec | Select-Object -First 1)".Trim() } else { "" } }
+    if ($Action -eq "remove-original") {
+      if (-not ((Test-Path -LiteralPath $pkgGguf) -and (Test-Path -LiteralPath $pkgExp))) {
+        throw "remove-original: no complete package of $leaf ($pkgGguf and its .experts): zero-server pack -Model it first"
+      }
+      # (only the file the package was made from: two folders' models of one file name make the same package folder)
+      $from = & $madeFrom
+      if (-not $from) { throw "remove-original: $pkgDir does not say which file it was made from (a package made before 2026-11-11): nothing deleted; delete the original yourself if it is that one" }
+      if (-not (Same-Path $from $src)) { throw "remove-original: $pkgDir was made from $from, not from ${src}: nothing deleted" }
+      $del = @($parts | ForEach-Object { & $real $_ })
+      # (every file free to delete before the first goes: a program that has one open, the server too, keeps them all)
+      foreach ($f in @($del | ForEach-Object { $_.target; $_.path } | Where-Object { $_ })) {
+        try { ([IO.File]::Open($f, "Open", "Read", "None")).Close() }
+        catch { throw "remove-original: $f is in use (a running server or another program has it open): nothing deleted" }
+      }
+      & $toPackage  # (the package is complete: the default model goes to it before the files go)
+      foreach ($d in $del) {
+        if ($d.target) { Remove-Item -LiteralPath $d.target -Force; Say "deleted $($d.target)" }
+        Remove-Item -LiteralPath $d.path -Force
+        Say "deleted $($d.path)"
+      }
+      Say ("remove-original: {0} file(s), {1:N1} GB freed; the model runs from its package {2}" -f $del.Count, (($del | Measure-Object bytes -Sum).Sum / 1e9), $pkgDir)
+      return
+    }
+    if ($all.Count -eq 0) { $all = Get-ModelsListed }
+    $entry = $all | Where-Object { Same-Path $_.path $src } | Select-Object -First 1
+    if ($entry -and -not $entry.moe) { throw "pack: $leaf is not a MoE model: packages are for MoE models, whose experts stream from an expert file" }
+    if ((Test-Path -LiteralPath $pkgGguf) -and (Test-Path -LiteralPath $pkgExp)) {
+      # (packed already: its projector and MTP files are checked again below, e.g. after a copy that failed; only for
+      #  the file it was made from, not a same-named model of another folder)
+      $from = & $madeFrom
+      if ($from -and -not (Same-Path $from $src)) { throw "pack: $pkgDir is the package of $from, not of ${src}: nothing done" }
+      Say "pack: $leaf has a package already: $pkgDir"
+    } else {
+      $bytes = ($parts | ForEach-Object { (& $real $_).bytes } | Measure-Object -Sum).Sum
+      # (the expert file the engine wrote for this model before, in the same folder, moves into the package instead of
+      #  being written again: then only the rest is new. One such file only; with several it cannot tell which)
+      $made = @(Get-ChildItem -LiteralPath $pkgDir -File -Filter "*.experts" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -ne $pkgExp })
+      $need = if ($made.Count -eq 1) { [Math]::Max(0, $bytes - $made[0].Length) } else { $bytes }
+      $drive = Get-PSDrive ((Split-Path $stateDir -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
+      if ($drive -and $drive.Free -lt $need + 2GB) {
+        throw ("pack: {0:N1} GB free on {1}:, the package needs about {2:N1} GB" -f ($drive.Free / 1GB), $drive.Name, (($need + 2GB) / 1GB))
+      }
+      Say ("pack: {0} ({1:N1} GB) -> {2} (it reads the whole model once: a few minutes)" -f $leaf, ($bytes / 1e9), $pkgDir)
+      & $exe --pack $src
+      if ($LASTEXITCODE -ne 0) { throw "pack failed (serverz --pack exit $LASTEXITCODE)" }
+    }
+    # (the projector and MTP head files that are this model's: in a Hugging Face snapshot folder or a folder with this
+    #  model alone every one, in a folder of several models those named after it, as the server picks projectors
+    #  (mmproj_key and model_mmprojs in tools\server_catalog.h: the same rules, culture-independent))
+    $key = { param([string]$f)
+      $k = $f.ToLowerInvariant() -replace '\.gguf$', '' -replace '^mtp-', ''
+      foreach ($m in "mmproj-", "mmproj_", "-mmproj", "_mmproj", "mmproj") {
+        $i = $k.IndexOf($m, [StringComparison]::Ordinal)
+        if ($i -ge 0) { $k = $k.Remove($i, $m.Length); break }
+      }
+      $k = $k -creplace '[-_.](ud[-_]|i?q\d|f16|bf16|f32|fp16|0000|mxfp4).*$', ''
+      $k.TrimEnd('-', '_', '.') }
+    $same = { param([string]$a, [string]$b)
+      if (-not $a -or -not $b) { return $false }
+      $lo, $sh = if ($a.Length -ge $b.Length) { $a, $b } else { $b, $a }
+      $lo.StartsWith($sh, [StringComparison]::Ordinal) -and ($lo.Length -eq $sh.Length -or $lo[$sh.Length] -eq '-' -or $lo[$sh.Length] -eq '_') }
+    $models = @(Get-ChildItem -LiteralPath $dirOf -File -Filter *.gguf | Where-Object { $_.Name -notmatch '(?i)mmproj' -and $_.Name -notmatch '(?i)^mtp-' -and ($_.Name -notmatch '-\d{5}-of-\d{5}\.gguf$' -or $_.Name -match '-00001-of-') })
+    $own = $models.Count -le 1 -or $dirOf -match '\\snapshots\\'
+    $mk = & $key $leaf
+    $copied = @()
+    foreach ($f in @(Get-ChildItem -LiteralPath $dirOf -File -Filter *.gguf | Where-Object { $_.Name -match '(?i)mmproj' -or $_.Name -match '(?i)^mtp-' })) {
+      $dst = Join-Path $pkgDir $f.Name
+      if (($own -or (& $same (& $key $f.Name) $mk)) -and -not (Test-Path -LiteralPath $dst)) {
+        Copy-Item -LiteralPath $f.FullName $dst
+        $copied += $f.Name
+      }
+    }
+    if ($copied.Count) { Say ("pack: copied into the package: " + ($copied -join ", ")) }
+    & $toPackage
+    Say "pack: done. The original $src is no longer needed by inferzero (zero-server remove-original -Model `"$src`" deletes it; other programs cannot read the package)."
+    return
+  }
   { $_ -in "list", "ls" } {
     if (-not (Test-Path $exe)) { throw "$exe not found: unpack the ready package from https://github.com/rizagp/inferzero/releases (or build it: setup.cmd)" }
     $all = Get-ModelsListed

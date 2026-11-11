@@ -643,6 +643,7 @@ function Show-Detail {
   $L.Add(("file    $($m.file)  ({0:N1} GB)" -f ($m.bytes / 1e9)))
   $L.Add("arch    $($m.arch)  -  " + $(if ($m.supported) { "supported by inferzero" } else { "NOT supported by inferzero" }))
   if ($m.note) { $L.Add("note    $($m.note)") }
+  if ($m.supported -and $m.moe -and -not (Is-Package $m)) { $L.Add("package: More > Pack makes an inferzero package of it (then its original GGUF can be deleted)") }
   $L.Add("id      $($m.alias)" + $(if ($m.short) { "   (shortcut: zero-pi $($m.short))" } else { "" }))
   $L.Add("variant $(if ($m.tags) { $m.tags } else { '-' })")
   $L.Add("MTP / drafter: $(if ($m.mtp) { 'yes (drafts checked by the main model: same output, faster)' } else { 'no' })")
@@ -871,6 +872,52 @@ function Check-Jobs {
     try { & $j.done $j.proc.ExitCode "$text" } catch { Show-Bar "Launcher error: $($_.Exception.Message)" "error" -Details "$($_.ScriptStackTrace)" }
   }
 }
+# ---- pack (zero-server pack): a MoE model as an inferzero package, then, if the user agrees, the original GGUF deleted
+function Is-Package($m) {
+  $pk = [IO.Path]::GetFullPath((Join-Path $stateDir "zero\models")) + "\"
+  return $m.path -and [IO.Path]::GetFullPath($m.path).StartsWith($pk, [StringComparison]::OrdinalIgnoreCase)
+}
+function Start-Pack {
+  if ($grid.SelectedRows.Count -eq 0) { $msg.Text = "Select a MoE model first."; return }
+  $m = $grid.SelectedRows[0].Tag
+  if (-not $m.supported) { Show-Bar "This model cannot be packed: inferzero cannot load it." "warn"; return }
+  if (-not $m.moe) { Show-Bar "Packages are for MoE models (35B-A3B, Flash Next, Gemma 4 26B): $($m.file) is a dense model." "warn"; return }
+  if (Is-Package $m) { Show-Bar "$($m.file) is a package already." "info"; return }
+  if ($script:packing) { Show-Bar "A model is being packed already." "info"; return }
+  $q = ("Pack $($m.file) ({0:N1} GB) as an inferzero package?`n`nIt reads the whole model once (a few minutes; Flash Next about 10) and writes a package of about the same size to {1}.`n`n" +
+        "The package can be used by inferzero only: llama.cpp, LM Studio and other programs cannot read it. Afterwards you can delete the original GGUF to free its space.") -f ($m.bytes / 1e9), (Join-Path $stateDir "zero\models")
+  if ([System.Windows.Forms.MessageBox]::Show($q, "inferzero", "YesNo", "Question") -ne "Yes") { return }
+  $script:packing = $true
+  $script:packSrc = $m.path
+  $script:packFile = $m.file
+  $script:packBytes = $m.bytes
+  $msg.Text = "Packing $($m.file)... (the model is read once; the window stays usable)"
+  # (-Port: zero-server asks that port's server which model it has loaded)
+  Start-Job2 @("pack", "-Model", "`"$($m.path)`"", "-Port", [int]$portBox.Value) {
+    param($code, $text)
+    $script:packing = $false
+    if ($code -ne 0) {
+      Show-Bar "Packing $($script:packFile) failed." "error" -Details ($text.Trim())
+      return
+    }
+    # (the model list is read again after this question: a list being read is a serverz process, and remove-original
+    #  refuses while a serverz it cannot ask runs)
+    $q2 = ("The package of $($script:packFile) is ready, and inferzero now runs the model from it.`n`n" +
+           "Delete the original GGUF ({0:N1} GB) to free its space?`n`n{1}`n`nWarning: the original GGUF is deleted for good. The package works in inferzero only; to use this model in another program you would download it again.") -f ($script:packBytes / 1e9), $script:packSrc
+    if ([System.Windows.Forms.MessageBox]::Show($q2, "inferzero", "YesNo", "Warning") -ne "Yes") {
+      # (the original is no longer listed once it has a package: the command, not the menu, deletes it later)
+      Show-Bar "Packed $($script:packFile). The original GGUF is kept; to delete it later: zero-server remove-original -Model `"$($script:packSrc)`"" "info"
+      Start-List
+      return
+    }
+    Start-Job2 @("remove-original", "-Model", "`"$($script:packSrc)`"", "-Port", [int]$portBox.Value) {
+      param($code2, $text2)
+      if ($code2 -eq 0) { Show-Bar ("Packed $($script:packFile); the original GGUF was deleted. " + (($text2 -split "`r?`n" | Where-Object { $_ -match "GB freed" } | Select-Object -First 1) -replace '^remove-original: ', '')) "info" }
+      else { Show-Bar "The original GGUF could not be deleted." "error" -Details ($text2.Trim()) }
+      Start-List
+    }
+  }
+}
 # a model's row by id, shortcut or path
 function Find-Row([string]$v) {
   foreach ($r in $grid.Rows) {
@@ -936,6 +983,12 @@ function Get-StartArgs([switch]$Speech) {
   , $a
 }
 function Start-Selected([switch]$Speech) {
+  # (not the model being packed: the server's open file would keep its expert file from moving into the package)
+  if ($script:packing -and -not $Speech -and $grid.SelectedRows.Count -and $grid.SelectedRows[0].Tag.path -and
+      [IO.Path]::GetFullPath($grid.SelectedRows[0].Tag.path) -eq [IO.Path]::GetFullPath($script:packSrc)) {
+    Show-Bar "$($script:packFile) is being packed: start it when the package is ready." "info"
+    return
+  }
   $a = Get-StartArgs -Speech:$Speech
   if ($null -eq $a) { return }
   $wh = if ((Get-Field "whisper") -notin "", "off") { " and Whisper" } else { "" }
@@ -1226,6 +1279,7 @@ Add-Sep $more
 [void](Add-Item $more "Set as default (model and options)" { Set-AsDefault })
 [void](Add-Item $more "Reset options" { Reset-Options })
 [void](Add-Item $more "Refresh the model list" { Start-List })
+[void](Add-Item $more "Pack the selected MoE model (inferzero only; the original can then go)..." { Start-Pack })
 Add-Sep $more
 if ($hasRec) {
   [void](Add-Item $more "Record a meeting..." { Start-Record })

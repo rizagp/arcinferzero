@@ -320,8 +320,13 @@
       load_prefix(P, sys_cut, folder);
       start = prepare_prefix(P);
     } else {
+      // (the held conversation is saved first, as switch_conversation would; and the host snapshot of its system
+      //  prompt goes too: a later request sharing this prompt's start would restore that other prompt's DeltaNet
+      //  states over this prompt's KV cache)
+      if (sess_cap_ && !cur_saved_ && cached_.size() >= 1024) save_current();
       eng_.reset();
       for (int s = 0; s < kSnaps; ++s) eng_.drop_snapshot(s);
+      eng_.drop_host_snapshot();
       cached_.clear();
     }
     cur_saved_ = false;

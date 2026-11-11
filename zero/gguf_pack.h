@@ -214,6 +214,27 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     drop_tmp();
     throw std::runtime_error("cannot rename " + tmp + ": " + ec.message());
   }
+  // (package-source.txt: the full path of the file it was made from; zero-server remove-original deletes that file
+  //  only. Two folders' models of the same file name make the same package folder, so the name alone does not say
+  //  which. A file of its own: the folder's source.txt is the expert store's (ExpertStore::place), rewritten by each
+  //  GGUF outside the data folder whose expert file goes in this folder, a same-named one from elsewhere too)
+  {
+    std::error_code e2;
+    const fs::path full = fs::absolute(fs::path(source), e2);
+    const fs::path rec = fs::path(dir) / "package-source.txt";
+    bool ok = false;
+    if (FILE* f = _wfopen(rec.wstring().c_str(), L"wb")) {
+      // (UTF-16 with its BOM: any path's characters, and PowerShell 5.1's Get-Content reads it as such)
+      const std::wstring s = L"\xFEFF" + (e2 ? fs::path(source) : full).wstring() + L"\r\n";
+      ok = fwrite(s.data(), sizeof(wchar_t), s.size(), f) == s.size();
+      ok = fclose(f) == 0 && ok;
+    }
+    if (!ok) {  // (the package works without it; only remove-original refuses then)
+      fs::remove(rec, e2);
+      fprintf(stderr, "inferzero: could not write %s: zero-server remove-original will not delete the original\n",
+              rec.string().c_str());
+    }
+  }
   r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   return r;
 }
