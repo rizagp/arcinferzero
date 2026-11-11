@@ -224,6 +224,14 @@
       stage_h8_[w.role] = true;
     }
   }
+  // the split-K pieces of an H8 GEMM: ~17 superblocks each for rows longer than 8192 (ARC_GEMM_SPLIT), one with the
+  // fused SwiGLU (silu(gate) * (u1 + u2) is not silu(gate) * u1 + u2). Each piece is rounded on its own before it is
+  // added to C, so the pieces decide the result's bits: gemm_xw (zero/xe2/engine_xw.h) takes them from here too
+  static int h8_splits(int K, int a) {
+    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
+    const int nsb = K / 256;
+    return a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1;
+  }
   // the GEMM (matmul1's prompt path) in H8: the same grid, split-K and epilogues as the W8 GEMM
   void h8_matmul(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int a, bool act32) {
     cl_mem wq = nullptr, hh = nullptr;
@@ -238,11 +246,10 @@
     int M = Mp, N = w.N, K = w.K;
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
-    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
     const int tm = pt ? 32 : gemm_tm();
     if (Mp % tm || N % 16 || K % 256)
       throw std::runtime_error(std::string("gemm ") + name + ": shape not a multiple of " + std::to_string(tm) + " x 16 x 256");
-    const int nsb = K / 256, splits = a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1, rgroup = rg_env;
+    const int nsb = K / 256, splits = h8_splits(K, a), rgroup = rg_env;
     int wgy = 1;
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
     size_t gws[2] = {(size_t)N * (Mp / tm / wgy), (size_t)wgy}, lws[2] = {16 * (size_t)cg, (size_t)wgy};

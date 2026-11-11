@@ -634,3 +634,24 @@ bit for bit (checked at start).
 default and four tile shapes, each shape's logits against the default's (identical expected), and a `--prof` of the
 default and the fastest shape at 4K. Left after that: the weights double-buffered in registers, the W8 and MoE
 expert layouts, and an 8-lane form for the Arc 140T.
+
+## 12. The Arc 140T (Xe-LPG Plus): what its XMX is, and where the prompt GEMM loses (2026-11-11)
+
+The 140T (Arrow Lake H, Core Ultra 9 285H) has an improved first-generation Xe GPU with XMX added, the Xe-HPG
+(Alchemist) kind: per Xe-core 16 vector engines and 16 matrix engines of 1024 bits, 4,096 int8 or 2,048 f16
+operations a clock (Intel's oneAPI GPU optimization guide). 8 cores at up to 2.35 GHz: ~77 int8 TOPS, the figure
+Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, half of a Xe2 DPAS).
+
+- **Where the time goes:** the 27B's prompt on the 140T preset (XMX + H8, 221-231 tok/s) is ~12 int8 TOPS, ~15 % of
+  that peak. ocloc `arl-h` for `gemm_x8.cl` H8R: ~110 instructions and ~13 sends per DPAS (preset: 3,517 / 425 / 32
+  DPAS; `X8W`: 100 and 11), against `gemm_xw.cl` on a B60 (`bmg`): ~60 instructions and 3.7 sends per DPAS of twice
+  the work. The weights go in with one 4-byte read per lane per word (gemm.cl's 16-lane layout read by 8 lanes: 16
+  reads per column half and 64 values), the activations with two 32-byte reads per row.
+- **Next (QUEUE 33.4b):** an 8-lane form of the wide tile for H8R: the weights of both column halves by
+  `block_read8` (4 words of both halves a read: 4 reads instead of 32), each activation row by one `block_read2`, and
+  more column halves per sub-group. The same values into the same registers: bit-identical. Checked with ocloc
+  `arl-h` (spills, sends per DPAS) and on the laptop with DPAS emulated (`ARC_XMX_TRY=2`), its speed on a 140T.
+- **f16 DPAS precision (open):** oneDNN says f16 work on GPUs older than Xe-HPC "may accumulate to f16". If the
+  140T's f16 DPAS keeps fewer bits inside than f32, that would explain the chunked DeltaNet on XMX missing its
+  1e-4 check there (its f16 operands are split into hi + lo halves) with a right layout; the 8-lane form passes on
+  the laptop with DPAS emulated (4.45e-07). `f33_sweep` now prints the size of the difference.

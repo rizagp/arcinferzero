@@ -1026,6 +1026,17 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       run(name, k, 2, gws, nullptr);
     }
   }
+  // One token's GEMV of w: gemv_v (vk) or gemv, and its rows per sub-group (matmul1 and gemv_gu alike).
+  // (ARC_GV_IQ3S=1, zero/xe2: IQ3_S through gemv_v too, its weights straight into registers instead of gemv's local
+  //  window with two barriers a step; bit-identical. Slower on the 125H's iGPU (bench/gemv_bench), unmeasured on a
+  //  B60, whose 27B GEMV reads ~55 % of its bandwidth)
+  // (Qwen3-ASR's Q8_0 matrices, 2026-10-28: 1 / 2 / 4 / 8 rows for the stacked gate + up (12,288 rows), qkv
+  //  (4,096), o / down (2,048) and the head all within 1 % in the model: the rule kept)
+  static int gemv1_rows(const GpuWeight& w, bool& vk) {
+    static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
+    vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S);
+    return vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2;
+  }
   // One token: the FFN's gate and up GEMVs in one launch (decode.cl -DGU2, QUEUE 33.5): rows [0, F) of gate and
   // [0, F) of up at C + F, each row computed by the kernel, grows and register file of its own launch, bit for bit;
   // one launch of 2F rows instead of two of F (a B60's 27B: 4,096 FFN launches of ~135 us per 32 steps). Off by
@@ -1035,9 +1046,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (!on || cur_T_ != 1 || q2mm_ || !g.raw || !u.raw || g.type != u.type || g.N != u.N || g.K != u.K ||
         &g == &lm_head_ || &u == &lm_head_)
       return false;
-    static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
-    const bool vk = gemv_v_ok(g) || (gv_iq3s && g.type == GGML_IQ3_S);
-    const int grows = vk ? gemv_v_rows(g) : g.N <= 4096 ? 1 : g.N <= 8192 ? 2 : g.N <= 65536 ? 4 : 2;  // (matmul1's)
+    bool vk = false;
+    const int grows = gemv1_rows(g, vk);  // (matmul1's kernel and rows for one of the matrices)
     if (g.N % grows) return false;  // (the up rows must start a sub-group of their own)
     int N = g.N, K = g.K, M = Mp, c_off = 0, a = 0;
     rd_bytes += raw_bytes(g) + raw_bytes(u);
@@ -1054,15 +1064,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     int a = acc;
     if (cur_T_ == 1) {
       // rows per sub-group: enough sub-groups for small N; very tall matrices (an lm_head of short rows) do better
-      // with more sub-groups again
-      // (ARC_GV_IQ3S=1, zero/xe2: IQ3_S through gemv_v too, its weights straight into registers instead of gemv's local
-      //  window with two barriers a step; bit-identical. Slower on the 125H's iGPU (bench/gemv_bench), unmeasured on a
-      //  B60, whose 27B GEMV reads ~55 % of its bandwidth)
-      static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
-      const bool vk = gemv_v_ok(w) || (gv_iq3s && w.type == GGML_IQ3_S);
-      // (Qwen3-ASR's Q8_0 matrices, 2026-10-28: 1 / 2 / 4 / 8 rows for the stacked gate + up (12,288 rows), qkv
-      //  (4,096), o / down (2,048) and the head all within 1 % in the model: the rule kept)
-      const int grows = vk ? gemv_v_rows(w) : w.N <= 4096 ? 1 : w.N <= 8192 ? 2 : w.N <= 65536 ? 4 : 2;
+      // with more sub-groups again (gemv1_rows)
+      bool vk = false;
+      const int grows = gemv1_rows(w, vk);
       int N = w.N, K = w.K, M = Mp;
       rd_bytes += raw_bytes(w);
       if (q2_fuse_ && a > 1) throw std::logic_error(std::string("fused two-pass GEMV with an epilogue: ") + name);

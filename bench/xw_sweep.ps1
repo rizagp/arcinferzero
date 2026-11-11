@@ -58,7 +58,10 @@ foreach ($name in $sets.Keys) {
   $note = ($o | Where-Object { $_ -match "gemm_xw|H8 on|XMX on" }) -join " | "
   $h = if (Test-Path $d) { (Get-FileHash $d).Hash } else { "" }
   if ($name -eq "default") { $base = $h }
-  $same = if (-not $h) { "no logits" } elseif ($h -eq $base) { "identical" } else { "DIFFER" }
+  # (a shape that did not run, H8 off or its start-up check failed, would match the default by running gemm.cl:
+  #  marked, and left out of the fastest-shape choice)
+  $used = $name -eq "default" -or ($o -match "the H8 GEMMs on XMX with")
+  $same = if (-not $h) { "no logits" } elseif (-not $used) { "xw not used" } elseif ($h -eq $base) { "identical" } else { "DIFFER" }
   "[$name] $note"
   $row = [ordered]@{ set = $name; logits = $same }
   foreach ($t in $Tokens) {

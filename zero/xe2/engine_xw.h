@@ -7,7 +7,8 @@
 // 16 * XW_NC) go through gemm_xw instead of gemm.cl; the others stay on gemm.cl. Off until a B60 measures it.
 //   ARC_GEMM_XW_TM=16 / 32 (32): tokens per sub-group; ARC_GEMM_XW_NC=1 / 2 / 4 (4): 16-column groups per sub-group;
 //   ARC_GEMM_XW_GRF=128: the default register file (32 x 64 needs 256: its accumulators alone are 128 registers).
-//   ARC_GEMM_XW_TRY=1: on any GPU with H8R, DPAS emulated where there is no XMX (tests; no speed meaning).
+//   ARC_GEMM_XW_TRY=1: on any GPU with H8R, DPAS emulated where there is no 16-lane XMX (tests; no speed meaning;
+//   on an iGPU H8 needs ARC_H8=1 too).
 // Checked once per device at start against gemm.cl without XMX, bit for bit (xw_check); a difference or a build
 // that fails leaves gemm.cl and says so.
 
@@ -63,9 +64,8 @@
     if (Mp % tm || N % (16 * xw_nc()) || K % 256) return false;
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
-    static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
-    // (the pieces gemm.cl's H8 GEMM takes, h8_matmul: the same sums per piece, so the same results)
-    const int nsb = K / 256, splits = a != 2 && K > 8192 && sk_sb > 0 ? (nsb + sk_sb - 1) / sk_sb : 1;
+    // (the pieces gemm.cl's H8 GEMM takes, h8_matmul's own helper: the same sums per piece, so the same results)
+    const int nsb = K / 256, splits = h8_splits(K, a);
     int wgy = 1;
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
     cl_kernel k = xw_kernel();
@@ -76,7 +76,8 @@
   }
   void xw_init() {
     if (!xw_wanted()) return;
-    xw_emu_ = !xmx_;
+    // (emulated without XMX, and on 8-lane XMX (the 140T, Alchemist): its DPAS is not the 16-lane one gemm_xw calls)
+    xw_emu_ = !xmx_ || cl_.sg8;
     static std::mutex mu;
     static std::map<std::string, bool> known;
     const std::string key = cl_.device_id + "|" + std::to_string(xw_tm()) + "x" + std::to_string(xw_nc()) +
@@ -135,9 +136,9 @@
               for (int sp = 0; sp < pieces; ++sp) {
                 int s0 = nsb * sp / pieces, s1 = nsb * (sp + 1) / pieces, ac = sp == 0 ? acc : 1;
                 int MM = M, NN = N, KK = K, ld = ldc, co = coff, rg = 2;
-                if (x == 0) {
-                  cl_kernel k = gemm_kernel(111, false, 0, 1);
-                  size_t gws[2] = {(size_t)N * (M / gemm_tm()), 1}, lws[2] = {16, 1};
+                if (x == 0) {  // (16 tokens a sub-group, whatever ARC_GEMM_TM: M is a multiple of 16, not of 32)
+                  cl_kernel k = gemm_kernel(111, false, 0, 1, 16);
+                  size_t gws[2] = {(size_t)N * (M / 16), 1}, lws[2] = {16, 1};
                   set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ld, co, ac, rg, s0, s1);
                   run("xw_check", k, 2, gws, lws);
                 } else {

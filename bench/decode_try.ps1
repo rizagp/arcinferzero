@@ -98,6 +98,20 @@ foreach ($model in $Models) {
   Same "SMALL_WG=0" (Invoke-Run $model @() @{ ARC_GEMV_SMALL_WG = "0" }) $plain
   Same "both off" (Invoke-Run $model @() @{ ARC_WIDE_ROWS = "0"; ARC_GEMV_SMALL_WG = "0" }) $plain
   Same "GEMV_GU=1" (Invoke-Run $model @() @{ ARC_GEMV_GU = "1" }) $plain
+  # (meant bit for bit, so checked bit for bit: every one of 32 steps' logits against plain's)
+  $lg = @()
+  foreach ($gu in "0", "1") {
+    $d = Join-Path ([IO.Path]::GetTempPath()) "inferzero-decode-try-gu$gu.bin"
+    $eap = $ErrorActionPreference
+    try {
+      $ErrorActionPreference = "Continue"
+      if ($gu -eq "1") { $env:ARC_GEMV_GU = "1" }
+      $null = & $runz $model --text-file $q --n 32 --dump-logits $d 2>&1 | Out-String
+    } finally { $ErrorActionPreference = $eap; Remove-Item Env:ARC_GEMV_GU -ErrorAction SilentlyContinue }
+    $lg += $(if (Test-Path $d) { (Get-FileHash $d).Hash } else { "" })
+    Remove-Item $d -ErrorAction SilentlyContinue
+  }
+  "GEMV_GU=1 logits       " + $(if (-not $lg[0] -or -not $lg[1]) { "not written" } elseif ($lg[0] -eq $lg[1]) { "identical to plain (32 steps)" } else { "DIFFER from plain" })
   Line "mtp" (Invoke-Run $model @("--mtp") @{})
   Line "mtp7" (Invoke-Run $model @("--mtp", "--mtp-drafts", "7") @{})
   if ($DFlash) { Line "dflash" (Invoke-Run $model @("--dflash", $DFlash, "--draft", "auto") @{}) }

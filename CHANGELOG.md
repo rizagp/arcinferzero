@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-11: self audit of gemm_xw and the fused GEMV; the 140T's XMX described
+
+- **gemm_xw's start-up check** built its gemm.cl reference with `ARC_GEMM_TM`'s tokens: with `ARC_GEMM_TM=32` and
+  `ARC_GEMM_XW_TM=16` it always failed (the reference left rows unwritten) and turned gemm_xw off. It takes 16 now.
+- **`ARC_GEMM_XW_TRY=1` on an 8-lane XMX GPU** (the 140T, Alchemist) ran the 16-lane DPAS instead of emulating it.
+- **The split-K pieces of an H8 GEMM** come from one helper (`h8_splits`) for gemm.cl and gemm_xw: the pieces decide
+  the result's bits, so two copies of the rule could drift apart; the one-token GEMV's kernel and rows likewise
+  (`gemv1_rows`, matmul1 and the fused gate + up).
+- **`bench\xw_sweep.ps1`** marks a shape "xw not used" when gemm_xw did not run (H8 off, its check failed) instead of
+  "identical"; **`decode_try.ps1`** compares `GEMV_GU=1`'s logits with plain's bit for bit (32 steps), not only tokens.
+- Checked: the default path's logits as before (4B, 48 steps), gemm_xw = gemm.cl (emulated), GEMV_GU = two launches.
+- **The Arc 140T** in docs/xe2-tuning.md section 12: an Alchemist-kind XMX (16 engines of 1024 bits a core, ~77 int8
+  TOPS), where the 27B's prompt reaches ~12; its GEMM's loads per DPAS read with ocloc, and QUEUE 33.4b.
+
 ## 2026-11-11: gate + up in one GEMV launch (opt-in), website_bench warmed up
 
 - **`ARC_GEMV_GU=1`** (QUEUE 33.5): for one token, the FFN's gate and up GEMVs run as one launch of both matrices'
