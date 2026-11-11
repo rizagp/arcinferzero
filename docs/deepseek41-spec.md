@@ -8,9 +8,18 @@ Engram 110.6 GB): it can only be run on a tester's machine.
 
 Implemented (`zero/engine_ds41.h`, `zero/kernels/ops_ds41.cl`, the MoE path of `zero/engine_moe.h` with `moe.cl
 -DROUTE_DS` and `-DSWI_CLAMP`), and checked against the f32 reference `tools/ref_forward` (`deepseek41_layers`,
-written from section 3) on synthetic models from `tools/make_tiny_deepseek41.py`. It has not run the real model yet:
-the real file's metadata has not been read (the keys in section 1 are as the converter writes them), and the accuracy
-check of the real model is against llama.cpp on the same prompts (the user's decision, 2026-11-11).
+written from section 3) on synthetic models from `tools/make_tiny_deepseek41.py`. It has not run the real model yet;
+the accuracy check of the real model is against llama.cpp on the same prompts (the user's decision, 2026-11-11).
+
+The real file's metadata (`bin\gguf_dump.exe` on manoreken2's `DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS.gguf`, issue
+#4, 2026-11-12): one file of 247.56 GiB, 1,043 tensors; every key the engine reads present with the values of
+section 1 (compress ratios 43 entries, KV sources 2 / 8 / 14 / 20, index sources 2 / 8 / 14 / 20 / 24 / 28 / 32 /
+36, candidate source 20 with 2048 blocks of 8, Engram layers 1 / 14 with 4-grams x 8 heads, rows of 256, 48 primes
+just above 16,000,000; 40 SwiGLU clamps of 10; `hash_layer_count` 0; `expert_gating_func` 4; no
+`hyper_connection.single_pass` key). Types: Q5_K (token embedding, head, q_b, output LoRA, shared experts), Q8_0
+(q_a, kv), BF16 router, F32 norms / mixes / sinks / biases, routed experts IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS
+(142 GB), the Engram table IQ4_NL (105 GB, 768,022,850 rows). The tokenizer's pre-tokenizer is `joyai-llm`, which
+inferzero's BPE does not have yet (it splits as Qwen's): first runs take token ids from llama.cpp.
 
 | Test model | What it covers | KL against f32 (mean over the positions) |
 |---|---|---|
