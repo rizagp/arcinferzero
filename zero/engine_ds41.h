@@ -35,7 +35,7 @@
          ds_cv_ = nullptr, ds_cg_ = nullptr, ds_lat_ = nullptr, ds_lat2_ = nullptr, ds_ik_ = nullptr, ds_iq_ = nullptr,
          ds_iw_ = nullptr, ds_sc_ = nullptr, ds_bsc_ = nullptr, ds_sel_ = nullptr, ds_nsel_ = nullptr,
          ds_bsel_ = nullptr, ds_nbsel_ = nullptr, ds_cand_ = nullptr, ds_att_ = nullptr, ds_oa_ = nullptr,
-         ds_f_ = nullptr, ds_ekv_ = nullptr, ds_eng_[2] = {};
+         ds_f_ = nullptr, ds_ekv_ = nullptr, ds_eng_[2] = {}, ds_kvh_ = nullptr;
   int ds_sc_q_ = 1, ds_nbmax_ = 1;  // (indexer scores: queries per pass; blocks of the candidate map)
   std::vector<int> ds_hist_;        // (the token ids before the current position, newest first, for the Engram hash)
   std::vector<float> ds_eng_host_;
@@ -218,8 +218,8 @@
         expect(S.ix_k, d.ID, D, p + "indexer.attn_k.weight");
         S.ix_knorm = load_vec(p + "indexer.k_norm.weight", d.ID);
         S.cap = ctx / S.rt + 2;
-        S.cc = buf((size_t)S.cap * D * 4);
-        S.ic = buf((size_t)S.cap * d.ID * 4);
+        S.cc = buf((size_t)S.cap * D * ds_kvb());
+        S.ic = buf((size_t)S.cap * d.ID * ds_kvb());
         S.pend = buf(ds_pend_bytes(S));
       }
       if (S.ix_own) {
@@ -233,7 +233,7 @@
         expect(S.eng_kv, (d.HC + 1) * E, d.ncol * d.PD, p + "engram_kv.weight");
         S.eng_gate = load_vec(p + "engram_gate.weight", d.HC * E);
       }
-      S.ring = buf((size_t)d.W * D * 4);
+      S.ring = buf((size_t)d.W * D * ds_kvb());
       load_moe(L, p);
       clFinish(cl_.queue);
     }
@@ -257,6 +257,7 @@
     ds_qa_ = buf(M * d.QL * 4);
     ds_q_ = buf(M * H * D * 4);
     ds_kv_ = buf(M * D * 4);
+    ds_kvh_ = buf(M * D * ds_kvb());  // (the chunk's keys as the caches hold them)
     ds_cv_ = buf(M * D * 4);
     ds_cg_ = buf(M * D * 4);
     ds_lat_ = buf((M + 16) * D * 4);
@@ -355,7 +356,7 @@
     clFinish(cl_.queue);
     v.clear();
     for (DsLayer& L : dsl_) {
-      v.push_back(read_buf(L.ring, (size_t)ds_.W * hp.head_dim * 4));
+      v.push_back(read_buf(L.ring, (size_t)ds_.W * hp.head_dim * ds_kvb()));
       if (L.kv_own) v.push_back(read_buf(L.pend, ds_pend_bytes(L)));
     }
     h = ds_hist_;
@@ -368,6 +369,14 @@
     }
     ds_hist_ = h;
   }
+  // The key caches in f16 (the window ring and the chunk's keys, the compressed rows, the index keys: half the
+  // memory, ~325 MB at 128K of context on the real model; its reference simulates fp8 / fp4 there); ARC_DS_KV32=1: f32
+  static bool ds_kv32() {
+    static const bool v = getenv("ARC_DS_KV32") && atoi(getenv("ARC_DS_KV32")) != 0;
+    return v;
+  }
+  static int ds_kvb() { return ds_kv32() ? 4 : 2; }
+  static std::string ds_kv_defs() { return ds_kv32() ? std::string() : std::string(" -DDS_KVH"); }
   size_t ds_pend_bytes(const DsLayer& L) const { return (size_t)2 * hp.head_dim * 4 * std::max(1, L.rt - 1); }
 
   // A saved conversation (save_state / load_state, format version 3): header [magic, 3, layers, embd, vocab, the
@@ -378,7 +387,8 @@
   int ds_shape_code() const {  // (unsigned arithmetic: it wraps on 40 layers; stored as its 32 bits)
     uint32_t c = (uint32_t)ds_.W * 31u + (uint32_t)ds_.ID;
     for (const DsLayer& L : dsl_) c = c * 7u + (L.kv_own ? 3u + (uint32_t)L.rt : 0u);
-    return (int)c;
+    // (f16 caches: another code, so a file saved with f32 caches does not load into them; f32: as before 2026-11-12)
+    return (int)(ds_kvb() == 4 ? c : c * 5u + 2u);
   }
   int ds_saved_hi() const {
     int hi = pos;
@@ -388,11 +398,11 @@
   std::vector<Seg> ds_segs(int hi) {
     std::vector<Seg> v;
     for (DsLayer& L : dsl_) {
-      v.push_back({L.ring, 0, (size_t)ds_.W * hp.head_dim * 4});
+      v.push_back({L.ring, 0, (size_t)ds_.W * hp.head_dim * ds_kvb()});
       if (!L.kv_own) continue;
       const size_t n = (size_t)(hi / L.rt);
-      v.push_back({L.cc, 0, n * hp.head_dim * 4});
-      v.push_back({L.ic, 0, n * ds_.ID * 4});
+      v.push_back({L.cc, 0, n * hp.head_dim * ds_kvb()});
+      v.push_back({L.ic, 0, n * ds_.ID * ds_kvb()});
       v.push_back({L.pend, 0, ds_pend_bytes(L)});
     }
     return v;
@@ -479,7 +489,7 @@
     // the snapshots' copies: sizes as ds_save makes them on this model
     std::vector<size_t> sizes;
     for (const DsLayer& L : dsl_) {
-      sizes.push_back((size_t)ds_.W * hp.head_dim * 4);
+      sizes.push_back((size_t)ds_.W * hp.head_dim * ds_kvb());
       if (L.kv_own) sizes.push_back(ds_pend_bytes(L));
     }
     auto copies = [&](std::vector<std::vector<uint8_t>>& v) {
@@ -526,11 +536,12 @@
     size_t gws[2] = {(size_t)E, (size_t)T};
     run("ds_expand", k, 2, gws, nullptr);
   }
-  // (drow0: the first destination row: a cache's next rows without a view per position)
+  // (drow0: the first destination row: a cache's next rows without a view per position; to_kv: dst is a key cache,
+  //  f16 or f32 as ds_kv_defs says)
   void ds_norm_rope(cl_mem src, cl_mem dst, int K, int nrows, cl_mem w, int ty, int rpp, int pmul, int poff, float sign,
-                    int drow0 = 0) {
+                    int drow0 = 0, bool to_kv = false) {
     if (nrows <= 0) return;
-    cl_kernel k = kernel("ops", "", "ds_norm_rope");
+    cl_kernel k = kernel("ops", to_kv ? ds_kv_defs() + " -DDS_DST_KV" : std::string(), "ds_norm_rope");
     int d0 = drow0, KK = K, un = w ? 1 : 0, R = hp.n_rot, rp = rpp, pm = pmul, po = poff;
     float eps = hp.eps, sg = sign;
     set_args(k, 0, src, dst, d0, KK, w ? w : src, un, eps, ds_rt_[ty], R, rp, pm, po, sg);
@@ -573,7 +584,7 @@
     rmsnorm_quant(ds_qa_, 0, L.q_a_norm, d.QL, Mp, T, 1);
     matmul("ds_q_b", L.q_b, Mp, ds_q_, H * D, 0, 0, true);
     if (L.ix_own) matmul("ds_ix_q_b", L.ix_qb, Mp, ds_iq_, d.IH * d.ID, 0, 0, true);
-    ds_norm_rope(ds_kv_, ds_kv_, D, T, L.kv_norm, ty, 1, 1, kDsPad, 1.0f);
+    ds_norm_rope(ds_kv_, ds_kvh_, D, T, L.kv_norm, ty, 1, 1, kDsPad, 1.0f, 0, true);
     ds_norm_rope(ds_q_, ds_q_, D, T * H, nullptr, ty, H, 1, kDsPad, 1.0f);
     // the compressor: the groups completed in this chunk become compressed rows n0 .. n1 - 1 of this layer's caches
     if (L.kv_own) {
@@ -600,8 +611,8 @@
         }
         ds_matmul_rows("ds_ix_k", L.ix_k, nn, ds_ik_, d.ID);
         const int po = n0 * rt - pos + kDsPad;
-        ds_norm_rope(ds_ik_, L.ic, d.ID, nn, L.ix_knorm, 1, 1, rt, po, 1.0f, n0);
-        ds_norm_rope(ds_lat2_, L.cc, D, nn, nullptr, 1, 1, rt, po, 1.0f, n0);
+        ds_norm_rope(ds_ik_, L.ic, d.ID, nn, L.ix_knorm, 1, 1, rt, po, 1.0f, n0, true);
+        ds_norm_rope(ds_lat2_, L.cc, D, nn, nullptr, 1, 1, rt, po, 1.0f, n0, true);
       }
       if (rt > 1 && (pos + T) % rt) {  // the tokens of the group not complete yet
         cl_kernel k = kernel("ops", "", "ds_pend_store");
@@ -622,7 +633,7 @@
       for (int q0 = 0; q0 < T; q0 += ds_sc_q_) {
         const int Tq = std::min(ds_sc_q_, T - q0);
         if (nrows > 0) {
-          cl_kernel k = kernel("ops", "", "ds_ix_scores");
+          cl_kernel k = kernel("ops", ds_kv_defs(), "ds_ix_scores");
           int ih = d.IH, id = d.ID, nr = nrows, p0 = pos, r = rt, tq = q0, l2 = ld, uc = use_cand ? 1 : 0,
               nb = ds_nbmax_, bs = d.cand_bs;
           set_args(k, 0, ds_iq_, ds_iw_, K.ic, ih, id, nr, p0, r, tq, ds_sc_, l2, ds_cand_, uc, nb, bs);
@@ -659,19 +670,19 @@
     }
     // attention over the window and the selected compressed rows
     {
-      cl_kernel k = kernel("ops", "", "ds_attn");
+      cl_kernel k = kernel("ops", ds_kv_defs(), "ds_attn");
       const DsLayer* K = L.rt ? &dsl_[L.kvs] : nullptr;
       int W = d.W, us = L.rt ? 1 : 0, ls = std::max(1, d.TOPK), R = hp.n_rot, po = kDsPad, p0 = pos, HH = H,
           hpg = H / d.G, MM = Mp;
-      set_args(k, 0, ds_q_, ds_kv_, L.ring, W, K ? K->cc : L.ring, ds_sel_, ds_nsel_, us, ls, L.sinks, ds_rt_[ty], R, po,
+      set_args(k, 0, ds_q_, ds_kvh_, L.ring, W, K ? K->cc : L.ring, ds_sel_, ds_nsel_, us, ls, L.sinks, ds_rt_[ty], R, po,
                p0, HH, hpg, MM, ds_att_);
       size_t gws[2] = {(size_t)16 * H, (size_t)T}, lws[2] = {16, 1};
       run("ds_attn", k, 2, gws, lws);
     }
     {
-      cl_kernel k = kernel("ops", "", "ds_ring_store");
+      cl_kernel k = kernel("ops", ds_kv_defs(), "ds_ring_store");
       int W = d.W, DD = D, p0 = pos, TT = T;
-      set_args(k, 0, ds_kv_, L.ring, W, DD, p0, TT);
+      set_args(k, 0, ds_kvh_, L.ring, W, DD, p0, TT);
       size_t gws[2] = {(size_t)D, (size_t)std::min(T, d.W)};
       run("ds_ring_store", k, 2, gws, nullptr);
     }

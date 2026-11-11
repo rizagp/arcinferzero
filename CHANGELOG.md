@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-12: DeepSeek-V4.1's key caches in f16
+
+- **The window ring, the compressed rows and the index keys of DeepSeek-V4.1 are kept in f16** (the chunk's own keys
+  rounded the same way, so the results do not depend on how a prompt is cut): half the cache memory, ~325 MB less at
+  128K of context on the real model. KL against the f32 reference unchanged within noise (tiny model 100 / 300 tokens:
+  0.00295 / 0.00363 against 0.00323 / 0.00361 with f32). `ARC_DS_KV32=1` keeps f32. Saved DeepSeek conversations from
+  before (f32) are processed again once.
+
 ## 2026-11-11: DeepSeek-V4.1 conversations saved to disk
 
 - **The server's saved conversations now cover DeepSeek-V4.1** (a format of its own, version 3: the window rings,

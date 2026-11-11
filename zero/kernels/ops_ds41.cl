@@ -8,6 +8,25 @@
 #ifndef DS_HC
 #define DS_HC 4
 #endif
+// The key caches (the window ring and the chunk's keys, the compressed rows, the index keys): f16 with -DDS_KVH (the
+// default, engine_ds41.h ds_kv_defs), else f32
+#ifdef DS_KVH
+#define DSKV_T half
+#define DSKV_LD(p, i) vload_half((i), (p))
+#define DSKV_ST(v, p, i) vstore_half((v), (i), (p))
+#else
+#define DSKV_T float
+#define DSKV_LD(p, i) ((p)[i])
+#define DSKV_ST(v, p, i) ((p)[i] = (v))
+#endif
+// ds_norm_rope's destination: a cache (-DDS_DST_KV) or f32 rows
+#ifdef DS_DST_KV
+#define DSDST_T DSKV_T
+#define DSDST_ST(v, p, i) DSKV_ST(v, p, i)
+#else
+#define DSDST_T float
+#define DSDST_ST(v, p, i) ((p)[i] = (v))
+#endif
 #define DS_MIX ((2 + DS_HC) * DS_HC)
 
 // The mixes of one site for each token: m = fn . x (24 rows of HC*E) * rsqrt(mean(x^2) + eps), then
@@ -131,12 +150,12 @@ __kernel void ds_expand(__global float* x, __global const float* f, __global con
 // (r / rpp) * pmul + poff), sign -1: the inverse rotation. One sub-group per row: lane l holds values l*K/16 ...
 // grid (16, nrows), local (16, 1).
 __attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void ds_norm_rope(__global const float* src, __global float* dst, int drow0, int K, __global const float* w,
+__kernel void ds_norm_rope(__global const float* src, __global DSDST_T* dst, int drow0, int K, __global const float* w,
                            int use_norm, float eps, __global const float2* tab, int R, int rpp, int pmul, int poff,
                            float sign) {
   const int r = get_group_id(1), l = get_sub_group_local_id(), per = K / 16;
   __global const float* s = src + (size_t)r * K + l * per;
-  __global float* d = dst + (size_t)(r + drow0) * K + l * per;  // (drow0: the first destination row)
+  __global DSDST_T* d = dst + (size_t)(r + drow0) * K + l * per;  // (drow0: the first destination row)
   float v[32];
   float ss = 0.0f;
   for (int i = 0; i < per; ++i) {
@@ -158,7 +177,7 @@ __kernel void ds_norm_rope(__global const float* src, __global float* dst, int d
       v[i + 1] = a * sn + b * cs.x;
     }
   }
-  for (int i = 0; i < per; ++i) d[i] = v[i];
+  for (int i = 0; i < per; ++i) DSDST_ST(v[i], d, i);
 }
 
 // The compressor: compressed row q (absolute row n0 + q) from the tokens j*rt .. j*rt + rt - 1 (j = n0 + q), each the
@@ -205,7 +224,7 @@ __kernel void ds_pend_store(__global const float* cv, __global const float* cg, 
 // score[t][j] = sum_h w[t][h] / sqrt(ID * IH) * relu(iq[t][h] . ik[j]) for the rows the query sees
 // (j < (pos + t + 1) / rt), else -inf; with a candidate map (cand [Tq][nbmax] bytes): rows outside its kept blocks
 // -inf too. grid (rows padded to 64, Tq), local (64, 1).
-__kernel void ds_ix_scores(__global const float* iq, __global const float* iw, __global const float* ik, int IH, int ID,
+__kernel void ds_ix_scores(__global const float* iq, __global const float* iw, __global const DSKV_T* ik, int IH, int ID,
                            int nrows, int pos, int rt, int tq0, __global float* sc, int ld, __global const uchar* cand,
                            int use_cand, int nbmax, int bs) {
   const int j = get_global_id(0), tl = get_global_id(1), t = tq0 + tl;
@@ -215,11 +234,11 @@ __kernel void ds_ix_scores(__global const float* iq, __global const float* iw, _
   if (j < nv && (!use_cand || cand[(size_t)t * nbmax + j / bs])) {
     s = 0.0f;
     const float wsc = rsqrt((float)(ID * IH));
-    __global const float* kr = ik + (size_t)j * ID;
+    __global const DSKV_T* kr = ik + (size_t)j * ID;
     for (int h = 0; h < IH; ++h) {
       __global const float* qr = iq + ((size_t)t * IH + h) * ID;
       float d = 0.0f;
-      for (int i = 0; i < ID; ++i) d += qr[i] * kr[i];
+      for (int i = 0; i < ID; ++i) d += qr[i] * DSKV_LD(kr, i);
       s += iw[(size_t)t * IH + h] * wsc * fmax(d, 0.0f);
     }
   }
@@ -357,8 +376,8 @@ __kernel void ds_cand_map(__global const int* bsel, __global const int* nbsel, i
 // RoPE at p) and stored group-major: att[g][t][(h % hpg) * D + i], g = h / hpg. One sub-group per (t, h): lane l holds
 // values l*32 .. l*32 + 31 (D = 512). grid (16 * H, T), local (16, 1).
 __attribute__((intel_reqd_sub_group_size(SG)))
-__kernel void ds_attn(__global const float* q, __global const float* kv, __global const float* ring, int W,
-                      __global const float* cc, __global const int* sel, __global const int* nsel, int use_sel, int ldsel,
+__kernel void ds_attn(__global const float* q, __global const DSKV_T* kv, __global const DSKV_T* ring, int W,
+                      __global const DSKV_T* cc, __global const int* sel, __global const int* nsel, int use_sel, int ldsel,
                       __global const float* sinks, __global const float2* tab, int R, int poff, int pos, int H, int hpg,
                       int Mp, __global float* att) {
   const int h = get_group_id(0), t = get_group_id(1), l = get_sub_group_local_id();
@@ -374,13 +393,13 @@ __kernel void ds_attn(__global const float* q, __global const float* kv, __globa
   const int s0 = max(0, p - W + 1);
   const int nc = use_sel ? nsel[t] : 0;
   for (int kk = s0; kk <= p + nc; ++kk) {
-    __global const float* kr;
+    __global const DSKV_T* kr;
     if (kk <= p) kr = kk >= pos ? kv + (size_t)(kk - pos) * D : ring + (size_t)(kk % W) * D;
     else kr = cc + (size_t)sel[(size_t)t * ldsel + (kk - p - 1)] * D;
     kr += l * 32;
     float kv32[32], d = 0.0f;
     for (int i = 0; i < 32; ++i) {
-      kv32[i] = kr[i];
+      kv32[i] = DSKV_LD(kr, i);
       d += qv[i] * kv32[i];
     }
     d = sub_group_reduce_add(d) * scale;
@@ -407,7 +426,7 @@ __kernel void ds_attn(__global const float* q, __global const float* kv, __globa
 }
 
 // The window ring after a chunk: positions max(pos, pos + T - W) .. pos + T - 1 into slots p % W. grid (D, n).
-__kernel void ds_ring_store(__global const float* kv, __global float* ring, int W, int D, int pos, int T) {
+__kernel void ds_ring_store(__global const DSKV_T* kv, __global DSKV_T* ring, int W, int D, int pos, int T) {
   const int d = get_global_id(0), q = get_global_id(1);
   const int p = max(pos, pos + T - W) + q;
   ring[(size_t)(p % W) * D + d] = kv[(size_t)(p - pos) * D + d];
