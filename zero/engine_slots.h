@@ -87,6 +87,10 @@
   void snapshot_host() {
     TP_MIRROR(snapshot_host(), TpMirror::kNone, 0);
     hsnap_.S.clear();
+    if (hp.ds41) {  // (DeepSeek-V4.1: not in snapshots yet, see snapshot())
+      hsnap_.pos = -1;
+      return;
+    }
     for (auto& L : layers_)
       if (hp.recurrent(L.il)) {
         hsnap_.S.push_back(read_buf(L.S, state_bytes()));
@@ -105,7 +109,7 @@
   }
   bool restore_host() {
     TP_MIRROR(restore_host(), TpMirror::kNone, 0);
-    if (hsnap_.pos < 0) return false;
+    if (hsnap_.pos < 0 || hp.ds41) return false;
     size_t k = 0;
     for (auto& L : layers_)
       if (hp.recurrent(L.il)) {

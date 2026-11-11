@@ -175,8 +175,13 @@ __kernel void swiglu_quant(__global const float* gu, int F, int M, int M_valid, 
 #pragma unroll
           for (int i = 0; i < 16; ++i) v[i] = gelu_tanh(gv[i]) * uv[i];
         } else {
+#ifdef SWI_CLAMP  // (DeepSeek-V4.1's shared expert: silu(min(g, L)) * clamp(u, -L, L))
+#pragma unroll
+          for (int i = 0; i < 16; ++i) v[i] = silu(fmin(gv[i], SWI_CLAMP)) * clamp(uv[i], -SWI_CLAMP, SWI_CLAMP);
+#else
 #pragma unroll
           for (int i = 0; i < 16; ++i) v[i] = silu(gv[i]) * uv[i];
+#endif
         }
       }
     }

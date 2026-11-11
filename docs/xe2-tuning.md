@@ -51,7 +51,10 @@ that compares every result file there).
 | GPU | INT8 XMX | FP16 XMX | FP32 vector | FP16 vector | INT8 DP4a | Memory read |
 |---|---|---|---|---|---|---|
 | Core Ultra 5 125H (Xe-LPG, 112 EUs, 2.2 GHz) | none | none | 3.85 of 3.94 TFLOPS (98 %) | 7.69 of 7.88 (98 %) | 12.98 of 15.77 TOPS (82 %) | 76.2 GB/s |
-| Arc 140T, Pro B60, Arc B390 | | | | | | waiting for their owners' runs |
+| Arc 140T (Xe-LPG Plus, 128 EUs, 2.35 GHz; issue #5, 2026-11-11) | 76.75 of 77.0 TOPS (100 %) | 38.38 of 38.5 TFLOPS (100 %); BF16 37.56 (98 %) | 4.70 of 4.81 (98 %) | 9.39 of 9.63 (98 %) | 15.07 of 19.25 TOPS (78 %) | 81.5 GB/s |
+| Pro B60, Arc B390 | | | | | | waiting for their owners' runs |
+
+The 140T run settles its matrix figures: Intel's 77 int8 TOPS is what its XMX does (a spec database's 154 int8 TOPS and 77 FP16 TFLOPS are twice that), and the engines run at their maximum clock under load. Its 27B prompt (~12 int8 TOPS at 4K) uses about a sixth of them: the room is in the kernels, not the hardware.
 
 The engine was written and tuned on a Core Ultra 5 125H (Xe-LPG iGPU, no XMX). On Xe2 cards the prompt GEMMs use
 XMX (DPAS), but their settings are still the iGPU's, and only the owners of these cards can measure what is faster.

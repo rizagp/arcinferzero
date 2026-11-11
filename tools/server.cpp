@@ -850,9 +850,8 @@ class Server {
     const int hpos = eng_.host_snapshot_pos();
     if (hpos > (int)L) eng_.drop_host_snapshot();  // the request diverges inside the system prompt
     if (hpos >= 0 && hpos <= (int)L && hpos > bp) { best = kSnaps; bp = hpos; }
-    if (best >= 0) {
-      if (best == kSnaps) eng_.restore_host();
-      else eng_.restore(best);
+    // (a restore the engine refuses: the conversation from the start, not the new tokens on the old position)
+    if (best >= 0 && (best == kSnaps ? eng_.restore_host() : eng_.restore(best))) {
       for (int s = 0; s < kSnaps; ++s) if (eng_.snapshot_pos(s) > bp) eng_.drop_snapshot(s);
       cached_.resize(bp);
       return bp;

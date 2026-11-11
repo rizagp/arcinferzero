@@ -10,6 +10,12 @@
     auto p = [&](const char* n) { return kernel("ops", "", n); };
     // (h8f_defs_: H8's float copy of the activations, zero/engine_h8.h; empty otherwise)
     k_rmsnorm_ = kernel("ops", h8f_defs_, "rmsnorm_quant");
+    if (hp.ds41) {  // (DeepSeek-V4.1: its shared expert's SwiGLU clamped; none of the Qwen attention / DeltaNet kernels)
+      k_swiglu_ = kernel("ops", h8f_defs_ + ds_swi_defs(), "swiglu_quant");
+      auto tabs = build_iq_tables();
+      tabs_ = buf(tabs.size() * 4, tabs.data());
+      return;
+    }
     k_swiglu_ = kernel("ops", h8f_defs_, "swiglu_quant");
     if (getenv("ARC_CT")) conv_ct_ = std::max(1, atoi(getenv("ARC_CT")));
     {
@@ -457,6 +463,7 @@
     // weights) at about half the speed (Gemma 4 12B's 826 MB head: 14 ms per token first, 21-28 ms last).
     load_head();
     if (hp.gemma) return load_weights_gemma4();
+    if (hp.ds41) return load_weights_ds41();
     layers_.resize(hp.n_layer);
     for (int il = 0; il < hp.n_layer; ++il) {
       Layer& L = layers_[il];

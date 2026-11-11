@@ -8,14 +8,14 @@
 # more blocks than the pool keeps). Head size 512 with 64 rotated dimensions and the 128-wide indexer stay as in the
 # real model, since kernels may be written for them.
 #
-# usage: python -I tools/make_tiny_deepseek41.py OUT.gguf [--seed N]
+# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N]
 import struct, sys
 import numpy as np
 
 ARCH = "deepseek41"
-E, NL, H, D, R, QL, G, OL = 256, 10, 8, 512, 64, 128, 2, 64
-SWA, TOPK, IH, ID = 16, 8, 8, 128
-NE, NU, FF, NSH = 16, 4, 128, 1
+E, NL, H, D, R, QL, G, OL = 256, 10, 8, 512, 64, 256, 2, 128
+SWA, TOPK, IH, ID = 16, 8, 16, 128
+NE, NU, FF, NSH = 16, 4, 256, 1
 HC, PD, NGRAM, HPN = 4, 64, 4, 8
 VOCAB = 512
 RATIOS = [0, 0, 2, 2, 2, 2, 1, 1, 1, 1]
@@ -121,6 +121,9 @@ def primes_from(start, n, used):
 def main():
     out = sys.argv[1]
     seed = int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else 41
+    global NU  # (--nu N: experts per token; --nu 16 = every expert, no selection to flip on near-ties)
+    if "--nu" in sys.argv:
+        NU = int(sys.argv[sys.argv.index("--nu") + 1])
     rng = np.random.default_rng(seed)
     w = Writer()
     p = ARCH + "."
@@ -232,8 +235,8 @@ def main():
             w.tensor(b + f"hc_{site}_base.weight", (0.5 * rng.standard_normal(mix)).astype(np.float32), F32)
             w.tensor(b + f"hc_{site}_scale.weight", (1.0 + 0.2 * rng.standard_normal(3)).astype(np.float32), F32)
         w.tensor(b + "ffn_norm.weight", normw(E), F32)
-        w.tensor(b + "ffn_gate_inp.weight", mat(NE, E, 2.0), BF16)
-        w.tensor(b + "exp_probs_b.bias", (0.3 * rng.standard_normal(NE)).astype(np.float32), F32)
+        w.tensor(b + "ffn_gate_inp.weight", mat(NE, E, 8.0), BF16)  # (decisive: fewer near-ties)
+        w.tensor(b + "exp_probs_b.bias", (0.1 * rng.standard_normal(NE)).astype(np.float32), F32)
         w.tensor(b + "ffn_gate_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
         w.tensor(b + "ffn_up_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
         w.tensor(b + "ffn_down_exps.weight", (rng.standard_normal((NE, E, FF)) / np.sqrt(FF)).astype(np.float32), Q8)

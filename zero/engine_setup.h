@@ -7,6 +7,7 @@
     hp.arch = a;
     if (a == "gemma4") return load_hparams_gemma4();
     if (a == "qwen3" || a == "qwen3vl") return load_hparams_qwen3();
+    if (a == "deepseek41") return load_hparams_ds41();
     if (a != "qwen35" && a != "qwen35moe" && a != "qwen4exp") throw std::runtime_error("unsupported architecture: " + a);
     hp.moe = a == "qwen35moe" || a == "qwen4exp";
     hp.hc = a == "qwen4exp";

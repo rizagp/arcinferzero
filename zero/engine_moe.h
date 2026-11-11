@@ -46,12 +46,13 @@
       set_args(k, 0, hco_, K, L.router_bf16, N, nt, rl_, ld);
       size_t g2[2] = {(size_t)16 * ((NR + rt - 1) / rt), (size_t)(T + tt - 1) / tt}, l2[2] = {16, 1};
       run("gemm_router", k, 2, g2, l2);
-    } else if (!hp.hc) {
+    } else if (!hp.hc && !hp.ds41) {  // (DeepSeek-V4.1: ds_collapse wrote the input, f32 in hco_ and int8 in aq_)
       rmsnorm_quant(x_, 0, L.post_norm, E, Mp, T, 1);
     }
     // router + shared expert gate/up (prompt chunks fuse silu(gate) * up into the up GEMM); one token: one GEMV
     // over the stacked rows when the layer has them (router logits at rgu_out_[0], gate / up in rgu_gu_)
-    const int fused = cur_T_ > 8 && !q2mm_ ? 1 : 0;  // (two passes: no fused epilogue)
+    // (two passes: no fused epilogue; DeepSeek-V4.1: none either, its SwiGLU is clamped in swiglu_quant)
+    const int fused = cur_T_ > 8 && !q2mm_ && !hp.ds41 ? 1 : 0;
     cl_mem rl = rl_, gu = big_;
     if (g4) {
       // (done above)
@@ -88,12 +89,14 @@
     const int tm = T == 1 && !q2g ? 1 : q2f ? (T <= 4 ? 4 : 8) : hp.moe_std ? (T <= 8 ? tm_dec : tm_std) : 16, n = T * NU;
     const std::string defs = "-cl-intel-256-GRF-per-thread -DNE=" + std::to_string(hp.n_expert) +
                              " -DNU=" + std::to_string(NU) + " -DTM=" + std::to_string(tm) +
-                             (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "");
+                             (Fp != F ? " -DFV=" + std::to_string(F) : std::string()) + (g4 ? " -DESCALE" : "") +
+                             (hp.ds41 ? " -DROUTE_DS -DRSCALE=" + flt_def(ds_.wscale) : std::string());
     const std::string hld = (Fp != F ? " -DHLD=" + std::to_string(Fp) : std::string()) + (g4 ? " -DMOE_GELU" : "");
     if (T == 1 && !q2g) {  // one token: its NU experts are the tiles
       cl_kernel k = kernel("moe", defs, "moe_route1");
       set_args(k, 0, rl, sgate_, mtiles_, stok_, swt_, minv_);
       if (g4) set_args(k, 6, L.escale);
+      if (hp.ds41) set_args(k, 6, dsl_[L.il].ebias);
       size_t g1 = 16, l1 = 16;
       run("moe_route", k, 1, &g1, &l1);
       if (tp_moe()) tp_moe_tiles1();  // (multi-GPU: this GPU's experts' tiles only, zero/mgpu/engine_tp_shard.h)
@@ -102,6 +105,7 @@
         cl_kernel k = kernel("moe", defs, "moe_route");
         set_args(k, 0, rl_, NR, T, mids_, mwts_, sgate_, mcount_);
         if (g4) set_args(k, 7, L.escale);
+        if (hp.ds41) set_args(k, 7, dsl_[L.il].ebias);
         size_t gws[2] = {16, (size_t)T}, lws[2] = {16, 1};
         run("moe_route", k, 2, gws, lws);
       }
@@ -165,8 +169,9 @@
     // CPU reference 0.0221 -> 0.0191 (337 tokens; max 0.96 -> 0.27); its gate / up stay per tile (15.4 vs 13.7 s, KL
     // 0.0230 with both).
     // (multi-GPU: not decode + GEMM, which decodes every expert of the layer, the other GPUs' too)
-    const bool gemm_ok = moe_group_ > 0 && Fp == F && moe_gemm_layer_ok(L) && !tp_moe();
-    const bool rg_ok = hp.moe_std && tm == 16 && (T >= rg_min || q2g) && F % 64 == 0 && moe_rg_layer_ok(L);
+    // (DeepSeek-V4.1: the per-tile kernels only, which have its clamped SwiGLU)
+    const bool gemm_ok = moe_group_ > 0 && Fp == F && moe_gemm_layer_ok(L) && !tp_moe() && !hp.ds41;
+    const bool rg_ok = hp.moe_std && tm == 16 && (T >= rg_min || q2g) && F % 64 == 0 && moe_rg_layer_ok(L) && !hp.ds41;
     // (Gemma 4 26B-A4B, F 704 padded to 768: no decode + GEMM, so gate / up take moe_rg at every chunk size from
     //  rg_min as the down projection does; ARC_G4_RG_GU=0: per tile)
     static const bool g4_rg_gu = !getenv("ARC_G4_RG_GU") || atoi(getenv("ARC_G4_RG_GU")) != 0;
@@ -193,7 +198,7 @@
       cl_kernel k = kernel("decode", (q2f && tm > 1 ? std::string("-cl-intel-256-GRF-per-thread ") : grf_env("ARC_MOE_GRF")) +
                                          "-DMOE_Q -DQT=" + std::to_string(L.ex_type[0]) + " -DGROWS=" +
                                          std::to_string(grows) + " -DTM=" + std::to_string(tm) + xdef + hld + q2fd +
-                                         (asct ? " -DASCT" : ""), "moe_gateup_q");
+                                         (asct ? " -DASCT" : "") + ds_swi_defs(), "moe_gateup_q");
       int M = Mp, K = E, FF = F;
       cl_mem sc = asc_;
       if (asct) {
@@ -328,9 +333,10 @@
       tp_moe_combine(T);  // (this GPU's experts + the shared expert on GPU 0, summed over the GPUs)
     } else {
       cl_kernel k = kernel("moe", defs, "moe_combine");
-      if (hp.hc) fill(hco_, (size_t)T * E * 4);  // (Flash Next: the block output alone, combined into the streams after)
+      // (Flash Next, DeepSeek-V4.1: the block output alone, combined into the streams after)
+      if (hp.hc || hp.ds41) fill(hco_, (size_t)T * E * 4);
       if (g4) fill(gmoe_, (size_t)T * E * 4);    // (Gemma 4: the experts' sum alone; msh_ stays zero)
-      set_args(k, 0, g4 ? gmoe_ : hp.hc ? hco_ : x_, msh_, sgate_, my_, minv_, E);
+      set_args(k, 0, g4 ? gmoe_ : hp.hc || hp.ds41 ? hco_ : x_, msh_, sgate_, my_, minv_, E);
       size_t gws[2] = {((size_t)E + 255) / 256 * 256, (size_t)T}, lws[2] = {256, 1};  // (moe_combine checks c < N)
       run("moe_combine", k, 2, gws, lws);
     }
