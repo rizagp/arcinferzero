@@ -1,10 +1,41 @@
 # DeepSeek-V4.1-Flash (`deepseek41`): implementation spec
 
 Status 2026-11-11: research notes, written before any code (as docs/flash-next-spec.md was), so the
-implementation can be checked against them. Nothing is implemented yet. The real model is ~231 GB as GGUF
-(ISTA-DASLab IQ1_M 120.7 GB + Engram 110.6 GB): it can only be run on a tester's machine. The plan: a small
-synthetic `deepseek41` GGUF with the real layout and random weights, checked part by part against
-`tools/ref_forward` (f32), then the real model on a tester's machine (QUEUE.md, DeepSeek item).
+implementation can be checked against them. The real model is ~231 GB as GGUF (ISTA-DASLab IQ1_M 120.7 GB +
+Engram 110.6 GB): it can only be run on a tester's machine.
+
+## Status in the engine (2026-11-12)
+
+Implemented (`zero/engine_ds41.h`, `zero/kernels/ops_ds41.cl`, the MoE path of `zero/engine_moe.h` with `moe.cl
+-DROUTE_DS` and `-DSWI_CLAMP`), and checked against the f32 reference `tools/ref_forward` (`deepseek41_layers`,
+written from section 3) on synthetic models from `tools/make_tiny_deepseek41.py`. It has not run the real model yet:
+the real file's metadata has not been read (the keys in section 1 are as the converter writes them), and the accuracy
+check of the real model is against llama.cpp on the same prompts (the user's decision, 2026-11-11).
+
+| Test model | What it covers | KL against f32 (mean over the positions) |
+|---|---|---|
+| tiny, `--nu 16` (10 layers, 8 heads, window 16, top-k 8, 16 experts all used) | every layer role, window wrap, top-k, the candidate pool, Engram | 100 tokens 0.0030 prompt / 0.0032 token by token; 300 tokens 0.0037 / 0.0037 |
+| tiny, `--nu 16 --heads 16` | the 16-head prompt attention (`ds_attn_gh`) | 300 tokens 0.0031 |
+| tiny (4 of 16 experts) | the routing | 0.003-0.05: expert near-ties flip under int8 rounding (traced layer by layer) |
+| `--real` (4 layers at the real widths: 5120, 64 heads, top-k 512, a 2048-block pool, 32 indexer heads, 384 experts) | kernel and buffer limits at the real sizes | median 0.001 at every depth over 1,200 positions; mean 0.05 from a random router's expert ties |
+
+What the server does with it: prompts and generation, the prompt-cache snapshots and saved conversations (format 3;
+`runz --snap-test` bit-identical). Not yet: slots, drafters (the DSpark MTP GGUF, section 3.9), images, multi-GPU.
+
+Switches (all default on; each one's off value restores the earlier kernel):
+
+| Switch | What it turns off |
+|---|---|
+| `ARC_DS_KV32=1` | f16 key caches (window ring, compressed rows, index keys): f32 |
+| `ARC_DS_MIX1=1` | the hyper-connection mixes over 16 work-groups a token: one work-group |
+| `ARC_DS_ATTN1=1` | the split attention of 1-8 rows and the 16-head prompt attention: one sub-group per (row, head) |
+| `ARC_DS_ATTN_GH=0` | the 16-head prompt attention only |
+| `ARC_DS_IX1=1` | the lane-per-row indexer scores: one work-item per score |
+
+Speed on the laptop (Core Ultra 5 125H), the `--real` test model's 4 layers, a 1,200-token prompt: prompt 407 ->
+~990 tok/s and generation 32 -> 41 tok/s over the night's changes (docs/before-after.md, 11-11 / 11-12). What is left
+there is the experts and the large matrix products at memory speed; the real model's speed depends on where its
+experts live (RAM or SSD) on the tester's machine.
 
 Sources are numbered [S1]..[S20] (list at the end). Statements without a source tag are derived arithmetic. "GUESS" marks
 inferences that were not seen in code. Most code was read through a summarising web fetcher, not byte for byte, so short
