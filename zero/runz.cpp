@@ -532,6 +532,65 @@ static int run_main(int argc, char** argv) {
       all = all && same;
       if (host) eng.drop_host_snapshot(); else eng.drop_snapshot(0);
     }
+    // a saved conversation: the prompt to a and a snapshot there, saved to a file; the engine's caches then overwritten
+    // by other tokens (reset() leaves the caches' contents), reset, the file loaded: the next tokens, then the loaded
+    // snapshot restored after other tokens and the next tokens again. A file cut in half must be refused. (Gemma: a
+    // loaded snapshot has no ring copy, so not for it; a model whose state cannot be saved: skipped)
+    if (!eng.hp.swa_rings) {
+      eng.reset();
+      feed(toks.data(), a);
+      eng.snapshot(0);
+      const std::string tmp = (std::filesystem::temp_directory_path() / "runz_snap_test.state").string();
+      FILE* fo = fopen(tmp.c_str(), "wb");
+      const bool saved = fo && eng.save_state(fo, a);
+      if (fo) fclose(fo);
+      if (!saved) {
+        printf("saved conversation: not supported here, skipped\n");
+        std::remove(tmp.c_str());
+        return all ? 0 : 1;
+      }
+      std::vector<int> scramble(toks.rbegin(), toks.rbegin() + std::min(n, a + mid));
+      eng.reset();
+      feed(scramble.data(), (int)scramble.size());
+      eng.reset();
+      eng.drop_snapshot(0);
+      bool cut_refused = false;
+      {  // (the first half of the file: refused, the engine left at position 0)
+        std::vector<char> all_bytes;
+        if (FILE* fr = fopen(tmp.c_str(), "rb")) {
+          char buf[65536];
+          for (size_t k; (k = fread(buf, 1, sizeof buf, fr)) > 0;) all_bytes.insert(all_bytes.end(), buf, buf + k);
+          fclose(fr);
+        }
+        const std::string half = tmp + ".half";
+        if (FILE* fh = fopen(half.c_str(), "wb")) {
+          fwrite(all_bytes.data(), 1, all_bytes.size() / 2, fh);
+          fclose(fh);
+        }
+        FILE* fh = fopen(half.c_str(), "rb");
+        cut_refused = fh && !eng.load_state(fh) && eng.pos == 0;
+        if (fh) fclose(fh);
+        std::remove(half.c_str());
+      }
+      FILE* fi = fopen(tmp.c_str(), "rb");
+      const bool loaded = fi && eng.load_state(fi) && eng.pos == a;
+      if (fi) fclose(fi);
+      std::remove(tmp.c_str());
+      const std::vector<float> g1 = loaded ? feed(toks.data() + a, tail) : std::vector<float>();
+      bool ok2 = false;
+      std::vector<float> g2;
+      if (loaded) {
+        feed(other.data(), mid);
+        ok2 = eng.restore(0) && eng.pos == a;
+        if (ok2) g2 = feed(toks.data() + a, tail);
+      }
+      auto eq = [&](const std::vector<float>& g) { return g.size() == want.size() && memcmp(g.data(), want.data(), g.size() * 4) == 0; };
+      const bool s1 = loaded && eq(g1), s2 = ok2 && eq(g2);
+      printf("saved conversation at %d: half the file %s; load %s; the next %d tokens %s; its snapshot restored after %d "
+             "other tokens %s, the next tokens %s\n", a, cut_refused ? "refused" : "ACCEPTED", loaded ? "ok" : "FAILED",
+             tail, s1 ? "bit-identical" : "DIFFER", mid, ok2 ? "ok" : "FAILED", s2 ? "bit-identical" : "DIFFER");
+      all = all && s1 && s2 && cut_refused;
+    }
     return all ? 0 : 1;
   }
   if (bench_batch > 1) {  // batched decoding (forward_batch) over 1..N slots holding the prompt, against one slot alone

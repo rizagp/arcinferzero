@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-11: DeepSeek-V4.1 conversations saved to disk
+
+- **The server's saved conversations now cover DeepSeek-V4.1** (a format of its own, version 3: the window rings,
+  the compressed rows and index keys up to the saved position, the pending compressor rows, the Engram history, the
+  snapshots' copies). `runz --snap-test` now also saves a conversation with a snapshot to a file, resets, loads it,
+  continues, then restores the loaded snapshot and continues again: bit-identical against a fresh run on the tiny
+  DeepSeek model and on Qwen3.5 4B.
+
 ## 2026-11-11: DeepSeek-V4.1 checked at the real model's widths
 
 - `tools/make_tiny_deepseek41.py --real`: a 4.4 GB test model with the real widths (embedding 5120, 64 heads of 512,

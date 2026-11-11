@@ -18,7 +18,8 @@
     return save_state([f](const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }, keep_from, host_snapshot);
   }
   size_t saved_size(int keep_from) {
-    if (!opt.attn_int8 || hp.ds41) return 0;  // (DeepSeek-V4.1: its caches are not in the saved layout yet)
+    if (hp.ds41) return ds_saved_size();  // (DeepSeek-V4.1: a layout of its own, zero/engine_ds41.h)
+    if (!opt.attn_int8) return 0;
     std::vector<int32_t> hdr;
     std::vector<Seg> segs;
     save_layout(keep_from, hdr, segs);
@@ -31,7 +32,8 @@
     return n;
   }
   bool save_state(const Sink& out, int keep_from, bool host_snapshot = true) {
-    if (!opt.attn_int8 || hp.ds41) return false;
+    if (hp.ds41) return ds_save_state(out, host_snapshot);
+    if (!opt.attn_int8) return false;
     flush_mtp_pending();
     std::vector<int32_t> hdr;
     std::vector<Seg> segs;
@@ -47,7 +49,8 @@
     reset();
     for (int i = 0; i < (int)snaps_.size(); ++i) drop_snapshot(i);
     drop_host_snapshot();
-    if (!opt.attn_int8 || hp.ds41) return false;
+    if (hp.ds41) return ds_load_state(f);
+    if (!opt.attn_int8) return false;
     const auto kl = kv_layers();
     std::vector<int32_t> hdr(11);
     if (!get(f, hdr.data(), hdr.size() * 4)) return false;

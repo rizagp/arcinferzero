@@ -6,8 +6,8 @@
 // sqrt(softplus) routing with the selection bias (moe.cl -DROUTE_DS) and clamped SwiGLU (-DSWI_CLAMP).
 // New (zero/kernels/ops_ds41.cl): the hyper-connection mixes with Sinkhorn, collapse / expand of the 4 streams,
 // Engram, the window + compressed-row attention with sinks, the compressor, the indexer and its top-k.
-// First version: f32 caches and plain kernels, checked against tools/ref_forward; the server's snapshots (ds_save),
-// not yet saved conversations, slots or drafters for this architecture.
+// First version: f32 caches and plain kernels, checked against tools/ref_forward; the server's snapshots (ds_save) and
+// saved conversations (ds_save_state); not yet slots, drafters, images or multi-GPU for this architecture.
 
   struct DsHp {
     int QL = 0, G = 0, OL = 0, W = 0, IH = 0, ID = 0, TOPK = 0, HC = 4, MIX = 24, iters = 20;
@@ -369,6 +369,138 @@
     ds_hist_ = h;
   }
   size_t ds_pend_bytes(const DsLayer& L) const { return (size_t)2 * hp.head_dim * 4 * std::max(1, L.rt - 1); }
+
+  // A saved conversation (save_state / load_state, format version 3): header [magic, 3, layers, embd, vocab, the
+  // model's DeepSeek shape (window, KV sources' ratios), pos, the Engram history], the snapshots [count, then per
+  // snapshot: pos, its history], the host snapshot's [pos, history]; then the device ranges (every layer's ring, every
+  // KV source's compressed rows and index keys below the highest saved position, its pending rows), then the
+  // snapshots' and the host snapshot's copies (ds_save's vectors, in order).
+  int ds_shape_code() const {  // (unsigned arithmetic: it wraps on 40 layers; stored as its 32 bits)
+    uint32_t c = (uint32_t)ds_.W * 31u + (uint32_t)ds_.ID;
+    for (const DsLayer& L : dsl_) c = c * 7u + (L.kv_own ? 3u + (uint32_t)L.rt : 0u);
+    return (int)c;
+  }
+  int ds_saved_hi() const {
+    int hi = pos;
+    for (const Snap& s : snaps_) hi = std::max(hi, s.pos);
+    return std::max(hi, hsnap_.pos);
+  }
+  std::vector<Seg> ds_segs(int hi) {
+    std::vector<Seg> v;
+    for (DsLayer& L : dsl_) {
+      v.push_back({L.ring, 0, (size_t)ds_.W * hp.head_dim * 4});
+      if (!L.kv_own) continue;
+      const size_t n = (size_t)(hi / L.rt);
+      v.push_back({L.cc, 0, n * hp.head_dim * 4});
+      v.push_back({L.ic, 0, n * ds_.ID * 4});
+      v.push_back({L.pend, 0, ds_pend_bytes(L)});
+    }
+    return v;
+  }
+  std::vector<int32_t> ds_header(bool host_snapshot) const {
+    std::vector<int32_t> h = {kStateMagic, 3, hp.n_layer, hp.n_embd, hp.n_vocab, ds_shape_code(), pos,
+                              (int)ds_hist_.size()};
+    h.insert(h.end(), ds_hist_.begin(), ds_hist_.end());
+    h.push_back((int)snaps_.size());
+    for (const Snap& s : snaps_) {
+      h.push_back(s.pos);
+      h.push_back(s.pos >= 0 ? (int)s.dsh.size() : 0);
+      if (s.pos >= 0) h.insert(h.end(), s.dsh.begin(), s.dsh.end());
+    }
+    const bool hs = host_snapshot && hsnap_.pos >= 0;
+    h.push_back(hs ? hsnap_.pos : -1);
+    h.push_back(hs ? (int)hsnap_.dsh.size() : 0);
+    if (hs) h.insert(h.end(), hsnap_.dsh.begin(), hsnap_.dsh.end());
+    return h;
+  }
+  size_t ds_saved_size() {
+    size_t n = ds_header(true).size() * 4;
+    for (const Seg& s : ds_segs(ds_saved_hi())) n += s.n;
+    for (const Snap& s : snaps_)
+      if (s.pos >= 0)
+        for (const auto& v : s.ds) n += v.size();
+    if (hsnap_.pos >= 0)
+      for (const auto& v : hsnap_.ds) n += v.size();
+    return n;
+  }
+  bool ds_save_state(const Sink& out, bool host_snapshot) {
+    clFinish(cl_.queue);
+    const std::vector<int32_t> h = ds_header(host_snapshot);
+    const int hi = std::max({pos, host_snapshot ? hsnap_.pos : -1, [&] { int m = -1; for (const Snap& s : snaps_) m = std::max(m, s.pos); return m; }()});
+    bool ok = out(h.data(), h.size() * 4) && segs_out(ds_segs(hi), out);
+    for (const Snap& s : snaps_)
+      if (s.pos >= 0)
+        for (const auto& v : s.ds) ok = ok && out(v.data(), v.size());
+    if (host_snapshot && hsnap_.pos >= 0)
+      for (const auto& v : hsnap_.ds) ok = ok && out(v.data(), v.size());
+    return ok;
+  }
+  // (reset() and the snapshot drops have run: load_state)
+  bool ds_load_state(FILE* f) {
+    auto fail = [&] {
+      reset();
+      for (int i = 0; i < (int)snaps_.size(); ++i) drop_snapshot(i);
+      drop_host_snapshot();
+      return false;
+    };
+    const int nh = ds_.ngram - 1;
+    auto hist = [&](std::vector<int>& hv) {  // (a history: its count, then the ids; -1 = none)
+      int32_t c = -1;
+      if (!get(f, &c, 4) || c < 0 || c > nh) return false;
+      hv.assign(c, -1);
+      if (c && !get(f, hv.data(), (size_t)c * 4)) return false;
+      for (int id : hv)
+        if (id < -1 || id >= hp.n_vocab) return false;
+      return true;
+    };
+    int32_t h[7];
+    if (!get(f, h, sizeof h) || h[0] != kStateMagic || h[1] != 3 || h[2] != hp.n_layer || h[3] != hp.n_embd ||
+        h[4] != hp.n_vocab || h[5] != ds_shape_code() || h[6] < 0 || h[6] > ctx)
+      return false;
+    std::vector<int> hcur;
+    if (!hist(hcur)) return false;
+    int32_t ns = 0;
+    if (!get(f, &ns, 4) || ns < 0 || ns > 8) return false;
+    snaps_.assign(ns, Snap());
+    int hi = h[6];
+    for (Snap& s : snaps_) {
+      int32_t sp = -1;
+      if (!get(f, &sp, 4) || sp < -1 || sp > ctx) return fail();
+      if (!hist(s.dsh)) return fail();
+      s.pos = sp;
+      hi = std::max(hi, sp);
+    }
+    int32_t hpos = -1;
+    if (!get(f, &hpos, 4) || hpos < -1 || hpos > ctx) return fail();
+    std::vector<int> hh;
+    if (!hist(hh)) return fail();
+    hi = std::max(hi, (int)hpos);
+    if (!segs_in(ds_segs(hi), f)) return fail();
+    // the snapshots' copies: sizes as ds_save makes them on this model
+    std::vector<size_t> sizes;
+    for (const DsLayer& L : dsl_) {
+      sizes.push_back((size_t)ds_.W * hp.head_dim * 4);
+      if (L.kv_own) sizes.push_back(ds_pend_bytes(L));
+    }
+    auto copies = [&](std::vector<std::vector<uint8_t>>& v) {
+      v.clear();
+      for (size_t n : sizes) {
+        v.emplace_back(n);
+        if (!get(f, v.back().data(), n)) return false;
+      }
+      return true;
+    };
+    for (Snap& s : snaps_)
+      if (s.pos >= 0 && !copies(s.ds)) return fail();
+    if (hpos >= 0) {
+      if (!copies(hsnap_.ds)) return fail();
+      hsnap_.dsh = hh;
+      hsnap_.pos = hpos;
+    }
+    ds_hist_ = hcur;
+    pos = h[6];
+    return true;
+  }
 
   void ds_mix(cl_mem fn, cl_mem base, cl_mem scale, int T, cl_mem out) {
     cl_kernel k = kernel("ops", "", "ds_mix");
