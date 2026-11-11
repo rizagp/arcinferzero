@@ -4,7 +4,7 @@
   void alloc_buffers() {
     const size_t M = max_chunk;
     const int maxK = aq_max_k();
-    const int ldq = hp.n_head * hp.head_dim * 2 + 2 * hp.n_head_kv * hp.head_dim;
+    const int ldq = hp.ds41 ? 2 * hp.n_ff_shexp : hp.n_head * hp.head_dim * 2 + 2 * hp.n_head_kv * hp.head_dim;
     const int big_w = std::max({hp.conv_dim(), 2 * hp.n_ff, ldq});
     x_ = buf(M * hp.hce() * 4);
     aq_ = buf(M * maxK * (q2mm_ ? 2 : 1) + h8f_off_ * 4);  // (h8f_off_: ARC_H8_FLOAT's float copy, zero/engine_h8.h)
@@ -44,9 +44,10 @@
     // only used inside the attention / DeltaNet part of a layer (z_; conv_out_, o_, qrope_): never live at the same time
     // (Qwen3.6 35B, 2048-token chunks: 167 MB, ~18K tokens of context)
     const size_t z_bytes = std::max<size_t>(M * hp.ssm_d_inner * 4, 64);
+    const int nhd = hp.ds41 ? 16 : hp.n_head * hp.head_dim;  // (DeepSeek-V4.1: no Qwen attention buffers)
     const size_t cv_bytes = (std::max<size_t>(M * hp.conv_dim() * 4, 64) + 4095) / 4096 * 4096,
-                 o_bytes = (M * std::max(hp.ssm_d_inner, hp.n_head * hp.head_dim) * 4 + 4095) / 4096 * 4096,
-                 qr_bytes = M * hp.n_head * hp.head_dim * 4;
+                 o_bytes = (M * std::max(hp.ssm_d_inner, nhd) * 4 + 4095) / 4096 * 4096,
+                 qr_bytes = M * nhd * 4;
     const bool share = hp.moe;
     auto sub = [&](cl_mem parent, size_t off, size_t bytes) -> cl_mem {
       if (opt.dry) return nullptr;
@@ -86,11 +87,11 @@
     }
     if (!share) {
       conv_out_ = buf(std::max<size_t>(M * hp.conv_dim() * 4, 64));
-      o_ = buf(M * std::max(hp.ssm_d_inner, hp.n_head * hp.head_dim) * 4);
-      qrope_ = buf(M * hp.n_head * hp.head_dim * 4);
+      o_ = buf(M * std::max(hp.ssm_d_inner, nhd) * 4);
+      qrope_ = buf(M * nhd * 4);
     }
     gb_ = buf(std::max<size_t>(M * 2 * hp.ssm_nv * 4, 64));
-    qi_ = buf(M * hp.n_head * hp.head_dim);
+    qi_ = buf(M * nhd);
     if (frows_) qf_ = buf(M * hp.n_head * hp.head_dim * 4);  // (the f32 queries of attn_fa_g)
     qsc_ = buf(M * hp.n_head * (hp.head_dim / 64) * 4);  // q scales per 64-dim block
     if (hp.swa_rings) {  // (RoPE tables per layer type: sliding / global)
@@ -99,7 +100,7 @@
     }
     if (hp.qwen3) rope_tab_[1] = buf(M * (hp.head_dim / 2) * 8);  // (Qwen3 dense: attn_prep_g with the table)
     // decode key-split partials: up to 4 rows x splits (small splits only while splits * sub-groups < 512)
-    apart_ = buf((size_t)4 * std::max(ctx / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4);
+    apart_ = hp.ds41 ? buf(64) : buf((size_t)4 * std::max(ctx / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4);
     // rows of a speculative verification pass or a batched pass over the slots
     // (DFlash2's head writes block - 1 draft rows whatever the drafts kept)
     batch_rows_ = std::min(16, std::max({1 + max_drafts(), opt.slots, 1, dfl_ ? dfl_B_ : 1}));
@@ -195,7 +196,8 @@
         stage_q_[r] = buf(stage_have_q_[r] = stage_need_q_[r]);
         stage_h_[r] = buf(stage_have_h_[r] = stage_need_h_[r]);
       }
-    if (!w8_resident || stream_) {
+    if (hp.ds41) alloc_ds41();
+    if ((!w8_resident || stream_) && !hp.ds41) {
       // residual stream of a layer-major segment (+ one chunk of padding rows)
       lm_seg_ = lm_seg_for(ctx);
       const size_t rows = (size_t)lm_seg_ + max_chunk;

@@ -245,6 +245,11 @@ __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, i
 #ifdef MOE_GELU  // (Gemma 4 experts: gelu_tanh(gate) * up)
       if (lane == 0 && n < F && m < nr)
         h[(size_t)(r0 + m) * HLD + n] = 0.5f * g * (1.0f + tanh(0.7978845608f * (g + 0.044715f * g * g * g))) * u;
+#elif defined(SWI_CLAMP)  // (DeepSeek-V4.1: the gate clamped from above, the up both ways)
+      if (lane == 0 && n < F && m < nr) {
+        const float gc = fmin(g, SWI_CLAMP), uc = clamp(u, -SWI_CLAMP, SWI_CLAMP);
+        h[(size_t)(r0 + m) * HLD + n] = gc / (1.0f + exp(-gc)) * uc;
+      }
 #else
       if (lane == 0 && n < F && m < nr) h[(size_t)(r0 + m) * HLD + n] = g / (1.0f + exp(-g)) * u;
 #endif

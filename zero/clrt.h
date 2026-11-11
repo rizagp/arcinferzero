@@ -1154,7 +1154,8 @@ inline std::string read_file(const std::string& path) {
 // too, and a norm's or a GEMV's build no longer compiles the attention, encoder, Flash Next or MoE kernels after it.
 struct KernelParts {
   static constexpr std::initializer_list<const char*> kOps = {"ops.cl", "ops_attn.cl", "ops_attn_g.cl", "ops_vit.cl",
-                                                              "ops_flashnext.cl", "ops_dflash.cl", "ops_gdn.cl"};
+                                                              "ops_flashnext.cl", "ops_dflash.cl", "ops_gdn.cl",
+                                                              "ops_ds41.cl"};
   static constexpr std::initializer_list<const char*> kDecode = {"decode.cl", "decode_moe.cl"};
   std::vector<std::string> prefix;              // prefix[k]: parts 0..k
   std::unordered_map<std::string, int> part_of;  // kernel name -> its part

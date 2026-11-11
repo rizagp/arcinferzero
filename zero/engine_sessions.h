@@ -18,7 +18,7 @@
     return save_state([f](const void* p, size_t n) { return fwrite(p, 1, n, f) == n; }, keep_from, host_snapshot);
   }
   size_t saved_size(int keep_from) {
-    if (!opt.attn_int8) return 0;
+    if (!opt.attn_int8 || hp.ds41) return 0;  // (DeepSeek-V4.1: its caches are not in the saved layout yet)
     std::vector<int32_t> hdr;
     std::vector<Seg> segs;
     save_layout(keep_from, hdr, segs);
@@ -31,7 +31,7 @@
     return n;
   }
   bool save_state(const Sink& out, int keep_from, bool host_snapshot = true) {
-    if (!opt.attn_int8) return false;
+    if (!opt.attn_int8 || hp.ds41) return false;
     flush_mtp_pending();
     std::vector<int32_t> hdr;
     std::vector<Seg> segs;
@@ -47,7 +47,7 @@
     reset();
     for (int i = 0; i < (int)snaps_.size(); ++i) drop_snapshot(i);
     drop_host_snapshot();
-    if (!opt.attn_int8) return false;
+    if (!opt.attn_int8 || hp.ds41) return false;
     const auto kl = kv_layers();
     std::vector<int32_t> hdr(11);
     if (!get(f, hdr.data(), hdr.size() * 4)) return false;
@@ -228,7 +228,10 @@
         write_buf(L.conv_state, blk_[k++]);
       }
     prog_base_ = prog_total_ = 0;
-    if (hp.swa_rings && !rewind(p0)) reset();  // the rings no longer hold the n_swa positions before p0
+    // (DeepSeek-V4.1: the layers that ran overwrote window-ring slots and pending compressor rows the positions before
+    //  p0 still need, and the Engram history moved on: back to the start)
+    if (hp.ds41) reset();
+    else if (hp.swa_rings && !rewind(p0)) reset();  // the rings no longer hold the n_swa positions before p0
     else pos = p0;
     throw Cancelled();
   }

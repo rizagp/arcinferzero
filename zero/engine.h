@@ -37,6 +37,7 @@ struct Hparams {
   bool gemma = false;  // Gemma 4: sliding-window + global attention layers, GeGLU, sandwich norms
   bool qwen3 = false;  // Qwen3 dense (qwen3 / qwen3vl, Qwen3-ASR's text model): full attention in every layer, no
                        // output gate, 128-dim heads with RoPE over all dims, SwiGLU FFN
+  bool ds41 = false;  // DeepSeek-V4.1-Flash (deepseek41): zero/engine_ds41.h
   bool swa_rings = false;  // sliding-window layers in ring caches (Gemma 4): no recurrent state, a cached
                           // prefix is reused by rewind() while the rings still hold it, per-layer KV geometry (kv_layers)
   int n_layer = 0, n_embd = 0, n_ff = 0, n_head = 0, n_head_kv = 0, head_dim = 0, n_rot = 0, n_vocab = 0;
@@ -267,7 +268,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  chunk 8192 / 4096 / 2048: expert cache 39 / 64 / 77 %, 4K prompt 216 / 184 / 217 tok/s, generation after a
     //  14K prompt 9.9 / 12.3 / 13.0 tok/s)
     plan_tight();  // (a dense model that nearly fills the GPU share: weights in host memory, smaller chunks and rings)
-    max_chunk = o.chunk > 0 ? o.chunk : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident ? 512 : 4096);
+    // (DeepSeek-V4.1: 1024, its queries are 64 x 512 floats a row)
+    max_chunk = o.chunk > 0 ? o.chunk : hp.ds41 ? 1024 : stream_ ? (hp.hc || hp.gemma ? 2048 : 8192) : hp.moe ? 2048 : tight_ ? 1024 : (w8_resident ? 512 : 4096);
     max_chunk = (std::max(max_chunk, o.min_chunk) + 127) / 128 * 128;
     q2_init();
     // (also in a dry run, --ctx auto's memory plan: H8's buffers and the float copy in aq_ are counted then; self audit
@@ -415,6 +417,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   void reset() {
     TP_MIRROR(reset(), TpMirror::kNone, 0);
     pos = 0;
+    ds_hist_.clear();
     written_hi_ = 0;
     swa_lo_ = 0;
     pend_toks_.clear();
@@ -440,7 +443,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (hp.ple_layer >= 0) ple_sync();
     struct DflCommit { Engine& e; int p0; ~DflCommit() { if (e.dfl_) e.dfl_commit_prompt(p0); } } dfl_commit{*this, pos};
     if (dfl_) dfl_window(pos, n);
-    if ((!w8_resident || stream_) && n > max_chunk && !hp.n_ple) {
+    if ((!w8_resident || stream_) && n > max_chunk && !hp.n_ple && !hp.ds41) {
       // layer-major in segments of up to lm_seg_ tokens (each matrix is decoded once per segment)
       prog_total_ = n;
       for (int s0 = 0; s0 < n; s0 += lm_seg_) {
@@ -572,7 +575,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // rpos[3 i .. 3 i + 2] (t, h, w; a text row's three are its cache position + rope_shift). Text and images then go
   // through the layers in one pass: a streamed MoE model reads its experts once, not once per piece of the prompt.
   // Not with per-layer embeddings (Gemma E2B / E4B), an MTP block or a DFlash2 drafter (media_inline_ok).
-  bool media_inline_ok() const { return !hp.n_ple && !mtp_block_ && !dfl_; }
+  bool media_inline_ok() const { return !hp.n_ple && !mtp_block_ && !dfl_ && !hp.ds41; }
   void set_media(const int* base, size_t n, const std::vector<const float*>* rows, const std::vector<int>* rpos) {
     TP_MIRROR(set_media(base, n, rows, rpos), TpMirror::kNone, 0);
     media_base_ = base;
@@ -590,6 +593,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
                                          const int* rpos = nullptr) {
     TP_MIRROR(forward_embd(embd, n, non_causal, logits, rpos), logits ? TpMirror::kLogits : TpMirror::kNone, 0);
     if (n <= 0 || n > max_chunk) throw std::runtime_error("forward_embd: 1..max_chunk rows");
+    if (hp.ds41) throw std::runtime_error("DeepSeek-V4.1: image / audio rows are not supported yet");
     if (rpos) {
       if (!rpos_) rpos_ = buf((size_t)max_chunk * 3 * 4);
       CL_CHECK(clEnqueueWriteBuffer(cl_.queue, rpos_, CL_TRUE, 0, (size_t)n * 3 * 4, rpos, 0, nullptr, nullptr));
@@ -745,6 +749,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     TP_MIRROR(snapshot(slot), TpMirror::kNone, 0);
     if (slot >= (int)snaps_.size()) snaps_.resize(slot + 1);
     Snap& s = snaps_[slot];
+    // (DeepSeek-V4.1: its window rings, pending compressor rows and Engram history are not in a snapshot yet: none is
+    //  taken, so the server starts such a conversation again instead of resuming on a later one's state)
+    if (hp.ds41) {
+      s.pos = -1;
+      return;
+    }
     const size_t sb = (size_t)hp.ssm_nv * hp.ssm_d_state * hp.ssm_d_state * 4, cb = conv_bytes();
     if (s.S.empty())
       for (auto& L : layers_)
@@ -811,7 +821,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   }
   bool restore(int slot) {
     TP_MIRROR(restore(slot), TpMirror::kNone, 0);
-    if (snapshot_pos(slot) < 0) return false;
+    if (snapshot_pos(slot) < 0 || hp.ds41) return false;  // (DeepSeek-V4.1: its caches are not in snapshots yet)
     Snap& s = snaps_[slot];
     if (hp.swa_rings && !s.ring_ok) {  // (no copy taken yet: the rings still hold its window, or it cannot be used)
       if (!s.ring_want || !rewind(s.pos)) return false;
@@ -1183,7 +1193,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     cur_T_ = T;
     attn_in_ready_ = ffn_in_ready_ = false;
     const size_t row_bytes = tok_embd_->nbytes / hp.n_vocab;
-    if (hp.hc) {  // Flash Next: hc_n copies of the embedding per row
+    if (hp.hc || hp.ds41) {  // Flash Next, DeepSeek-V4.1: hc_n copies of the embedding per row
       const int W = hp.hce(), E = hp.n_embd;
       std::fill(x_host_.begin(), x_host_.begin() + (size_t)Mp * W, 0.0f);
 #pragma omp parallel for if (T > 64)
@@ -1199,6 +1209,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
           if (med[t])
             for (int c = 0; c < hp.hc_n; ++c) std::copy(med[t], med[t] + E, &x_host_[(size_t)t * W + (size_t)c * E]);
       CL_CHECK(clEnqueueWriteBuffer(cl_.queue, x_, CL_TRUE, 0, (size_t)Mp * W * 4, x_host_.data(), 0, nullptr, nullptr));
+      if (hp.ds41) ds_prepare(tokens, T);
       if (hp.ple_layer >= 0) {
         if (med) {  // (an image's rows: <|image_pad|> in the n-gram hash, as forward_embd)
           std::vector<int> ids(tokens, tokens + T);
@@ -1254,6 +1265,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       layer_gemma_ffn(L, T, Mp);
       return;
     }
+    if (hp.ds41) return ds_layer(L, T, Mp);
     if (hp.hc) {  // Flash Next: each block reads the mixed streams and adds its output to every stream
       if (L.il == hp.ple_layer) ple_block(L, T, Mp);
       hc_mix(L.hc_norm[0], L.hc_down[0], L.hc_up[0], T, Mp, act32_for(false), 0);
@@ -1491,6 +1503,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   }
 
 #include "engine_flashnext.h"  // (Qwen3.8 Flash Next)
+#include "engine_ds41.h"  // (DeepSeek-V4.1-Flash)
 
 #include "engine_qwen.h"  // (Qwen layers)
 #include "mgpu/engine_tp_shard.h"  // (multi-GPU, zero/mgpu/: this engine as one shard of a model split over GPUs)
@@ -1507,6 +1520,12 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   void head_rows(int r0, int n, cl_mem normw, cl_mem hout) {
     const int saved = cur_T_;
     cur_T_ = n;
+    if (hp.ds41) {  // DeepSeek-V4.1: the streams collapsed with the last FFN site's pre, then the output norm
+      ds_collapse(ds_mixF_, 0, normw, r0, n, 16);
+      matmul("lm_head", lm_head_, 16, logits_, n_logits(), 0, 0, true);
+      cur_T_ = saved;
+      return;
+    }
     if (hp.hc) {  // Flash Next: the final mixer of the streams is the output norm
       // (the MTP head reads the rows' residual streams before the mixer, hc * E floats each: QUEUE F34)
       if (hout && mtp_block_) {

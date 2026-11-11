@@ -14,6 +14,9 @@
 inline float bf16f(ushort h) { return as_float((uint)h << 16); }
 // the four signed bytes q = code - 2 of inputs 4j .. 4j+3 of a code word (no borrows: every byte stays below 0x82)
 inline uint dec2(uint w, int j) { return (((w >> (2 * j)) & 0x03030303u) + 0x7E7E7E7Eu) ^ 0x80808080u; }
+#ifdef ROUTE_DS  // (DeepSeek-V4.1: sqrt(softplus(g)), see moe_route)
+inline float ds_sp(float g) { return sqrt(g > 20.0f ? g + log1p(exp(-g)) : log1p(exp(g))); }
+#endif
 
 // One sub-group per token: softmax over the NE router logits, top NU (ties: lower expert), weights renormalized
 // over the selection; counts the tokens of every expert. Row t of `logits` holds the shared-expert gate logit at
@@ -27,13 +30,25 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 #define ESCALE_ARG
 #define ESCALE_MUL(e)
 #endif
-#define ROUTE_P(g, mx) exp((g) - (mx))
+#ifdef ROUTE_DS  // (DeepSeek-V4.1: s = sqrt(softplus(logit)), chosen by s + bias, weights s / (sum + 1e-20) * RSCALE)
+#define ROUTE_ARG , __global const float* ebias
+#define ROUTE_V(g, e) (ds_sp(g) + ebias[e])
+#define ROUTE_PK(gv, mx, lg, gi) ds_sp((lg)[gi])
+#define ROUTE_W(pk, sum) ((pk) / ((sum) + 1e-20f) * RSCALE)
+#define SGATE(lg) 1.0f
+#else
+#define ROUTE_ARG
+#define ROUTE_V(g, e) (g)
+#define ROUTE_PK(gv, mx, lg, gi) ROUTE_P(gv, mx)
+#define ROUTE_W(pk, sum) ((pk) / (sum))
 #define SGATE(lg) (1.0f / (1.0f + exp(-(lg)[NE])))
+#endif
+#define ROUTE_P(g, mx) exp((g) - (mx))
 #if NU > 16
 #error "moe_route writes choice k from lane k of a 16-lane sub-group: at most 16 experts per token"
 #endif
 __kernel void moe_route(__global const float* logits, int ldl, int T, __global int* ids, __global float* wts,
-                        __global float* sgate, __global int* counts ESCALE_ARG) {
+                        __global float* sgate, __global int* counts ESCALE_ARG ROUTE_ARG) {
   const int t = get_group_id(1), l = get_sub_group_local_id();
   if (t >= T) return;
   __global const float* lg = logits + (size_t)t * ldl;
@@ -41,7 +56,7 @@ __kernel void moe_route(__global const float* logits, int ldl, int T, __global i
   float mx = -INFINITY;
 #pragma unroll
   for (int i = 0; i < NE / SG; ++i) {
-    v[i] = lg[i * SG + l];
+    v[i] = ROUTE_V(lg[i * SG + l], i * SG + l);
     mx = fmax(mx, v[i]);
   }
   mx = sub_group_reduce_max(mx);
@@ -60,14 +75,14 @@ __kernel void moe_route(__global const float* logits, int ldl, int T, __global i
     for (int i = 0; i < NE / SG; ++i)
       if (i * SG + l == gi) v[i] = -INFINITY;
     sel[k] = min(gi, NE - 1);  // (a row of NaN logits picks no lane: NE would index past counts and the experts)
-    p[k] = ROUTE_P(gv, mx);
+    p[k] = ROUTE_PK(gv, mx, lg, sel[k]);
     sum += p[k];
   }
 #pragma unroll
   for (int k = 0; k < NU; ++k)
     if (l == k) {
       ids[t * NU + k] = sel[k];
-      wts[t * NU + k] = p[k] / sum ESCALE_MUL(sel[k]);
+      wts[t * NU + k] = ROUTE_W(p[k], sum) ESCALE_MUL(sel[k]);
       atomic_inc(&counts[sel[k]]);
     }
   if (l == 0) sgate[t] = SGATE(lg);
@@ -77,13 +92,13 @@ __kernel void moe_route(__global const float* logits, int ldl, int T, __global i
 // scan or scatter). grid (16), local (16).
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void moe_route1(__global const float* logits, __global float* sgate, __global int* tiles,
-                         __global int* stok, __global float* swt, __global int* inv ESCALE_ARG) {
+                         __global int* stok, __global float* swt, __global int* inv ESCALE_ARG ROUTE_ARG) {
   const int l = get_sub_group_local_id();
   float v[NE / SG];
   float mx = -INFINITY;
 #pragma unroll
   for (int i = 0; i < NE / SG; ++i) {
-    v[i] = logits[i * SG + l];
+    v[i] = ROUTE_V(logits[i * SG + l], i * SG + l);
     mx = fmax(mx, v[i]);
   }
   mx = sub_group_reduce_max(mx);
@@ -102,7 +117,7 @@ __kernel void moe_route1(__global const float* logits, __global float* sgate, __
     for (int i = 0; i < NE / SG; ++i)
       if (i * SG + l == gi) v[i] = -INFINITY;
     sel[k] = min(gi, NE - 1);  // (as moe_route)
-    p[k] = ROUTE_P(gv, mx);
+    p[k] = ROUTE_PK(gv, mx, logits, sel[k]);
     sum += p[k];
   }
 #pragma unroll
@@ -112,7 +127,7 @@ __kernel void moe_route1(__global const float* logits, __global float* sgate, __
       tiles[2 + 3 * k] = k;
       tiles[3 + 3 * k] = 1;
       stok[k] = 0;
-      swt[k] = p[k] / sum ESCALE_MUL(sel[k]);
+      swt[k] = ROUTE_W(p[k], sum) ESCALE_MUL(sel[k]);
       inv[k] = k;
     }
   if (l == 0) {

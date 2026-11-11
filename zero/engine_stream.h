@@ -210,15 +210,17 @@
     const int E = hp.n_embd, NR = hp.router_rows();
     std::vector<float> v((size_t)NR * E, 0.0f);
     const GgufTensor& r = f_.get(p + "ffn_gate_inp.weight");
-    const GgufTensor& sg = f_.get(p + "ffn_gate_inp_shexp.weight");
-    if (r.nelements() != (uint64_t)hp.n_expert * E || sg.nelements() != (uint64_t)E)
+    // (DeepSeek-V4.1: no shared-expert gate, its row stays zero; moe.cl ROUTE_DS sets the gate to 1)
+    const GgufTensor* sg = hp.ds41 ? f_.find(p + "ffn_gate_inp_shexp.weight") : &f_.get(p + "ffn_gate_inp_shexp.weight");
+    if (r.nelements() != (uint64_t)hp.n_expert * E || (sg && sg->nelements() != (uint64_t)E))
       throw std::runtime_error("unexpected MoE router shape");
     dequant_row(r.type, r.data, hp.n_expert * E, v.data());
-    dequant_row(sg.type, sg.data, E, v.data() + (size_t)hp.n_expert * E);
+    if (sg) dequant_row(sg->type, sg->data, E, v.data() + (size_t)hp.n_expert * E);
     auto q8 = quantize_rows_q8_0(v.data(), NR, E);
     // (Flash Next's precise mode: the router and shared-expert gate rows as BF16, as the file has them (exact, half
     //  the bytes of f32), read with f32 inputs: near-tie expert choices stay as the f32 reference makes them)
-    if (hp.hc && fn_precise()) {  // (BF16 as in the file: v holds exactly those values)
+    // (DeepSeek-V4.1 always: its router is BF16 in the file and computed in f32 by the reference)
+    if ((hp.hc && fn_precise()) || hp.ds41) {  // (BF16 as in the file: v holds exactly those values)
       std::vector<uint16_t> bf(v.size());
       for (size_t i = 0; i < v.size(); ++i) {
         uint32_t u;

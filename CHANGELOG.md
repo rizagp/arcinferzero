@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-11: DeepSeek-V4.1-Flash, a first engine path (tested on a small synthetic model)
+
+- **`deepseek41` loads and runs** (`zero/engine_ds41.h`, `zero/kernels/ops_ds41.cl`), written from
+  [docs/deepseek41-spec.md](docs/deepseek41-spec.md): the 4 hyper-connection streams with their Sinkhorn mixes, the
+  Engram n-gram rows (read by rows from the GGUF, as Flash Next's PLE table), one 512-wide KV head over a sliding
+  window plus up to top-k compressed rows picked by the indexer (ratio 2 and 1 compressors, the candidate block pool,
+  attention sinks), the grouped output LoRA, and a MoE with 384 experts streamed from the SSD through the existing
+  expert path: its router in f32, a sqrt(softplus) choice with the selection bias (`moe.cl -DROUTE_DS`), SwiGLU
+  clamped at 10 (`-DSWI_CLAMP`).
+- The real model is ~231 GB (ISTA-DASLab IQ1_M + its Engram table): it cannot run on the laptop. It was built and
+  checked on `tools/make_tiny_deepseek41.py`, a 39 MB GGUF with the real keys, tensor names and layer roles and random
+  weights: KL against the f32 reference (`tools/ref_forward`) 0.0032-0.0039 for 100 / 300-token prompts, in one
+  chunk, in chunks of 128 and token by token. Not yet for this model: server prompt-cache snapshots, saved
+  conversations, slots, drafters, multi-GPU; the caches are f32 and the kernels plain (speed comes after the real
+  model's first run).
+- Other models: their logits are bit-identical (Qwen3.6 35B, Gemma 4 26B, Qwen3.5 4B checked against the commit
+  before); the MoE kernels' new switches are off for them.
+
 ## 2026-11-11: Gemma 4's attention keys in f16 (more context); a faster attention tried and dropped
 
 - **Gemma 4's float attention keeps its K rows in f16** instead of f32, as Qwen3 dense does (`ARC_G4_KF16=0`: f32 as

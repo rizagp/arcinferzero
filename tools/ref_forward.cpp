@@ -1048,7 +1048,7 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
 // 4 hyper-connection streams with single-pass Sinkhorn mixes, Engram n-gram rows before its layers, one 512-wide KV
 // head (K = V) over a sliding window plus up to top_k compressed rows picked by an indexer, sinks, grouped output
 // LoRA, a sqrt(softplus) MoE with clamped SwiGLU. Leaves in x [T][E] the final collapsed hidden state (main applies
-// the output norm and head). REF_DUMP=file: the 4 streams of the last token after each layer.
+// the output norm and head). REF_DUMP=file: the 4 streams of the last token after each half of a layer.
 static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& x) {
   const int T = (int)toks.size();
   const int nl = hp("block_count"), E = hp("embedding_length"), H = hp("attention.head_count"), D = hp("attention.key_length");
@@ -1400,6 +1400,7 @@ static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& 
       matmul(p + "attn_output_b.weight", oa, T, y);
     }
     hc_post(y, Xr, apost, acomb, X);
+    if (fdump) fwrite(&X[(size_t)(T - 1) * HCD], 4, HCD, fdump);  // (after each half, as runz ARC_DUMP_ROWS)
     // FFN site: its mixes from the post-attention streams, its input collapsed with the attention site's pre
     Xr = X;
     mixes(p + "hc_ffn", X, fpre, fpost, fcomb);
@@ -1424,6 +1425,12 @@ static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& 
       std::vector<int> id(NE);
       for (int e = 0; e < NE; ++e) id[e] = e;
       std::stable_sort(id.begin(), id.end(), [&](int a, int b) { return sb[a] > sb[b]; });
+      if (getenv("REF_ROUTES") && t == T - 1) {  // (debug: the last token's choice and the margin to the next)
+        fprintf(stderr, "\nlayer %d experts", il);
+        for (int k = 0; k <= NU && k < NE; ++k) fprintf(stderr, " %d(%.4f)", id[k], sb[id[k]]);
+        fprintf(stderr, "\nrouter:");
+        for (int e = 0; e < NE; ++e) fprintf(stderr, " %.4f", z[(size_t)t * NE + e]);
+      }
       double sum = 0;
       for (int k = 0; k < NU; ++k) sum += s[id[k]];
       std::vector<float> ge(FF), ue(FF), de(E);
