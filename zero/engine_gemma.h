@@ -105,9 +105,16 @@
           (hd / fa_fs / 16 == 4 || hd / fa_fs / 16 == 8 || hd / fa_fs / 16 == 16)) {
         const int fa_gr = fa_gr_env ? fa_gr_env : std::clamp(64 / (hpg * (hd / fa_fs / 16)), 1, 4);
         const int fa_kb = fa_kb_env ? fa_kb_env : hd < 512 && hpg * fa_gr <= 8 ? 2 : 1;
+        // (ARC_FA_QB=2 / 4, opt-in: chunks of 16 dims per query read in the scores, one key block per step only;
+        //  bit-identical. bench\gattn_bench, the 12B's global layers: 32K deep, 512 / 4096 queries 574 -> 484 / 4,067 ->
+        //  3,432 ms; but the engine's 32K prompt measured attn_global 133.3 -> 162.2 s with it (2026-11-11, one run
+        //  each, the new one second): not the default until that is understood. The 26B's 8 q heads per kv head:
+        //  565 -> 636 ms in the bench)
+        static const int fa_qb_env = getenv("ARC_FA_QB") ? atoi(getenv("ARC_FA_QB")) : 1;
+        const int fa_qb = fa_kb == 1 && (fa_qb_env == 2 || fa_qb_env == 4) ? fa_qb_env : 1;
         cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH -DHD=" + std::to_string(hd) + " -DHPG=" +
                                         std::to_string(hpg) + " -DFS=" + std::to_string(fa_fs) + " -DGR=" + std::to_string(fa_gr) +
-                                        " -DKB=" + std::to_string(fa_kb) + kdef,
+                                        " -DKB=" + std::to_string(fa_kb) + (fa_qb > 1 ? " -DFA_QB=" + std::to_string(fa_qb) : std::string()) + kdef,
                              "attn_fa_gh");
         int cp = L.cap, nn = nh, nk = nkv, pp = p0, MM = n, w = win, nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1;
         set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM,

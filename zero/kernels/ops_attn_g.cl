@@ -412,6 +412,12 @@ __kernel void attn_fa_gc(__global const float* part, int nh, int pos0, int M_val
 #ifndef KB
 #define KB 1  // blocks of 16 keys per sub-group and step: each q load serves KB key rows
 #endif
+#ifndef FA_QB
+#define FA_QB 1  // chunks of 16 dims per query block read (1, 2 or 4)
+#endif
+#if (FA_QB != 1 && FA_QB != 2 && FA_QB != 4) || (HD / 16) % FA_QB || (FA_QB > 1 && KB != 1)
+#error "FA_QB: 1, 2 or 4, dividing HD / 16, with KB 1"
+#endif
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __global const VC_T* vc, int cap, int nh,
                          int nkv, int pos0, int M_valid, __global float* out, int win, int nc_lo, int nc_hi
@@ -468,6 +474,42 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
 #pragma unroll
         for (int h = 0; h < GRH; ++h) s[kk][h] = 0.0f;
       }
+#if FA_QB > 1 && KB == 1
+      // (-DFA_QB=n: n chunks of 16 dims per step, each head's query read for all n in one block read instead of n:
+      //  the same fma chain per (key, head), dims in order)
+      for (int c0 = 0; c0 < HD / 16; c0 += FA_QB) {
+        float16 kq[FA_QB];
+#pragma unroll
+        for (int u = 0; u < FA_QB; ++u) kq[u] = any[0] ? KLD16(krow[0] + 16 * (c0 + u)) : (float16)0.0f;
+#pragma unroll
+        for (int h = 0; h < GRH; ++h) {
+          const int r = h / HPG, m = min(m0 + r, M_valid - 1);
+          __global const uint* qp = (__global const uint*)(qf + ((size_t)m * nh + g * HPG + h % HPG) * HD + 16 * c0);
+#if FA_QB == 2
+          const uint2 qq = intel_sub_group_block_read2(qp);
+          const float qcs[2] = {as_float(qq.s0), as_float(qq.s1)};
+#else
+          const uint4 qq = intel_sub_group_block_read4(qp);
+          const float qcs[4] = {as_float(qq.s0), as_float(qq.s1), as_float(qq.s2), as_float(qq.s3)};
+#endif
+          float a = s[0][h];
+#pragma unroll
+          for (int u = 0; u < FA_QB; ++u) {
+            const float qc = qcs[u];
+            const float16 kv = kq[u];
+            a = fma(BC16(qc, 0), kv.s0, a);  a = fma(BC16(qc, 1), kv.s1, a);
+            a = fma(BC16(qc, 2), kv.s2, a);  a = fma(BC16(qc, 3), kv.s3, a);
+            a = fma(BC16(qc, 4), kv.s4, a);  a = fma(BC16(qc, 5), kv.s5, a);
+            a = fma(BC16(qc, 6), kv.s6, a);  a = fma(BC16(qc, 7), kv.s7, a);
+            a = fma(BC16(qc, 8), kv.s8, a);  a = fma(BC16(qc, 9), kv.s9, a);
+            a = fma(BC16(qc, 10), kv.sa, a); a = fma(BC16(qc, 11), kv.sb, a);
+            a = fma(BC16(qc, 12), kv.sc, a); a = fma(BC16(qc, 13), kv.sd, a);
+            a = fma(BC16(qc, 14), kv.se, a); a = fma(BC16(qc, 15), kv.sf, a);
+          }
+          s[0][h] = a;
+        }
+      }
+#else
       for (int c = 0; c < HD / 16; ++c) {
         float16 kv[KB];
 #pragma unroll
@@ -491,6 +533,7 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
           }
         }
       }
+#endif
 #pragma unroll
       for (int kk = 0; kk < KB; ++kk) {
         const int b = bs + KB * sgi + kk, p = b * 16 + lane;
@@ -562,8 +605,8 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
 #undef GD
 #undef GRH
 #undef KB
+#undef FA_QB
 #endif  // FA_GH
-
 // Single-token rows: x[m] = (x[m] + rmsnorm(t[m]) * w) * s (as add_rmsnorm), then the next GEMV input from the new
 // x[m]: rmsnorm(x[m]) * w2 (or x[m] itself with w2_norm = 0) quantized like rmsnorm_quant. The new values stay in
 // registers for the second step (sub-group j, lane l: elements 256 (j + 16 i) + 16 l .. +15; K <= 16384): reading
