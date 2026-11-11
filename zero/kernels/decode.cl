@@ -767,12 +767,22 @@ __kernel void decode_w8_sl(__global const uchar* raw, int N, int K, __global con
 #endif
 #define Q2F_STORE(n, v, r) C[c_off + (n)] = (accumulate ? C[c_off + (n)] + (v) : (v)) + (r)
 #endif
+// -DGU2 (gemv, gemv_v; one token): two matrices of N rows in one launch, the FFN's gate (raw) and up (raw2), as
+// two launches would write them: rows [N, 2N) of the grid read raw2 and write at c_off + N. Each row's sums are
+// those of its own launch, bit for bit; one launch instead of two (ARC_GEMV_GU, zero/engine.h gemv_gu)
+#ifdef GU2
+#define GU2_ARG , __global const uchar* raw2
+#define GU2_SWITCH(r0) if ((r0) >= N) { raw = raw2; (r0) -= N; c_off += N; }
+#else
+#define GU2_ARG
+#define GU2_SWITCH(r0)
+#endif
 #define WIN_U (2 * BBP / 4)          // uints per two-superblock window
 #define WIN_CALLS ((WIN_U + 15) / 16)
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* aq,
                    __global const float* asc, __global const ushort* absum, int M, __global float* C, int c_off,
-                   int accumulate) {
+                   int accumulate GU2_ARG) {
   __local uint win_all[16][WIN_CALLS * 16];
   __local uint* win = win_all[get_sub_group_id() & 15];
 #ifdef GRID_OFF
@@ -790,7 +800,9 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
   const uint* aux = tabs;
 #endif
   barrier(CLK_LOCAL_MEM_FENCE);
-  const int lane = get_sub_group_local_id(), r0 = (get_global_id(0) / 16) * GROWS;
+  const int lane = get_sub_group_local_id();
+  int r0 = (get_global_id(0) / 16) * GROWS;
+  GU2_SWITCH(r0)
   const int nsb = K / 256;
   float acc[GROWS];
 #pragma unroll
@@ -1186,10 +1198,12 @@ __kernel void decode_w8_vb(__global const uchar* raw, int N, int K, __global con
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void gemv_v(__global const uchar* raw, int N, int K, __global const uint* tabs, __global const char* aq,
                      __global const float* asc, __global const ushort* absum, int M, __global float* C, int c_off,
-                     int accumulate) {
+                     int accumulate GU2_ARG) {
   __local uint kt[VB_TABLES];
   vb_tables(kt, tabs);
-  const int lane = get_sub_group_local_id(), r0 = (get_global_id(0) / 16) * GROWS;
+  const int lane = get_sub_group_local_id();
+  int r0 = (get_global_id(0) / 16) * GROWS;
+  GU2_SWITCH(r0)
   const int nsb = K / 256, ib = lane % 8, hs = lane / 8;
   float acc[GROWS];
 #pragma unroll

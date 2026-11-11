@@ -26,6 +26,8 @@
 #                  (ARC_WIDE_ROWS=0); tokens checked against plain
 #   SMALL_WG=0     plain, the GEMV of matrices with few rows (DeltaNet's alpha / beta, MoE routers) in work-groups
 #                  of 256 as before 2026-11-10 (ARC_GEMV_SMALL_WG=0); also both off; tokens checked against plain
+#   GEMV_GU=1      dense models: plain, the FFN gate and up GEMVs in one launch instead of two (ARC_GEMV_GU=1,
+#                  QUEUE 33.5; bit-identical; MoE models take their own FFN, so it equals plain there); tokens checked
 #   (at the end, per model: a --prof-gen table, the GPU time of a generation step by kernel)
 #   MOE_GR_GU=2/4, MOE_GR_DN=2/8   MoE models: rows per sub-group of the experts' gate / up and down GEMVs for one
 #                  token (ARC_MOE_GR_GU, default 1; ARC_MOE_GR_DN, default 4)
@@ -39,7 +41,7 @@ $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
 $vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF", "ARC_GV_IQ3S", "ARC_MOE_GR_GU", "ARC_MOE_GR_DN", "ARC_BATCH", "ARC_XALL",
-          "ARC_WIDE_ROWS", "ARC_GEMV_SMALL_WG")
+          "ARC_WIDE_ROWS", "ARC_GEMV_SMALL_WG", "ARC_GEMV_GU")
 # (Qwen chat format, thinking off: the answer starts right away)
 $q = Join-Path ([IO.Path]::GetTempPath()) "inferzero-decode-try.txt"
 $text = "<|im_start|>user`nWrite a Python module with a class LRUCache (get, put, a capacity, O(1) operations using " +
@@ -95,6 +97,7 @@ foreach ($model in $Models) {
   Same "WIDE_ROWS=0" (Invoke-Run $model @() @{ ARC_WIDE_ROWS = "0" }) $plain
   Same "SMALL_WG=0" (Invoke-Run $model @() @{ ARC_GEMV_SMALL_WG = "0" }) $plain
   Same "both off" (Invoke-Run $model @() @{ ARC_WIDE_ROWS = "0"; ARC_GEMV_SMALL_WG = "0" }) $plain
+  Same "GEMV_GU=1" (Invoke-Run $model @() @{ ARC_GEMV_GU = "1" }) $plain
   Line "mtp" (Invoke-Run $model @("--mtp") @{})
   Line "mtp7" (Invoke-Run $model @("--mtp", "--mtp-drafts", "7") @{})
   if ($DFlash) { Line "dflash" (Invoke-Run $model @("--dflash", $DFlash, "--draft", "auto") @{}) }

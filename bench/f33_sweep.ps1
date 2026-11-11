@@ -56,6 +56,9 @@ function Path-Of([string]$o, [hashtable]$e) {
   if ($e.ARC_GDN_CHUNK) {
     $x = [regex]::Match($o, "chunked DeltaNet on XMX, (\d+) lanes")
     if ($e.ARC_GDN_CHUNK -eq "3" -and $x.Success) { $p += "gdn XMX $($x.Groups[1].Value)-lane" + $(if ($e.ARC_GDN_XEMU) { " (emulated)" } else { "" }) }
+    # (with its size: ~1e-3 says precision (an f16 DPAS that drops the low halves' bits), ~1 a wrong layout; the 140T
+    #  reported only the word, issue #5)
+    elseif ($o -match "chunked DeltaNet on XMX differs from gdn_chunk \(([^ ]+) of the result\)") { $p += "gdn_recur (XMX DIFFERED by $($Matches[1]))" }
     elseif ($o -match "chunked DeltaNet on XMX differs") { $p += "gdn_recur (XMX DIFFERED)" }
     elseif ($o -match "chunked DeltaNet on XMX does not build") { $p += "gdn_recur (XMX did not build)" }
     elseif ($e.ARC_GDN_CHUNK -eq "3") { $p += "gdn_recur (no XMX here)" }

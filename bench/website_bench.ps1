@@ -119,6 +119,9 @@ foreach ($m in $Models) {
   if (-not (Test-Path $m)) { "skipped (not found): $m"; continue }
   $name = [IO.Path]::GetFileNameWithoutExtension($m)
   "=== $name"
+  # (a run that is not counted first: a model's first run compiles its kernels (and builds or warms its expert file),
+  #  which landed in the first size's generation: a B60's 4B generated 12.8 tok/s at 128 tokens, 61 at 512, issue #4)
+  $null = Run @($m, "--bench-pp", "128", "--n", "8", "--must-fit") @{ ARC_BENCH_RUNS = "1" }
   # ---- A. prompt sizes
   foreach ($n in $Sizes) {
     $runs = if ($n -le 8192) { "2" } else { "1" }

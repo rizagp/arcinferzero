@@ -388,6 +388,7 @@
     } else if (fused) {
       matmul("gemm_gate", L.gate, Mp, big_, F, 0, 0, a_in);
       matmul("gemm_up", L.up, Mp, big_, F, 0, 2, a_in);
+    } else if (gemv_gu(L.gate, L.up, Mp, big_)) {  // (one token, ARC_GEMV_GU=1: both in one launch, the same rows)
     } else {
       matmul("gemm_gate", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
       matmul("gemm_up", L.up, Mp, big_, 2 * F, F, 0, a_in);

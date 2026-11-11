@@ -1026,6 +1026,30 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       run(name, k, 2, gws, nullptr);
     }
   }
+  // One token: the FFN's gate and up GEMVs in one launch (decode.cl -DGU2, QUEUE 33.5): rows [0, F) of gate and
+  // [0, F) of up at C + F, each row computed by the kernel, grows and register file of its own launch, bit for bit;
+  // one launch of 2F rows instead of two of F (a B60's 27B: 4,096 FFN launches of ~135 us per 32 steps). Off by
+  // default until measured: ARC_GEMV_GU=1. false: not taken (two launches as before)
+  bool gemv_gu(const GpuWeight& g, const GpuWeight& u, int Mp, cl_mem C) {
+    static const bool on = getenv("ARC_GEMV_GU") && atoi(getenv("ARC_GEMV_GU")) != 0;
+    if (!on || cur_T_ != 1 || q2mm_ || !g.raw || !u.raw || g.type != u.type || g.N != u.N || g.K != u.K ||
+        &g == &lm_head_ || &u == &lm_head_)
+      return false;
+    static const bool gv_iq3s = getenv("ARC_GV_IQ3S") && atoi(getenv("ARC_GV_IQ3S")) != 0;
+    const bool vk = gemv_v_ok(g) || (gv_iq3s && g.type == GGML_IQ3_S);
+    const int grows = vk ? gemv_v_rows(g) : g.N <= 4096 ? 1 : g.N <= 8192 ? 2 : g.N <= 65536 ? 4 : 2;  // (matmul1's)
+    if (g.N % grows) return false;  // (the up rows must start a sub-group of their own)
+    int N = g.N, K = g.K, M = Mp, c_off = 0, a = 0;
+    rd_bytes += raw_bytes(g) + raw_bytes(u);
+    cl_kernel k = kernel("decode", xe2_gemv_grf() + "-DQT=" + std::to_string(g.type) + " -DGROWS=" + std::to_string(grows) +
+                                       head_defs(g) + (vk ? std::string() : xe2_gemv_pf()) + " -DGU2",
+                         vk ? "gemv_v" : "gemv");
+    set_args(k, 0, g.raw, N, K, tabs_, aq_, asc_, absum_, M, C, c_off, a, u.raw);
+    const size_t sgs = (size_t)N / grows, l1 = vk ? 256 : xe2_gemv_wg(sgs);  // (the work-group of one matrix's launch)
+    size_t g1 = (2 * sgs * 16 + l1 - 1) / l1 * l1;
+    run("gemm_gate_up", k, 1, &g1, &l1);
+    return true;
+  }
   void matmul1(const char* name, const GpuWeight& w, int Mp, cl_mem C, int ldc, int c_off, int acc, bool act32) {
     int a = acc;
     if (cur_T_ == 1) {

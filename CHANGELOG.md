@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-11: gate + up in one GEMV launch (opt-in), website_bench warmed up
+
+- **`ARC_GEMV_GU=1`** (QUEUE 33.5): for one token, the FFN's gate and up GEMVs run as one launch of both matrices'
+  rows, each row as in its own launch (bit-identical: every step's logits of the 4B, 9B and 27B). On the laptop no
+  faster (27B about 3 % slower, 4B within noise: its iGPU already reads at ~84 % of its bandwidth), so it is off; a
+  B60, at 57 % of its bandwidth with 837 launches a token, measures it with `decode_try.ps1`'s new `GEMV_GU=1` row.
+- **`bench\website_bench.ps1`** makes one run per model that is not counted before the sizes: a model's first run
+  compiles its kernels, which landed in the first size's generation (a B60: the 4B at 128 tokens 12.8 tok/s, 61 at
+  512).
+
 ## 2026-11-11: the H8 prompt GEMMs with wider XMX tiles, opt-in (QUEUE 33.4)
 
 - **`ARC_GEMM_XW=1`** (GPUs with 16-lane XMX; off until a B60 measures it): the H8 prompt GEMMs (per-column and
