@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-12: DeepSeek-V4.1 generation 28 % faster on the test model
+
+- The hyper-connection mixes of a token now run over 16 work-groups instead of one (`ds_mix` 99 -> 18 ms on the
+  real-widths test model), and attention of 1-8 rows splits each head's keys over 8 sub-groups (`ds_attn` 90 -> 61
+  ms); keys come in vector loads. Generation on the real-widths test model 32.2 -> 41.2 tok/s on the laptop. KL
+  against the f32 reference unchanged within noise. `ARC_DS_MIX1=1` / `ARC_DS_ATTN1=1`: the single kernels.
+
 ## 2026-11-12: DeepSeek-V4.1's key caches in f16
 
 - **The window ring, the compressed rows and the index keys of DeepSeek-V4.1 are kept in f16** (the chunk's own keys

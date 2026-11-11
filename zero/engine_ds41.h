@@ -512,14 +512,31 @@
     return true;
   }
 
+  // (two kernels, 16 work-groups a token: ops_ds41.cl ds_mix_part / ds_mix_fin; ARC_DS_MIX1=1: the one-work-group
+  //  ds_mix of before, 0.78 ms a site and token on the laptop at the real widths)
   void ds_mix(cl_mem fn, cl_mem base, cl_mem scale, int T, cl_mem out) {
-    cl_kernel k = kernel("ops", "", "ds_mix");
-    int hcd = hp.hce(), it = ds_.iters;
+    int hcd = hp.hce(), it = ds_.iters, TT = T;
     float eps = hp.eps, he = ds_.hc_eps;
-    set_args(k, 0, x_, hcd, fn, base, scale, eps, he, it, out);
-    size_t gws[2] = {256, (size_t)T}, lws[2] = {256, 1};
-    run("ds_mix", k, 2, gws, lws);
+    static const bool one = getenv("ARC_DS_MIX1") && atoi(getenv("ARC_DS_MIX1")) != 0;
+    if (one || hcd % 16) {
+      cl_kernel k = kernel("ops", "", "ds_mix");
+      set_args(k, 0, x_, hcd, fn, base, scale, eps, he, it, out);
+      size_t gws[2] = {256, (size_t)T}, lws[2] = {256, 1};
+      run("ds_mix", k, 2, gws, lws);
+      return;
+    }
+    if (!ds_mixp_) ds_mixp_ = buf((size_t)max_chunk * 16 * (ds_.MIX + 1) * 4);
+    cl_kernel k1 = kernel("ops", "", "ds_mix_part");
+    set_args(k1, 0, x_, hcd, fn, ds_mixp_);
+    size_t g1[2] = {256 * 16, (size_t)T}, l1[2] = {256, 1};
+    run("ds_mix", k1, 2, g1, l1);
+    cl_kernel k2 = kernel("ops", "", "ds_mix_fin");
+    set_args(k2, 0, ds_mixp_, hcd, TT, base, scale, eps, he, it, out);
+    size_t g2 = (size_t)(T + 63) / 64 * 64, l2 = 64;
+    run("ds_mix", k2, 1, &g2, &l2);
   }
+  cl_mem ds_mixp_ = nullptr;  // (ds_mix_part's sums: [max_chunk][16][25])
+  cl_mem ds_apart_ = nullptr;  // (ds_attn_split's partials: [8 rows][heads][8][D + 2])
   // collapse + norm of rows r0 .. r0 + n - 1 (mix rows alike): f32 into hco_, quantized into aq_ (Mp rows)
   void ds_collapse(cl_mem mix, int first, cl_mem normw, int r0, int n, int Mp) {
     cl_kernel k = kernel("ops", "", "ds_collapse");
@@ -669,7 +686,29 @@
       }
     }
     // attention over the window and the selected compressed rows
-    {
+    // (1-8 rows: the keys of each (row, head) split over 8 sub-groups, combined after: ds_attn_split / ds_attn_comb;
+    //  ARC_DS_ATTN1=1: one sub-group per (row, head) as for prompt chunks)
+    static const bool attn1 = getenv("ARC_DS_ATTN1") && atoi(getenv("ARC_DS_ATTN1")) != 0;
+    constexpr int kRows = 8, S = 8;  // (rows of the split path, splits per (row, head))
+    if (T <= kRows && !attn1) {
+      if (!ds_apart_) ds_apart_ = buf((size_t)kRows * H * S * (D + 2) * 4);
+      const DsLayer* K = L.rt ? &dsl_[L.kvs] : nullptr;
+      {
+        cl_kernel k = kernel("ops", ds_kv_defs(), "ds_attn_split");
+        int W = d.W, us = L.rt ? 1 : 0, ls = std::max(1, d.TOPK), p0 = pos, HH = H, SS = S;
+        set_args(k, 0, ds_q_, ds_kvh_, L.ring, W, K ? K->cc : L.ring, ds_sel_, ds_nsel_, us, ls, L.sinks, p0, HH, SS,
+                 ds_apart_);
+        size_t gws[3] = {(size_t)16 * H, (size_t)T, (size_t)S}, lws[3] = {16, 1, 1};
+        run("ds_attn", k, 3, gws, lws);
+      }
+      {
+        cl_kernel k = kernel("ops", ds_kv_defs(), "ds_attn_comb");
+        int SS = S, R = hp.n_rot, po = kDsPad, HH = H, hpg = H / d.G, MM = Mp;
+        set_args(k, 0, ds_apart_, SS, ds_rt_[ty], R, po, HH, hpg, MM, ds_att_);
+        size_t gws[2] = {(size_t)16 * H, (size_t)T}, lws[2] = {16, 1};
+        run("ds_attn", k, 2, gws, lws);
+      }
+    } else {
       cl_kernel k = kernel("ops", ds_kv_defs(), "ds_attn");
       const DsLayer* K = L.rt ? &dsl_[L.kvs] : nullptr;
       int W = d.W, us = L.rt ? 1 : 0, ls = std::max(1, d.TOPK), R = hp.n_rot, po = kDsPad, p0 = pos, HH = H,

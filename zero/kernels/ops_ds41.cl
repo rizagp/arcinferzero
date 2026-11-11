@@ -14,10 +14,12 @@
 #define DSKV_T half
 #define DSKV_LD(p, i) vload_half((i), (p))
 #define DSKV_ST(v, p, i) vstore_half((v), (i), (p))
+#define DSKV_LD16(p, i) vload_half16((i), (p))
 #else
 #define DSKV_T float
 #define DSKV_LD(p, i) ((p)[i])
 #define DSKV_ST(v, p, i) ((p)[i] = (v))
+#define DSKV_LD16(p, i) vload16((i), (p))
 #endif
 // ds_norm_rope's destination: a cache (-DDS_DST_KV) or f32 rows
 #ifdef DS_DST_KV
@@ -54,6 +56,82 @@ __kernel void ds_mix(__global const float* x, int HCD, __global const float* fn,
     if (l == 0) red[j] = s;
   }
   if (l != 0) return;
+  const float rs = rsqrt(ss / HCD + eps);
+  __global float* o = mix + (size_t)t * DS_MIX;
+  for (int j = 0; j < DS_HC; ++j) {
+    o[j] = 1.0f / (1.0f + exp(-(red[j] * rs * scale[0] + base[j]))) + 1e-6f;
+    o[DS_HC + j] = 2.0f / (1.0f + exp(-(red[DS_HC + j] * rs * scale[1] + base[DS_HC + j])));
+  }
+  float c[DS_HC * DS_HC];
+  for (int j = 0; j < DS_HC; ++j) {
+    float mx = -INFINITY;
+    for (int k = 0; k < DS_HC; ++k) {
+      const int q = 2 * DS_HC + j * DS_HC + k;
+      c[j * DS_HC + k] = red[q] * rs * scale[2] + base[q];
+      mx = fmax(mx, c[j * DS_HC + k]);
+    }
+    float z = 0.0f;
+    for (int k = 0; k < DS_HC; ++k) z += c[j * DS_HC + k] = exp(c[j * DS_HC + k] - mx);
+    for (int k = 0; k < DS_HC; ++k) c[j * DS_HC + k] = c[j * DS_HC + k] / z + hc_eps;
+  }
+  for (int it = 0; it < iters; ++it) {
+    if (it > 0)
+      for (int j = 0; j < DS_HC; ++j) {
+        float s = 0.0f;
+        for (int k = 0; k < DS_HC; ++k) s += c[j * DS_HC + k];
+        for (int k = 0; k < DS_HC; ++k) c[j * DS_HC + k] /= s + hc_eps;
+      }
+    for (int k = 0; k < DS_HC; ++k) {
+      float s = 0.0f;
+      for (int j = 0; j < DS_HC; ++j) s += c[j * DS_HC + k];
+      for (int j = 0; j < DS_HC; ++j) c[j * DS_HC + k] /= s + hc_eps;
+    }
+  }
+  for (int i = 0; i < DS_HC * DS_HC; ++i) o[2 * DS_HC + i] = c[i];
+}
+
+// ds_mix in two steps, so that a single token keeps the whole GPU busy (one work-group read the 2 MB of a site's
+// weights alone: 0.78 ms a site, ~2.5 GB/s): ds_mix_part, DS_MIXS work-groups per token, each the 24 sums and the sum of
+// squares over its slice of the HC * E inputs (strided by work-item, then a work-group sum), into part[t][s][25];
+// ds_mix_fin, one work-item per token: the slices' sums in order, then the same pre / post / Sinkhorn as ds_mix.
+// grid (256 * DS_MIXS, T), local (256, 1); grid (T).
+#define DS_MIXS 16
+__kernel void ds_mix_part(__global const float* x, int HCD, __global const float* fn, __global float* part) {
+  const int t = get_group_id(1), sl = get_group_id(0), l = get_local_id(0), per = HCD / DS_MIXS;
+  __global const float* xr = x + (size_t)t * HCD + (size_t)sl * per;
+  __global const float* fr = fn + (size_t)sl * per;
+  float acc[DS_MIX];
+#pragma unroll
+  for (int j = 0; j < DS_MIX; ++j) acc[j] = 0.0f;
+  float ss = 0.0f;
+  for (int i = l; i < per; i += 256) {
+    const float v = xr[i];
+    ss += v * v;
+#pragma unroll
+    for (int j = 0; j < DS_MIX; ++j) acc[j] += fr[(size_t)j * HCD + i] * v;
+  }
+  __global float* o = part + ((size_t)t * DS_MIXS + sl) * (DS_MIX + 1);
+  ss = work_group_reduce_add(ss);
+#pragma unroll
+  for (int j = 0; j < DS_MIX; ++j) {
+    const float s = work_group_reduce_add(acc[j]);
+    if (l == 0) o[j] = s;
+  }
+  if (l == 0) o[DS_MIX] = ss;
+}
+__kernel void ds_mix_fin(__global const float* part, int HCD, int T, __global const float* base,
+                         __global const float* scale, float eps, float hc_eps, int iters, __global float* mix) {
+  const int t = get_global_id(0);
+  if (t >= T) return;
+  float red[DS_MIX], ss = 0.0f;
+#pragma unroll
+  for (int j = 0; j < DS_MIX; ++j) red[j] = 0.0f;
+  for (int sl = 0; sl < DS_MIXS; ++sl) {
+    __global const float* p = part + ((size_t)t * DS_MIXS + sl) * (DS_MIX + 1);
+#pragma unroll
+    for (int j = 0; j < DS_MIX; ++j) red[j] += p[j];
+    ss += p[DS_MIX];
+  }
   const float rs = rsqrt(ss / HCD + eps);
   __global float* o = mix + (size_t)t * DS_MIX;
   for (int j = 0; j < DS_HC; ++j) {
@@ -398,10 +476,12 @@ __kernel void ds_attn(__global const float* q, __global const DSKV_T* kv, __glob
     else kr = cc + (size_t)sel[(size_t)t * ldsel + (kk - p - 1)] * D;
     kr += l * 32;
     float kv32[32], d = 0.0f;
-    for (int i = 0; i < 32; ++i) {
-      kv32[i] = DSKV_LD(kr, i);
-      d += qv[i] * kv32[i];
+    {  // (two 16-value loads: the same values as 32 single ones)
+      const float16 ka = DSKV_LD16(kr, 0), kb = DSKV_LD16(kr, 1);
+      vstore16(ka, 0, kv32);
+      vstore16(kb, 1, kv32);
     }
+    for (int i = 0; i < 32; ++i) d += qv[i] * kv32[i];
     d = sub_group_reduce_add(d) * scale;
     const float mn = fmax(m, d), cr = exp(m - mn), pe = exp(d - mn);
     z = z * cr + pe;
@@ -409,6 +489,86 @@ __kernel void ds_attn(__global const float* q, __global const DSKV_T* kv, __glob
     m = mn;
   }
   const float iz = 1.0f / z;
+  for (int i = 0; i < 32; ++i) o[i] *= iz;
+  const int r0 = D - R;
+  for (int i = 0; i < 32; i += 2) {
+    const int e = l * 32 + i;
+    if (e >= r0) {
+      const float2 cs = tab[(size_t)(t + poff) * (R / 2) + (e - r0) / 2];
+      const float a = o[i], b = o[i + 1];
+      o[i] = a * cs.x + b * cs.y;
+      o[i + 1] = -a * cs.y + b * cs.x;
+    }
+  }
+  const int g = h / hpg;
+  __global float* out = att + ((size_t)g * Mp + t) * (hpg * D) + (h % hpg) * D + l * 32;
+  for (int i = 0; i < 32; ++i) out[i] = o[i];
+}
+
+// ds_attn for passes of 1-8 rows, the keys of a (row, head) split over S sub-groups (flash-decoding: a single token
+// otherwise ran 64 sub-groups in all): split s takes keys [s * per, (s + 1) * per) of the row's list (window first,
+// then the selected rows), the sink in split 0 only; its unnormalized output, max and sum into part[t][h][s][D + 2].
+// ds_attn_comb: the splits in order, out = sum o_s e^(m_s - M) / sum z_s e^(m_s - M), then ds_attn's inverse RoPE and
+// group-major store. grid (16 * H, T, S), local (16, 1, 1); grid (16 * H, T), local (16, 1).
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ds_attn_split(__global const float* q, __global const DSKV_T* kv, __global const DSKV_T* ring, int W,
+                            __global const DSKV_T* cc, __global const int* sel, __global const int* nsel, int use_sel,
+                            int ldsel, __global const float* sinks, int pos, int H, int S, __global float* part) {
+  const int h = get_group_id(0), t = get_group_id(1), s = get_group_id(2), l = get_sub_group_local_id();
+  const int D = 512, p = pos + t;
+  float qv[32], o[32];
+  __global const float* qr = q + ((size_t)t * H + h) * D + l * 32;
+  for (int i = 0; i < 32; ++i) {
+    qv[i] = qr[i];
+    o[i] = 0.0f;
+  }
+  const float scale = rsqrt((float)D);
+  float m = s == 0 ? sinks[h] : -INFINITY, z = s == 0 ? 1.0f : 0.0f;
+  const int s0 = max(0, p - W + 1), nw = p - s0 + 1;
+  const int nc = use_sel ? nsel[t] : 0, n = nw + nc, per = (n + S - 1) / S;
+  for (int i0 = s * per; i0 < min(n, (s + 1) * per); ++i0) {
+    const int kk = i0 < nw ? s0 + i0 : p + 1 + (i0 - nw);
+    __global const DSKV_T* kr;
+    if (kk <= p) kr = kk >= pos ? kv + (size_t)(kk - pos) * D : ring + (size_t)(kk % W) * D;
+    else kr = cc + (size_t)sel[(size_t)t * ldsel + (kk - p - 1)] * D;
+    kr += l * 32;
+    float kv32[32], d = 0.0f;
+    {  // (two 16-value loads: the same values as 32 single ones)
+      const float16 ka = DSKV_LD16(kr, 0), kb = DSKV_LD16(kr, 1);
+      vstore16(ka, 0, kv32);
+      vstore16(kb, 1, kv32);
+    }
+    for (int i = 0; i < 32; ++i) d += qv[i] * kv32[i];
+    d = sub_group_reduce_add(d) * scale;
+    const float mn = fmax(m, d), cr = exp(m - mn), pe = exp(d - mn);
+    z = z * cr + pe;
+    for (int i = 0; i < 32; ++i) o[i] = o[i] * cr + pe * kv32[i];
+    m = mn;
+  }
+  __global float* pp = part + (((size_t)t * H + h) * S + s) * (D + 2);
+  for (int i = 0; i < 32; ++i) pp[l * 32 + i] = o[i];
+  if (l == 0) {
+    pp[D] = m;
+    pp[D + 1] = z;
+  }
+}
+__attribute__((intel_reqd_sub_group_size(SG)))
+__kernel void ds_attn_comb(__global const float* part, int S, __global const float2* tab, int R, int poff, int H,
+                           int hpg, int Mp, __global float* att) {
+  const int h = get_group_id(0), t = get_group_id(1), l = get_sub_group_local_id();
+  const int D = 512;
+  __global const float* pb = part + ((size_t)t * H + h) * S * (D + 2);
+  float M = -INFINITY;
+  for (int s = 0; s < S; ++s) M = fmax(M, pb[(size_t)s * (D + 2) + D]);
+  float o[32], Z = 0.0f;
+  for (int i = 0; i < 32; ++i) o[i] = 0.0f;
+  for (int s = 0; s < S; ++s) {
+    __global const float* pp = pb + (size_t)s * (D + 2);
+    const float w = exp(pp[D] - M);
+    Z += pp[D + 1] * w;
+    for (int i = 0; i < 32; ++i) o[i] += pp[l * 32 + i] * w;
+  }
+  const float iz = 1.0f / Z;
   for (int i = 0; i < 32; ++i) o[i] *= iz;
   const int r0 = D - R;
   for (int i = 0; i < 32; i += 2) {
