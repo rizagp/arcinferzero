@@ -48,16 +48,16 @@ $sets = [ordered]@{
   "xw 16x64" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 16 }
   "xw 32x16" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 1 }
 }
-# (an 8-lane GPU, the Arc 140T, runs gemm_xw8: its own shapes, 16 x 16 at 128 registers by default, the larger ones
-#  at 256; its H8 GEMMs are the 140T preset's prompt chunks of 512+ tokens)
+# (an 8-lane GPU, the Arc 140T, runs gemm_xw8: its own shapes; its H8 GEMMs are the 140T preset's prompt chunks of
+#  512+ tokens, where gemm_xw8 32 x 16 at 256 registers is the default since 2026-11-11: the first row is without it)
 $probe = Invoke-Runz @{ ARC_GEMM_XW = 1 } @("--bench-pp", "512", "--n", "1")
 if ($probe -match "gemm_xw8, 8 lanes") {
   $sets = [ordered]@{
-    "default"          = @{}
-    "xw8 16x16"        = @{ ARC_GEMM_XW = 1 }
-    "xw8 32x16 256reg" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 32; ARC_GEMM_XW_GRF = 256 }
-    "xw8 16x32 256reg" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 2; ARC_GEMM_XW_GRF = 256 }
-    "xw8 32x32 256reg" = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 32; ARC_GEMM_XW_NC = 2; ARC_GEMM_XW_GRF = 256 }
+    "default"                  = @{ ARC_GEMM_XW = 0 }  # (the row named default: without xw, as before)
+    "xw8 32x16 256reg"         = @{ ARC_GEMM_XW = 1 }  # (the engine's default now)
+    "xw8 16x16 128reg"         = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 16; ARC_GEMM_XW_GRF = 128 }
+    "xw8 16x32 256reg"         = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 16; ARC_GEMM_XW_NC = 2 }
+    "xw8 32x32 256reg"         = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 2 }
   }
 }
 "inferzero xw_sweep: $(Split-Path $Model -Leaf), $(Get-Date -Format s)"

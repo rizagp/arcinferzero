@@ -1,16 +1,20 @@
 // The H8R prompt GEMM on XMX with a wider tile per sub-group (QUEUE 33.4 / 33.4b, kernels/gemm_xw.cl and
 // gemm_xw8.cl): a part of class Engine (zero/engine.h), included inside the class body after zero/xe2/engine_xe2.h
-// and engine_h8.h; not a header of its own. Off unless asked for: every path is unchanged without the switch.
+// and engine_h8.h; not a header of its own. On by default only in the Arc 140T preset (below); elsewhere off unless
+// asked for, every path unchanged without the switch.
 //
 // ARC_GEMM_XW=1: where H8R runs on XMX (h8_ with per-column scales: the Qwen dense models on discrete cards by
 // default, the Arc 140T preset's chunks of 512+ tokens, ARC_H8=1 elsewhere), the H8 GEMMs whose shape it takes (M a
 // multiple of XW_TM, N of 16 * XW_NC) go through the wide-tile kernel instead of gemm.cl / gemm_x8.cl; the others
-// stay. Off until a B60 / a 140T measures it.
+// stay. On by default in the Arc 140T preset since 2026-11-11 (32 x 16 tiles, 256 registers: its owner's sweep, issue
+// #5, 27B 512 / 4K / 16K prompts 147.6 / 214.1 / 205.4 -> 204.9 / 298.6 / 283.1 tok/s, logits identical; ARC_GEMM_XW=0:
+// off); elsewhere off until a B60 measures it.
 //   16-lane XMX (Xe2 / Xe3): gemm_xw.cl, XW_TM tokens x XW_NC 16-column groups (32 x 4 = 32 x 64).
 //   8-lane XMX (the 140T, Alchemist-kind): gemm_xw8.cl, coalesced loads (a group's weights in 4 block reads, an
-//   activation row in one), XW_TM x XW_NC (16 x 1 = 16 x 16, both halves, 128 registers).
-//   ARC_GEMM_XW_TM=16 / 32 (32 on 16 lanes, 16 on 8): tokens per sub-group; ARC_GEMM_XW_NC=1 / 2 / 4 (4 on 16 lanes, 1 on 8; 4 is
-//   16-lane only); ARC_GEMM_XW_GRF=128 / 256: the register file (256 on 16 lanes, 128 on 8, where 32 tokens spill).
+//   activation row in one), XW_TM x XW_NC (32 x 1 = 32 x 16, both halves, 256 registers; before 2026-11-11 16 x 16 at
+//   128, which the 140T measured 26 % slower than 32 x 16 at 256).
+//   ARC_GEMM_XW_TM=16 / 32 (32 by default): tokens per sub-group; ARC_GEMM_XW_NC=1 / 2 / 4 (4 on 16 lanes, 1 on 8; 4 is
+//   16-lane only); ARC_GEMM_XW_GRF=128 / 256: the register file (256 by default; on 8 lanes 32 tokens spill at 128).
 //   ARC_GEMM_XW_TRY=1: on any GPU with H8R, DPAS emulated where the GPU has none of its kind (tests; no speed
 //   meaning; on an iGPU H8 needs ARC_H8=1, or the 140T preset with ARC_140T=1 ARC_XMX_TRY=2).
 //   ARC_GEMM_XW_LANES=16: the 16-lane kernel on an 8-lane GPU, DPAS emulated (tests).
@@ -24,11 +28,11 @@
     static const int e = getenv("ARC_GEMM_XW_LANES") ? atoi(getenv("ARC_GEMM_XW_LANES")) : 0;
     return cl_.sg8 && e != 16 ? 8 : 16;
   }
-  // (8 lanes: 16 x 16 at the default register file by default, the shape that does not spill there (ocloc arl-h,
-  //  2026-11-11): the 140T's XMX GEMM gained 108 -> 165 tok/s from 128 registers' occupancy; 16 lanes: 32 x 64 at 256)
+  // (8 lanes: 32 x 16 at 256 registers by default: the 140T's sweep (issue #5, 2026-11-11), 27B 4K prompt 16 x 16 at
+  //  128 273.7, 32 x 16 at 256 298.6, 16 x 32 at 256 275.9, 32 x 32 at 256 257.9 tok/s; 16 lanes: 32 x 64 at 256)
   int xw_tm() const {
     static const int e = getenv("ARC_GEMM_XW_TM") ? atoi(getenv("ARC_GEMM_XW_TM")) : 0;
-    const int def = xw_lanes() == 8 ? 16 : 32;
+    const int def = 32;
     if (e == 16 || e == 32) return e;
     if (e) { static std::once_flag said; std::call_once(said, [&] { fprintf(stderr, "inferzero: ARC_GEMM_XW_TM=%d not supported (16 or 32): %d\n", e, def); }); }
     return def;
@@ -37,7 +41,7 @@
     static const char* e = getenv("ARC_GEMM_XW_GRF");
     if (e && std::string(e) == "128") return false;
     if (e && std::string(e) == "256") return true;
-    return xw_lanes() == 16;
+    return true;
   }
   int xw_nc() const {
     static const int e = getenv("ARC_GEMM_XW_NC") ? atoi(getenv("ARC_GEMM_XW_NC")) : 0;
@@ -53,8 +57,10 @@
     return t;
   }
   // (h8_ and xmx_ known: after the XMX and H8 checks of the constructor)
+  // (the 140T preset: on unless ARC_GEMM_XW=0; elsewhere ARC_GEMM_XW=1)
   bool xw_wanted() const {
-    const bool on = getenv("ARC_GEMM_XW") && atoi(getenv("ARC_GEMM_XW")) != 0;
+    const char* e = getenv("ARC_GEMM_XW");
+    const bool on = e ? atoi(e) != 0 : p140_;
     return h8_ && h8_row() && (xw_try() || (on && xmx_));
   }
   cl_kernel xw_kernel() {

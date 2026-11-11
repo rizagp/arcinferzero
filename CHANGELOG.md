@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-11: the Arc 140T's prompts about 40 % faster (gemm_xw8 by default)
+
+- **On the Arc 140T (its preset), the H8 prompt GEMMs now run through `gemm_xw8` with 32 x 16 tiles at 256
+  registers.** Measured by its owner (issue #5), Qwen3.8 27B: 512 / 4K / 16K-token prompts 147.6 / 214.1 / 205.4 ->
+  204.9 / 298.6 / 283.1 tok/s, the logits identical; the start-time check compares it with the old kernel bit for bit.
+  `ARC_GEMM_XW=0` turns it off. Other GPUs: unchanged (it stays opt-in there, `ARC_GEMM_XW=1`).
+- `bench\xw_sweep.ps1` on an 8-lane GPU: its "default" row is the old path, so the comparison stays the same.
+
 ## 2026-11-11: Gemma's long-prompt attention, an opt-in read pattern and a benchmark for it
 
 - **`bench\gattn_bench.exe`** times Gemma 4's head-512 prompt attention (`attn_fa_gh`) at any depth on random data
