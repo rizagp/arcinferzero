@@ -1043,6 +1043,415 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
   x = mixed;
 }
 
+// DeepSeek-V4.1-Flash (deepseek41), written from the reference inference code (DeepSeek's model.py / engram.py /
+// kernel.py) as docs/deepseek41-spec.md section 3 describes it, without the reference's simulated fp8 / fp4 rounding:
+// 4 hyper-connection streams with single-pass Sinkhorn mixes, Engram n-gram rows before its layers, one 512-wide KV
+// head (K = V) over a sliding window plus up to top_k compressed rows picked by an indexer, sinks, grouped output
+// LoRA, a sqrt(softplus) MoE with clamped SwiGLU. Leaves in x [T][E] the final collapsed hidden state (main applies
+// the output norm and head). REF_DUMP=file: the 4 streams of the last token after each layer.
+static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& x) {
+  const int T = (int)toks.size();
+  const int nl = hp("block_count"), E = hp("embedding_length"), H = hp("attention.head_count"), D = hp("attention.key_length");
+  const int R = hp("rope.dimension_count"), QL = hp("attention.q_lora_rank"), W = hp("attention.sliding_window");
+  const int G = hp("attention.output_group_count"), OL = hp("attention.output_lora_rank");
+  const int IH = hp("attention.indexer.head_count"), ID = hp("attention.indexer.key_length"), TOPK = hp("attention.indexer.top_k");
+  const int NE = hp("expert_count"), NU = hp("expert_used_count"), FF = hp("expert_feed_forward_length");
+  const int HC = hp("hyper_connection.count"), SK = hp("hyper_connection.sinkhorn_iterations", 20), HCD = HC * E;
+  const int MIX = (2 + HC) * HC;
+  const double hc_eps = F->get_float(A + ".hyper_connection.epsilon", 1e-6);
+  const float eps = (float)F->get_float(A + ".attention.layer_norm_rms_epsilon", 1e-20);
+  const float wscale = (float)F->get_float(A + ".expert_weights_scale", 1.0);
+  const double base0 = F->get_float(A + ".rope.freq_base", 10000), base1 = F->get_float(A + ".attention.compress_rope_freq_base", 160000);
+  const double yfac = F->get_float(A + ".rope.scaling.factor", 16), yorig = (double)hp("rope.scaling.original_context_length", 65536);
+  const double bfast = F->get_float(A + ".rope.scaling.yarn_beta_fast", 32), bslow = F->get_float(A + ".rope.scaling.yarn_beta_slow", 1);
+  auto ints = [&](const std::string& k) {
+    const std::vector<int64_t>* v = F->get_ints(A + "." + k);
+    if (!v) { fprintf(stderr, "deepseek41: no %s\n", k.c_str()); exit(1); }
+    return *v;
+  };
+  auto floats = [&](const std::string& k, int n, double def) {
+    const std::vector<double>* v = F->get_floats(A + "." + k);
+    std::vector<double> o(n, def);
+    for (int i = 0; v && i < n && i < (int)v->size(); ++i) o[i] = (*v)[i];
+    return o;
+  };
+  const std::vector<int64_t> ratio = ints("attention.compress_ratios"), kv_src = ints("attention.kv_source_layers"),
+                             idx_src = ints("attention.indexer.source_layers"), ple_layers = ints("ple.layers");
+  const int cand_src = hp("attention.indexer.candidate_source_layer"), cand_k = hp("attention.indexer.candidate_top_k_blocks");
+  const int cand_bs = hp("attention.indexer.candidate_block_size");
+  const std::vector<double> clamp_e = floats("swiglu_clamp_exp", nl, 0), clamp_s0 = floats("swiglu_clamp_shexp", nl, -1);
+  // per layer: its KV source and index source (the most recent at or before it; -1 for the window-only layers)
+  std::vector<int> kvs(nl, -1), ixs(nl, -1);
+  for (int il = 0; il < nl; ++il) {
+    if (ratio[il] == 0) continue;
+    for (int64_t s : kv_src) if (s <= il) kvs[il] = (int)s;
+    for (int64_t s : idx_src) if (s <= il) ixs[il] = (int)s;
+  }
+  auto has = [](const std::vector<int64_t>& v, int il) { return std::find(v.begin(), v.end(), (int64_t)il) != v.end(); };
+
+  // RoPE frequencies: window-only layers plain at freq_base; compressed layers at compress_rope_freq_base with YaRN's
+  // frequency interpolation (no magnitude factor)
+  auto freqs = [&](double theta, bool yarn) {
+    std::vector<double> f(R / 2);
+    for (int i = 0; i < R / 2; ++i) f[i] = std::pow(theta, -2.0 * i / R);
+    if (yarn) {
+      auto cd = [&](double r) { return R * std::log(yorig / (2 * 3.14159265358979323846 * r)) / (2 * std::log(theta)); };
+      const double lo = std::max(std::floor(cd(bfast)), 0.0), hi = std::min(std::ceil(cd(bslow)), (double)R - 1);
+      for (int i = 0; i < R / 2; ++i) {
+        const double ramp = std::clamp((i - lo) / std::max(hi - lo, 1e-3), 0.0, 1.0);
+        f[i] = f[i] / yfac * ramp + f[i] * (1 - ramp);
+      }
+    }
+    return f;
+  };
+  const std::vector<double> fr0 = freqs(base0, false), fr1 = freqs(base1, true);
+  // rotates the last R values of v[0..n) as adjacent pairs at position pos (sign -1: the inverse)
+  auto rope = [&](float* v, int n, int pos, const std::vector<double>& fr, int sign) {
+    float* r = v + n - R;
+    for (int i = 0; i < R / 2; ++i) {
+      const double a = sign * pos * fr[i], c = std::cos(a), s = std::sin(a);
+      const double x0 = r[2 * i], x1 = r[2 * i + 1];
+      r[2 * i] = (float)(x0 * c - x1 * s);
+      r[2 * i + 1] = (float)(x0 * s + x1 * c);
+    }
+  };
+  auto norm_rows = [&](std::vector<float>& v, int n, const std::string& w) {
+    const std::vector<float> wv = vecf(w);
+    for (size_t r = 0; r < v.size() / n; ++r) rmsnorm(&v[r * n], n, wv.data(), eps);
+  };
+  auto sigm = [](double v) { return 1.0 / (1.0 + std::exp(-v)); };
+
+  // streams X[t][s][E]: HC copies of the embedding
+  std::vector<float> X((size_t)T * HCD);
+  for (int t = 0; t < T; ++t)
+    for (int s = 0; s < HC; ++s) memcpy(&X[((size_t)t * HC + s) * E], &x[(size_t)t * E], (size_t)E * 4);
+  std::vector<float> pre_in((size_t)T * HC, 0.0f);  // (layer 0's attention input: stream 0)
+  for (int t = 0; t < T; ++t) pre_in[(size_t)t * HC] = 1.0f;
+
+  // Engram rows: per Engram layer and token, the hashed row of each of the (ngram-1) * heads columns
+  const int ngram = hp("ple.ngram_size"), hpn = hp("ple.heads_per_ngram"), PD = hp("embedding_length_per_layer_input");
+  const int ncol = (ngram - 1) * hpn;
+  const std::vector<int64_t> mults = ints("ple.layer_multipliers"), offs = ints("ple.head_offsets"), primes = ints("ple.head_vocab_sizes");
+  const std::vector<int64_t> tmap = ints("engram.token_map");
+  const int pad_id = hp("engram.pad_token_id", 2);
+  const int64_t pad_c = pad_id >= 0 && pad_id < (int)tmap.size() ? tmap[pad_id] : 0;
+  auto engram_rows = [&](int e, int p, std::vector<int64_t>& rows) {
+    std::vector<uint64_t> tk(ngram);
+    for (int k = 0; k < ngram; ++k) {
+      const int q = p - k;
+      const int64_t c = q >= 0 && toks[q] >= 0 && toks[q] < (int)tmap.size() ? tmap[toks[q]] : -1;
+      tk[k] = (uint64_t)(c >= 0 ? c : pad_c);
+    }
+    rows.assign(ncol, 0);
+    uint64_t r = tk[0] * (uint64_t)mults[(size_t)e * ngram];
+    for (int o = 1; o < ngram; ++o) {
+      r ^= tk[o] * (uint64_t)mults[(size_t)e * ngram + o];
+      for (int h = 0; h < hpn; ++h) {
+        const int col = (o - 1) * hpn + h;
+        rows[col] = (int64_t)(r % (uint64_t)primes[(size_t)e * ncol + col]) + offs[(size_t)e * ncol + col];
+      }
+    }
+  };
+  const GgufTensor* ple_t = F->find("per_layer_token_embd.weight");
+
+  // mixes of a site from the streams: pre [HC], post [HC], comb [HC][HC] (comb[j][k]: source j to destination k)
+  auto mixes = [&](const std::string& p, const std::vector<float>& Xs, std::vector<float>& pre, std::vector<float>& post,
+                   std::vector<float>& comb) {
+    std::vector<float> m;
+    matmul(p + "_fn.weight", Xs, T, m);
+    const std::vector<float> base = vecf(p + "_base.weight"), sc = vecf(p + "_scale.weight");
+    pre.assign((size_t)T * HC, 0), post.assign((size_t)T * HC, 0), comb.assign((size_t)T * HC * HC, 0);
+    for (int t = 0; t < T; ++t) {
+      double ss = 0;
+      for (int i = 0; i < HCD; ++i) ss += (double)Xs[(size_t)t * HCD + i] * Xs[(size_t)t * HCD + i];
+      const double rs = 1.0 / std::sqrt(ss / HCD + eps);
+      const float* mt = &m[(size_t)t * MIX];
+      for (int j = 0; j < HC; ++j) {
+        pre[(size_t)t * HC + j] = (float)(sigm(mt[j] * rs * sc[0] + base[j]) + 1e-6);
+        post[(size_t)t * HC + j] = (float)(2 * sigm(mt[HC + j] * rs * sc[1] + base[HC + j]));
+      }
+      std::vector<double> c(HC * HC);
+      for (int j = 0; j < HC; ++j) {
+        double mx = -1e300;
+        for (int k = 0; k < HC; ++k) {
+          c[j * HC + k] = mt[2 * HC + j * HC + k] * rs * sc[2] + base[2 * HC + j * HC + k];
+          mx = std::max(mx, c[j * HC + k]);
+        }
+        double z = 0;
+        for (int k = 0; k < HC; ++k) z += c[j * HC + k] = std::exp(c[j * HC + k] - mx);
+        for (int k = 0; k < HC; ++k) c[j * HC + k] = c[j * HC + k] / z + hc_eps;
+      }
+      auto colnorm = [&]() {
+        for (int k = 0; k < HC; ++k) {
+          double s = 0;
+          for (int j = 0; j < HC; ++j) s += c[j * HC + k];
+          for (int j = 0; j < HC; ++j) c[j * HC + k] /= s + hc_eps;
+        }
+      };
+      colnorm();
+      for (int it = 1; it < SK; ++it) {
+        for (int j = 0; j < HC; ++j) {
+          double s = 0;
+          for (int k = 0; k < HC; ++k) s += c[j * HC + k];
+          for (int k = 0; k < HC; ++k) c[j * HC + k] /= s + hc_eps;
+        }
+        colnorm();
+      }
+      for (int i = 0; i < HC * HC; ++i) comb[(size_t)t * HC * HC + i] = (float)c[i];
+    }
+  };
+  // collapse: y[t] = sum_j w[t][j] X[t][j]
+  auto hc_pre = [&](const std::vector<float>& Xs, const std::vector<float>& w, std::vector<float>& y) {
+    y.assign((size_t)T * E, 0.0f);
+    for (int t = 0; t < T; ++t)
+      for (int i = 0; i < E; ++i) {
+        double a = 0;
+        for (int j = 0; j < HC; ++j) a += (double)w[(size_t)t * HC + j] * Xs[((size_t)t * HC + j) * E + i];
+        y[(size_t)t * E + i] = (float)a;
+      }
+  };
+  // expand: X[t][k] = post[k] f[t] + sum_j comb[j][k] Xr[t][j]
+  auto hc_post = [&](const std::vector<float>& f, const std::vector<float>& Xr, const std::vector<float>& post,
+                     const std::vector<float>& comb, std::vector<float>& Xo) {
+    Xo.assign((size_t)T * HCD, 0.0f);
+    for (int t = 0; t < T; ++t)
+      for (int k = 0; k < HC; ++k)
+        for (int i = 0; i < E; ++i) {
+          double a = (double)post[(size_t)t * HC + k] * f[(size_t)t * E + i];
+          for (int j = 0; j < HC; ++j) a += (double)comb[((size_t)t * HC + j) * HC + k] * Xr[((size_t)t * HC + j) * E + i];
+          Xo[((size_t)t * HC + k) * E + i] = (float)a;
+        }
+  };
+
+  std::map<int, std::vector<float>> comp, ikey;            // per KV source: compressed rows [n][D], index keys [n][ID]
+  std::map<int, std::vector<std::vector<int>>> sel;        // per index source: each query's selected rows
+  std::vector<std::vector<char>> cand_keep;                // the candidate source's kept blocks per query
+  FILE* fdump = getenv("REF_DUMP") ? fopen(getenv("REF_DUMP"), "wb") : nullptr;
+  std::vector<float> h, y, Xr, apre, apost, acomb, fpre, fpost, fcomb;
+  for (int il = 0; il < nl; ++il) {
+    const std::string p = "blk." + std::to_string(il) + ".";
+    // Engram, before the block: X[s] += sigmoid(signed sqrt(gated match of stream s with key s)) * value
+    for (size_t e = 0; e < ple_layers.size(); ++e) {
+      if (ple_layers[e] != il) continue;
+      std::vector<float> rowsv((size_t)T * ncol * PD), kv;
+      std::vector<int64_t> rows;
+      const size_t rb = ple_t->nbytes / ple_t->dims[1];
+      for (int t = 0; t < T; ++t) {
+        engram_rows((int)e, t, rows);
+        for (int c = 0; c < ncol; ++c)
+          dequant_row(ple_t->type, ple_t->data + (size_t)rows[c] * rb, PD, &rowsv[((size_t)t * ncol + c) * PD]);
+      }
+      matmul(p + "engram_kv.weight", rowsv, T, kv);
+      const std::vector<float> gate = vecf(p + "engram_gate.weight");
+      for (int t = 0; t < T; ++t) {
+        const float* kt = &kv[(size_t)t * (HC + 1) * E];
+        const float* val = kt + (size_t)HC * E;
+        for (int s = 0; s < HC; ++s) {
+          float* xs = &X[((size_t)t * HC + s) * E];
+          const float* ks = kt + (size_t)s * E;
+          double xx = 0, kk = 0, dt = 0;
+          for (int i = 0; i < E; ++i) xx += (double)xs[i] * xs[i], kk += (double)ks[i] * ks[i], dt += (double)xs[i] * ks[i] * gate[(size_t)s * E + i];
+          const double dot = dt / std::sqrt(xx / E + eps) / std::sqrt(kk / E + eps) / std::sqrt((double)E);
+          const double g = sigm((dot >= 0 ? 1 : -1) * std::sqrt(std::max(std::fabs(dot), 1e-6)));
+          for (int i = 0; i < E; ++i) xs[i] = (float)(xs[i] + g * val[i]);
+        }
+      }
+    }
+    // attention site
+    Xr = X;
+    mixes(p + "hc_attn", X, apre, apost, acomb);
+    hc_pre(X, pre_in, h);
+    norm_rows(h, E, p + "attn_norm.weight");
+    const std::vector<double>& fr = ratio[il] ? fr1 : fr0;
+    std::vector<float> qr, q, kvw;
+    matmul(p + "attn_q_a.weight", h, T, qr);
+    norm_rows(qr, QL, p + "attn_q_a_norm.weight");
+    matmul(p + "attn_q_b.weight", qr, T, q);
+    for (int t = 0; t < T; ++t)
+      for (int hh = 0; hh < H; ++hh) rope(&q[((size_t)t * H + hh) * D], D, t, fr, 1);
+    matmul(p + "attn_kv.weight", h, T, kvw);
+    norm_rows(kvw, D, p + "attn_kv_a_norm.weight");
+    for (int t = 0; t < T; ++t) rope(&kvw[(size_t)t * D], D, t, fr, 1);
+    const int rt = (int)ratio[il];
+    if (rt && has(kv_src, il)) {  // the compressor: one row per complete group of rt tokens
+      std::vector<float> cv, cg, lat;
+      matmul(p + "attn_compressor_kv.weight", h, T, cv);
+      if (rt > 1) matmul(p + "attn_compressor_gate.weight", h, T, cg);
+      const int n = T / rt;
+      lat.assign((size_t)n * D, 0.0f);
+      for (int j = 0; j < n; ++j)
+        for (int d = 0; d < D; ++d) {
+          if (rt == 1) { lat[(size_t)j * D + d] = cv[(size_t)j * D + d]; continue; }
+          double mx = -1e300, z = 0, a = 0;
+          for (int u = 0; u < rt; ++u) mx = std::max(mx, (double)cg[(size_t)(j * rt + u) * D + d]);
+          for (int u = 0; u < rt; ++u) {
+            const double pw = std::exp(cg[(size_t)(j * rt + u) * D + d] - mx);
+            z += pw, a += pw * cv[(size_t)(j * rt + u) * D + d];
+          }
+          lat[(size_t)j * D + d] = (float)(a / z);
+        }
+      norm_rows(lat, D, p + "attn_compressor_norm.weight");
+      std::vector<float> ik;
+      if (n) {
+        matmul(p + "indexer.attn_k.weight", lat, n, ik);
+        norm_rows(ik, ID, p + "indexer.k_norm.weight");
+      }
+      for (int j = 0; j < n; ++j) {
+        rope(&ik[(size_t)j * ID], ID, j * rt, fr, 1);
+        rope(&lat[(size_t)j * D], D, j * rt, fr, 1);
+      }
+      comp[il] = lat, ikey[il] = ik;
+    }
+    if (rt && has(idx_src, il)) {  // the indexer: per query, top_k of the visible compressed rows
+      std::vector<float> iq, iw;
+      matmul(p + "indexer.attn_q_b.weight", qr, T, iq);
+      matmul(p + "indexer.proj.weight", h, T, iw);
+      const std::vector<float>& ik = ikey[kvs[il]];
+      const bool is_cand = il == cand_src, use_cand = !is_cand && il > cand_src && kvs[il] == kvs[cand_src];
+      if (is_cand) cand_keep.assign(T, {});
+      std::vector<std::vector<int>>& S = sel[il];
+      S.assign(T, {});
+      for (int t = 0; t < T; ++t) {
+        for (int hh = 0; hh < IH; ++hh) rope(&iq[((size_t)t * IH + hh) * ID], ID, t, fr, 1);
+        const int nv = (t + 1) / rt;
+        std::vector<double> sc(nv);
+        for (int j = 0; j < nv; ++j) {
+          double s = 0;
+          for (int hh = 0; hh < IH; ++hh) {
+            double d = 0;
+            for (int i = 0; i < ID; ++i) d += (double)iq[((size_t)t * IH + hh) * ID + i] * ik[(size_t)j * ID + i];
+            s += iw[(size_t)t * IH + hh] / std::sqrt((double)ID) / std::sqrt((double)IH) * std::max(d, 0.0);
+          }
+          sc[j] = s;
+        }
+        if (is_cand && nv) {  // the candidate pool: the best blocks of cand_bs rows, the newest block always in
+          const int nb = (nv + cand_bs - 1) / cand_bs;
+          std::vector<double> bs(nb, -INFINITY);
+          for (int j = 0; j < nv; ++j) bs[j / cand_bs] = std::max(bs[j / cand_bs], sc[j]);
+          bs[nb - 1] = INFINITY;
+          std::vector<int> bi(nb);
+          for (int b = 0; b < nb; ++b) bi[b] = b;
+          std::stable_sort(bi.begin(), bi.end(), [&](int a, int b) { return bs[a] > bs[b]; });
+          cand_keep[t].assign(nb, 0);
+          for (int b = 0; b < std::min(nb, cand_k); ++b) cand_keep[t][bi[b]] = 1;
+        }
+        if (use_cand)
+          for (int j = 0; j < nv; ++j)
+            if (j / cand_bs >= (int)cand_keep[t].size() || !cand_keep[t][j / cand_bs]) sc[j] = -INFINITY;
+        std::vector<int> ord(nv);
+        for (int j = 0; j < nv; ++j) ord[j] = j;
+        std::stable_sort(ord.begin(), ord.end(), [&](int a, int b) { return sc[a] > sc[b]; });
+        for (int k = 0; k < std::min(TOPK, nv); ++k)
+          if (sc[ord[k]] > -INFINITY) S[t].push_back(ord[k]);
+        std::sort(S[t].begin(), S[t].end());
+      }
+    }
+    // attention: the window rows of this layer, then the selected compressed rows of its KV source; sinks
+    std::vector<float> att((size_t)T * H * D, 0.0f);
+    const std::vector<float> sinks = vecf(p + "attn_sinks.weight");
+    const float scale = 1.0f / std::sqrt((float)D);
+    const std::vector<std::vector<int>>* lsel = rt ? &sel.at(ixs[il]) : nullptr;
+    const float* lcomp = rt ? comp.at(kvs[il]).data() : nullptr;
+#pragma omp parallel for
+    for (int t = 0; t < T; ++t) {
+      std::vector<const float*> keys;
+      for (int s = std::max(0, t - W + 1); s <= t; ++s) keys.push_back(&kvw[(size_t)s * D]);
+      if (rt)
+        for (int j : (*lsel)[t]) keys.push_back(lcomp + (size_t)j * D);
+      std::vector<double> lg(keys.size());
+      for (int hh = 0; hh < H; ++hh) {
+        const float* qh = &q[((size_t)t * H + hh) * D];
+        double mx = sinks[hh];
+        for (size_t k = 0; k < keys.size(); ++k) {
+          double d = 0;
+          for (int i = 0; i < D; ++i) d += (double)qh[i] * keys[k][i];
+          lg[k] = d * scale;
+          mx = std::max(mx, lg[k]);
+        }
+        double z = std::exp(sinks[hh] - mx);
+        std::vector<double> o(D, 0.0);
+        for (size_t k = 0; k < keys.size(); ++k) {
+          const double pw = std::exp(lg[k] - mx);
+          z += pw;
+          for (int i = 0; i < D; ++i) o[i] += pw * keys[k][i];
+        }
+        float* oh = &att[((size_t)t * H + hh) * D];
+        for (int i = 0; i < D; ++i) oh[i] = (float)(o[i] / z);
+        rope(oh, D, t, fr, -1);
+      }
+    }
+    // grouped output LoRA: group g's heads (H / G of them) through rows g*OL.. of attn_output_a, then attn_output_b
+    {
+      const int GK = H * D / G;
+      std::vector<float> oa((size_t)T * G * OL), part, ga((size_t)T * GK);
+      const GgufTensor& wa = F->get(p + "attn_output_a.weight");
+      const size_t rb = wa.nbytes / wa.dims[1];
+      std::vector<float> wrow(GK);
+      for (int g = 0; g < G; ++g)
+        for (int r = 0; r < OL; ++r) {
+          dequant_row(wa.type, wa.data + (size_t)(g * OL + r) * rb, GK, wrow.data());
+          for (int t = 0; t < T; ++t) {
+            double a = 0;
+            const float* in = &att[(size_t)t * H * D + (size_t)g * GK];
+            for (int i = 0; i < GK; ++i) a += (double)wrow[i] * in[i];
+            oa[(size_t)t * G * OL + g * OL + r] = (float)a;
+          }
+        }
+      matmul(p + "attn_output_b.weight", oa, T, y);
+    }
+    hc_post(y, Xr, apost, acomb, X);
+    // FFN site: its mixes from the post-attention streams, its input collapsed with the attention site's pre
+    Xr = X;
+    mixes(p + "hc_ffn", X, fpre, fpost, fcomb);
+    hc_pre(X, apre, h);
+    norm_rows(h, E, p + "ffn_norm.weight");
+    std::vector<float> z, f((size_t)T * E, 0.0f), sg, su, sd;
+    matmul(p + "ffn_gate_inp.weight", h, T, z);
+    const std::vector<float> eb = vecf(p + "exp_probs_b.bias");
+    const double lim = clamp_e[il], lim_s = clamp_s0[il] >= 0 ? clamp_s0[il] : lim;
+    auto swiglu = [](float g, float u, double l) {
+      if (l > 0) u = (float)std::clamp((double)u, -l, l), g = (float)std::min((double)g, l);
+      return silu(g) * u;
+    };
+#pragma omp parallel for
+    for (int t = 0; t < T; ++t) {
+      std::vector<double> s(NE), sb(NE);
+      for (int e = 0; e < NE; ++e) {
+        const double v = z[(size_t)t * NE + e];
+        s[e] = std::sqrt(v > 20 ? v + std::log1p(std::exp(-v)) : std::log1p(std::exp(v)));
+        sb[e] = s[e] + eb[e];
+      }
+      std::vector<int> id(NE);
+      for (int e = 0; e < NE; ++e) id[e] = e;
+      std::stable_sort(id.begin(), id.end(), [&](int a, int b) { return sb[a] > sb[b]; });
+      double sum = 0;
+      for (int k = 0; k < NU; ++k) sum += s[id[k]];
+      std::vector<float> ge(FF), ue(FF), de(E);
+      const float* ht = &h[(size_t)t * E];
+      for (int k = 0; k < NU; ++k) {
+        const int e = id[k];
+        const float wgt = (float)(s[e] / (sum + 1e-20) * wscale);
+        expert_mv(p + "ffn_gate_exps", e, FF, E, ht, ge.data());
+        expert_mv(p + "ffn_up_exps", e, FF, E, ht, ue.data());
+        for (int i = 0; i < FF; ++i) ge[i] = swiglu(ge[i], ue[i], lim);
+        expert_mv(p + "ffn_down_exps", e, E, FF, ge.data(), de.data());
+        for (int i = 0; i < E; ++i) f[(size_t)t * E + i] += wgt * de[i];
+      }
+    }
+    matmul(p + "ffn_gate_shexp.weight", h, T, sg);
+    matmul(p + "ffn_up_shexp.weight", h, T, su);
+    for (size_t i = 0; i < sg.size(); ++i) sg[i] = swiglu(sg[i], su[i], lim_s);
+    matmul(p + "ffn_down_shexp.weight", sg, T, sd);
+    for (size_t i = 0; i < f.size(); ++i) f[i] += sd[i];
+    hc_post(f, Xr, fpost, fcomb, X);
+    pre_in = fpre;
+    if (fdump) fwrite(&X[(size_t)(T - 1) * HCD], 4, HCD, fdump);
+    fprintf(stderr, "\rlayer %d/%d", il + 1, nl);
+  }
+  if (fdump) fclose(fdump);
+  hc_pre(X, pre_in, x);
+}
+
 // Gemma's final logit soft-capping (cap * tanh(l / cap)); no-op for other models.
 static void softcap(std::vector<float>& l) {
   const float c = (float)F->get_float(A + ".final_logit_softcapping", 0.0);
@@ -1096,7 +1505,8 @@ int main(int argc, char** argv) {
 
   if (A == "gemma4") gemma4_layers(toks, x);
   if (A == "qwen4exp") qwen4exp_layers(toks, x);
-  for (int il = 0; il < nl && A != "gemma4" && A != "qwen4exp"; ++il) {
+  if (A == "deepseek41") deepseek41_layers(toks, x);
+  for (int il = 0; il < nl && A != "gemma4" && A != "qwen4exp" && A != "deepseek41"; ++il) {
     const std::string p = "blk." + std::to_string(il) + ".";
     auto an = vecf(p + "attn_norm.weight");
     h = x;
