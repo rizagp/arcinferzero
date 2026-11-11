@@ -355,7 +355,7 @@
     return v;
   }
   // (a saved state loads only into the same layout: ring caches (swa_rings), the 4-bit V copy, the two-pass mode's float K / V rows)
-  int state_flags() const { return (hp.swa_rings ? 1 : 0) | (frows_ ? 4 | 8 : 0) | (q2_ && !q2mm_ ? 16 : 0) | (g4_att8_ ? 32 : 0); }  // (2: the removed
+  int state_flags() const { return (hp.swa_rings ? 1 : 0) | (frows_ ? 4 | 8 : 0) | (q2_ && !q2mm_ ? 16 : 0) | (g4_att8_ ? 32 : 0) | (hp.gemma && kf16_ ? 64 : 0); }  // (2: the removed
   //  --v4; 8: int8 copies of the drafter's layers only; 16: Gemma's matmuls in one pass, E2B / E4B)
   // header and device ranges of save_state()
   void save_layout(int keep_from, std::vector<int32_t>& hdr, std::vector<Seg>& segs, bool host_snapshot = true) {

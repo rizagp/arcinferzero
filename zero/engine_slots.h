@@ -54,7 +54,7 @@
         if (L.kv_src < 0) {
           const size_t cap = L.swa ? swa_cap : c;
           if (L.i8) n += 2 * (size_t)L.nkv * cap * L.hd + 2 * (size_t)L.nkv * cap * (L.hd / 64) * 4;
-          if (frows_) n += (4 + 2) * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows: f32 K, f16 V)
+          if (frows_) n += (kc_bytes() + 2) * (size_t)L.nkv * cap * L.hd;  // (attn_fa_g's float K / V rows: f32 (or f16) K, f16 V)
         }
     } else {
       int nl = mtp_block_ ? 1 : 0;

@@ -943,8 +943,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   // runs on both and adds them (the f32 reference simulating this: Gemma 4 26B KL 0.0985 -> 0.0053 together with
   // two-pass attention). The offsets come from alloc_buffers' sizes (max_chunk rows of the widest input).
   bool q2_ = false;
-  bool frows_ = false;  // (the float K / V rows (f32 K, f16 V) and f32 queries of attn_fa_g: Gemma 4's two-pass mode)
-  // (Qwen3 dense: the K rows in f16 as well (ops.cl -DK_F16); ARC_Q3_KF32=1: f32 as Gemma's)
+  bool frows_ = false;  // (the float K / V rows (f16 K, f16 V) and f32 queries of attn_fa_g: Gemma 4's two-pass mode)
+  // (the K rows in f16 (ops.cl -DK_F16): Qwen3 dense (ARC_Q3_KF32=1: f32) and Gemma 4 since 2026-11-11 (ARC_G4_KF16=0: f32))
   bool kf16_ = false;
   size_t kc_bytes() const { return kf16_ ? 2 : 4; }
   // (two-pass matmul inputs: Gemma 4's mode, and Flash Next's dense matmuls with ARC_FN_Q2=1, an F21.13 experiment:

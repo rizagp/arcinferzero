@@ -168,6 +168,11 @@
     };
     hp.gemma = true;
     hp.swa_rings = true;
+    // the float attention's K rows in f16 instead of f32 (as Qwen3 dense has them; ARC_G4_KF16=0: f32 as before
+    // 2026-11-11): half the K memory, so more context. The same speed on the laptop (its prompt attention is bound by
+    // instructions, not bytes); KL against f32 as before: 20 tokens 12B 0.00000, E4B 0.00395 (0.00389), 26B 0.01013
+    // (0.01014); after an 8,839-token prompt the 12B's next 33 tokens KL 0.00007 against f32 K, every top token equal
+    kf16_ = !(getenv("ARC_G4_KF16") && atoi(getenv("ARC_G4_KF16")) == 0);
     hp.n_layer = I("block_count");
     if (hp.n_layer <= 0 || hp.n_layer > 4096) throw std::runtime_error("invalid block_count in the GGUF");
     hp.n_embd = I("embedding_length");

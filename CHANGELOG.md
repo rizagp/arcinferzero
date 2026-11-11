@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-11: Gemma 4's attention keys in f16 (more context); a faster attention tried and dropped
+
+- **Gemma 4's float attention keeps its K rows in f16** instead of f32, as Qwen3 dense does (`ARC_G4_KF16=0`: f32 as
+  before). Half the key memory, so a larger automatic context: Gemma 4 26B 102,400 -> 131,072 tokens (with images
+  110,592 -> 131,072; `-std` 131,072 -> 163,840); the 12B and E4B were at their caps already. The same speed (8K
+  prompts within 1 %: the laptop's prompt attention is bound by its instructions, not by bytes). Accuracy as f32:
+  20-token KL 12B 0.00000, E4B 0.00395 (0.00389 with f32), 26B 0.01013 (0.01014); after an 8,839-token prompt the
+  12B's next 33 tokens KL 0.00007 against f32 K, every top token the same. Gemma conversations saved to disk with f32
+  keys are processed again once (another layout).
+- The automatic context is estimated again once (its cache's layout version is new, and the K row switches
+  `ARC_G4_KF16` / `ARC_Q3_KF32` are part of its key: a context sized for f16 K is never taken for f32 K). The
+  two-pass fallback attention (`ARC_FA_GH=0`) takes one row a work-group with f16 K (its multi-row form copies f32
+  words), the same results. From a self audit of the change.
+- **Tried and dropped:** Gemma's prompt attention with the softmax computed once instead of by every sub-group and a
+  P.V without a check per key (ocloc: ~2 -> ~1.45 instructions per FMA where it matters). Bit-identical, but no
+  faster: 12B 8K prompt 129.6 / 127.5 tok/s against 126.1 / 127.3 (twice as slow with the probabilities in a second
+  local array: half the work-groups per core). The scores' loop over the keys, unchanged, is what bounds it.
+
 ## 2026-11-11: a GPU benchmark, in the launcher too
 
 - **`bin\gpu_bench.exe`** (and the launcher's More > Benchmark this GPU) measures what the GPU really does: its

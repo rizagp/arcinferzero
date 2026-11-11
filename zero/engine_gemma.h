@@ -15,7 +15,8 @@
       matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, 0, a_in);
       if (L.has_v) matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, 0, a_in);
     }
-    const std::string hdo = "-DHD=" + std::to_string(hd) + sb_opt(hd) + " -DRT_TABLE";  // (the RoPE table always passed)
+    const std::string kdef = kf16_ ? " -DK_F16" : "";  // (ARC_G4_KF16: f16 K rows, written and read in f16)
+    const std::string hdo = "-DHD=" + std::to_string(hd) + sb_opt(hd) + " -DRT_TABLE" + kdef;  // (the RoPE table always passed)
     const int win = L.swa ? hp.n_swa : 0;
     // RoPE, the K / V writes into the ring (or cache) and the q rows for the attention: rows r0 .. r0 + Tq of the pass
     // at position p0 (a batched pass: per sequence, in its slot)
@@ -76,7 +77,7 @@
       if (fa_split && n <= 8) {
         const int gq = gq_div(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
         const std::string fd = "-cl-intel-256-GRF-per-thread -DFA_G -DFA_SPLIT -DHD=" + std::to_string(hd) + " -DGQ=" +
-                               std::to_string(gq);
+                               std::to_string(gq) + kdef;
         cl_kernel k = kernel("ops", fd, "attn_fa_g");
         // (splits of the launch: those of its widest row, as the kernel computes them)
         const int nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1, last = p0 + n - 1;
@@ -106,7 +107,7 @@
         const int fa_kb = fa_kb_env ? fa_kb_env : hd < 512 && hpg * fa_gr <= 8 ? 2 : 1;
         cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH -DHD=" + std::to_string(hd) + " -DHPG=" +
                                         std::to_string(hpg) + " -DFS=" + std::to_string(fa_fs) + " -DGR=" + std::to_string(fa_gr) +
-                                        " -DKB=" + std::to_string(fa_kb),
+                                        " -DKB=" + std::to_string(fa_kb) + kdef,
                              "attn_fa_gh");
         int cp = L.cap, nn = nh, nk = nkv, pp = p0, MM = n, w = win, nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1;
         set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM,
@@ -116,9 +117,10 @@
         return;
       }
       const int gq = gq_div(hpg, fa_gq ? fa_gq : hd >= 512 ? 2 : 4);
-      const int R = n <= 8 ? 1 : fa_rows ? fa_rows : hd >= 512 ? 1 : 32;  // (sliding: 32 rows 4.43 -> 4.16 s; 64: too large)
+      // (sliding: 32 rows 4.43 -> 4.16 s; 64: too large. FA_ROWS copies f32 K rows as words: one row with f16 K)
+      const int R = n <= 8 || kf16_ ? 1 : fa_rows ? fa_rows : hd >= 512 ? 1 : 32;
       cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_G -DHD=" + std::to_string(hd) + " -DGQ=" +
-                                      std::to_string(gq) + (R > 1 ? " -DFA_ROWS=" + std::to_string(R) : std::string()),
+                                      std::to_string(gq) + (R > 1 ? " -DFA_ROWS=" + std::to_string(R) : std::string()) + kdef,
                            "attn_fa_g");
       int cp = L.cap, nn = nh, nk = nkv, pp = p0, MM = n, w = win, nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1;
       set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM,

@@ -67,10 +67,10 @@
         L.vsc = buf(is);
         for (cl_mem m : {L.kq, L.vq}) fill(m, ib);
         for (cl_mem m : {L.ksc, L.vsc}) fill(m, is);
-        if (q2_) {  // (two-pass mode: f32 K / f16 V rows for attn_fa_g; the int8 cache stays for the drafter)
-          L.kc = buf(kvb * 4);
+        if (q2_) {  // (two-pass mode: f16 K (f32 with ARC_G4_KF16=0) / f16 V rows for attn_fa_g; the int8 cache stays for the drafter)
+          L.kc = buf(kvb * kc_bytes());  // (f32, or f16 with ARC_G4_KF16)
           L.vc = buf(kvb * 2);
-          fill(L.kc, kvb * 4);
+          fill(L.kc, kvb * kc_bytes());
           fill(L.vc, kvb * 2);
         }
       }

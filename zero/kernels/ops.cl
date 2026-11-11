@@ -12,7 +12,7 @@
 #endif
 // Gemma 4's float attention: the K rows in f32 (-DK_F16: in f16, Qwen3 dense: its float attention reads half the K
 // bytes. Qwen3-ASR, 72-token prompt against f32: KL < 0.00001 either way (max 0.00004); attention -10 %, one token
-// at 2048 of context 26.8 -> 27.9 tok/s; Gemma 4 keeps f32 K, bit-identical)
+// at 2048 of context 26.8 -> 27.9 tok/s; Gemma 4 too since 2026-11-11, ARC_G4_KF16=0: f32)
 #ifdef K_F16
 #define KC_T half
 #define KLD16(p) vload_half16(0, p)
