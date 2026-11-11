@@ -42,7 +42,16 @@ All the switches (environment variables; each is read once per process):
 The tools: `bench\gemm_sweep.ps1` (prompt), `bench\decode_try.ps1` (generation), `bin\mgpu_probe.exe` and
 `bin\event_probe.exe` (several GPUs), `bin\replay_probe.exe` (kernel launches), `bin\membw_probe.exe` (memory read
 bandwidth of the CPU, the GPU and both; docs/speed-progress.md), `bin\clinfo.exe` (what the driver
-offers).
+offers), `bin\gpu_bench.exe` (the matrix engines' int8 / f16 / bf16, the vector engines and memory measured against
+the GPU's figures on paper; the launcher's More > Benchmark this GPU; a page in `%USERPROFILE%\.inferzero\bench\gpu`
+that compares every result file there).
+
+**Measured with `gpu_bench` (2026-11-11), against EUs x maximum clock x the per-EU rate of the GPU's kind:**
+
+| GPU | INT8 XMX | FP16 XMX | FP32 vector | FP16 vector | INT8 DP4a | Memory read |
+|---|---|---|---|---|---|---|
+| Core Ultra 5 125H (Xe-LPG, 112 EUs, 2.2 GHz) | none | none | 3.85 of 3.94 TFLOPS (98 %) | 7.69 of 7.88 (98 %) | 12.98 of 15.77 TOPS (82 %) | 76.2 GB/s |
+| Arc 140T, Pro B60, Arc B390 | | | | | | waiting for their owners' runs |
 
 The engine was written and tuned on a Core Ultra 5 125H (Xe-LPG iGPU, no XMX). On Xe2 cards the prompt GEMMs use
 XMX (DPAS), but their settings are still the iGPU's, and only the owners of these cards can measure what is faster.

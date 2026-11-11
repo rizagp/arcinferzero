@@ -37,7 +37,7 @@ only): they are trained mostly on English and code. Every model, kept current: [
 | Sustained load | 5–8 % slower after minutes (heat); back-to-back runs 5–10 % slower than the first | benchmark with idle gaps (30 s before each measurement); take the best of two runs |
 | The iGPU is shared with every process | E4B 23 tok/s alone, 8 tok/s while a 27B server processed a prompt | nothing else on the GPU while measuring |
 
-Measure these yourself (`bench/peak_bench`, `bench/bw_bench`, `bench/ssd_bench`, `zero/page_probe.cpp`) before
+Measure these yourself (`bin\gpu_bench.exe`, `bench/bw_bench`, `bench/ssd_bench`, `zero/page_probe.cpp`) before
 believing any document, including generated "blueprints" that quote bandwidths or features this chip does not have.
 
 ## 2. What made prompts fast

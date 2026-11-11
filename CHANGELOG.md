@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-11: a GPU benchmark, in the launcher too
+
+- **`bin\gpu_bench.exe`** (and the launcher's More > Benchmark this GPU) measures what the GPU really does: its
+  matrix engines (XMX: int8, f16, bf16 DPAS, in the sub-group size its DPAS takes), its vector engines (FP32, FP16,
+  int8 DP4a) and memory read bandwidth, each next to the GPU's figure on paper (EUs x maximum clock x the per-EU
+  rate of its kind: the rates behind Intel's numbers, a multiply-add counted as two). The kind and generation come
+  from the driver's IP version (Meteor Lake 12.70 / 12.71, Arrow Lake H 12.74, Battlemage 20.1, Lunar Lake 20.4,
+  Panther Lake 30.x). It writes a result file and a page in `%USERPROFILE%\.inferzero\bench\gpu`: a comparison table
+  of every result file in that folder (results from other PCs dropped there too), then a card per GPU in the layout
+  of a spec database's page, with its notes.
+- The laptop (Core Ultra 5 125H): FP32 3.85 of 3.94 TFLOPS on paper, FP16 7.69 of 7.88, int8 DP4a 12.98 of 15.77
+  TOPS, memory 76.2 GB/s. To check the vendors' matrix figures (the 140T: Intel 77 int8 TOPS, a spec database 154;
+  a Pro B60 ~197) on the cards themselves.
+- `bench/peak_bench.cpp` removed: the laptop-only DP4a / FMA probe it was, with the 125H's EU count fixed in it.
+
 ## 2026-11-11: the 140T's H8 GEMM with coalesced loads and a wider tile, opt-in (QUEUE 33.4b)
 
 - **`ARC_GEMM_XW=1` on a GPU with 8-lane XMX** (Arrow Lake H's Arc 140T): the H8 prompt GEMMs, the 140T preset's

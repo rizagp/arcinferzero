@@ -172,6 +172,7 @@ $script:models = @()
 $script:running = $null
 $script:props = $null
 $script:jobs = New-Object System.Collections.ArrayList
+$script:benching = $false  # (the GPU benchmark running: Start-GpuBench)
 
 Set-Splash "Building the window..."
 $form = New-Object System.Windows.Forms.Form
@@ -872,6 +873,35 @@ function Check-Jobs {
     try { & $j.done $j.proc.ExitCode "$text" } catch { Show-Bar "Launcher error: $($_.Exception.Message)" "error" -Details "$($_.ScriptStackTrace)" }
   }
 }
+# ---- the GPU benchmark (bin\gpu_bench.exe): the matrix engines (XMX), the vector engines and memory, measured against
+# the GPU's figures on paper; a page in the data folder (bench\gpu\gpu-benchmark.html) shows every result there side
+# by side, results from other PCs (their .json) dropped in that folder too
+function Start-GpuBench {
+  $gb = Join-Path $root "bin\gpu_bench.exe"
+  if (-not (Test-Path $gb)) { Show-Bar "bin\gpu_bench.exe not found: unpack the latest package (or build it: .\build.ps1 bench\gpu_bench.cpp)." "warn"; return }
+  if ($script:benching) { Show-Bar "The GPU benchmark is running already." "info"; return }
+  $q = "Measure this GPU's matrix engines (XMX), vector engines and memory against its figures on paper?`n`nAbout half a minute; the GPU is busy meanwhile."
+  if ($script:running) { $q += "`n`nThe server is running ($($script:running)): its work would lower the numbers. Stop it first for clean ones." }
+  if ([System.Windows.Forms.MessageBox]::Show($q, "inferzero", "YesNo", "Question") -ne "Yes") { return }
+  $script:benching = $true
+  $id = [guid]::NewGuid().ToString("N").Substring(0, 8)
+  $out = Join-Path $env:TEMP "zero-gpubench-$id.out"; $err = Join-Path $env:TEMP "zero-gpubench-$id.err"
+  $p = Start-Process -FilePath $gb -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+  $null = $p.Handle  # (Windows PowerShell 5.1: without the handle taken now, ExitCode is $null once it exits)
+  $msg.Text = "Measuring the GPU (about half a minute)..."
+  [void]$script:jobs.Add(@{ proc = $p; out = $out; err = $err; done = {
+        param($code, $text)
+        $script:benching = $false
+        $page = (($text -split "`r?`n" | Where-Object { $_ -match '^page: ' } | Select-Object -First 1) -replace '^page: ', '').Trim()
+        if ($code -ne 0 -or -not $page -or -not (Test-Path -LiteralPath $page)) {
+          Show-Bar "The GPU benchmark failed (exit code $code)." "error" -Details ($text.Trim())
+          return
+        }
+        $gpu = ($text -split "`r?`n" | Where-Object { $_ -match '^GPU: ' } | Select-Object -First 1) -replace '^GPU: ', ''
+        Show-Bar "GPU benchmark done; the page is open in the browser. $gpu" "info" -Details ($text.Trim())
+        Start-Process $page
+      } })
+}
 # ---- pack (zero-server pack): a MoE model as an inferzero package, then, if the user agrees, the original GGUF deleted
 function Is-Package($m) {
   $pk = [IO.Path]::GetFullPath((Join-Path $stateDir "zero\models")) + "\"
@@ -1294,6 +1324,7 @@ if ($hasRec) {
 [void](Add-Item $more "Open the presets folder" { New-Item -ItemType Directory -Force $presetDir | Out-Null; Start-Process explorer.exe -ArgumentList "`"$presetDir`"" })
 Add-Sep $more
 [void](Add-Item $more "Check this PC (doctor report)" { Run-Doctor })
+[void](Add-Item $more "Benchmark this GPU (matrix, vector, memory)..." { Start-GpuBench })
 [void](Add-Item $more "Check for updates now" { Check-Update -Manual })
 $updItem = Add-Item $more "Check for updates when the window opens" { $script:upd.enabled = -not $script:upd.enabled; $updItem.Checked = [bool]$script:upd.enabled; Save-Upd }
 $updItem.Checked = [bool]$script:upd.enabled
