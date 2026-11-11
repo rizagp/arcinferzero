@@ -559,7 +559,7 @@
                     int drow0 = 0, bool to_kv = false) {
     if (nrows <= 0) return;
     cl_kernel k = kernel("ops", to_kv ? ds_kv_defs() + " -DDS_DST_KV" : std::string(), "ds_norm_rope");
-    int d0 = drow0, KK = K, un = w ? 1 : 0, R = hp.n_rot, rp = rpp, pm = pmul, po = poff;
+    int d0 = drow0, KK = K, un = w ? 1 : src == dst && !to_kv ? 2 : 0, R = hp.n_rot, rp = rpp, pm = pmul, po = poff;
     float eps = hp.eps, sg = sign;
     set_args(k, 0, src, dst, d0, KK, w ? w : src, un, eps, ds_rt_[ty], R, rp, pm, po, sg);
     size_t gws[2] = {16, (size_t)nrows}, lws[2] = {16, 1};

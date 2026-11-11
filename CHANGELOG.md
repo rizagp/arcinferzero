@@ -5,6 +5,8 @@
 - The indexer's scores take a lane per compressed row: each row's index key is read once for all its heads (the
   real-widths test model's 1,200-token prompt: 318 -> 21 ms, 763 -> 986 tok/s), bit-identical. It matters more with
   long prompts, where the scores grow with rows x queries. `ARC_DS_IX1=1`: the previous kernel.
+- The queries' RoPE reads and writes only the rotated 64 dims of each 512-wide head (65 -> 14 ms on that prompt),
+  bit-identical.
 
 ## 2026-11-12: DeepSeek-V4.1 prompts nearly twice as fast on the test model
 

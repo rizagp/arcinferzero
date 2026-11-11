@@ -234,6 +234,9 @@ __kernel void ds_norm_rope(__global const float* src, __global DSDST_T* dst, int
                            int use_norm, float eps, __global const float2* tab, int R, int rpp, int pmul, int poff,
                            float sign) {
   const int r = get_group_id(1), l = get_sub_group_local_id(), per = K / 16;
+  // (use_norm 2: in place without a norm (the queries): a lane whose values are all below the rotated ones has nothing
+  //  to do; no sub-group operation follows in that mode)
+  if (use_norm == 2 && (l + 1) * per <= K - R) return;
   __global const float* s = src + (size_t)r * K + l * per;
   __global DSDST_T* d = dst + (size_t)(r + drow0) * K + l * per;  // (drow0: the first destination row)
   float v[32];
@@ -242,7 +245,7 @@ __kernel void ds_norm_rope(__global const float* src, __global DSDST_T* dst, int
     v[i] = s[i];
     ss += v[i] * v[i];
   }
-  if (use_norm) {
+  if (use_norm == 1) {
     ss = sub_group_reduce_add(ss);
     const float rs = rsqrt(ss / K + eps);
     for (int i = 0; i < per; ++i) v[i] = v[i] * rs * w[l * per + i];
