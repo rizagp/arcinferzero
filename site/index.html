@@ -288,7 +288,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <li><a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></li>
     </ul>
     <div class="right">
-      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.10</a>
+      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.11</a>
       <a class="btn p sm" href="https://github.com/rizagp/inferzero/releases/latest">Download</a>
     </div>
   </div>
@@ -357,7 +357,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       </div>
     </div>
     <div class="legend"><span><i class="me"></i>the reference laptop</span><span><i></i>measured by users</span><span><i class="d"></i>a shorter prompt, not comparable</span></div>
-    <p class="src">Qwen3.8 27B GSQ-RCO IQ3_S. Several cards add their partial sums through host memory, since the B60s have no peer access; 2-4 cards' generation was measured on 2026-10-31, before the newer single-card defaults. The 35B on the same ladder reads 851 tok/s on the laptop, 726 on the 285H, 3,232 on one B60 and 4,290 on four. Details: <a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/inferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>.</p>
+    <p class="src">Qwen3.8 27B GSQ-RCO IQ3_S. Several cards add their partial sums through host memory, since the B60s have no peer access; 2-4 cards' generation was measured on 2026-10-31, before the newer single-card defaults. The 35B on the same ladder reads 851 tok/s on the laptop, 726 on the 285H, 3,232 on one B60 and 4,290 on four. The first Xe3 report, a Core Ultra X7 358H (Arc B390) with a Qwen3.8 27B fine-tune in Q3_K_M, another file: 245-255 tok/s on a 10K prompt against 170 for llama.cpp's Vulkan back end, 7.4-7.7 tok/s generation against 6.1-7.3 (a user's report, 2026-11-11; its matrix engines on, no Xe3 tuning yet). Details: <a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/inferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>.</p>
   </div>
 </section>
 
@@ -443,7 +443,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <article class="card w3">
         <div class="eb">Mixture of experts</div>
         <h3>Models larger than the GPU's memory</h3>
-        <p>Only the experts in use stay in GPU memory. The next layer's missing experts are read from the SSD while the GPU computes the current one, so Flash Next's 52 GB of experts run on a 32 GB laptop.</p>
+        <p>Only the experts in use stay in GPU memory. The next layer's missing experts are read from the SSD while the GPU computes the current one, so Flash Next's 52 GB of experts run on a 32 GB laptop. The launcher can pack such a model so its experts are stored once, not twice: Gemma 4 26B takes 14.8 GB instead of 27.7.</p>
         <div class="fig" aria-hidden="true">
           <div class="mini" id="mini"></div>
         </div>
@@ -618,7 +618,7 @@ zero-server start -Model 27b -Slots 2</pre>
     <div class="endcta">
       <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>7 MB</kbd></a>
       <a class="btn s" href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">Build from source</a>
-      <span class="mono">release 2026.11.10.1</span>
+      <span class="mono">release 2026.11.11.2</span>
     </div>
   </div>
 </section>
