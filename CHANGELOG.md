@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-11: DeepSeek-V4.1 checked at the real model's widths
+
+- `tools/make_tiny_deepseek41.py --real`: a 4.4 GB test model with the real widths (embedding 5120, 64 heads of 512,
+  q LoRA 1280, 8 output groups of 1024, window 128, top-k 512, a 2048-block candidate pool, 32 indexer heads, 384
+  experts with 6 active, Engram rows of 256) in 4 layers that cover every layer role, expert FFN 256, experts Q4_0.
+  The engine loads and runs it (1,200-token prompt in two chunks: 7.5 s; generation 35 tok/s on the laptop).
+- Against the f32 reference: up to 417 tokens every half-layer within 3 % of the reference (attention halves within
+  2 % also at 600 tokens, where top-k 512 is active); over 1,200 positions token by token the median KL is 0.001 at
+  every depth, the mean 0.049 from positions where an expert near-tie flips (the reference's 6th and 7th experts
+  0.014 apart in the case traced): a random-weight router of 384 experts. The real model's check is against
+  llama.cpp on the same prompts.
+
 ## 2026-11-11: DeepSeek-V4.1-Flash in the server's prompt cache
 
 - **The server's snapshots now cover DeepSeek-V4.1** (`zero/engine_ds41.h` ds_save / ds_load): a follow-up

@@ -8,7 +8,13 @@
 # more blocks than the pool keeps). Head size 512 with 64 rotated dimensions and the 128-wide indexer stay as in the
 # real model, since kernels may be written for them.
 #
-# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N]
+# --real: the real model's widths instead (embedding 5120, 64 heads, q LoRA 1280, 8 output groups of 1024, window 128,
+# top-k 512, a 2048-block candidate pool of 8 rows, 32 indexer heads, 384 experts with 6 active, Engram rows of 256),
+# so that kernels and buffers meet their real sizes; but 4 layers (window only; ratio 2 with Engram; ratio 1 with the
+# candidate pool; an index layer using it), an expert FFN of 256 instead of 2304 and a vocabulary of 2048 to keep the
+# file at ~3.5 GB (experts in Q4_0). Its data are written tensor by tensor.
+#
+# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N] [--real]
 import struct, sys
 import numpy as np
 
@@ -24,7 +30,57 @@ IDX_SRC = [2, 4, 6, 8]
 CAND_SRC, CAND_BLOCKS, CAND_BS = 6, 4, 4
 PLE_LAYERS = [1, 4]
 
-GGML_F32, GGML_F16, GGML_Q8_0, GGML_BF16 = 0, 1, 8, 30
+GGML_F32, GGML_F16, GGML_Q4_0, GGML_Q8_0, GGML_BF16 = 0, 1, 2, 8, 30
+
+
+def real_config():
+    global E, NL, H, D, R, QL, G, OL, SWA, TOPK, IH, ID, NE, NU, FF, NSH, HC, PD, NGRAM, HPN, VOCAB
+    global RATIOS, KV_SRC, IDX_SRC, CAND_SRC, CAND_BLOCKS, CAND_BS, PLE_LAYERS
+    E, NL, H, D, R, QL, G, OL = 5120, 4, 64, 512, 64, 1280, 8, 1024
+    SWA, TOPK, IH, ID = 128, 512, 32, 128
+    NE, NU, FF, NSH = 384, 6, 256, 1
+    HC, PD, NGRAM, HPN = 4, 256, 4, 8
+    VOCAB = 2048
+    RATIOS = [0, 2, 1, 1]
+    KV_SRC = [1, 2]
+    IDX_SRC = [1, 2, 3]
+    CAND_SRC, CAND_BLOCKS, CAND_BS = 2, 2048, 8
+    PLE_LAYERS = [0, 1]
+
+
+def encode(data, ggml_type):
+    if ggml_type == GGML_F32:
+        return data.astype("<f4").tobytes()
+    if ggml_type == GGML_F16:
+        return data.astype("<f2").tobytes()
+    if ggml_type == GGML_BF16:
+        u = data.astype("<f4").view("<u4")
+        return ((u + 0x7FFF + ((u >> 16) & 1)) >> 16).astype("<u2").tobytes()  # round to nearest even
+    if ggml_type == GGML_Q8_0:
+        x = data.astype("<f4").reshape(-1, 32)
+        amax = np.abs(x).max(axis=1)
+        d = (amax / 127.0).astype("<f2")
+        df = d.astype("<f4")
+        inv = np.where(df > 0, 1.0 / np.where(df > 0, df, 1), 0)
+        q = np.clip(np.rint(x * inv[:, None]), -127, 127).astype("<i1")
+        blk = np.zeros(x.shape[0], dtype=[("d", "<f2"), ("q", "<i1", 32)])
+        blk["d"], blk["q"] = d, q
+        return blk.tobytes()
+    if ggml_type == GGML_Q4_0:  # (as ggml: d = the value of largest magnitude / -8, q = x / d + 8 in 0..15)
+        x = data.astype("<f4").reshape(-1, 32)
+        mx = x[np.arange(x.shape[0]), np.abs(x).argmax(axis=1)]
+        d = (mx / -8.0).astype("<f2")
+        df = d.astype("<f4")
+        inv = np.where(df != 0, 1.0 / np.where(df != 0, df, 1), 0)
+        q = np.clip(np.trunc(x * inv[:, None] + 8.5), 0, 15).astype("<u1")
+        blk = np.zeros(x.shape[0], dtype=[("d", "<f2"), ("q", "<u1", 16)])
+        blk["d"], blk["q"] = d, q[:, :16] | (q[:, 16:] << 4)
+        return blk.tobytes()
+    raise ValueError(ggml_type)
+
+
+def type_bytes(n, ggml_type):
+    return {GGML_F32: 4 * n, GGML_F16: 2 * n, GGML_BF16: 2 * n, GGML_Q8_0: n // 32 * 34, GGML_Q4_0: n // 32 * 18}[ggml_type]
 
 
 class Writer:
@@ -42,29 +98,15 @@ class Writer:
     def str(self, k, v): self.add(k, 8, v)
     def arr(self, k, etype, vals): self.add(k, 9, (etype, list(vals)))
 
-    def tensor(self, name, data, ggml_type):
-        # data: numpy array in row-major [.., ne1, ne0] (ne0 = the contiguous dimension, as ggml writes it)
-        dims = list(data.shape[::-1])
-        if ggml_type == GGML_F32:
-            raw = data.astype("<f4").tobytes()
-        elif ggml_type == GGML_F16:
-            raw = data.astype("<f2").tobytes()
-        elif ggml_type == GGML_BF16:
-            u = data.astype("<f4").view("<u4")
-            raw = ((u + 0x7FFF + ((u >> 16) & 1)) >> 16).astype("<u2").tobytes()  # round to nearest even
-        elif ggml_type == GGML_Q8_0:
-            x = data.astype("<f4").reshape(-1, 32)
-            amax = np.abs(x).max(axis=1)
-            d = (amax / 127.0).astype("<f2")
-            df = d.astype("<f4")
-            inv = np.where(df > 0, 1.0 / np.where(df > 0, df, 1), 0)
-            q = np.clip(np.rint(x * inv[:, None]), -127, 127).astype("<i1")
-            blk = np.zeros(x.shape[0], dtype=[("d", "<f2"), ("q", "<i1", 32)])
-            blk["d"], blk["q"] = d, q
-            raw = blk.tobytes()
+    def tensor(self, name, data, ggml_type, shape=None):
+        # data: numpy array in row-major [.., ne1, ne0] (ne0 = the contiguous dimension, as ggml writes it), or with
+        # `shape` a function giving the encoded bytes piece by piece at write time (big tensors)
+        if shape is None:
+            raw = encode(data, ggml_type)
+            self.tensors.append((name, list(data.shape[::-1]), ggml_type, len(raw), lambda raw=raw: [raw]))
         else:
-            raise ValueError(ggml_type)
-        self.tensors.append((name, dims, ggml_type, raw))
+            n = int(np.prod(shape))
+            self.tensors.append((name, list(shape[::-1]), ggml_type, type_bytes(n, ggml_type), data))
 
     @staticmethod
     def s(b):
@@ -88,17 +130,21 @@ class Writer:
         for k, t, v in self.kv:
             out += self.s(k) + struct.pack("<I", t) + self.value(t, v)
         off = 0
-        offs = []
-        for name, dims, ty, raw in self.tensors:
-            offs.append(off)
+        for name, dims, ty, nb, _ in self.tensors:
             out += self.s(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", d) for d in dims)
             out += struct.pack("<IQ", ty, off)
-            off = (off + len(raw) + 31) // 32 * 32
+            off = (off + nb + 31) // 32 * 32
         out += b"\0" * ((32 - len(out) % 32) % 32)
-        for (name, dims, ty, raw), o in zip(self.tensors, offs):
-            out += raw + b"\0" * ((32 - len(raw) % 32) % 32)
         with open(path, "wb") as f:
             f.write(out)
+            for name, dims, ty, nb, gen in self.tensors:
+                got = 0
+                for piece in gen():
+                    f.write(piece)
+                    got += len(piece)
+                if got != nb:
+                    raise RuntimeError(f"{name}: {got} bytes written, {nb} expected")
+                f.write(b"\0" * ((32 - nb % 32) % 32))
 
 
 def primes_from(start, n, used):
@@ -121,6 +167,8 @@ def primes_from(start, n, used):
 def main():
     out = sys.argv[1]
     seed = int(sys.argv[sys.argv.index("--seed") + 1]) if "--seed" in sys.argv else 41
+    if "--real" in sys.argv:
+        real_config()
     global NU  # (--nu N: experts per token; --nu 16 = every expert, no selection to flip on near-ties)
     if "--nu" in sys.argv:
         NU = int(sys.argv[sys.argv.index("--nu") + 1])
@@ -237,9 +285,21 @@ def main():
         w.tensor(b + "ffn_norm.weight", normw(E), F32)
         w.tensor(b + "ffn_gate_inp.weight", mat(NE, E, 8.0), BF16)  # (decisive: fewer near-ties)
         w.tensor(b + "exp_probs_b.bias", (0.1 * rng.standard_normal(NE)).astype(np.float32), F32)
-        w.tensor(b + "ffn_gate_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
-        w.tensor(b + "ffn_up_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
-        w.tensor(b + "ffn_down_exps.weight", (rng.standard_normal((NE, E, FF)) / np.sqrt(FF)).astype(np.float32), Q8)
+        if "--real" in sys.argv:  # (per expert at write time, Q4_0: 384 experts of 5120 x 256)
+            def gen_exps(n_out, n_in, scale, seed_e):
+                def g():
+                    r2 = np.random.default_rng(seed_e)
+                    for e in range(NE):
+                        yield encode((r2.standard_normal((n_out, n_in)) * scale / np.sqrt(n_in)).astype(np.float32), GGML_Q4_0)
+                return g
+            sd = int(rng.integers(1 << 30))
+            w.tensor(b + "ffn_gate_exps.weight", gen_exps(FF, E, 3.0, sd), GGML_Q4_0, shape=(NE, FF, E))
+            w.tensor(b + "ffn_up_exps.weight", gen_exps(FF, E, 3.0, sd + 1), GGML_Q4_0, shape=(NE, FF, E))
+            w.tensor(b + "ffn_down_exps.weight", gen_exps(E, FF, 1.0, sd + 2), GGML_Q4_0, shape=(NE, E, FF))
+        else:
+            w.tensor(b + "ffn_gate_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
+            w.tensor(b + "ffn_up_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
+            w.tensor(b + "ffn_down_exps.weight", (rng.standard_normal((NE, E, FF)) / np.sqrt(FF)).astype(np.float32), Q8)
         w.tensor(b + "ffn_gate_shexp.weight", mat(FF * NSH, E, 3.0), Q8)
         w.tensor(b + "ffn_up_shexp.weight", mat(FF * NSH, E, 3.0), Q8)
         w.tensor(b + "ffn_down_shexp.weight", mat(E, FF * NSH), Q8)
