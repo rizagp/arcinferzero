@@ -353,6 +353,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       });
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
+    if (!opt.dry) xw_init();   // (the H8R GEMM with wider XMX tiles, ARC_GEMM_XW=1: zero/xe2/engine_xw.h)
     if (!opt.dry && hp.ssm_nv > 0) gdnx_init();  // (the chunked DeltaNet on XMX, ARC_GDN_CHUNK=3: the same file)
     if (!opt.dry && k_attn_q8_) attnx_init();      // (the prompt attention on XMX, ARC_ATTN_XMX=1: the same file)
     {  // (the scripts' progress bar: the bytes of the tensors uploaded here, not the experts streamed from the SSD)
@@ -1467,6 +1468,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 #include "mgpu/engine_tp_shard.h"  // (multi-GPU, zero/mgpu/: this engine as one shard of a model split over GPUs)
 #include "xe2/engine_xe2.h"  // (tuning switches for GPUs with XMX, zero/xe2/; off on the iGPUs)
 #include "engine_h8.h"  // (H8 prompt GEMMs, QUEUE 31.12: Hadamard-rotated int8, ARC_H8=1)
+#include "xe2/engine_xw.h"  // (the H8R GEMM on XMX with wider tiles, QUEUE 33.4: ARC_GEMM_XW=1)
 
 #include "npu/engine_npu.h"  // (the NPU experiment: a share of the Qwen FFN's gate / up on the NPU, ARC_NPU=1)
 

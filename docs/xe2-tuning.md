@@ -21,6 +21,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=0` | on for Qwen dense models on discrete cards with 16-lane XMX (with `ARC_GEMM_CG=4`), and in the 140T preset | H8 off (2026-11-08: B60 27B 512 / 4K / 16K 615 / 766 / 706 -> 677 / 1,024 / 937 tok/s with it) | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
+| `ARC_GEMM_XW=1` | off | the H8 (per-column / per-token scale) prompt GEMMs through `gemm_xw.cl` (QUEUE 33.4, 2026-11-11): a sub-group holds 32 tokens x 64 columns instead of 16 or 32 x 16, so each 64-value chunk of activations is loaded once for 64 columns and each column group's weights once for 32 tokens (twice the DPAS work per byte loaded). Bit-identical to `gemm.cl` (checked at start bit for bit; the laptop with DPAS emulated: the 4B's logits identical at every shape). `_TM=16/32`, `_NC=1/2/4` (16-column groups), `_GRF=128`; `bench\xw_sweep.ps1`. ocloc `bmg`: 32 x 64 at 256 registers no spills (128 DPAS a superblock), at 128 registers 5.6 KB spilled; the smaller shapes no spills at either | 11 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
 | `ARC_GV_IQ3S=1` | off | single-token IQ3_S weights through `gemv_v` (straight into registers) instead of `gemv`'s local window; bit-identical; the 125H 6 % slower (27B step 210 -> 223 ms), a B60 to measure (2026-11-08) | 2 |
@@ -611,3 +612,24 @@ Since 2026-11-10, both bit-identical:
 SMALL_WG=0 23.71 (no gain), both off 23.18; `swiglu_quant` 31.4 -> 8.8 ms per 32 steps, `rmsnorm_quant` 29.0 -> 25.1
 (its work-group still sums the whole row: the next lever for it is a two-stage sum). Left: `attn_k` / `attn_v` (1,024 sub-groups, rows of 20 superblocks), `attn_prep` (23 us
 each: its RoPE's `pow` / `cos` / `sin` in 4 lanes), and the codebook GEMVs themselves.
+
+## 11. The H8 GEMMs with wider XMX tiles (QUEUE 33.4, 2026-11-11): `ARC_GEMM_XW=1`, `bench\xw_sweep.ps1`
+
+`gemm.cl`'s XMX kernel gives a sub-group 16 or 32 tokens x 16 columns: each 64-value chunk of a column group's
+weights (1 KB) serves 16 / 32 tokens, and the activation rows are loaded again by every column group. `gemm_xw.cl`
+gives it 32 tokens x 64 columns (16 DPAS accumulators, 128 registers): per chunk 2 KB of activations and 4 KB of
+weights feed 32 DPAS, about 43 int8 operations per byte loaded against ~21. H8R only (one scale per column and per
+token, a split's dot product one integer sum), so the epilogue is a single multiply and the results are gemm.cl's
+bit for bit (checked at start).
+
+| Tile (`_TM` x 16 `_NC`) | ocloc `bmg`, 256 registers | 128 registers | `ptl-h`, no register option |
+|---|---|---|---|
+| 32 x 64 (default) | no spills, 128 DPAS a superblock, 473 sends | 5.6 KB spilled | 192 registers, no spills |
+| 32 x 32 | no spills | no spills | 128 |
+| 16 x 64 | no spills | no spills | 128 |
+| 16 x 32, 32 x 16 | no spills | no spills | 96 (10 threads per vector engine) |
+
+**To measure (a B60):** `.\bench\xw_sweep.ps1 -Model <27B gguf>`: the prompt at 512 / 4K / 16K tokens for the
+default and four tile shapes, each shape's logits against the default's (identical expected), and a `--prof` of the
+default and the fastest shape at 4K. Left after that: the weights double-buffered in registers, the W8 and MoE
+expert layouts, and an 8-lane form for the Arc 140T.

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-11: the H8 prompt GEMMs with wider XMX tiles, opt-in (QUEUE 33.4)
+
+- **`ARC_GEMM_XW=1`** (GPUs with 16-lane XMX; off until a B60 measures it): the H8 prompt GEMMs (per-column and
+  per-token scales, the Qwen dense models' default on discrete cards) run through a new kernel,
+  `zero/kernels/gemm_xw.cl`, whose sub-group holds 32 tokens x 64 columns instead of 16 or 32 x 16. A 64-value chunk
+  of activations is then loaded once for 64 columns and a column group's weights once for 32 tokens: twice the
+  matrix work per byte loaded. On a B60 the 27B's FFN GEMMs ran at ~33 of ~197 int8 TOPS.
+- Bit for bit the results of `gemm.cl`: the same integer sums, split-K pieces and epilogue; checked at start bit for
+  bit (a difference keeps gemm.cl and says so). `ARC_GEMM_XW_TM` / `_NC` / `_GRF` change the tile;
+  `bench\xw_sweep.ps1` measures them against the default and compares the logits.
+- Checked on the laptop with DPAS emulated (`ARC_GEMM_XW_TRY=1`): the start-up check passes at four tile shapes and
+  the 4B's logits are identical to gemm.cl's H8; without the switch the default path and H8 are bit-identical to
+  the build before. ocloc for the B60 (`bmg`): 32 x 64 without spills at 256 registers. For Panther Lake (`ptl-h`)
+  the compiler sizes the register file itself when 256 is not asked for (192 at 32 x 64, 96 at the small shapes).
+
 ## 2026-11-11: packing a MoE model from the launcher, and deleting its original
 
 - **More > Pack the selected MoE model** in the launcher (or `scripts\zero-server.ps1 pack -Model <name or path>`)
