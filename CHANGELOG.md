@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-11: the update notice, old packages explained, `cache_prompt`, projectors in a shared folder
+
+- **The launcher said a newer package was out when it was this one** (issue #8): a check made by an older package
+  was kept for 20 hours in the data folder every package shares. A check now holds for the package that made it
+  (its folder and serverz.exe's time).
+- **A package or GSQ conversion from before 2026-11-10 says why it cannot load:** the model list and the launcher
+  show what to do (delete the package's folder, then load the original GGUF or `--pack` it again; convert a GSQ
+  model again) instead of "NOT supported". The launcher's update bar no longer promises more than it keeps.
+- **`"cache_prompt": false`** in a chat request evaluates the whole prompt (llama.cpp's option); it was ignored, and
+  a repeated prompt came back from the cache (a user's report from a Panther Lake B390). Checked: 376 tokens
+  evaluated again with it, 371 cached without.
+- **A projector in a folder of several models** is taken only by the model it is named after (`mmproj-<name>...`);
+  in a Hugging Face snapshot folder, or a folder with one model, as before. The first `mmproj*.gguf` of a folder
+  went with every model in it (the same report: an unrelated one on a Qwen3.8 27B fine-tune). The log says when it
+  found others; `--mmproj FILE` takes any.
+- **Measured on a B60 (issue #4):** `ARC_WIDE_ROWS` +2.3 % on the 27B's generation (swiglu_quant -72 %),
+  `ARC_GEMV_SMALL_WG` no gain (kept, bit-identical); docs/before-after.md.
+
 ## 2026-11-10 (evening): self audit after the transcription crash ([docs/self-audit-2026-11-10b.md](docs/self-audit-2026-11-10b.md))
 
 - **A live recording's draft is kept** when its accurate pass is stopped or a part of it fails: before, the partial

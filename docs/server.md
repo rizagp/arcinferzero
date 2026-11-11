@@ -113,6 +113,11 @@
   (`none`/`low`/`medium`/`high`); a reasoning budget (`thinking_token_budget`, `thinking_budget_tokens` or
   `reasoning_budget`, default `--think-budget`) closes the `<think>` block after that many tokens.
 - Prefix reuse: consecutive requests that share a prefix (agent loops) only process the new tokens.
+  `"cache_prompt": false` in a request (llama.cpp's option, e.g. for benchmarks) evaluates the whole prompt: no
+  cached prefix, saved conversation or prefix file is used for it.
+- Vision projector: `--mmproj FILE`, or found next to the model: in a Hugging Face snapshot folder, or a folder
+  with that model alone, any `mmproj*.gguf`; in a folder of several models only one named after the model
+  (`mmproj-<model name>-f16.gguf` for `<model name>-Q4_K_M.gguf`); the log says when it found others.
 - Cancelling: when the client closes the connection (Pi: Esc), the server stops within a layer during prompt
   processing (27B: ~1 s) and before the next token during generation, so the next request starts right away. The
   prompt blocks that were complete stay processed. A reply the client drops after an abort or error costs nothing

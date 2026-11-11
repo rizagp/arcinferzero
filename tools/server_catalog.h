@@ -22,6 +22,7 @@ struct ModelInfo {
   // only (-nodf); 2 DFlash2 only, the MTP block not loaded (-df)
   int draft = 0;
   std::string base, tags;
+  std::string note;  // (why it cannot load, when the file says: a package or GSQ conversion from before 2026-11-10)
 };
 // Two spellings of one model file (separators, case, a path given on the command line vs one found by the scan).
 static std::string lower_ascii(std::string s) {
@@ -123,6 +124,61 @@ static std::vector<std::filesystem::directory_entry> dir_list(const std::filesys
   else
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) add(*it);
   return v;
+}
+
+// The name a model file and its projector share: lower case, without .gguf, "mmproj" and the quantization or split
+// part's suffix (from the first "-q4...", "-iq3...", "-f16", "-bf16", "-f32", "-ud-", "-0000...")
+static std::string mmproj_key(std::string f) {
+  f = lower_ascii(f);
+  if (f.size() > 5 && f.compare(f.size() - 5, 5, ".gguf") == 0) f.resize(f.size() - 5);
+  for (const char* m : {"mmproj-", "mmproj_", "-mmproj", "_mmproj", "mmproj"})
+    if (const size_t p = f.find(m); p != std::string::npos) {
+      f.erase(p, strlen(m));
+      break;
+    }
+  size_t cut = f.size();
+  for (size_t i = 1; i < f.size() && cut == f.size(); ++i) {
+    if (f[i - 1] != '-' && f[i - 1] != '_' && f[i - 1] != '.') continue;
+    auto at = [&](const char* s) { return f.compare(i, strlen(s), s) == 0; };
+    const auto dg = [&](size_t k) { return k < f.size() && f[k] >= '0' && f[k] <= '9'; };
+    if ((f[i] == 'q' && dg(i + 1)) || (at("iq") && dg(i + 2)) || at("f16") || at("bf16") || at("f32") || at("fp16") ||
+        at("ud-") || at("ud_") || at("0000") || at("mxfp4"))
+      cut = i - 1;
+  }
+  f.resize(cut);
+  while (!f.empty() && (f.back() == '-' || f.back() == '_' || f.back() == '.')) f.pop_back();
+  return f;
+}
+// The mmproj-*.gguf files next to a model that are its own, in the folder's order. In a Hugging Face snapshot
+// folder (one repository) and in a folder with this model alone, every one; in a folder of several models (a
+// user's D:\models) only those named after it, "mmproj-<its name>", quantizations aside. Before, a folder's first
+// projector went with every model in it: a Qwen3.8 27B fine-tune took an unrelated one of the same width (a
+// user's report, 2026-11-11). --mmproj FILE still takes any.
+static std::vector<std::filesystem::path> model_mmprojs(const std::filesystem::path& model) {
+  namespace fs = std::filesystem;
+  std::vector<fs::path> mm;
+  int models = 0;
+  for (const auto& de : dir_list(model.parent_path())) {
+    const fs::path& p = de.path();
+    if (p.extension() != ".gguf") continue;
+    const std::string f = lower_ascii(p.filename().string());
+    if (f.find("mmproj") != std::string::npos) {
+      mm.push_back(p);
+    } else if (f.rfind("mtp-", 0) != 0) {  // (a model: a split one counted once, by its first part)
+      const size_t k = f.find("-of-");
+      if (k == std::string::npos || k < 6 || f.compare(k - 5, 5, "00001") == 0) ++models;
+    }
+  }
+  const std::string ml = lower_ascii(model.string());
+  if (mm.empty() || models <= 1 || ml.find("\\snapshots\\") != std::string::npos || ml.find("/snapshots/") != std::string::npos)
+    return mm;
+  const std::string mk = mmproj_key(model.filename().string());
+  std::vector<fs::path> own;
+  for (const fs::path& p : mm) {
+    const std::string k = mmproj_key(p.filename().string());
+    if (!k.empty() && !mk.empty() && (mk.rfind(k, 0) == 0 || k.rfind(mk, 0) == 0)) own.push_back(p);
+  }
+  return own;
 }
 
 static std::vector<ModelInfo> scan_models() {
@@ -268,15 +324,19 @@ static std::vector<ModelInfo> scan_models() {
       static std::mutex told_mu;
       static std::set<std::string> told;
       if (std::string(e.what()).find("arcinferzero") != std::string::npos) {
+        m.note = "made before 2026-11-10 (its keys are arcinferzero.*): a package: delete its folder, then load the original "
+                 "GGUF or pack it again (serverz --pack); a GSQ conversion: convert it again (setup -Models 35b-gsq)";
         std::lock_guard<std::mutex> lk(told_mu);
         if (told.insert(m.path).second) fprintf(stderr, "inferzero: %s\n", e.what());
       }
     }
     bool mmproj = false, drafter = false, audio = false;
+    const std::vector<std::filesystem::path> own_mm = model_mmprojs(c.path);  // (the projectors that are this model's)
     for (const auto& s : dir_list(c.path.parent_path())) {
       const std::string f = lower(s.path().filename().string());
       if (s.path().extension() != ".gguf") continue;
-      if (f.find("mmproj") != std::string::npos && !mmproj) {  // images: a projector inferzero reads
+      if (f.find("mmproj") != std::string::npos && !mmproj &&
+          std::find(own_mm.begin(), own_mm.end(), s.path()) != own_mm.end()) {  // images: a projector inferzero reads
         try {
           const GgufFile g(s.path().string());
           const std::string pt = g.get_str("clip.vision.projector_type", "");
@@ -532,11 +592,7 @@ static size_t encoder_reserve(const std::string& model, const std::string& mmpro
   std::string mp = mmproj_opt;
   std::error_code ec;
   if (mp.empty())
-    for (const auto& de : dir_list(fs::path(model).parent_path()))
-      if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") {
-        mp = de.path().string();
-        break;
-      }
+    if (const auto own = model_mmprojs(fs::path(model)); !own.empty()) mp = own[0].string();
   if (mp.empty()) return 0;
   try {
     const GgufFile m(model), g(mp);
@@ -667,6 +723,7 @@ static int list_models() {
     j.set("bytes", (double)m.bytes);
     j.set("arch", m.arch);
     j.set("supported", m.supported);
+    if (!m.note.empty()) j.set("note", m.note);
     j.set("ctx_train", (double)m.ctx_train);
     j.set("vision", m.vision);
     j.set("mtp", m.mtp);
@@ -717,11 +774,10 @@ static int list_models() {
       } catch (const std::exception&) {}
       if (m.vision) {
         std::error_code ec;
-        for (const auto& de : dir_list(std::filesystem::path(m.path).parent_path()))
-          if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") {
-            try { pt = GgufFile(de.path().string()).get_str("clip.vision.projector_type", ""); } catch (const std::exception&) {}
-            break;
-          }
+        for (const auto& p : model_mmprojs(std::filesystem::path(m.path))) {
+          try { pt = GgufFile(p.string()).get_str("clip.vision.projector_type", ""); } catch (const std::exception&) {}
+          break;
+        }
       }
       // (the engine's default: streamed experts 8192, Flash Next 2048, resident decoded weights 512)
       int chunk = m.arch == "qwen4exp" || (gemma && moe) ? 2048 : moe ? 8192 : a.resident ? 512 : 4096;  // (as the engine)

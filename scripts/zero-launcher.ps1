@@ -642,6 +642,7 @@ function Show-Detail {
   $L.Add("$($m.name)")
   $L.Add(("file    $($m.file)  ({0:N1} GB)" -f ($m.bytes / 1e9)))
   $L.Add("arch    $($m.arch)  -  " + $(if ($m.supported) { "supported by inferzero" } else { "NOT supported by inferzero" }))
+  if ($m.note) { $L.Add("note    $($m.note)") }
   $L.Add("id      $($m.alias)" + $(if ($m.short) { "   (shortcut: zero-pi $($m.short))" } else { "" }))
   $L.Add("variant $(if ($m.tags) { $m.tags } else { '-' })")
   $L.Add("MTP / drafter: $(if ($m.mtp) { 'yes (drafts checked by the main model: same output, faster)' } else { 'no' })")
@@ -890,7 +891,7 @@ function Get-StartArgs([switch]$Speech) {
   } else {
     if ($grid.SelectedRows.Count -eq 0) { return $null }
     $m = $grid.SelectedRows[0].Tag
-    if (-not $m.supported) { Show-Bar "inferzero does not support this model yet (architecture $($m.arch))." "warn"; return $null }
+    if (-not $m.supported) { Show-Bar $(if ($m.note) { "$($m.file): $($m.note)" } else { "inferzero does not support this model yet (architecture $($m.arch))." }) "warn"; return $null }
   }
   $a = @("start", "-Model", $m.alias)
   foreach ($k in @($script:over.Keys)) {
@@ -1089,13 +1090,16 @@ function Reset-Options {
 
 # ---- updates: once a day at most, the latest GitHub release against this package (zero-server version -Check);
 # off in More when not wanted. Only a link: nothing is downloaded by itself.
-$script:upd = @{ enabled = $true; last = ""; latest = ""; url = ""; newer = $false }
+$script:upd = @{ enabled = $true; last = ""; latest = ""; url = ""; newer = $false; pkg = "" }
+# (the package a check was made for: the data folder is shared by every unpacked package, so a check made by an
+#  older one said "newer" in the new one too for 20 hours: issue #8. Its folder and serverz.exe's time)
+$pkgKey = "$root|" + $(try { (Get-Item -LiteralPath (Join-Path $root "bin\serverz.exe") -ErrorAction Stop).LastWriteTimeUtc.Ticks } catch { "" })
 if (Test-Path $updateFile) { try { $u = Get-Content $updateFile -Raw | ConvertFrom-Json; foreach ($p in $u.PSObject.Properties) { $script:upd[$p.Name] = $p.Value } } catch {} }
 function Save-Upd { try { ConvertTo-Json -InputObject $script:upd | Set-Content $updateFile -Encoding utf8 } catch {} }
 function Check-Update([switch]$Manual) {
   if (-not $Manual) {
     if (-not $script:upd.enabled) { return }
-    try { if ($script:upd.last -and ((Get-Date) - [datetime]$script:upd.last).TotalHours -lt 20) { if ($script:upd.newer) { Show-UpdateBar }; return } } catch {}
+    try { if ($script:upd.last -and $script:upd.pkg -eq $pkgKey -and ((Get-Date) - [datetime]$script:upd.last).TotalHours -lt 20) { if ($script:upd.newer) { Show-UpdateBar }; return } } catch {}
   }
   $script:manualUpd = [bool]$Manual
   Start-Job2 @("version", "-Check", "-Json") {
@@ -1105,13 +1109,13 @@ function Check-Update([switch]$Manual) {
       if ($script:manualUpd) { Show-Bar "Could not ask GitHub for the latest release$(if ($v -and $v.update.error) { ': ' + $v.update.error })." "warn" }
       return
     }
-    $script:upd.last = (Get-Date).ToString("s"); $script:upd.latest = $v.update.latest; $script:upd.url = $v.update.url; $script:upd.newer = [bool]$v.update.newer
+    $script:upd.last = (Get-Date).ToString("s"); $script:upd.latest = $v.update.latest; $script:upd.url = $v.update.url; $script:upd.newer = [bool]$v.update.newer; $script:upd.pkg = $pkgKey
     Save-Upd
     if ($v.update.newer) { Show-UpdateBar } elseif ($script:manualUpd) { Show-Bar "Up to date: this is the latest package ($($v.update.latest)) or newer." "info" }
   }
 }
 function Show-UpdateBar {
-  Show-Bar "A newer inferzero package is out: $($script:upd.latest). Unpack it into a new folder; your models and settings stay where they are." "info" `
+  Show-Bar "A newer inferzero package is out: $($script:upd.latest). Unpack it into a new folder; your chats, settings and models stay where they are (what changed: the release notes)." "info" `
     -ActionText "Download page" -Action { Start-Process $script:upd.url }
 }
 

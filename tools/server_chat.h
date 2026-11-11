@@ -310,9 +310,20 @@
     // end of the system prompt (the start of the second turn; Gemma's first turn follows <bos>): every conversation
     // of a client (Pi: its system prompt and tool list, ~4K tokens) shares it
     const size_t sys_cut = system_end(P);
-    switch_conversation(P);
-    load_prefix(P, sys_cut, folder);
-    const size_t start = prepare_prefix(P);
+    // ("cache_prompt": false, llama.cpp's request option, e.g. for benchmarks: the whole prompt evaluated; no cached
+    //  prefix, saved conversation or prefix file is used, and this slot's state and snapshots are dropped first.
+    //  Before, it was ignored and a repeated prompt came back from the cache: a user's report, 2026-11-11)
+    const bool cache_prompt = !body["cache_prompt"].is_bool() || body["cache_prompt"].as_bool(true);
+    size_t start = 0;
+    if (cache_prompt) {
+      switch_conversation(P);
+      load_prefix(P, sys_cut, folder);
+      start = prepare_prefix(P);
+    } else {
+      eng_.reset();
+      for (int s = 0; s < kSnaps; ++s) eng_.drop_snapshot(s);
+      cached_.clear();
+    }
     cur_saved_ = false;
     // start of the last turn header "<|im_start|>assistant\n" (Gemma: "<|turn>model\n"). The next request of the
     // conversation diverges after it (the reply as the template renders it) or, after an aborted or failed reply that

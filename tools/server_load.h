@@ -12,6 +12,18 @@ static std::vector<std::filesystem::directory_entry> model_dir_files(const std::
   for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) out.push_back(*it);
   return out;
 }
+// the model's own projector next to it, or "" (and the log says when the folder has others: --mmproj takes one)
+static std::string own_mmproj(const std::string& model) {
+  const auto own = model_mmprojs(std::filesystem::path(model));
+  if (!own.empty()) return own[0].string();
+  int others = 0;
+  for (const auto& de : model_dir_files(model))
+    others += de.path().extension() == ".gguf" && lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos;
+  if (others)
+    fprintf(stderr, "vision: %d projector file(s) next to the model, none named after it (a folder of several models): "
+                    "--mmproj FILE uses one\n", others);
+  return "";
+}
 struct ServeOpts {
   EngineOptions eo;
   bool ctx_auto = false;
@@ -95,9 +107,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       gemma = g.get_str("general.architecture", "") == "gemma4" && g.get_int("gemma4.embedding_length_per_layer_input", 0) == 0;
     } catch (const std::exception&) {
     }
-    if (gemma && so.mmproj.empty())
-      for (const auto& de : model_dir_files(model))
-        proj = proj || (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf");
+    if (gemma && so.mmproj.empty()) proj = !model_mmprojs(model).empty();
     if (gemma && (proj || !so.mmproj.empty())) eo.min_chunk = std::max(so.img_max, 2048);
   }
   if (so.ctx_auto) {
@@ -165,10 +175,9 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   srv.whisper_props_ = so.whisper_props;
   std::string mmproj = so.mmproj;
   if (!eng.hp.gemma && mmproj != "-") {
-    // Qwen vision (dense and MoE): --mmproj, or an mmproj-*.gguf next to the model with a Qwen3-VL projector inferzero runs
-    if (mmproj.empty())
-      for (const auto& de : model_dir_files(model))
-        if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") { mmproj = de.path().string(); break; }
+    // Qwen vision (dense and MoE): --mmproj, or the model's own mmproj-*.gguf next to it (model_mmprojs) with a
+    // Qwen3-VL projector inferzero runs
+    if (mmproj.empty()) mmproj = own_mmproj(model);
     if (!mmproj.empty()) {
       try {
         auto v = std::make_unique<VisionQwen3VL>(mmproj, eng);
@@ -187,10 +196,8 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     }
   }
   if (eng.hp.gemma && mmproj != "-") {
-    // vision: --mmproj, or an mmproj-*.gguf next to the model (Hugging Face snapshot folder)
-    if (mmproj.empty())
-      for (const auto& de : model_dir_files(model))
-        if (lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos && de.path().extension() == ".gguf") { mmproj = de.path().string(); break; }
+    // vision: --mmproj, or the model's own mmproj-*.gguf next to it (model_mmprojs)
+    if (mmproj.empty()) mmproj = own_mmproj(model);
     if (!mmproj.empty()) {
       try {
         std::unique_ptr<GemmaImageEncoder> v;
