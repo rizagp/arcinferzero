@@ -125,6 +125,13 @@ class Engine {
   // the rotary position by max(gw, gh) instead of gw * gh); kept by the caller with the conversation
   int rope_shift = 0;
   bool profile = false, w8_resident = false, has_mtp = false;
+  // keep_rows: forward() takes a prompt in chunks of max_chunk only, never in the 8-token passes of just-in-time
+  // weights, so logits_at() can read every row of the call (runz's checks of every position: --kl-ref with every
+  // position's reference, --perplexity). x_rows_: the rows of x_ the last forward() left, the ones logits_at reads.
+  // (2026-11-10: Gemma 4 12B's --kl-ref read rows 0..19 of a 20-token prompt that had gone in passes of 8, 8 and 4:
+  //  KL 10.75 at every position, while its own next token was right)
+  bool keep_rows = false;
+  int x_rows_ = 0;
   // weight bytes the GEMVs read (token generation; bin/runz.exe reports GB/s against read_gbs())
   uint64_t rd_bytes = 0;
   // this GPU's read bandwidth in GB/s: the best of 5 streams of a 256 MB buffer (block reads, 16 lanes; this laptop's
@@ -452,7 +459,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // matmuls, whose passes cost more (Gemma 4 12B, ~11 / 22 / 27 tokens 1.1 / 1.2 / 1.25 -> 0.6 / 0.85 / 1.1 s;
     // ~40: 1.25 -> 1.4)
     const int few = q2mm_ ? 32 : 40;
-    const int step = !w8_resident && !stream_ && n <= few && max_chunk >= 64 ? 8 : max_chunk;
+    const int step = !keep_rows && !w8_resident && !stream_ && n <= few && max_chunk >= 64 ? 8 : max_chunk;
     for (int c0 = 0; c0 < n; c0 += step) {
       if (c0 > 0 && cancelled()) throw Cancelled();  // between chunks the state is complete
       const int T = std::min(step, n - c0);
@@ -467,6 +474,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         if (by_layer && &L != &layers_.back() && cancelled()) cancel_block(pos);
       }
       pos += T;
+      x_rows_ = T;
       if (mtp_block_) mtp_prefill(tokens + c0, T, Mp, pos - T);
       if (c0 + T >= n) head(T);
       if (profile) collect_profile();
@@ -545,6 +553,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       }
     x_ = x_views_[nch - 1];
     cur_T_ = chunk_T(nch - 1);
+    x_rows_ = cur_T_;
     head(cur_T_);
     // leave the last chunk in x_ as the chunk-by-chunk path does (logits_at() reads its rows)
     CL_CHECK(clEnqueueCopyBuffer(cl_.queue, x_, x_saved, 0, 0, (size_t)chunk_Mp(nch - 1) * hp.hce() * 4, 0, nullptr,
@@ -721,6 +730,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
 
   // Logits predicting the token after row `row` of the last processed chunk (for perplexity evaluation).
   const std::vector<float>& logits_at(int row) {
+    if (row < 0 || row >= x_rows_)  // (a row the last pass did not leave: another chunk's, or nothing)
+      throw std::runtime_error("logits_at: row " + std::to_string(row) + " is not one of the " + std::to_string(x_rows_) +
+                               " the last pass left (keep_rows: the prompt in one chunk)");
     head_rows(row, 1, out_norm_, nullptr);
     CL_CHECK(clEnqueueReadBuffer(cl_.queue, logits_, CL_TRUE, 0, (size_t)n_logits() * 4, logits_host_.data(), 0,
                                  nullptr, nullptr));

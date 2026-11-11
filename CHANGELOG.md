@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-11: Gemma 4 12B's every-position KL check fixed (it was the check, not the model)
+
+- **Why `tests\run_tests.ps1`'s Gemma 4 12B KL read 10.75:** with weights decoded just in time, a prompt of up to
+  32 tokens (two-pass models; 40 otherwise) goes through the layers in passes of 8 tokens. After the 20-token test
+  prompt the residual stream held the last pass's 4 rows only, and `runz --kl-ref` read rows 0..19 of it: every
+  position compared garbage, while the model's own next token and text were right. E4B and 26B (weights resident:
+  one chunk) passed.
+- **Fix:** `Engine::keep_rows` (set by runz for `--kl-ref` and `--perplexity`) takes the prompt in one chunk, and
+  `logits_at()` refuses a row the last pass did not leave instead of reading it. The server is unchanged.
+- Checked: Gemma 4 12B KL 0.00000 (max 0.00001), top token 20 / 20; E4B 0.00389 and 26B 0.01014 as before; the
+  4B's logits bit-identical; `--perplexity` runs (4B, 2 x 512: 12.11).
+
 ## 2026-11-11: the update notice, old packages explained, `cache_prompt`, projectors in a shared folder
 
 - **The launcher said a newer package was out when it was this one** (issue #8): a check made by an older package

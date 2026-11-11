@@ -418,6 +418,8 @@ static int run_main(int argc, char** argv) {
     return run_tp(model, eo, gpus, toks, n_gen, bench_pp, dump_logits, show, kl_ref, bench_batch);
   }
   Engine eng(model, eo);
+  // (every position's logits are read after the prompt: no 8-token passes, see Engine::keep_rows)
+  eng.keep_rows = !kl_ref.empty() || !ppl_file.empty();
   Vocab vocab(eng.gguf());
   printf("loaded: %d layers, n_embd %d, vocab %d | GPU buffers %.2f GiB | W8 %s | chunk %d | ctx %d | load %.0f ms\n",
          eng.hp.n_layer, eng.hp.n_embd, eng.hp.n_vocab, eng.gpu_bytes / 1073741824.0,
