@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -89,6 +90,18 @@ class FileMap {
       return false;
     }
     return true;
+#endif
+  }
+  // the same by a std::filesystem::path: on Windows its wide form (CreateFileW, as Whisper's model.bin was opened before;
+  // its callers still pass the path through a narrow string, src/whisper.h, so names outside the code page do not reach
+  // here intact yet), on Linux its bytes
+  bool open_fs(const std::filesystem::path& p) {
+#ifdef _WIN32
+    close();
+    file_ = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    return file_ != INVALID_HANDLE_VALUE;
+#else
+    return open(p.c_str());
 #endif
   }
   bool size(uint64_t& out) const {

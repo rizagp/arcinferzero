@@ -9,7 +9,7 @@
 #include "audio.h"
 #include "json.h"
 #include "tokenizer.h"
-#include <windows.h>
+#include "platform.h"  // (windows.h on Windows; plat::FileMap)
 #include <compressapi.h>
 #include <algorithm>
 #include <chrono>
@@ -71,9 +71,7 @@ struct Ct2Var {
 class Ct2File {
  public:
   explicit Ct2File(const std::string& path) {
-    file_ = CreateFileW(std::filesystem::path(path).wstring().c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file_ == INVALID_HANDLE_VALUE) throw std::runtime_error("whisper: cannot open " + path);
+    if (!fm_.open_fs(std::filesystem::path(path))) throw std::runtime_error("whisper: cannot open " + path);
     try {  // (a constructor that throws runs no destructor: the handles and the view closed here)
       parse(path);
     } catch (...) {
@@ -87,21 +85,17 @@ class Ct2File {
 
  private:
   void close() {
-    if (base_) UnmapViewOfFile(base_);
-    if (map_) CloseHandle(map_);
-    if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
+    fm_.close();
     base_ = nullptr;
-    map_ = nullptr;
-    file_ = INVALID_HANDLE_VALUE;
   }
   void parse(const std::string& path) {
-    LARGE_INTEGER sz;
-    if (!GetFileSizeEx(file_, &sz)) throw std::runtime_error("whisper: cannot read the size of " + path);
-    size_ = (size_t)sz.QuadPart;
-    map_ = CreateFileMappingW(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
-    if (!map_) throw std::runtime_error("whisper: cannot map " + path);
-    base_ = (const uint8_t*)MapViewOfFile(map_, FILE_MAP_READ, 0, 0, 0);
-    if (!base_) throw std::runtime_error("whisper: MapViewOfFile failed for " + path);
+    uint64_t sz = 0;
+    if (!fm_.size(sz)) throw std::runtime_error("whisper: cannot read the size of " + path);
+    size_ = (size_t)sz;
+    const int mr = fm_.map();
+    if (mr == 1) throw std::runtime_error("whisper: cannot map " + path);
+    if (mr == 2) throw std::runtime_error("whisper: MapViewOfFile failed for " + path);
+    base_ = fm_.data();
     size_t p = 0;
     auto need = [&](size_t n) { if (p + n > size_) throw std::runtime_error("whisper: model.bin is truncated"); };
     auto u8 = [&]() { need(1); return base_[p++]; };
@@ -180,7 +174,7 @@ class Ct2File {
     auto it = alias_.find(n);
     return it == alias_.end() ? n : it->second;
   }
-  HANDLE file_ = INVALID_HANDLE_VALUE, map_ = nullptr;
+  plat::FileMap fm_;  // (model.bin mapped, src/platform.h)
   const uint8_t* base_ = nullptr;
   size_t size_ = 0;
   std::map<std::string, Ct2Var> vars_;

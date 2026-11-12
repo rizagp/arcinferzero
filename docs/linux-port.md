@@ -49,6 +49,10 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 - 2026-11-13: the expert file's writing through `plat::DirectWriter` and small helpers (page-aligned memory, the
   working-set trim, replace / remove a file): `zero/expert_store.h` has no Windows calls left. Windows bit-identical (two
   test models' expert files byte-identical between the builds). Next: Whisper's wide paths, then sockets.
+- 2026-11-13: Whisper's model.bin mapped through `plat::FileMap::open_fs` (a `std::filesystem::path`: CreateFileW on
+  Windows, its bytes on Linux); transcripts identical. Left: `src/whisper.h` still passes the path through a narrow
+  string (`.string()`), so a folder name outside the code page fails on Windows as before; Whisper's decompression
+  (compressapi) and Media Foundation audio stay Windows-only for now. Next: sockets (`src/http.h`).
 
 ## The order
 

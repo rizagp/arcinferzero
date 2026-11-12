@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-13 (morning): the Linux port, Whisper's model file through the platform layer
+
+- **`plat::FileMap::open_fs`** (`src/platform.h`): a file opened by a `std::filesystem::path` (CreateFileW on Windows);
+  Whisper's model.bin (`src/whisper.h`) is mapped through it. Windows: the same calls and messages as before. Checked
+  against release 2026.11.13.05: a synthesized 8-s clip transcribed with large-v3 gives the same text and JSON (and the
+  same speed, 1.6-1.7 s), a missing model the same error; runz's logits identical. Left (as before): the model path
+  goes through a narrow string on its way, so a folder name outside the code page still fails.
+
 ## 2026-11-13 (dawn): the wide-tile H8 GEMM on by default on discrete cards (a B60: 27B 4K prompt +21 %)
 
 - **`ARC_GEMM_XW` on by default where H8 is** (the Qwen dense models on discrete cards with 16-lane XMX; it was on only
