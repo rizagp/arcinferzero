@@ -12,7 +12,7 @@
 #include <vector>
 
 namespace uni {
-enum : uint16_t { NUMBER = 0x02, LETTER = 0x04, MARK = 0x10 };
+enum : uint16_t { NUMBER = 0x02, LETTER = 0x04, MARK = 0x10, PUNCT = 0x20, SYMBOL = 0x40 };
 
 inline uint16_t flags(uint32_t cp) {
   const size_t n = sizeof(kUniRangeStart) / sizeof(kUniRangeStart[0]);
@@ -77,6 +77,9 @@ class Tokenizer {
     bos = (int)f.get_int("tokenizer.ggml.bos_token_id", -1);
     // Gemma 4: SentencePiece-style BPE (spaces as U+2581, merges over UTF-8 characters, <0xXX> byte fallback)
     spm_ = f.get_str("tokenizer.ggml.model") == "gemma4";
+    // DeepSeek-V4.1 (joyai-llm, llama.cpp's name for DeepSeek-V3's split): pretokenize_ds3
+    const std::string pre = f.get_str("tokenizer.ggml.pre");
+    ds3_ = pre == "joyai-llm" || pre == "deepseek-v3";
     static const std::vector<std::string> none;
     auto m = f.get_strs("tokenizer.ggml.merges");
     init(m ? *m : none);
@@ -201,7 +204,113 @@ class Tokenizer {
   }
 
  private:
-  bool spm_ = false, gpt2_ = false;
+  bool spm_ = false, gpt2_ = false, ds3_ = false;
+
+  // DeepSeek-V3's pre-tokenizer (GGUF tokenizer.ggml.pre "joyai-llm" / "deepseek-v3"), as llama.cpp applies it: three
+  // regexes in turn, each splitting the pieces of the one before (its matches and the text between them both pieces):
+  //   1. \p{N}{1,3}
+  //   2. [一-龥぀-ゟ゠-ヿ]+          (U+4E00-9FA5, U+3040-309F, U+30A0-30FF)
+  //   3. [!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+[\r\n]*|
+  //      \s*[\r\n]+|\s+(?!\S)|\s+
+  // llama.cpp runs 1 and 3 through std::regex on its "collapsed" text: ASCII as is, other codepoints by category
+  // (whitespace first, then N / L / P / M / S, anything else a class of its own), so [A-Za-z] and \s match ASCII only
+  // plus collapsed whitespace. Alternatives are tried in order (ECMAScript), not for the longest match.
+  // Regex 2 tests the whole codepoint, as Hugging Face's tokenizer and llama.cpp on Linux do. llama.cpp on Windows
+  // cuts codepoints to 16 bits there (wchar_t), so a few above U+FFFF (CJK Ext B U+24E00-29FA5, ...) next to a space
+  // or a letter split differently in its Windows builds: " \U00024E00" is [223,175,100,119,225] there, [86387,...] here
+  // and in the reference tokenizer.
+  static void pretokenize_ds3(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words) {
+    const size_t n = c.size();
+    std::vector<uint8_t> k(n);  // per codepoint: its collapsed class
+    enum : uint8_t { kOther, kWs, kN, kL, kM, kP, kS };
+    for (size_t i = 0; i < n; ++i) {
+      const uint32_t x = c[i];
+      if (x < 128) {
+        if (x == ' ' || (x >= 9 && x <= 13)) k[i] = kWs;
+        else {
+          const uint16_t f = uni::flags(x);
+          k[i] = f & uni::NUMBER ? kN : f & uni::LETTER ? kL : f & uni::PUNCT ? kP : f & uni::SYMBOL ? kS : kOther;
+        }
+        continue;
+      }
+      if (uni::is_ws(x)) { k[i] = kWs; continue; }
+      const uint16_t f = uni::flags(x);
+      k[i] = f & uni::NUMBER ? kN : f & uni::LETTER ? kL : f & uni::PUNCT ? kP : f & uni::MARK ? kM
+           : f & uni::SYMBOL ? kS : kOther;
+    }
+    auto cjk = [&](size_t i) { const uint32_t x = c[i]; return (x >= 0x4E00 && x <= 0x9FA5) || (x >= 0x3040 && x <= 0x30FF); };
+    auto nl = [&](size_t i) { return c[i] == '\r' || c[i] == '\n'; };
+    auto asc_letter = [&](size_t i) { return c[i] < 128 && k[i] == kL; };
+    auto lm = [&](size_t i) { return k[i] == kL || k[i] == kM; };
+    auto ps = [&](size_t i) { return k[i] == kP || k[i] == kS; };
+    // regex 3 over [s, e): its matches, and the text between them, as words
+    auto split3 = [&](size_t s, size_t e) {
+      size_t gap = s, i = s;
+      while (i < e) {
+        size_t m = 0;
+        // [ASCII punctuation][A-Za-z]+
+        if (c[i] < 128 && (k[i] == kP || k[i] == kS) && i + 1 < e && asc_letter(i + 1)) {
+          m = i + 1;
+          while (m < e && asc_letter(m)) ++m;
+        }
+        // [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+
+        if (!m) {
+          const bool pre_ok = !nl(i) && k[i] != kL && k[i] != kP && k[i] != kS;
+          size_t j = pre_ok && i + 1 < e && lm(i + 1) ? i + 1 : lm(i) ? i : e;
+          if (j < e) { while (j < e && lm(j)) ++j; m = j; }
+        }
+        //  ?[\p{P}\p{S}]+[\r\n]*
+        if (!m) {
+          size_t j = c[i] == ' ' && i + 1 < e && ps(i + 1) ? i + 1 : ps(i) ? i : e;
+          if (j < e) {
+            while (j < e && ps(j)) ++j;
+            while (j < e && nl(j)) ++j;
+            m = j;
+          }
+        }
+        if (!m && k[i] == kWs) {
+          size_t j = i;
+          while (j < e && k[j] == kWs) ++j;
+          size_t last_nl = e;
+          for (size_t q = i; q < j; ++q)
+            if (nl(q)) last_nl = q;
+          if (last_nl < e) m = last_nl + 1;  // \s*[\r\n]+
+          else if (j == e) m = j;            // \s+(?!\S) at the piece's end
+          else if (j - i >= 2) m = j - 1;    // \s+(?!\S)
+          else m = j;                        // \s+
+        }
+        if (!m) { ++i; continue; }  // (no match here: part of the text between matches)
+        if (gap < i) words.push_back({gap, i});
+        words.push_back({i, m});
+        i = gap = m;
+      }
+      if (gap < e) words.push_back({gap, e});
+    };
+    // regex 2 over [s, e), then regex 3 over each of its pieces
+    auto split2 = [&](size_t s, size_t e) {
+      size_t i = s;
+      while (i < e) {
+        size_t j = i;
+        const bool in = cjk(i);
+        while (j < e && cjk(j) == in) ++j;
+        split3(i, j);
+        i = j;
+      }
+    };
+    // regex 1: digit groups of up to 3 (a group passes 2 and 3 unsplit: neither matches digits alone)
+    size_t i = 0;
+    while (i < n) {
+      size_t j = i;
+      if (k[i] == kN) {
+        while (j < n && j - i < 3 && k[j] == kN) ++j;
+        words.push_back({i, j});
+      } else {
+        while (j < n && k[j] != kN) ++j;
+        split2(i, j);
+      }
+      i = j;
+    }
+  }
 
   // GPT-2's pre-tokenizer (Whisper), the regex 's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
   static void pretokenize_gpt2(const std::vector<uint32_t>& c, std::vector<std::pair<size_t, size_t>>& words) {
@@ -422,6 +531,7 @@ class Tokenizer {
     uni::utf8_decode(text, cps, offs);
     std::vector<std::pair<size_t, size_t>> words;
     if (gpt2_) pretokenize_gpt2(cps, words);
+    else if (ds3_) pretokenize_ds3(cps, words);
     else pretokenize(cps, words);
     for (auto& [a, b] : words) bpe_word(text.substr(offs[a], offs[b] - offs[a]), out);
   }

@@ -18,8 +18,12 @@ section 1 (compress ratios 43 entries, KV sources 2 / 8 / 14 / 20, index sources
 just above 16,000,000; 40 SwiGLU clamps of 10; `hash_layer_count` 0; `expert_gating_func` 4; no
 `hyper_connection.single_pass` key). Types: Q5_K (token embedding, head, q_b, output LoRA, shared experts), Q8_0
 (q_a, kv), BF16 router, F32 norms / mixes / sinks / biases, routed experts IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS
-(142 GB), the Engram table IQ4_NL (105 GB, 768,022,850 rows). The tokenizer's pre-tokenizer is `joyai-llm`, which
-inferzero's BPE does not have yet (it splits as Qwen's): first runs take token ids from llama.cpp.
+(142 GB), the Engram table IQ4_NL (105 GB, 768,022,850 rows). The tokenizer's pre-tokenizer is `joyai-llm` (llama.cpp:
+DeepSeek-V3's split). inferzero has it since 2026-11-12 (`src/tokenizer.h`, `pretokenize_ds3`), checked token for
+token against llama.cpp b12292 on this vocabulary (the IQ1_M build's first shard, 5.5 MB: metadata only); runz
+reads the real metadata up to the first tensor. No BOS is added (`add_bos_token` false), as in llama.cpp. One known difference: llama.cpp's Windows builds cut
+codepoints above U+FFFF to 16 bits in the CJK split, so a few rare characters (CJK Ext B and others) next to a space
+tokenize differently there; inferzero follows the reference tokenizer and llama.cpp on Linux.
 
 | Test model | What it covers | KL against f32 (mean over the positions) |
 |---|---|---|

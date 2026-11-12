@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-12: DeepSeek-V4.1's tokenizer
+
+- **The `joyai-llm` pre-tokenizer** (DeepSeek-V4.1's GGUFs; llama.cpp's DeepSeek-V3 split, also taken for
+  `deepseek-v3`): digits in groups of up to three, runs of CJK ideographs and kana apart, then DeepSeek-V3's word
+  rule, applied in turn as llama.cpp does (`src/tokenizer.h`, `pretokenize_ds3`). Before, such models were split as
+  Qwen's (single digits), so text prompts gave other tokens than llama.cpp's. Checked against llama.cpp b12292's
+  `llama-tokenize` on the real model's vocabulary (its first shard): 16 texts, about 140,000 tokens (edge-case
+  Unicode, random codepoint soup, the repository's docs and code), every token the same. Other models' tokens
+  unchanged (Qwen3.6-35B and Gemma 4 26B, three texts each, before and after). DeepSeek-V4.1 runs can take text now
+  instead of token ids.
+
 ## 2026-11-12: the 35B MoE's generation on discrete cards back to its speed
 
 - **`ARC_GEMV_SMALL_WG` is off again by default** (discrete cards, `zero/xe2/`). A Pro B60's `decode_try` on package

@@ -16,7 +16,7 @@ param(
   [int]$PplChunks = 40,
   [string]$Out = "bench_results.jsonl",
   [string]$LlamaRoot = "$env:USERPROFILE\llama-builds",
-  [string]$LlamaBuild = "b11835",
+  [string]$LlamaBuild = "b12292",
   [int]$Ubatch = 512,
   [int]$Repeats = 2,
   [int]$Cooldown = 30   # seconds of idle GPU before each measurement (the laptop throttles under sustained load)
