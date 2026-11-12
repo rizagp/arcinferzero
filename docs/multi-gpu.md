@@ -289,6 +289,9 @@ on PCIe x4, 903.9 -> 1,033.7), so `ARC_TP_PIPE` is on unless `=0`. The gain is f
 directions suggested: most of a sum's time is not the copy itself (the waiting counts each GPU's work before it
 too). The next step is to overlap the sums with the next chunk's work (the `ARC_TP_OVERLAP` branch, stage 1).
 
+2026-11-13, with the wide-tile H8 GEMM on by default on each shard (release 2026.11.13.05, issue #4): the 27B's 4K
+prompt over 2 Pro B60s 1,596.6 tok/s, over 4 1,887.6 (from 1,368.8 / 1,734.0).
+
 **`--ctx auto` on a split model (2026-11-12):** the dry probe is shard 0 of N (`tp_size` N, `tp_rank` 0: the
 largest shard, which takes the extra unit of a count that does not divide), so the context is what one GPU's share
 of the weights and the KV leaves on GPU 0. Before, it sized the whole model on one GPU, and a model bigger than one

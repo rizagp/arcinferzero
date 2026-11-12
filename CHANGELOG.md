@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-13 (morning): split models with the wide tiles measured; Flash Next over several GPUs queued
+
+- **A split 27B on Pro B60s with the wide-tile H8 GEMM** (release 2026.11.13.05, issue #4): the 4K prompt over 2 GPUs
+  1,368.8 -> 1,596.6 tok/s, over 4 1,734.0 -> 1,887.6; website, docs/multi-gpu.md.
+- **Queued: Flash Next (qwen4exp) over several GPUs** (asked for in issue #4); refused with a message today.
+
 ## 2026-11-13 (morning): the Linux port, Whisper's model file through the platform layer
 
 - **`plat::FileMap::open_fs`** (`src/platform.h`): a file opened by a `std::filesystem::path` (CreateFileW on Windows);
