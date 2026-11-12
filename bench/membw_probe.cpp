@@ -80,13 +80,23 @@ int main(int argc, char** argv) {
   // the CPU's buffer: plain host memory, every page touched before timing
   uint8_t* hbuf = (uint8_t*)_aligned_malloc(bytes, 4096);
   if (!hbuf) { fprintf(stderr, "could not allocate %.1f GiB of host memory\n", gib); return 1; }
-  memset(hbuf, 1, bytes);
-  // the GPU's: a device buffer (on an iGPU the same RAM)
+  // (random words, not one value: a buffer filled with one value read at 1,149 GB/s on a B580 with 456 on paper, the
+  //  discrete cards' memory compression at work; gpu_bench.cpp, 2026-11-12)
+  {
+    uint64_t s = 0x9e3779b97f4a7c15ull;
+    uint32_t* w = (uint32_t*)hbuf;
+    for (size_t i = 0; i < bytes / 4; ++i) {
+      s ^= s << 13, s ^= s >> 7, s ^= s << 17;
+      w[i] = (uint32_t)(s >> 16);
+    }
+  }
+  // the GPU's: a device buffer (on an iGPU the same RAM), the same random words
   cl_program prog = cl.build(kSrc, "-cl-std=CL3.0 -DUNROLL=" + std::to_string(unroll));
   cl_kernel k = cl.kernel(prog, "rd");
   cl_mem dbuf = cl.buffer(CL_MEM_READ_WRITE, bytes), dout = cl.buffer(CL_MEM_READ_WRITE, 64);
-  const uint32_t one = 0x01010101u;
-  CL_CHECK(clEnqueueFillBuffer(cl.queue, dbuf, &one, 4, 0, bytes, 0, nullptr, nullptr));
+  for (size_t off = 0, step = (size_t)64 << 20; off < bytes; off += step)
+    CL_CHECK(clEnqueueWriteBuffer(cl.queue, dbuf, CL_TRUE, off, std::min(step, bytes - off), hbuf + off, 0, nullptr,
+                                  nullptr));
   clFinish(cl.queue);
   const int n4 = (int)(bytes / 16);
   set_args(k, 0, dbuf, n4, dout);

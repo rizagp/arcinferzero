@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-12: gpu_bench's memory read on discrete cards
+
+- **`gpu_bench` and `membw_probe` read random data** instead of a buffer filled with one value. An Arc B580's run
+  (Reddit, 2026-11-12) read 1,149 GB/s from 1 GiB, with 456 GB/s on paper and an 18 MB L2: the constant fill made
+  the reads cheap, as the discrete cards' memory compression can. The laptop's iGPU reads the same as before (76.2 ->
+  77.6 GB/s). Earlier read figures from discrete cards with these tools are not valid; the engine's own probe
+  (`runz --prof-gen`, an unwritten buffer: a Pro B60 428 GB/s) was not affected.
+
 ## 2026-11-12: DeepSeek-V4.1's tokenizer
 
 - **The `joyai-llm` pre-tokenizer** (DeepSeek-V4.1's GGUFs; llama.cpp's DeepSeek-V3 split, also taken for

@@ -393,8 +393,23 @@ int main(int argc, char** argv) {
       cl_program p = cl.build(kSrc, "-cl-std=CL3.0 -DK_READ");
       cl_kernel k = cl.kernel(p, "probe");
       cl_mem db = cl.buffer(CL_MEM_READ_WRITE, bytes);
-      const uint32_t one = 0x01010101u;
-      CL_CHECK(clEnqueueFillBuffer(cl.queue, db, &one, 4, 0, bytes, 0, nullptr, nullptr));
+      // (random words, written from the host: a buffer filled with one value read at 1,149 GB/s on a B580, whose
+      //  memory gives 456 on paper (Reddit, 2026-11-12): 1 GiB is far more than its 18 MB L2, so the constant fill
+      //  itself made the reads cheap, as the discrete cards' memory compression can. The engine's probe (read_gbs,
+      //  an unwritten buffer) gave a B60 428 GB/s)
+      {
+        const size_t step = (size_t)64 << 20;
+        std::vector<uint32_t> h(step / 4);
+        uint64_t s = 0x9e3779b97f4a7c15ull;
+        for (size_t off = 0; off < bytes; off += step) {
+          const size_t n = std::min(step, bytes - off);
+          for (size_t i = 0; i < n / 4; ++i) {
+            s ^= s << 13, s ^= s >> 7, s ^= s << 17;
+            h[i] = (uint32_t)(s >> 16);
+          }
+          CL_CHECK(clEnqueueWriteBuffer(cl.queue, db, CL_TRUE, off, n, h.data(), 0, nullptr, nullptr));
+        }
+      }
       clFinish(cl.queue);
       int n4 = (int)(bytes / 16);
       set_args(k, 0, db, n4, bo);

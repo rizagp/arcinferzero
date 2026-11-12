@@ -52,6 +52,7 @@ that compares every result file there).
 |---|---|---|---|---|---|---|
 | Core Ultra 5 125H (Xe-LPG, 112 EUs, 2.2 GHz) | none | none | 3.85 of 3.94 TFLOPS (98 %) | 7.69 of 7.88 (98 %) | 12.98 of 15.77 TOPS (82 %) | 76.2 GB/s |
 | Arc 140T (Xe-LPG Plus, 128 EUs, 2.35 GHz; issue #5, 2026-11-11) | 76.75 of 77.0 TOPS (100 %) | 38.38 of 38.5 TFLOPS (100 %); BF16 37.56 (98 %) | 4.70 of 4.81 (98 %) | 9.39 of 9.63 (98 %) | 15.07 of 19.25 TOPS (78 %) | 81.5 GB/s |
+| Arc B580 (Xe2-HPG, 160 EUs, 2.85 GHz; Reddit, 2026-11-12, driver 101.9175) | 233.21 of 233.47 TOPS (100 %) | 116.60 of 116.74 TFLOPS (100 %); BF16 116.60 (100 %) | 14.52 of 14.59 (99.5 %) | 13.72 of 29.18 (47 %: the FP32 rate, no packed FP16) | 55.24 of 58.37 TOPS (95 %) | 1,149 GB/s, **not valid** (a one-value buffer, 456 on paper; random data since 2026-11-12) |
 | Pro B60, Arc B390 | | | | | | waiting for their owners' runs |
 
 The 140T run settles its matrix figures: Intel's 77 int8 TOPS is what its XMX does (a spec database's 154 int8 TOPS and 77 FP16 TFLOPS are twice that), and the engines run at their maximum clock under load. Its 27B prompt (~12 int8 TOPS at 4K) uses about a sixth of them: the room is in the kernels, not the hardware.
