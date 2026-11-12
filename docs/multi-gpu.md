@@ -103,6 +103,96 @@ part-times on 2 GPUs and 2.5 on 4; overlapped, 1 and 1.5: the sums up to ~2x fas
 the links and the host memory carry both directions at once (manoreken2's 1.85x says they can on B60s). Not
 measured yet: off by default.
 
+### Sums beside the next chunk's work (`ARC_TP_OVERLAP=1`, 2026-11-12, opt-in, stage 1)
+
+A tester's two Arcs (the second on PCIe x4, the 27B IQ4_XS, 32K prompt over 2 GPUs): 904 tok/s, 1,034 with
+`ARC_TP_PIPE=1`, and ~31 s of a 31.7-s pass inside the sums (1,024 of them). That figure includes the GPU's own work
+before each sum, but most of it is the GPU idle while its shard's thread waits for a sum. Stage 1 lets the GPU work on
+the next chunk during the FFN sums.
+
+**Where it applies:** prompts that run layer by layer (`forward_layer_major`: just-in-time weights and a prompt longer
+than a chunk, the tester's case), dense split models (not the 35B MoE). Generation, chunk-by-chunk prompts (resident
+weights) and MoE sum as before.
+
+**Why the FFN sum can wait:** at layer L, chunk c's FFN sum is read first when layer L+1 reaches chunk c. Before that,
+layer L computes chunk c+1, whose attention reads chunk c's KV cache and DeltaNet state; both were written before that
+sum. The attention / DeltaNet sums stay on the critical path: the FFN of the same chunk reads them next.
+
+**How:**
+- Each shard has a **sum thread** with a Level Zero device handle of its own (`zrt::Dev`, "guarded" by the shard's:
+  the same time limit, abort and fault flags), an immediate command list on the compute group (its second queue when
+  the GPU has one, else the same queue), its own copy list (`ARC_TP_PIPE`) and its own kernel objects of `tp.cl`.
+- The main thread matmuls the output projection into one of **two partial buffers** (instead of the one `tp_part_`);
+  its list signals the job's `ready` event; the job (rows, the chunk's view of `x_all_`, the buffer, `ready`, `done`)
+  goes to the sum thread's queue.
+- The sum thread runs the sums one after another, in the same order on every shard, through the same code as before
+  (`tp_reduce_at` / `tp_reduce_rs` / `tp_reduce_rs_pipe`, which now take their buffers as arguments): the same
+  barriers, counters, time limits and f16 failsafe. Its list waits for `ready` and signals `done`.
+- The main thread waits for `done` right away after an attention / DeltaNet sum; after an FFN sum only before the
+  chunk's next layer, before a partial buffer is written again, and at the end of the pass.
+- **Every wait between the two lists is a host wait first** (`zrt::event_wait`, with the time limit), then a GPU wait
+  on the already signalled event (device scope, so the waiting list sees the other's writes). A GPU wait for an event
+  not yet signalled never ends on a GPU with one compute queue: both lists run in that queue. Seen on the laptop: both
+  shards stopped until the 120-s limit.
+- Events: two per job, never reused within a pass, reset at the next pass's start (after a host wait for the main
+  list, so both lists are idle).
+- The same kernels on the same values in the same order: **the logits are the same bit for bit** as without the
+  switch.
+
+**Failsafes:**
+- A sum that throws (a barrier's time limit, another GPU's failure, a GPU wait that gave up) is kept. The rest of the
+  queue is skipped, each skipped job's `done` signalled from the host so the main list never waits for good. The
+  error is thrown on the main thread at its next submit or wait, as if the main thread had thrown it.
+- A pass that ends early with sums still queued (any exception on the main thread) marks the split model failed, so
+  the other shards leave their barriers, and waits for its sum thread.
+- A served model's cancel check meets the other shards at a barrier: every queued sum finishes first (the cost: the
+  layer's last FFN sum is not overlapped when the server has a cancel callback).
+- A sum thread stuck for good (`ARC_TP_HANG=r:k` makes it sleep) leaves its shard's thread waiting for it; the
+  watchdog (`TpEngine::wait_done`) gives up on that shard as on any stuck shard. Its progress already counts the sum
+  threads' work: the barriers and the pipelined pieces are theirs now.
+- Profiles (`--prof`) do not show the sum thread's kernels.
+
+**Memory:** one more partial buffer per GPU, `chunk x n_embd x 4` bytes (80 MB for the 27B at chunk 4096).
+
+**Checked** on the laptop with `ARC_TP_SIM=1` (one GPU, one compute queue: the sums do not run beside the GEMMs
+there, so no speed is measured), the 27B IQ3_S, `--budget 0` (layer by layer), every prompt position's logits and 3
+generated tokens' (`runz --dump-logits`), compared byte for byte:
+- the switch off against the build before (6640be9) and the switch on against off: 2, 3 and 4 shards, chunk 512
+  (8,678 and 10,171 tokens: 17-20 chunks, 2,176-2,560 sums); `ARC_TP_PIPE=1` over 2 and 4; the f16 failsafe forced
+  (`ARC_TP_F16_LIMIT=0`) over 2, and over 3 with `ARC_TP_PIPE=1`; chunk 4096 (3 chunks); a 4,136-token prompt
+  whose last chunk of 40 rows takes the one-step f32 sum, over 2, and over 3 with `ARC_TP_PIPE=1`: all identical;
+- `serverz --gpus 2` (the cancel check per layer): the same greedy reply to a 2,021-token prompt off and on;
+- `ARC_TP_TIMEOUT=5` with `ARC_TP_HANG=1:20` (an FFN sum), `1:21` (an attention sum), `1:20:wait`, `0:20:wait`, and
+  `1:20` / `1:20:wait` with `ARC_TP_PIPE=1`: every run ended with the expected error in 46-64 s (20 s of it the load),
+  no process left.
+
+**Speed:** unmeasured; it needs two or more real GPUs. At best stage 1 hides the FFN sums (half the sums) behind the
+next chunk's attention work.
+
+**Self audit (threads, lifetimes, events, deadlocks, exceptions), fixed before the commit:**
+- GPU-side waits between the two lists deadlocked on a one-queue GPU (the 120-s stop above): host waits first.
+- A host join left the sum list's last kernels possibly still running while the main list went on (a cancel's state
+  restore, the next generation step's sums reuse `tp_part_`): every join also waits for the last two sums on the GPU.
+- A sum on rows that are not a chunk view (the sum thread cannot name them as a kernel argument) threw; it now runs
+  on the main thread after the queue is empty and its kernels are done.
+- Checked and left as they are: the sum thread allocates nothing and its Dev's buffer list is fixed before it
+  starts (no concurrent writes); each list and each kernel object is used by one thread only; events are reset only
+  with both lists idle; skipped jobs' events are signalled from the host, so neither list waits for good after a
+  failure; `release_all` drains the main list, then the sum thread's lists, before any buffer is freed; a faulted
+  model is never freed (its sum thread may still run). Known limit: `ARC_ZE_WATCH`'s launch ring (a debug switch) is
+  not made for two threads of one GPU.
+
+**Next stages (not built):**
+- **Stage 2: hide the attention sums too.** Reorder a layer's chunks so that chunk c+1's attention / DeltaNet half
+  runs while chunk c's attention sum is on its way, and chunk c's FFN after it: attn(c+1) ‖ sum_attn(c), then
+  FFN(c) ‖ sum_attn(c+1) ... The DeltaNet state and KV cache of chunk c+1 depend only on chunk c's attention input,
+  so the order is free; the sums must keep one order on every shard (they do: the same schedule everywhere). It
+  needs a partial buffer per sum in flight (3-4) and the FFN input of chunk c kept until its FFN runs.
+- **Stage 3: chunk-major prompts (resident weights).** With resident weights a prompt runs chunk by chunk (each
+  chunk through all layers): there is no next chunk at the same layer to overlap with. Split each chunk into two
+  sub-chunks of rows and run them as stage 1 / 2 do (sub-chunk b's attention while sub-chunk a's sum is on its way);
+  the GEMMs get half as many rows, so only where the sums cost more than the smaller GEMMs lose.
+
 ## Mixture of experts (Qwen3.6 35B-A3B, 2026-11-01)
 
 The MoE layers are divided by expert instead of by FFN column: GPU r of N holds the routed experts [e0, e1) (256

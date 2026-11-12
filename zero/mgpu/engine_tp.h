@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <deque>
 #include <exception>
 #include <immintrin.h>
 #include <mutex>
@@ -109,6 +110,81 @@ struct TpComm {
   }
 };
 
+// ARC_TP_OVERLAP=1: a layer-major prompt's sums (forward_layer_major, just-in-time weights) on a thread of their own
+// per shard, so the GPU computes while a sum crosses PCIe. Chunk c's FFN sum at layer L is needed only when layer L+1
+// reaches chunk c; meanwhile layer L computes chunk c+1's attention (which reads chunk c's KV cache and DeltaNet
+// state, both written before that sum). So:
+//  - the main thread matmuls a projection into one of two partial buffers (parts), its list signals the job's
+//    `ready` event and the job goes to the sum thread's queue; an attention / DeltaNet sum is waited for at once
+//    (`done`: the FFN that follows reads its rows), an FFN sum only before the chunk's next layer (tpo_chunk) or the
+//    pass's end; a partial buffer is written again only after the job that read it is done
+//  - the sum thread runs the sums one after another in the same order on every shard (tp_reduce_at: the same
+//    barriers, counters, time limits and f16 failsafe), on a Dev of its own (`dev`: an immediate compute list on the
+//    compute group's second queue when there is one, its own copy list and events), waiting for `ready` first and
+//    its list signalling `done` last
+//  - every wait for the other list's event: on the host, then on the GPU for the signalled event (tpo_wait)
+//  - the same kernels on the same values in the same order: the logits bit for bit as without it
+//  - events: two per job, never reused within a pass; reset at the next pass's start, when both lists are idle
+//  - failsafes: a sum's error is kept, the rest of the queue skipped (their `done` signalled from the host so the
+//    main list never waits for good) and thrown on the main thread at its next submit or join; a pass that ends early
+//    with sums queued marks the split model failed (the others leave their barriers) and waits for its sum thread;
+//    a sum thread stuck in a hang keeps its shard's thread waiting, which TpEngine::wait_done gives up on as before
+// Not with MoE (tp_moe_combine's sum stays where it is) and not in chunk-by-chunk passes (resident weights).
+inline bool tpo_wanted() {
+  static const bool on = getenv("ARC_TP_OVERLAP") && atoi(getenv("ARC_TP_OVERLAP")) != 0;
+  return on;
+}
+struct Engine::TpOverlap {
+  struct Job {
+    int rows = 0;
+    cl_mem x = nullptr, part = nullptr;
+    ze_event_handle_t ready = nullptr, done = nullptr;
+  };
+  zrt::Dev dev;  // (the sum thread's: zrt::cur there)
+  TpKs ks{};     // (the sum thread's own kernels: arguments are set per kernel object)
+  cl_mem flag_r = nullptr;  // (this GPU's f16 flag as a kernel argument, made on the main thread)
+  cl_mem parts[2] = {};
+  ze_event_handle_t part_done[2] = {};  // (the job that last read each partial buffer)
+  int next_part = 0;
+  std::vector<ze_event_pool_handle_t> pools;
+  std::vector<ze_event_handle_t> evs;  // (every event made; the first `used` handed out since the pass began)
+  size_t used = 0;
+  bool live = false;  // (inside a pass: tp_out queues its sums)
+  int chunk = 0;      // (the chunk run_layer is on)
+  std::vector<ze_event_handle_t> pend;  // (per chunk: the FFN sum its next layer waits for)
+  std::thread th;
+  std::mutex mu;
+  std::condition_variable cv, idle_cv;
+  std::deque<Job> q;
+  bool busy = false, quit = false;
+  long queued = 0, finished = 0;  // (jobs, for the log)
+  std::exception_ptr err;  // (the first sum that failed; the queue after it skipped)
+  ze_event_handle_t event() {
+    if (used == evs.size()) {
+      const uint32_t k = 512;
+      ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, k};
+      ze_event_pool_handle_t pool = nullptr;
+      ZE_CHECK(zeEventPoolCreate(zrt::ctx, &pd, 1, &dev.dev, &pool));
+      pools.push_back(pool);
+      for (uint32_t i = 0; i < k; ++i) {
+        ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, i, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
+        ze_event_handle_t e = nullptr;
+        ZE_CHECK(zeEventCreate(pool, &ed, &e));
+        evs.push_back(e);
+      }
+    }
+    return evs[used++];
+  }
+  // (the queue empty and no job running; the first error, cleared)
+  std::exception_ptr wait_idle() {
+    std::unique_lock<std::mutex> lk(mu);
+    idle_cv.wait(lk, [&] { return q.empty() && !busy; });
+    std::exception_ptr e = err;
+    err = nullptr;
+    return e;
+  }
+};
+
 inline bool Engine::tp_served() const { return tp_->served; }
 
 // A served split model's cancel check: every shard reaches it at the same point of a pass (the same chunks and layers),
@@ -144,7 +220,17 @@ inline bool tp_rs_rows(int rows, int n) {
   return rows >= min_rows && rows >= n;
 }
 
-inline void Engine::tp_reduce(int rows) {
+// (the sum's kernels: this engine's own, or the sum thread's (ARC_TP_OVERLAP), which sets their arguments apart)
+inline Engine::TpKs Engine::tp_ks(const TpSum& a) const {
+  if (a.bg) return tpo_->ks;
+  return TpKs{k_tp_add_, k_tp_half_, k_tp_rs_sum_, k_tp_rs_add_, k_tp_rs_add_r_};
+}
+inline void Engine::tp_run(const TpSum& a, const char* name, cl_kernel k, size_t g, size_t l) {
+  if (!a.bg) return run(name, k, 1, &g, &l);
+  CL_CHECK(clEnqueueNDRangeKernel(cl_.queue, k, 1, nullptr, &g, &l, 0, nullptr, nullptr));  // (no profiling there)
+}
+
+inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
   TpComm& c = *tp_;
   const int r = opt.tp_rank, E = hp.n_embd;
   {  // (tests of the failsafe: ARC_TP_HANG=r:k, shard r stops for good at its k-th sum, as a GPU that hangs;
@@ -169,21 +255,21 @@ inline void Engine::tp_reduce(int rows) {
   }
   const size_t n = (size_t)rows * E;
   if (n > c.slot_floats) throw std::runtime_error("tensor parallel: more rows than the shared buffer holds");
-  tp_build();
+  tp_build();      // (the sum thread: both made before it starts, tpo_begin)
   tp_wrap_host();
-  if (tp_rs_rows(rows, c.n)) return tp_reduce_rs(rows);
+  if (tp_rs_rows(rows, c.n)) return tp_reduce_rs(rows, a);
+  const TpKs ks = tp_ks(a);
   const int h = c.half[r];
   const cl_ulong off = (cl_ulong)h * c.n * c.slot_floats, stride = c.slot_floats;
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, tp_part_->ptr, n * 4, nullptr, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
   const auto t0 = std::chrono::steady_clock::now();
   zrt::sync();
   c.barrier(opt.tp_rank);
   c.wait_ms[r] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   ++c.reduces[r];
   int nn = (int)n, np = c.n;
-  set_args(k_tp_add_, 0, x_, tp_host_, off, nn, np, stride);
-  size_t g1 = (n + 255) / 256 * 256, l1 = 256;
-  run("tp_add", k_tp_add_, 1, &g1, &l1);
+  set_args(ks.add, 0, a.x, tp_host_, off, nn, np, stride);
+  tp_run(a, "tp_add", ks.add, (n + 255) / 256 * 256, 256);
   c.half[r] = h ^ 1;
 }
 
@@ -211,8 +297,9 @@ inline int tp_pipe_pieces(int rows, int n, int E) {
   return std::max(1, std::min(p, min_rows));
 }
 
-inline void Engine::tp_reduce_rs(int rows) {
-  if (tp_pipe_on()) return tp_reduce_rs_pipe(rows);
+inline void Engine::tp_reduce_rs(int rows, const TpSum& a) {
+  if (tp_pipe_on()) return tp_reduce_rs_pipe(rows, a);
+  const TpKs ks = tp_ks(a);
   TpComm& c = *tp_;
   const int r = opt.tp_rank, E = hp.n_embd, N = c.n;
   const size_t n = (size_t)rows * E, i0 = (size_t)rows * r / N * E, i1 = (size_t)rows * (r + 1) / N * E;
@@ -223,7 +310,7 @@ inline void Engine::tp_reduce_rs(int rows) {
   char* put = region + (size_t)r * stride * 2;
   char* res = region + (size_t)N * stride * 2;
   char* dev = (char*)tp_h_->ptr;
-  int nn = (int)n, a = (int)i0, b = (int)i1;
+  int nn = (int)n, ia = (int)i0, ib = (int)i1;
   auto barrier = [&] {
     const auto t0 = std::chrono::steady_clock::now();
     zrt::sync();
@@ -240,9 +327,9 @@ inline void Engine::tp_reduce_rs(int rows) {
   const cl_ulong fo = (cl_ulong)r * sizeof(int);
   // (less 1/1024: each part's f16 may round up half an ulp, and N parts at the limit summed to inf; kernel audit)
   float lim_n = lim * (1.0f - 1.0f / 1024) / N;
-  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn, from(tp_flag_, fo), lim_n, a, b);
+  set_args(ks.half, 0, a.part, tp_h_, nn, a.bg ? tpo_->flag_r : from(tp_flag_, fo), lim_n, ia, ib);
   size_t g1 = (n + 255) / 256 * 256, l1 = 256;
-  run("tp_sum", k_tp_half_, 1, &g1, &l1);
+  tp_run(a, "tp_sum", ks.half, g1, l1);
   if (i0 > 0) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), put, dev, i0 * 2, nullptr, 0, nullptr));
   if (n > i1) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), put + i1 * 2, dev + i1 * 2, (n - i1) * 2, nullptr, 0, nullptr));
   barrier();
@@ -252,25 +339,25 @@ inline void Engine::tp_reduce_rs(int rows) {
     static std::atomic<long> warned{0};
     if (r == 0 && warned++ < 3) zlog::eprintf("inferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
     const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
-    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, tp_part_->ptr, n * 4, nullptr, 0, nullptr));
+    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
     barrier();
     ++c.reduces[r];
     int np = N;
     cl_ulong st = stride;
-    set_args(k_tp_add_, 0, x_, tp_host_, off, nn, np, st);
-    run("tp_add", k_tp_add_, 1, &g1, &l1);
+    set_args(ks.add, 0, a.x, tp_host_, off, nn, np, st);
+    tp_run(a, "tp_add", ks.add, g1, l1);
     c.half[r] = h ^ 1;
     return;
   }
   const cl_ulong put_off = (cl_ulong)h * N * c.slot_floats * 2, str = stride, res_off = put_off + (cl_ulong)N * stride;
-  set_args(k_tp_rs_sum_, 0, x_, tp_part_, tp_host_, put_off, str, N, r, a, b, tp_h_);
+  set_args(ks.rs_sum, 0, a.x, a.part, tp_host_, put_off, str, N, r, ia, ib, tp_h_);
   size_t g2 = (i1 - i0 + 255) / 256 * 256;
-  if (i1 > i0) run("tp_sum", k_tp_rs_sum_, 1, &g2, &l1);
+  if (i1 > i0) tp_run(a, "tp_sum", ks.rs_sum, g2, l1);
   if (i1 > i0) ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), res + i0 * 2, dev + i0 * 2, (i1 - i0) * 2, nullptr, 0, nullptr));
   barrier();
   ++c.reduces[r];
-  set_args(k_tp_rs_add_, 0, x_, tp_host_, res_off, nn, a, b);
-  run("tp_sum", k_tp_rs_add_, 1, &g1, &l1);
+  set_args(ks.rs_add, 0, a.x, tp_host_, res_off, nn, ia, ib);
+  tp_run(a, "tp_sum", ks.rs_add, g1, l1);
   c.half[r] = h ^ 1;
 }
 
@@ -287,7 +374,8 @@ inline void Engine::tp_reduce_rs(int rows) {
 //    one (the copy list waits for tp_half, after them on the in-order compute list), so a GPU that has seen every
 //    other GPU's first piece of the next sum knows they all finished reading this half
 //  - every wait has the barrier's time limit and leaves when another GPU failed
-inline void Engine::tp_reduce_rs_pipe(int rows) {
+inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
+  const TpKs ks = tp_ks(a);
   TpComm& c = *tp_;
   const int r = opt.tp_rank, E = hp.n_embd, N = c.n;
   const size_t n = (size_t)rows * E, i0 = (size_t)rows * r / N * E, i1 = (size_t)rows * (r + 1) / N * E;
@@ -329,10 +417,10 @@ inline void Engine::tp_reduce_rs_pipe(int rows) {
   c.flags[r] = 0;
   const cl_ulong fo = (cl_ulong)r * sizeof(int);
   float lim_n = lim * (1.0f - 1.0f / 1024) / N;
-  int nn = (int)n, a = (int)i0, b = (int)i1;
-  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn, from(tp_flag_, fo), lim_n, a, b);
+  int nn = (int)n, ia = (int)i0, ib = (int)i1;
+  set_args(ks.half, 0, a.part, tp_h_, nn, a.bg ? tpo_->flag_r : from(tp_flag_, fo), lim_n, ia, ib);
   size_t g1 = (n + 255) / 256 * 256, l1 = 256;
-  run("tp_sum", k_tp_half_, 1, &g1, &l1);
+  tp_run(a, "tp_sum", ks.half, g1, l1);
   ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), evH, 0, nullptr));
   ZE_CHECK(zeCommandListAppendBarrier(cp, nullptr, 1, &evH));
   for (int p = 0; p < P; ++p) {
@@ -356,15 +444,15 @@ inline void Engine::tp_reduce_rs_pipe(int rows) {
     zrt::event_wait(ev_put(P - 1));
     c.barrier(r);
     const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
-    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, tp_part_->ptr, n * 4, nullptr, 0, nullptr));
+    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
     zrt::sync();
     c.barrier(r);
     waited();
     ++c.reduces[r];
     int np = N;
     cl_ulong st = stride;
-    set_args(k_tp_add_, 0, x_, tp_host_, off, nn, np, st);
-    run("tp_add", k_tp_add_, 1, &g1, &l1);
+    set_args(ks.add, 0, a.x, tp_host_, off, nn, np, st);
+    tp_run(a, "tp_add", ks.add, g1, l1);
     c.half[r] = h ^ 1;
     return;
   }
@@ -381,9 +469,8 @@ inline void Engine::tp_reduce_rs_pipe(int rows) {
     piece(r, p, p0, p1);
     if (p1 > p0) {
       int pa = (int)p0, pb = (int)p1;
-      set_args(k_tp_rs_sum_, 0, x_, tp_part_, tp_host_, put_off, str, N, r, pa, pb, tp_h_);
-      size_t g2 = (p1 - p0 + 255) / 256 * 256;
-      run("tp_sum", k_tp_rs_sum_, 1, &g2, &l1);
+      set_args(ks.rs_sum, 0, a.x, a.part, tp_host_, put_off, str, N, r, pa, pb, tp_h_);
+      tp_run(a, "tp_sum", ks.rs_sum, (p1 - p0 + 255) / 256 * 256, l1);
     }
     ze_event_handle_t es = ev_sum(p);
     ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), es, 0, nullptr));
@@ -402,14 +489,246 @@ inline void Engine::tp_reduce_rs_pipe(int rows) {
       piece(k, p, p0, p1);
       if (p1 <= p0) continue;
       int ja = (int)p0, jb = (int)p1;
-      set_args(k_tp_rs_add_r_, 0, x_, tp_host_, res_off, ja, jb);
-      size_t g3 = (p1 - p0 + 255) / 256 * 256;
-      run("tp_sum", k_tp_rs_add_r_, 1, &g3, &l1);
+      set_args(ks.rs_add_r, 0, a.x, tp_host_, res_off, ja, jb);
+      tp_run(a, "tp_sum", ks.rs_add_r, (p1 - p0 + 255) / 256 * 256, l1);
     }
   }
   waited();
   ++c.reduces[r];
   c.half[r] = h ^ 1;
+}
+
+// ---- ARC_TP_OVERLAP (see TpOverlap above)
+inline void Engine::tpo_begin(int nch) {
+  if (!tp_on() || !tpo_wanted() || tp_moe() || opt.dry) return;
+  TpComm& c = *tp_;
+  const int r = opt.tp_rank, E = hp.n_embd;
+  if (!tpo_) {
+    // (everything the sums would make on first use, made here on the shard's own thread: the sum thread allocates
+    //  nothing, and finds every buffer it names in its Dev's list of buffers)
+    tp_build();
+    tp_wrap_host();
+    if (!tp_part_) tp_part_ = buf((size_t)max_chunk * E * 4);
+    if (!tp_h_) tp_h_ = buf((size_t)max_chunk * E * 2);
+    if (!tp_flag_) {
+      tp_flag_ = zrt::wrap(c.flags, (size_t)c.n * sizeof(int));
+      mems_.push_back(tp_flag_);
+    }
+    tpo_ = new TpOverlap;
+    TpOverlap& o = *tpo_;
+    o.parts[0] = tp_part_;
+    o.parts[1] = buf((size_t)max_chunk * E * 4);
+    o.flag_r = from(tp_flag_, (size_t)r * sizeof(int));
+    o.ks = TpKs{cl_.kernel(tp_prog_, "tp_add"), cl_.kernel(tp_prog_, "tp_half"), cl_.kernel(tp_prog_, "tp_rs_sum"),
+                cl_.kernel(tp_prog_, "tp_rs_add"), cl_.kernel(tp_prog_, "tp_rs_add_r")};
+    zrt::Dev& d = zrt::D();
+    o.dev.dev = d.dev;
+    o.dev.index = d.index;
+    o.dev.guard = &d;
+    for (cl_mem m : x_views_) o.dev.mems.insert(m);
+    for (cl_mem m : {o.parts[0], o.parts[1], tp_h_, tp_host_, tp_flag_, o.flag_r}) o.dev.mems.insert(m);
+    // (an immediate list on the compute group: its second queue when it has one, so the sums' kernels run beside the
+    //  main list's GEMMs; else the same queue, still correct)
+    uint32_t ng = 0;
+    ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(d.dev, &ng, nullptr));
+    std::vector<ze_command_queue_group_properties_t> gp(ng);
+    for (auto& g : gp) g.stype = ZE_STYPE_COMMAND_QUEUE_GROUP_PROPERTIES;
+    ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(d.dev, &ng, gp.data()));
+    uint32_t ord = 0, idx = 0;
+    for (uint32_t i = 0; i < ng; ++i)
+      if (gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) {
+        ord = i;
+        idx = gp[i].numQueues > 1 ? 1 : 0;
+        break;
+      }
+    ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, ord, idx, 2 /* in order */, 2 /* asynchronous */, 0};
+    ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, d.dev, &qd, &o.dev.cl));
+    zlog::eprintf("inferzero: GPU %d: ARC_TP_OVERLAP: the prompt's sums on a thread of their own, %s (queue group %u, queue %u)\n",
+                  d.index, idx ? "the second compute queue" : "the same compute queue", ord, idx);
+    o.th = std::thread([this] { tpo_loop(); });
+  }
+  TpOverlap& o = *tpo_;
+  if (o.used) {  // (the last pass's events: both lists idle once the main list is, as every sum was waited for)
+    zrt::sync();
+    for (size_t i = 0; i < o.used; ++i) ZE_CHECK(zeEventHostReset(o.evs[i]));
+    o.used = 0;
+  }
+  o.pend.assign(nch, nullptr);
+  o.part_done[0] = o.part_done[1] = nullptr;
+  o.next_part = 0;
+  o.chunk = 0;
+  o.live = true;
+}
+inline bool Engine::tpo_out(const char* name, const GpuWeight& w, int Mp, int act32) {
+  TpOverlap& o = *tpo_;
+  if (!o.live) return false;
+  {
+    std::lock_guard<std::mutex> lk(o.mu);
+    if (o.err) {  // (a sum failed: stop the pass here; the guard waits for the queue, TpoPass)
+      std::exception_ptr e = o.err;
+      o.err = nullptr;
+      std::rethrow_exception(e);
+    }
+  }
+  // (rows the sum thread does not know (not a chunk view of x_all_): this sum on the main thread, as without the
+  //  switch, once the queue is empty, so the sums stay in order)
+  if (!o.dev.mems.count(x_) || o.chunk < 0 || o.chunk >= (int)o.pend.size()) {
+    tpo_join();  // (also the last sums' kernels on the GPU: they use tp_h_)
+    return false;
+  }
+  const int s = o.next_part;
+  o.next_part ^= 1;
+  if (o.part_done[s]) tpo_wait(o.part_done[s]);
+  matmul(name, w, Mp, o.parts[s], hp.n_embd, 0, 0, act32);
+  TpOverlap::Job j;
+  j.rows = cur_T_;
+  j.x = x_;
+  j.part = o.parts[s];
+  j.ready = o.event();
+  j.done = o.event();
+  ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), j.ready, 0, nullptr));
+  o.part_done[s] = j.done;
+  {
+    std::lock_guard<std::mutex> lk(o.mu);
+    o.q.push_back(j);
+    ++o.queued;
+  }
+  o.cv.notify_one();
+  if (!strcmp(name, "gemm_down")) {
+    if (o.pend[o.chunk]) tpo_wait(o.pend[o.chunk]);
+    o.pend[o.chunk] = j.done;  // (waited for when this chunk's next layer starts)
+  } else {
+    tpo_wait(j.done);  // (the FFN reads these rows next)
+  }
+  return true;
+}
+inline void Engine::tpo_chunk(int c) {
+  if (!tpo_ || !tpo_->live) return;
+  TpOverlap& o = *tpo_;
+  o.chunk = c;
+  if (c >= 0 && c < (int)o.pend.size() && o.pend[c]) {
+    tpo_wait(o.pend[c]);
+    o.pend[c] = nullptr;
+  }
+}
+inline void Engine::tpo_join() {
+  if (!tpo_ || !tpo_->live) return;
+  std::exception_ptr e = tpo_->wait_idle();
+  tpo_gpu_done();
+  if (e) std::rethrow_exception(e);
+}
+// (the main list waits for the last two sums on the GPU: after them the sum list is done with every buffer, so what
+//  the main list runs next (a cancel's state restore, a sum of its own, the next generation step) cannot overlap them)
+inline void Engine::tpo_gpu_done() {
+  for (ze_event_handle_t d : tpo_->part_done)
+    if (d) tpo_wait(d);
+}
+// A wait of one list for the other's event: first on the host (the time limit and abort of zrt::event_wait), then on
+// the GPU, where it passes at once and has the waiting side see the other's writes (device scope). Never a GPU wait
+// for an event not yet signalled: a GPU with one compute queue (this laptop's iGPU) runs both lists in it, and a wait
+// there for the other list's later work never ends (seen: both shards stopped until the 120-s limit)
+inline void Engine::tpo_wait(ze_event_handle_t e) {
+  zrt::event_wait(e);
+  ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), nullptr, 1, &e));
+}
+inline void Engine::tpo_end() {
+  if (!tpo_ || !tpo_->live) return;
+  TpOverlap& o = *tpo_;
+  std::exception_ptr e = o.wait_idle();
+  for (ze_event_handle_t& p : o.pend)
+    if (p) {
+      tpo_wait(p);
+      p = nullptr;
+    }
+  tpo_gpu_done();
+  o.live = false;
+  if (e) std::rethrow_exception(e);
+}
+inline void Engine::tpo_abandon() {
+  if (!tpo_ || !tpo_->live) return;
+  TpOverlap& o = *tpo_;
+  o.live = false;
+  bool pending;
+  {
+    std::lock_guard<std::mutex> lk(o.mu);
+    pending = !o.q.empty() || o.busy;
+  }
+  if (pending) {  // (this shard stops with sums queued: the others would wait for its later sums; they leave instead)
+    TpComm& c = *tp_;
+    int none = -1;
+    c.first_failed.compare_exchange_strong(none, opt.tp_rank);
+    c.failed = true;
+  }
+  o.wait_idle();  // (its error, if any, is the second one: the pass's own goes on)
+  try {  // (signalled by now, by its list or from the host after a failure; a GPU that hangs: the wait's limit)
+    tpo_gpu_done();
+  } catch (...) {  // (a destructor's caller: the pass's own error goes on)
+  }
+}
+inline void Engine::tpo_loop() {
+  TpOverlap& o = *tpo_;
+  TpComm& c = *tp_;
+  zrt::cur = &o.dev;
+  zrt::tp_guarded = true;
+  for (;;) {
+    TpOverlap::Job j;
+    bool skip;
+    {
+      std::unique_lock<std::mutex> lk(o.mu);
+      o.cv.wait(lk, [&] { return o.quit || !o.q.empty(); });
+      if (o.q.empty()) return;
+      j = o.q.front();
+      o.q.pop_front();
+      o.busy = true;
+      skip = o.err || c.failed.load();
+    }
+    std::exception_ptr e;
+    if (!skip) {
+      try {
+        tpo_wait(j.ready);
+        tp_reduce_at(j.rows, TpSum{j.x, j.part, true});
+        ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), j.done, 0, nullptr));
+      } catch (...) {  // (as TpEngine::loop: the others leave their barriers)
+        e = std::current_exception();
+        int none = -1;
+        c.first_failed.compare_exchange_strong(none, opt.tp_rank);
+        c.failed = true;
+        skip = true;
+      }
+    }
+    if (skip) ZE_CHECK(zeEventHostSignal(j.done));  // (the main list's waits for it end; the model is broken now)
+    std::lock_guard<std::mutex> lk(o.mu);
+    if (e && !o.err) o.err = e;
+    o.busy = false;
+    ++o.finished;
+    if (o.q.empty()) o.idle_cv.notify_all();
+  }
+}
+inline void Engine::tpo_free() {
+  if (!tpo_) return;
+  TpOverlap* o = tpo_;
+  if (o->th.joinable()) {
+    {
+      std::lock_guard<std::mutex> lk(o->mu);
+      o->quit = true;
+    }
+    o->cv.notify_all();
+    o->th.join();
+  }
+  // (its lists drain: every wait there follows a signal of the main list, idle by now (release_all), or of its own)
+  for (ze_command_list_handle_t l : {o->dev.cl_tp, o->dev.cl})
+    if (l) {
+      zeCommandListHostSynchronize(l, UINT64_MAX);
+      zeCommandListDestroy(l);
+    }
+  for (cl_kernel k : {o->ks.add, o->ks.half, o->ks.rs_sum, o->ks.rs_add, o->ks.rs_add_r})
+    if (k) clReleaseKernel(k);
+  for (ze_event_handle_t e : o->evs) zeEventDestroy(e);
+  for (ze_event_pool_handle_t p : o->pools) zeEventPoolDestroy(p);
+  for (ze_event_handle_t e : o->dev.tp_ev)
+    if (e) zeEventDestroy(e);
+  delete o;
+  tpo_ = nullptr;
 }
 
 // N shards of one model, each on its own GPU and thread; forward() runs them together and joins their logits.

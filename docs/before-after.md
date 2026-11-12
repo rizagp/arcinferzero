@@ -80,6 +80,17 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-12, a split model's FFN sums beside the next chunk's work, opt-in** (`ARC_TP_OVERLAP=1`,
+  zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums beside the next chunk's work"). **Speed: not measured** (the laptop
+  has one GPU; with `ARC_TP_SIM` all shards share its one compute queue). Laptop numbers say nothing either way:
+  27B over 2, 8,678 tokens at chunk 512, one run each: off 139.1 tok/s (6640be9: 96.9, the same code path: the
+  noise of runs back to back), on 127.0; the "waiting" figure means nothing with it on (the sum thread waits, not
+  the shard). Accuracy: logits bit-identical, off
+  against 6640be9 and on against off (27B, `ARC_TP_SIM`, `--budget 0`: 2 / 3 / 4 shards, chunk 512 and 4096,
+  `ARC_TP_PIPE=1`, the f16 failsafe forced, a 40-row last chunk; every prompt position and 3 generated tokens).
+  Memory: one more partial buffer per GPU (80 MB for the 27B at chunk 4096). Asked of testers: `--bench-pp 32768 --n 0
+  --gpus 2` off / on.
+
 - **2026-11-09, chunked DeltaNet and prompt attention on XMX, opt-in** (`ARC_GDN_CHUNK=1` / `2` / `3`,
   `ARC_ATTN_XMX=1`; zero/kernels/ops_gdn.cl, gdn_x.cl, attn_x.cl; QUEUE F33.1 / F33.2). Default path: logits
   bit-identical to bb8fd33 (4B, 27B, 35B; ~1,500-token prompt, 24 tokens; all seven laptop models, E4B, 4B, 9B,
