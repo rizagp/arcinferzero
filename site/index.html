@@ -318,11 +318,11 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
 
     <div class="proof">
       <div><div class="eb">Core Ultra 5 125H</div><b>851<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 8K prompt, experts streamed from the SSD. A 131K-token context read in 6.7 minutes.</p></div>
-      <div><div class="eb">Core Ultra 9 285H</div><b>221<small>tok/s</small></b><p>Qwen3.8 27B prompt on the Arc 140T's XMX. Flash Next generates 26 tok/s there with DFlash2.</p></div>
+      <div><div class="eb">Core Ultra 9 285H</div><b>302<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt on the Arc 140T's XMX. Flash Next generates 26 tok/s there with DFlash2.</p></div>
       <div><div class="eb">1× Arc Pro B60</div><b>1,024<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt. The 35B reads 3,232 tok/s and generates 88 tok/s, 114 with MTP.</p></div>
       <div><div class="eb">4× Arc Pro B60</div><b>4,290<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 16K prompt, one model split over four cards with tensor parallelism.</p></div>
     </div>
-    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, 2026-11-09. 285H and B60: measured by users on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a> and <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, 2026-11-06 to 11-09.</p>
+    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, 2026-11-09. 285H and B60: measured by users on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a> and <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, 2026-11-06 to 11-11.</p>
   </div>
 </section>
 
@@ -340,7 +340,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <div>
         <div class="cap"><span>Prompt · tok/s</span><span>4K prompt unless noted</span></div>
         <div class="row me"><span class="n">Core Ultra 5 125H<small>Xe-LPG · DP4a · 8K</small></span><span class="t"><span class="f" style="width:8.3%"></span></span><span class="v">135</span></div>
-        <div class="row"><span class="n">Core Ultra 9 285H<small>Arc 140T · XMX · 2K</small></span><span class="t"><span class="f" style="width:13.6%"></span></span><span class="v">221</span></div>
+        <div class="row"><span class="n">Core Ultra 9 285H<small>Arc 140T · XMX · H8</small></span><span class="t"><span class="f" style="width:18.6%"></span></span><span class="v">302</span></div>
         <div class="row"><span class="n">1× Arc Pro B60<small>XMX · H8</small></span><span class="t"><span class="f" style="width:63.1%"></span></span><span class="v">1,024</span></div>
         <div class="row"><span class="n">2× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:79.6%"></span></span><span class="v">1,292</span></div>
         <div class="row"><span class="n">3× Arc Pro B60<small>512-token prompt</small></span><span class="t"><span class="f d" style="width:32.7%"></span></span><span class="v">531<small>pp512</small></span></div>
@@ -426,6 +426,17 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       </table>
     </div>
     <p class="src">Core Ultra 5 125H, 32 GB, Windows 11; commit 281b083, 2026-11-09 (the 27B's 131K row and Gemma's KL measured again 2026-11-10). Prompt in tok/s with the wait for the first token; generation in tok/s for a 256-token coding answer; KL over 480 tokens of USAGE.md. Drafting never changes the text: the drafts are checked by the full model, so the answer is the one plain decoding gives.</p>
+    <div class="tbl" style="margin-top:40px">
+      <table>
+        <tr><th>1× Arc Pro B60, a user's run</th><th class="r">8K prompt</th><th class="r">32K prompt</th><th class="r">131K prompt</th><th class="r">Generation</th><th class="r">With drafting</th><th class="r">KL vs f32</th></tr>
+        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">3,652<small>2.2 s</small></td><td class="r">2,710<small>12 s</small></td><td class="r">1,302<small>1.7 min</small></td><td class="r">56.9</td><td class="r hl">109.0<small>MTP</small></td><td class="r kl-ok">0.0056</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="r">1,022<small>8.0 s</small></td><td class="r">809<small>41 s</small></td><td class="r">420<small>5.2 min</small></td><td class="r">23.7</td><td class="r hl">52.0<small>MTP</small></td><td class="r kl-ok">0.0011</td></tr>
+        <tr><td>Gemma 4 12B</td><td class="r">644<small>13 s</small></td><td class="r">377<small>87 s</small></td><td class="r">144<small>15 min</small></td><td class="r">38.0</td><td class="r hl">73.1<small>drafter</small></td><td class="r">–</td></tr>
+        <tr><td>Qwen3.5 9B</td><td class="r">3,095<small>2.6 s</small></td><td class="r">2,569<small>13 s</small></td><td class="r">1,425<small>1.5 min</small></td><td class="r">52.1</td><td class="r hl">83.3<small>MTP</small></td><td class="r kl-ok">0.0025</td></tr>
+        <tr><td>Qwen3.5 4B</td><td class="r">4,630<small>1.8 s</small></td><td class="r">3,196<small>10 s</small></td><td class="r">1,430<small>1.5 min</small></td><td class="r">64.2</td><td class="r hl">128.9<small>MTP</small></td><td class="r kl-ok">0.0020</td></tr>
+      </table>
+    </div>
+    <p class="src">Arc Pro B60 (24 GB), the same <code>bench/website_bench.ps1</code> run by a user on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>; commit 97d225b, 2026-11-10. The 35B is the UD-IQ4_XS file. Gemma 4 12B's KL is left out: that day's check read the wrong rows for it (fixed 2026-11-11). On the Arc 140T (Core Ultra 9 285H), a user's runs of the 27B since its XMX tiles became the default (2026-11-11): 512 / 4K / 16K-token prompts at 205 / 299 / 283 tok/s, and 302 at 4K in a later run.</p>
   </div>
 </section>
 
