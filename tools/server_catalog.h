@@ -738,7 +738,9 @@ static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
 
 // --list-models: the catalog as JSON (scripts\zero-server.ps1 and zero-pi read it). ctx: the context --ctx auto chose
 // for this GPU memory (with --mtp when the model has a drafter, default chunk), computed now if not known yet.
-static int list_models() {
+// speech: GPU bytes a running server keeps for speech to text (its /props speech_reserve_bytes, given by
+// --speech-reserve N): kept free as a load does (server_load.h), so each model's ctx is what a switch would give.
+static int list_models(size_t speech = 0) {
   Json out = Json::array();
   std::map<std::string, std::string> dflash;  // model file -> its DFlash2 drafter (one search per file, not per variant)
   for (const ModelInfo& m : scan_models()) {
@@ -777,7 +779,7 @@ static int list_models() {
     a.ctx = 0;
     if (m.supported)
       try {
-        const size_t enc = m.vision ? encoder_reserve(m.path, "", 0) : 0;
+        const size_t enc = (m.vision ? encoder_reserve(m.path, "", 0) : 0) + speech;
         a = auto_ctx(m.path, eo, false, enc);
         // (the drafter only where it leaves kDflashMinCtx tokens of context: the server drops it there too)
         if (!eo.dflash.empty() && eo.mtp_block && a.ctx < kDflashMinCtx) {

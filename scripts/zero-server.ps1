@@ -275,9 +275,15 @@ function Sync-PiModels {
   $cfgPath = Join-Path $env:USERPROFILE ".pi\agent\models.json"
   $before = if (Test-Path $cfgPath) { (Get-Item $cfgPath).LastWriteTime } else { $null }
   $id = Get-Running
-  $n = 0
-  if ($id) { try { $n = [int](Invoke-RestMethod "$base/props" -TimeoutSec 5).n_ctx } catch {} }
-  try { $ids = @(Update-PiModels $exe $base $id $n) } catch { Say "  (Pi's model list not updated: $_)"; return }
+  $n = 0; $sr = 0
+  if ($id) {
+    try {
+      $p = Invoke-RestMethod "$base/props" -TimeoutSec 5
+      $n = [int]$p.n_ctx
+      if ($p.PSObject.Properties["speech_reserve_bytes"]) { $sr = [double]$p.speech_reserve_bytes }  # (speech to text's GPU memory: the other models' contexts keep it free, as a switch does)
+    } catch {}
+  }
+  try { $ids = @(Update-PiModels $exe $base $id $n $sr) } catch { Say "  (Pi's model list not updated: $_)"; return }
   if ((Test-Path $cfgPath) -and (Get-Item $cfgPath).LastWriteTime -ne $before) { Say "Pi's model list updated: $($ids.Count) models" }
 }
 

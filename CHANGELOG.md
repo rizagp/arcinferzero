@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-12: Pi's context for every model counts speech to text
+
+- **Pi's model list now gives each model the context a switch to it would really get.** With Whisper or Qwen3-ASR
+  loaded, the server keeps their GPU memory free when it sizes a model's context (`--ctx auto`), but Pi's list
+  (`~/.pi/agent/models.json`, written by `zero-server` / `zero-pi` at each start) took the other models' contexts
+  from `--list-models`, which did not: after `/model` inside Pi, Pi could count on more context than the server
+  served, and compacted only after an overflow error.
+- The server's `/props` reports `speech_reserve_bytes` (the GPU memory it keeps for speech to text now);
+  `serverz --list-models --speech-reserve BYTES` keeps that much free in every model's context, as a load does;
+  `zero-server`'s Pi sync passes the running server's value. The running model's context still comes from the
+  server itself. Without speech to text nothing changes.
+
 ## 2026-11-12: `xw_peak`, the Arc 140T's XMX prompt GEMM in TOPS; layouts in the DPAS order to measure
 
 The 140T's prompt GEMM (`gemm_xw8`, 32 x 16 tiles) runs the 27B's FFN at ~23 int8 TOPS, ~30 % of the 76.75 its

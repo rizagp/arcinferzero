@@ -8,6 +8,8 @@
 .\bin\serverz.exe -m C:\path\to\model.gguf --port 8080 --ctx auto --mtp --alias qwen3.8-27b
 .\bin\serverz.exe --help           # every option with its default
 .\bin\serverz.exe --list-models    # the models it can load (Hugging Face cache, %USERPROFILE%\.inferzero\models, model-dirs.txt), as JSON
+                                   # (--speech-reserve BYTES: each context as a running server with speech to text would size it,
+                                   #  its /props speech_reserve_bytes; zero-server passes it for Pi's model list)
 ```
 
 - **Speech to text only**: `serverz -m none` (`zero-server start -Model none`, the launcher's More >

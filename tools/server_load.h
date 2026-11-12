@@ -173,6 +173,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   Server& srv = *L->srv;
   srv.model_bytes_ = gguf_bytes(model);
   srv.whisper_props_ = so.whisper_props;
+  srv.speech_reserve_ = so.whisper_bytes;
   std::string mmproj = so.mmproj;
   if (!eng.hp.gemma && mmproj != "-") {
     // Qwen vision (dense and MoE): --mmproj, or the model's own mmproj-*.gguf next to it (model_mmprojs) with a

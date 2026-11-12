@@ -297,6 +297,8 @@ class Server {
   bool has_audio() const { return audio_ != nullptr && aud_tok_ >= 0; }  // (what a chat request with audio needs)
   uint64_t model_bytes_ = 0;  // the model file's size (/v1/models "models": "size"), set by load_model
   Json whisper_props_;        // /props "whisper" (the speech model next to this one), set by load_model
+  size_t speech_reserve_ = 0; // /props "speech_reserve_bytes": GPU memory --ctx auto keeps for speech to text now (so.whisper_bytes;
+                              // zero-server.ps1 passes it to --list-models for Pi's other models)
   // f with the engine lock, as a request's step holds it: another engine of the process (Whisper) shares the GPU
   // runtime's command list with this one
   void with_engine(const std::function<void()>& f) {
@@ -395,6 +397,7 @@ class Server {
       r.set("modalities", mod);
       r.set("audio", has_audio());
       if (!whisper_props_.is_null()) r.set("whisper", whisper_props_);
+      r.set("speech_reserve_bytes", (double)speech_reserve_);
       r.set("mtp", eng_.has_mtp);
       r.set("mtp_drafts", eng_.opt.mtp_drafts);
       {  // (the web UI's controls follow the model: its thinking switch, Qwen3.8's effort levels, the GGUF's sampling)
@@ -938,7 +941,12 @@ int main(int argc, char** argv) {
   crashlog::extra = [] { zrt::print_last_launch(); };  // (a crash inside a launch: which kernel, with what)
   full_speed_process();
   for (int i = 1; i < argc; ++i)
-    if (std::string(argv[i]) == "--list-models") return list_models();
+    if (std::string(argv[i]) == "--list-models") {
+      size_t speech = 0;  // (--speech-reserve N: bytes a running server keeps for speech to text, its /props)
+      for (int j = 1; j + 1 < argc; ++j)
+        if (std::string(argv[j]) == "--speech-reserve") speech = (size_t)std::max(0.0, atof(argv[j + 1]));
+      return list_models(speech);
+    }
   std::string model, host = "127.0.0.1", alias;
   int port = 8080;
   bool swap = true, help = false, web_tools = true, terminal = true, precise = false;
@@ -1180,6 +1188,8 @@ int main(int argc, char** argv) {
             "                                                 Whisper too); a chat request naming a model loads it later\n"
             "       inferzero-server --list-models             the models it can load, as JSON (Hugging Face cache,\n"
             "                                                 %%USERPROFILE%%\\.inferzero\\models, model-dirs.txt) with each one's auto context\n"
+            "                        (--speech-reserve BYTES: that much GPU memory kept for speech to text, a running server's\n"
+            "                         /props speech_reserve_bytes, as its model switches keep it)\n"
             "  -m, --model FILE      model GGUF; an mmproj-* image projector and an mtp-* drafter next to it are found\n"
             "  --host H, --port P    listen address (default 127.0.0.1:8080). A browser page of another origin (another\n"
             "                        site, or another port of this computer) reaches only the model endpoints: not the\n"
@@ -1971,7 +1981,7 @@ int main(int argc, char** argv) {
       so.whisper_props = wh->props();
       cur_so.whisper_bytes = so.whisper_bytes;
       cur_so.whisper_props = so.whisper_props;
-      if (cur && cur->srv) cur->srv->whisper_props_ = so.whisper_props;
+      if (cur && cur->srv) cur->srv->whisper_props_ = so.whisper_props, cur->srv->speech_reserve_ = so.whisper_bytes;
       return rs.send(200, "application/json", state().dump());
     }
     // other API formats (tools/api_compat.h): translated into a chat request; the answer is translated back

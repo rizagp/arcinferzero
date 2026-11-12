@@ -2,8 +2,12 @@
 # so Pi's /model switches between them (the server loads the requested one). Context window: each model's own, as
 # `serverz.exe --list-models` computes it for the current GPU memory; the running model's from the server.
 # Dot-sourced by zero-pi.ps1 and install-pi.ps1. Other providers in models.json are kept.
-function Update-PiModels([string]$ServerExe, [string]$Base, [string]$RunningId = "", [int]$RunningCtx = 0) {
-  $all = @(& $ServerExe --list-models | ConvertFrom-Json | ForEach-Object { $_ }) | Where-Object { $_.supported }  # (unroll)
+# SpeechReserve: the running server's GPU bytes for speech to text (/props speech_reserve_bytes), kept free in the
+# other models' contexts as the server's model switch keeps it.
+function Update-PiModels([string]$ServerExe, [string]$Base, [string]$RunningId = "", [int]$RunningCtx = 0, [double]$SpeechReserve = 0) {
+  $lm = @("--list-models")
+  if ($SpeechReserve -gt 0) { $lm += @("--speech-reserve", ([int64]$SpeechReserve).ToString()) }
+  $all = @(& $ServerExe @lm | ConvertFrom-Json | ForEach-Object { $_ }) | Where-Object { $_.supported }  # (unroll)
   $cfgPath = Join-Path $env:USERPROFILE ".pi\agent\models.json"
   $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
   if (-not $cfg.PSObject.Properties["providers"]) { $cfg | Add-Member providers ([pscustomobject]@{}) }
