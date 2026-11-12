@@ -4,6 +4,7 @@
 // with the GPU runtimes' loading and the user's home folder; files, mapping, sockets and processes follow.
 #pragma once
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 
 #ifdef _WIN32
@@ -268,6 +269,116 @@ class AsyncFile {
   bool ok_[kMaxSlots] = {};
 #endif
 };
+
+// A file written without the OS file cache (the expert file: 15-52 GB through the Windows cache filled the RAM of a 32 GB
+// laptop): created anew, written in 4 KB multiples from page-aligned buffers. Windows: CreateFileA (no sharing,
+// CREATE_ALWAYS, FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH) and WriteFile in pieces of up to 1 GiB, as
+// expert_store.h did. Linux: O_DIRECT (plain writes where a filesystem has none) and write().
+class DirectWriter {
+ public:
+  DirectWriter() = default;
+  DirectWriter(const DirectWriter&) = delete;
+  DirectWriter& operator=(const DirectWriter&) = delete;
+  ~DirectWriter() { close(); }
+  bool open(const char* path) {
+    close();
+#ifdef _WIN32
+    h_ = CreateFileA(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH, nullptr);
+    return h_ != INVALID_HANDLE_VALUE;
+#else
+    fd_ = ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT | O_CLOEXEC, 0644);
+    if (fd_ < 0 && errno == EINVAL) fd_ = ::open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    return fd_ >= 0;
+#endif
+  }
+  bool is_open() const {
+#ifdef _WIN32
+    return h_ != INVALID_HANDLE_VALUE;
+#else
+    return fd_ >= 0;
+#endif
+  }
+  // all n bytes, or false
+  bool write(const void* p, uint64_t n) {
+    while (n) {
+      const uint64_t c = n < (1ull << 30) ? n : (1ull << 30);
+#ifdef _WIN32
+      DWORD got = 0;
+      if (!WriteFile(h_, p, (DWORD)c, &got, nullptr) || got != (DWORD)c) return false;
+#else
+      const ssize_t got = ::write(fd_, p, (size_t)c);
+      if (got < 0 && errno == EINTR) continue;
+      if (got != (ssize_t)c) return false;
+#endif
+      p = (const uint8_t*)p + c;
+      n -= c;
+    }
+    return true;
+  }
+  void close() {
+#ifdef _WIN32
+    if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+    h_ = INVALID_HANDLE_VALUE;
+#else
+    if (fd_ >= 0) ::close(fd_);
+    fd_ = -1;
+#endif
+  }
+
+ private:
+#ifdef _WIN32
+  HANDLE h_ = INVALID_HANDLE_VALUE;
+#else
+  int fd_ = -1;
+#endif
+};
+
+// Page-aligned memory of n bytes, zeroed (VirtualAlloc; mmap on Linux): nullptr when there is none. Freed by page_free(p, n).
+inline void* page_alloc(size_t n) {
+#ifdef _WIN32
+  return VirtualAlloc(nullptr, n, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#else
+  void* p = mmap(nullptr, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  return p == MAP_FAILED ? nullptr : p;
+#endif
+}
+inline void page_free(void* p, size_t n) {
+#ifdef _WIN32
+  (void)n;
+  if (p) VirtualFree(p, 0, MEM_RELEASE);
+#else
+  if (p) munmap(p, n);
+#endif
+}
+// The pages this process touched leave its working set (they stay cached for reuse): after a pass over a mapped file.
+// Linux: nothing (the kernel reclaims mapped file pages by itself).
+inline void trim_working_set() {
+#ifdef _WIN32
+  SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+#endif
+}
+// `from` renamed to `to`, an existing `to` replaced: false on failure (last_error() says why)
+inline bool replace_file(const char* from, const char* to) {
+#ifdef _WIN32
+  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+  return ::rename(from, to) == 0;
+#endif
+}
+inline void remove_file(const char* path) {
+#ifdef _WIN32
+  DeleteFileA(path);
+#else
+  ::unlink(path);
+#endif
+}
+inline unsigned long last_error() {
+#ifdef _WIN32
+  return GetLastError();
+#else
+  return (unsigned long)errno;
+#endif
+}
 
 // The user's home folder: %USERPROFILE% on Windows, $HOME on Linux; nullptr when the variable is not set.
 inline const char* home_env() {

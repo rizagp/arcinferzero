@@ -407,39 +407,33 @@ struct ExpertStore {
     // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
     // RAM (3.9 GB left, paging) on the 32 GB laptop
     // (the .tmp file goes away if the build fails half way: it is as large as the expert file)
+    // (src/platform.h DirectWriter: unbuffered, write-through; Linux O_DIRECT)
     struct Tmp {
-      HANDLE h;
+      plat::DirectWriter w;
       std::string path;
       bool done = false;
       ~Tmp() {
-        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
-        if (!done) DeleteFileA(path.c_str());
+        w.close();
+        if (!done) plat::remove_file(path.c_str());
       }
-    } out{CreateFileA(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
-                      nullptr), tmp};
-    if (out.h == INVALID_HANDLE_VALUE) {
+    } out{{}, tmp};
+    if (!out.w.open(tmp.c_str())) {
       out.done = true;
       throw std::runtime_error("cannot write " + tmp);
     }
     auto put = [&](const void* p, uint64_t n) {
-      while (n) {
-        const DWORD c = (DWORD)std::min<uint64_t>(n, 1u << 30);
-        DWORD got = 0;
-        if (!WriteFile(out.h, p, c, &got, nullptr) || got != c) throw std::runtime_error("write failed: " + tmp);
-        p = (const uint8_t*)p + c;
-        n -= c;
-      }
+      if (!out.w.write(p, n)) throw std::runtime_error("write failed: " + tmp);
     };
     // header (+ layer table), padded to the first layer's offset
     {
       uint64_t first = kAlign;
       for (auto& L : layers) if (L.rec) { first = L.off; break; }
-      uint8_t* hb = (uint8_t*)VirtualAlloc(nullptr, first, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+      uint8_t* hb = (uint8_t*)plat::page_alloc(first);  // (zeroed: the header's padding)
       if (!hb) throw std::runtime_error("out of memory writing the expert file");
       Header h{kMagic, kVersion, fp, layers.size(), (uint64_t)n_expert, file_bytes};
       memcpy(hb, &h, sizeof h);
       memcpy(hb + sizeof h, layers.data(), layers.size() * sizeof(LayerInfo));
-      struct Free { void* p; ~Free() { VirtualFree(p, 0, MEM_RELEASE); } } free_hb{hb};
+      struct Free { void* p; size_t n; ~Free() { plat::page_free(p, n); } } free_hb{hb, (size_t)first};
       put(hb, first);
     }
     const int G = 32;  // experts converted per batch (in parallel)
@@ -454,7 +448,7 @@ struct ExpertStore {
         m[i] = src(f, prefixes[l], i);
         t[i] = m[i].t;
       }
-      struct Buf { uint8_t* p; ~Buf() { VirtualFree(p, 0, MEM_RELEASE); } } bb{(uint8_t*)VirtualAlloc(nullptr, (size_t)L.rec * G, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)};
+      struct Buf { uint8_t* p; size_t n; ~Buf() { plat::page_free(p, n); } } bb{(uint8_t*)plat::page_alloc((size_t)L.rec * G), (size_t)L.rec * G};
       uint8_t* buf = bb.p;
       if (!buf) throw std::runtime_error("out of memory writing the expert file");
       for (int e0 = 0; e0 < n_expert; e0 += G) {
@@ -487,16 +481,15 @@ struct ExpertStore {
         put(buf, (uint64_t)ne * L.rec);
       }
       // the layer's GGUF pages leave the working set (they stay in the standby list, which Windows can reuse)
-      SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+      plat::trim_working_set();
       ++n_done;
       if (loadp::st().on) loadp::step("writing the expert file (once per model)", (double)n_done, (double)n_all);
       else zlog::eprintf("\r  layer %zu / %zu", n_done, n_all);  // (the command-line tools: their own line)
     }
     if (!loadp::st().on) zlog::eprintf("\n");
-    CloseHandle(out.h);
-    out.h = INVALID_HANDLE_VALUE;
-    if (!MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))  // (an old file of the same name: replaced)
-      throw std::runtime_error("cannot rename " + tmp + " (" + std::to_string(GetLastError()) + ")");
+    out.w.close();
+    if (!plat::replace_file(tmp.c_str(), path.c_str()))  // (an old file of the same name: replaced)
+      throw std::runtime_error("cannot rename " + tmp + " (" + std::to_string(plat::last_error()) + ")");
     out.done = true;
     build_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     built = true;

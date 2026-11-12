@@ -46,6 +46,9 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   + `pread` at the start of each read (no reads in flight yet: `io_uring` later, once it runs there). Windows
   bit-identical (the 35B-A3B, Flash Next streaming its experts, the 4B, against 2026.11.13.02). Next in step 1: the
   expert file's writing (`ExpertStore::build`), Whisper's wide paths (`src/whisper.h`), then sockets.
+- 2026-11-13: the expert file's writing through `plat::DirectWriter` and small helpers (page-aligned memory, the
+  working-set trim, replace / remove a file): `zero/expert_store.h` has no Windows calls left. Windows bit-identical (two
+  test models' expert files byte-identical between the builds). Next: Whisper's wide paths, then sockets.
 
 ## The order
 

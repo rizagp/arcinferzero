@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-13 (before dawn): the Linux port, the expert file's writing through the platform layer
+
+- **`plat::DirectWriter`, `page_alloc` / `page_free`, `trim_working_set`, `replace_file`, `remove_file`,
+  `last_error`** (`src/platform.h`): the expert file's writing (`ExpertStore::build`, zero/expert_store.h) uses them,
+  so expert_store.h has no Windows calls left. Windows: the same calls as before (an unbuffered write-through file,
+  VirtualAlloc, SetProcessWorkingSetSize, MoveFileExA). Linux: O_DIRECT writes (plain where a filesystem has none),
+  mmap, rename. Checked against release 2026.11.13.03: two test models' expert files written again by both builds
+  byte-identical (33.4 MB each, no .tmp left), and the logits identical for the 35B-A3B, Flash Next and the 4B.
+
 ## 2026-11-13 (night): the Linux port, the expert file's reads through the platform layer; B60 numbers
 
 - **`plat::AsyncFile`** (`src/platform.h`): a file read without the OS file cache, reads in flight on numbered slots;
