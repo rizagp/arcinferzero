@@ -17,6 +17,15 @@
 // results (checked at start, engine_xw.h xw_check). -DXW_EMU: DPAS as the DP4a dot products the extension's text
 // gives (tests on a GPU without XMX).
 // Grid: (8 * (N / (16 * XW_NC)) * rows, WGY), local (8, WGY), rows = M / (XW_TM * WGY); the row-group sweep of gemm.cl.
+//
+// Layouts in the DPAS operands' order (bench\xw_peak.cpp, 2026-11-12; not used by the engine yet). Off, the kernel is
+// the one above, unchanged; on, the same words reach the same DPAS operands (the same sums, bit for bit):
+//   -DXW_PACKA: aq in [M / 8 token groups][K / 64 chunks][2 halves][8 rows][8 words] (word w of half h = values
+//     32h + 4w .. 32h + 4w + 3 of the row): a token group's chunk in 2 block reads of 8 words instead of 8 of 2; the
+//     loop takes a column group's weights first, then streams the token groups (fewer registers held: 32 x 32 fits).
+//   -DXW_PACKW: wq in [N / 16 groups][K / 64 chunks][lo0, lo1, hi0, hi1][8 words][8 lanes] (lo0: columns 0..7, words
+//     0..7; lo1: columns 8..15; hi: words 8..15): the 4 block reads land in the DPAS B operands as they are, no
+//     register shuffles.
 
 #define SG 8
 #define LS 16  // lanes of the weight layout (gemm.cl's)
@@ -76,6 +85,61 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
 #pragma unroll
     for (int h = 0; h < XW_NH; ++h) xacc[t][h] = (int8)(0);
 
+#if defined(XW_PACKA) || defined(XW_PACKW)
+  // (the packed layouts: a column group's 4 B operands, then each token group's 2 A operands)
+  const int nch = K / 64;
+  __global const uint* apk = (__global const uint*)aq + (size_t)(m0 / 8) * nch * 128;
+  for (int s = s_begin; s < s_end; ++s) {
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      const int ch = s * 4 + j;
+#ifndef XW_PACKA
+      int8 al[XW_TG], ah[XW_TG];
+#pragma unroll
+      for (int t = 0; t < XW_TG; ++t) {
+        uint2 r[8];
+#pragma unroll
+        for (int p = 0; p < 8; ++p)
+          r[p] = intel_sub_group_block_read2((__global const uint*)(ap + (size_t)(8 * t + p) * K + ch * 64));
+        al[t] = (int8)(r[0].s0, r[1].s0, r[2].s0, r[3].s0, r[4].s0, r[5].s0, r[6].s0, r[7].s0);
+        ah[t] = (int8)(r[0].s1, r[1].s1, r[2].s1, r[3].s1, r[4].s1, r[5].s1, r[6].s1, r[7].s1);
+      }
+#endif
+      int8 lo0[XW_NC], lo1[XW_NC], hi0[XW_NC], hi1[XW_NC];
+#pragma unroll
+      for (int c = 0; c < XW_NC; ++c) {
+        __global const uint* dp = wq + ((size_t)(g0 + c) * nsb * 4 + ch) * (16 * LS);
+#ifdef XW_PACKW
+        lo0[c] = as_int8(intel_sub_group_block_read8(dp));
+        lo1[c] = as_int8(intel_sub_group_block_read8(dp + 64));
+        hi0[c] = as_int8(intel_sub_group_block_read8(dp + 128));
+        hi1[c] = as_int8(intel_sub_group_block_read8(dp + 192));
+#else
+        const uint8 q0 = intel_sub_group_block_read8(dp), q1 = intel_sub_group_block_read8(dp + 4 * LS);
+        const uint8 q2 = intel_sub_group_block_read8(dp + 8 * LS), q3 = intel_sub_group_block_read8(dp + 12 * LS);
+        lo0[c] = as_int8((uint8)(q0.s0, q0.s2, q0.s4, q0.s6, q1.s0, q1.s2, q1.s4, q1.s6));
+        lo1[c] = as_int8((uint8)(q0.s1, q0.s3, q0.s5, q0.s7, q1.s1, q1.s3, q1.s5, q1.s7));
+        hi0[c] = as_int8((uint8)(q2.s0, q2.s2, q2.s4, q2.s6, q3.s0, q3.s2, q3.s4, q3.s6));
+        hi1[c] = as_int8((uint8)(q2.s1, q2.s3, q2.s5, q2.s7, q3.s1, q3.s3, q3.s5, q3.s7));
+#endif
+      }
+#pragma unroll
+      for (int t = 0; t < XW_TG; ++t) {
+#ifdef XW_PACKA
+        __global const uint* tp = apk + ((size_t)t * nch + ch) * 128;
+        const int8 a0 = as_int8(intel_sub_group_block_read8(tp)), a1 = as_int8(intel_sub_group_block_read8(tp + 64));
+#else
+        const int8 a0 = al[t], a1 = ah[t];
+#endif
+#pragma unroll
+        for (int c = 0; c < XW_NC; ++c) {
+          xacc[t][2 * c] = xw8_mad(a1, hi0[c], xw8_mad(a0, lo0[c], xacc[t][2 * c]));
+          xacc[t][2 * c + 1] = xw8_mad(a1, hi1[c], xw8_mad(a0, lo1[c], xacc[t][2 * c + 1]));
+        }
+      }
+    }
+  }
+#else
   for (int s = s_begin; s < s_end; ++s) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
@@ -108,6 +172,7 @@ __kernel void gemm_xw8(__global const uint* restrict wq, __global const uint* re
       }
     }
   }
+#endif
 
   // ---- the one epilogue, gemm_x8's: the token's scale x the column's x the sum, then the accumulate mode
   float av[XW_TM / SG];

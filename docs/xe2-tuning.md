@@ -674,3 +674,23 @@ Intel gives. Its DPAS takes 8-lane sub-groups (8 x 8 x 32 int8 per instruction, 
   140T's f16 DPAS keeps fewer bits inside than f32, that would explain the chunked DeltaNet on XMX missing its
   1e-4 check there (its f16 operands are split into hi + lo halves) with a right layout; the 8-lane form passes on
   the laptop with DPAS emulated (4.45e-07). `f33_sweep` now prints the size of the difference.
+- **Toward ~80 % of the XMX peak (2026-11-12, issue #5): `bin\xw_peak.exe`.** With 32 x 16 tiles the 27B's FFN
+  GEMMs run at ~23 int8 TOPS (~30 % of the owner's measured 76.75), the whole 4K prompt ~16 TOPS. A 64-value step
+  of a sub-group does 16 DPAS and 36 reads (32 activation rows one at a time, 4 weight reads), ~190 bytes per DPAS;
+  a 140T Xe-core runs about one DPAS a clock. `xw_peak` times the GEMM alone at the FFN shapes against the peak it
+  measures, for the default and variants of `gemm_xw8.cl` (the same bits required):
+
+  | Variant (ocloc `arl-h`, 256 registers) | Spill | Loop instructions per DPAS | Register moves in the loop | Loads per DPAS |
+  |---|---|---|---|---|
+  | default 32 x 16 | 0 | 11.8 | 399 | ~2.6 |
+  | `XW_PACKA` 32 x 16 (activations in the DPAS order) | 0 | 8.8 | 180 | ~1.6 |
+  | `XW_PACKW` 32 x 16 (weights in the DPAS order) | 0 | 8.8 | 194 | ~2.5 |
+  | both, 32 x 16 | 0 | 5.7 | 0 | ~1.6 |
+  | both, 32 x 32 | 0 | 4.1 | 0 | ~1.0 |
+  | both, 16 x 32 | 0 | 4.9 | 0 | ~1.6 |
+  | plain 32 x 32 (the sweep's slower shape) | 0 | 9.5 | 649 | ~1.5 |
+
+  (Loads: a `block_read8` of 8 lanes, 256 bytes, is two messages of 128.) Not used by the engine yet: the ones that
+  win on a 140T go in with the H8 activation kernel and the weight decode writing the packed layouts. The bench also
+  prints what the f16 DPAS keeps (products, the 16-term sum, the accumulator), to choose the DeltaNet fix: f32 adds
+  of DPAS results from zero if only the accumulator rounds, int8 DPAS on 3-part values if the products do.

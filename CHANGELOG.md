@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-12: `xw_peak`, the Arc 140T's XMX prompt GEMM in TOPS; layouts in the DPAS order to measure
+
+The 140T's prompt GEMM (`gemm_xw8`, 32 x 16 tiles) runs the 27B's FFN at ~23 int8 TOPS, ~30 % of the 76.75 its
+owner's `gpu_bench` measured; the whole 4K prompt ~16 TOPS. Toward ~80 % (issue #5), a bench first:
+- **`bin\xw_peak.exe`** (`bench\xw_peak.cpp`, in the package): the GEMM alone at the 27B's FFN shapes (gate, up with
+  the fused SwiGLU, down in 4 split-K pieces; `--shape NxK[:a]`, `--m`), the engine's launch geometry, TOPS and the
+  share of the int8 peak it measures in the same run; each variant's output compared bit for bit with the default.
+  It also prints what the f16 DPAS keeps (products, the sum inside one DPAS, the accumulator, chained against
+  added in f32): which of them loses bits would say how to fix the chunked DeltaNet on XMX, which missed its
+  start-up check on the 140T by about f16's precision (QUEUE row 4). About a minute; 8-lane GPUs only.
+- **`gemm_xw8.cl -DXW_PACKA / -DXW_PACKW`** (not used by the engine): activations and weights in the order the DPAS
+  operands take them, made on the CPU by the bench. ocloc `arl-h`, 256 registers, no spills in any: the main loop's
+  instructions per DPAS 11.8 (default) -> 5.7 (both, 32 x 16) -> 4.1 (both, 32 x 32), its register moves 399 -> 0,
+  its loads ~2.6 -> ~1.6 -> ~1.0 per DPAS. The 32 x 32 tile also loads 1/3 fewer bytes per DPAS than 32 x 16.
+- Checked on the laptop (DPAS emulated): every variant's output identical to the default's at three shapes (split-K
+  and SwiGLU included); the engine's logits with the kernel before and after the change bit-identical (4B, H8 + the
+  wide tile, 853 tokens). The engine's path is the old code unchanged (`#if` around it). The speed needs a 140T.
+
 ## 2026-11-12: the fixes of the static audit (docs/audit-2026-11-12.md)
 
 Every finding of the audit fixed (numbers as in the audit):
