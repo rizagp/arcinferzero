@@ -401,6 +401,11 @@
       matmul("gemm_up", L.up, Mp, big_, 2 * F, F, 0, a_in);
     }
     const int a_dn = act32_for(false);
+    if (fused && L.down.K == F && h8_swi_ok(L.down, Mp)) {  // (the down GEMM's rotation reads big_ itself, engine_h8.h h8_takes)
+      H8Src src(this, big_);
+      tp_out("gemm_down", L.down, Mp, a_dn);
+      return;
+    }
     {
       int gelu = 0;
       set_args(k_swiglu_, 0, big_, F, Mp, T, aq_, asc_, absum_, a_dn, fused, gelu);

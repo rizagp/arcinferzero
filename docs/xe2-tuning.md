@@ -16,6 +16,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMM_GRF=128` on 8-lane GPUs | 256 there | the default register file for gemm_x8 too (no spills at 16 tokens without `ARC_X8_W`; spills with it or with 32 tokens, except H8). Since 2026-11-08 also the DP4a GEMM of iGPUs (it spills there: 6x slower on the 125H) | 8 |
 | `ARC_GEMM_CG` on iGPUs | 1 | since 2026-11-08 also the DP4a GEMM of iGPUs without XMX switches, when set (bit-identical) | 8 |
 | `ARC_GEMM_WPF=n` | off | the XMX prompt GEMM prefetches its weights n 64-value chunks ahead (4: the next superblock), within its column group; bit-identical (2026-11-08) | 8 |
+| `ARC_H8_SWI=0` | on | `swiglu_quant` before an H8 down GEMM again; by default the rotation reads the up GEMM's output (silu(gate) * up in f32) itself and `swiglu_quant` is left out (2026-11-12, the same results: the 27B on the laptop +2-2.5 % a prompt) | 8 |
 | `ARC_H8_REUSE=0` | on | H8 GEMMs on the same input (q / k / v, gate / up, qkv / z) rotate it before each GEMM again, instead of once (`h8_act`; 2026-11-12, the same results: the 27B on the laptop 400 -> 256 rotations a prompt, -30 % of their time) | 8 |
 | `ARC_H8_FUSE=0` | on | H8's weight rotation after `decode_w8` again, instead of in one pass with the decode (`decode.cl h8r_decode`); the same values | 8 |
 | `ARC_XMX_SPEED=1` | off | the start-time speed check (a model-sized GEMM, XMX against DP4a) on discrete cards too, and under `ARC_XMX_TRY` (tests); iGPUs with XMX always run it | 8 |

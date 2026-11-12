@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-12 (midnight): the H8 down GEMM reads the up GEMM's output; `runz --n 0` fixed
+
+- **No `swiglu_quant` before an H8 down GEMM** (QUEUE 33.3). In a prompt chunk, the up GEMM already writes
+  silu(gate) * up in f32, and `swiglu_quant` only copied those values for the H8 rotation (and wrote int8 rows that an
+  H8 GEMM does not read). The down GEMM's rotation now reads the up GEMM's output itself, and `swiglu_quant` is left
+  out (`ARC_H8_SWI=0`: as before). Bit-identical: 4B and 27B logits on and off (a 711-token prompt, padding rows in its
+  last chunk), and a two-shard split (`ARC_TP_SIM`); the default laptop path identical to release 2026.11.12.18.
+- Laptop, `ARC_H8=1 --bench-pp 2048`, 2 alternated rounds of 3 runs: 27B 120.7-123.0 -> 123.9-125.3 tok/s (+2-2.5 %;
+  `swiglu_quant` 495-511 ms gone, the rotation 23-75 ms slower as it reads f32 values of its own), 4B 823-898 -> 911-958
+  tok/s.
+- **`runz --bench-pp N --n 0` crashed** after the prompt runs (an empty list of step times was read), and the crash lost
+  the `pp` lines still buffered: the generation summary is now printed only when `--n` is above 0.
+
 ## 2026-11-12 (late): H8 prompt GEMMs on the same input rotate it once
 
 - **The H8 prompt GEMMs** (on by default on discrete cards; `ARC_H8=1` elsewhere) rotated their input before each

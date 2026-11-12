@@ -1174,7 +1174,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     }
     // (ARC_H8=1, zero/engine_h8.h; the 140T preset: H8 only where it takes the GEMM, p140_take)
     const bool pt = p140_take(w, Mp);
-    if (h8_ok(w) && (!p140_ || h8_env() || pt)) return h8_matmul(name, w, Mp, C, ldc, c_off, a, act32);
+    if (h8_takes(w, Mp)) return h8_matmul(name, w, Mp, C, ldc, c_off, a, act32);  // (the same test as layer_ffn's, engine_h8.h)
     cl_mem wq = w.wq, wh = w.wh;
     if (!wq) {
       wq = stage_q_[w.role];

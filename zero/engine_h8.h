@@ -179,22 +179,44 @@
     H8Share(const H8Share&) = delete;
     H8Share& operator=(const H8Share&) = delete;
   };
+  // The FFN's down GEMM in H8 from f32 (QUEUE 33.3): when the up GEMM's epilogue wrote silu(gate) * up to big_
+  // ([rows][F] f32), those are the values swiglu_quant would only copy to aq_ + H8F (fused: v = the GEMM's value, the
+  // same row stride F), and an H8 GEMM reads neither aq_'s int8 rows nor asc_ / absum_ (no weight minimum): the
+  // rotation reads big_ itself and swiglu_quant is left out. Bit-identical; ARC_H8_SWI=0 as before.
+  // h8_takes: matmul1's prompt path takes the H8 GEMM for w (its first branch past the GEMVs)
+  bool h8_takes(const GpuWeight& w, int Mp) const {
+    return cur_T_ > 8 && !q2mm_ && h8_ok(w) && (!p140_ || h8_env() || p140_take(w, Mp));
+  }
+  bool h8_swi_ok(const GpuWeight& down, int Mp) const {
+    static const bool on = !getenv("ARC_H8_SWI") || atoi(getenv("ARC_H8_SWI")) != 0;
+    return on && h8_row() && !h8f_defs_.empty() && h8_takes(down, Mp);
+  }
+  cl_mem h8_fsrc_ = nullptr;  // (set: the next rotations read f32 rows of K from here, not aq_ + H8F; H8Src)
+  struct H8Src {
+    Engine* e;
+    H8Src(Engine* en, cl_mem src) : e(en) { e->h8_fsrc_ = src; }
+    ~H8Src() { e->h8_fsrc_ = nullptr; }
+    H8Src(const H8Src&) = delete;
+    H8Src& operator=(const H8Src&) = delete;
+  };
   // this GEMM's input (aq_ / asc_, per-32 scales when act32) rotated into h8_aq_ / h8_asc_
   void h8_act(int Mp, int K, bool act32) {
+    const cl_mem src = h8_fsrc_ ? h8_fsrc_ : aq_;
     if (h8_share_) {
-      if (h8_last_K_ == K && h8_last_M_ == Mp && h8_last_a32_ == (act32 ? 1 : 0) && h8_last_aq_ == aq_) return;
-      h8_last_K_ = K, h8_last_M_ = Mp, h8_last_a32_ = act32 ? 1 : 0, h8_last_aq_ = aq_;
+      if (h8_last_K_ == K && h8_last_M_ == Mp && h8_last_a32_ == (act32 ? 1 : 0) && h8_last_aq_ == src) return;
+      h8_last_K_ = K, h8_last_M_ = Mp, h8_last_a32_ = act32 ? 1 : 0, h8_last_aq_ = src;
     }
     const int hb = h8_block(K);
     int a32 = act32 ? 1 : 0, M = Mp, KK = K;
     if (h8_row()) {
-      cl_kernel k = h8r_kernel(hb, 0, "h8r_act", h8f_defs_);
-      set_args(k, 0, aq_, asc_, a32, h8_aq_, h8_asc_, M, KK);
+      cl_kernel k = h8r_kernel(hb, 0, "h8r_act", h8_fsrc_ ? std::string(" -DH8F=0") : h8f_defs_);
+      set_args(k, 0, src, asc_, a32, h8_aq_, h8_asc_, M, KK);
       const size_t wg = 16 * (size_t)(K / hb);
       size_t gws[1] = {wg * Mp}, lws[1] = {wg};
       run("h8_act", k, 1, gws, lws);
       return;
     }
+    if (h8_fsrc_) throw std::logic_error("h8_act: an f32 source without H8R");
     cl_kernel k = h8_kernel(hb, 0, "h8_act");
     set_args(k, 0, aq_, asc_, a32, h8_aq_, h8_asc_, M, KK);
     size_t gws[3] = {(size_t)hb / 4, (size_t)Mp, (size_t)(K / hb)}, lws[3] = {(size_t)hb / 4, 1, 1};

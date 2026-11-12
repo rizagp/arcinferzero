@@ -990,21 +990,24 @@ static int run_main(int argc, char** argv) {
       step_ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts).count());
     }
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    printf("tg%d: %.1f ms  ->  %.2f tokens/s\n", n_gen, ms, n_gen / ms * 1000.0);
-    if (zrt::launch_stats && n_gen > 0)  // (ARC_LAUNCH_STATS: the host's share of a step)
-      printf("launches: %.0f per token, host waits %.1f; host %.2f ms appending + %.2f ms setting arguments per token (%.1f us per launch)\n",
-             (double)(zrt::launch_n - ln0) / n_gen, (double)(zrt::sync_n - sy0) / n_gen, (zrt::launch_ns - lt0) / 1e6 / n_gen, (zrt::setarg_ns - sa0) / 1e6 / n_gen,
-             (zrt::launch_ns - lt0 + zrt::setarg_ns - sa0) / 1e3 / std::max<uint64_t>(1, zrt::launch_n - ln0));
-    {  // (a whole slow run or single slow steps)
-      std::vector<double> st = step_ms;
-      std::sort(st.begin(), st.end());
-      printf("tg steps: min %.1f, median %.1f, max %.1f ms; first 8:", st.front(), st[st.size() / 2], st.back());
-      for (int i = 0; i < 8 && i < (int)step_ms.size(); ++i) printf(" %.1f", step_ms[i]);
-      printf("\n");
+    // (--n 0: the prompt only; the summary reads step_ms[0], which crashed before the pp lines were flushed, 2026-11-12)
+    if (n_gen > 0) {
+      printf("tg%d: %.1f ms  ->  %.2f tokens/s\n", n_gen, ms, n_gen / ms * 1000.0);
+      if (zrt::launch_stats)  // (ARC_LAUNCH_STATS: the host's share of a step)
+        printf("launches: %.0f per token, host waits %.1f; host %.2f ms appending + %.2f ms setting arguments per token (%.1f us per launch)\n",
+               (double)(zrt::launch_n - ln0) / n_gen, (double)(zrt::sync_n - sy0) / n_gen, (zrt::launch_ns - lt0) / 1e6 / n_gen, (zrt::setarg_ns - sa0) / 1e6 / n_gen,
+               (zrt::launch_ns - lt0 + zrt::setarg_ns - sa0) / 1e3 / std::max<uint64_t>(1, zrt::launch_n - ln0));
+      {  // (a whole slow run or single slow steps)
+        std::vector<double> st = step_ms;
+        std::sort(st.begin(), st.end());
+        printf("tg steps: min %.1f, median %.1f, max %.1f ms; first 8:", st.front(), st[st.size() / 2], st.back());
+        for (int i = 0; i < 8 && i < (int)step_ms.size(); ++i) printf(" %.1f", step_ms[i]);
+        printf("\n");
+      }
+      const double gb = (eng.rd_bytes - b0) / 1e9;
+      printf("weights read: %.0f MB per token, %.1f GB/s%s\n", gb * 1000 / n_gen, gb / ms * 1000,
+             peak_note(eng, gb / ms * 1000).c_str());
     }
-    const double gb = (eng.rd_bytes - b0) / 1e9;
-    printf("weights read: %.0f MB per token, %.1f GB/s%s\n", gb * 1000 / n_gen, gb / ms * 1000,
-           peak_note(eng, gb / ms * 1000).c_str());
   } else {
     if (toks.empty()) { zlog::eprintf("no tokens\n"); return 1; }
     if (kl_decode) {
