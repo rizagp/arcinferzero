@@ -96,11 +96,13 @@
   // the first (GROWS x more loads in flight: a B60's GEMV reached ~55 % of its bandwidth; QUEUE F31.4). Bit-identical
   // On by default on discrete cards since 2026-11-08 for dense models: a Pro B60's 27B 22.39 -> 23.11 and 22.33 ->
   // 23.08 tok/s in two runs (issue #4); 2026-11-09, package 2c132a9: 27B 23.21 with it, 22.45 without. Not for MoE
-  // models since 2026-11-09: the same run's 35B 78.77 with it, 85.15 without (+8 %; 2026-11-06 it was 84.08 / 83.88).
+  // models from 2026-11-09 to 11-12: the same run's 35B 78.77 with it, 85.15 without (+8 %; 2026-11-06 it was 84.08 /
+  // 83.88). MoE models too again since 2026-11-12: on package fffaf1a (the small work-groups off again, the code of
+  // today) the 35B 88.91 with it, 79.93 without (+11 %; the 27B 23.72 with, 22.46 without), issue #4.
   // iGPUs keep it off (the 125H 8 % slower, a 140T 1-2 %). ARC_GEMV_PF=0 / 1
   std::string xe2_gemv_pf() const {
     static const int pf = getenv("ARC_GEMV_PF") ? (atoi(getenv("ARC_GEMV_PF")) != 0 ? 1 : 0) : -1;
-    const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated() && !hp.moe) : pf == 1;
+    const bool on = pf < 0 ? (cl_.xmx && !cl_.sg8 && !zrt::integrated()) : pf == 1;
     return on ? std::string(" -DGEMV_PF") : std::string();
   }
   // ARC_GEMV_SMALL_WG: the single-token GEMV (gemv) of a matrix with few rows, at most 512 sub-groups (DeltaNet's

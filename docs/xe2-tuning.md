@@ -29,7 +29,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_MOE_GR_GU` / `ARC_MOE_GR_DN` | 1 / 4 | rows per sub-group of the experts' gate / up and down GEMVs for one token (`bench\decode_try.ps1` rows for MoE models) | 2 |
 | `ARC_GEMV_MT_GRF=256` | 128 on GPUs with 16-lane XMX (discrete cards, Lunar / Panther Lake) | the 2-8 token GEMV's register file (MTP, DFlash2, batches) | 7 |
 | `ARC_GVROWS=1/2/4` | by matrix size | rows per sub-group of the codebook GEMV | 2 |
-| `ARC_GEMV_PF=1` | on on discrete cards for dense models since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s); off for MoE models since 2026-11-09 (B60 35B 78.77 with it, 85.15 without); off on iGPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
+| `ARC_GEMV_PF=1` | on on discrete cards for dense models since 2026-11-08 (B60 27B 22.33 -> 23.08 tok/s) and MoE models since 2026-11-12 (B60 35B 79.93 -> 88.91; off for them 2026-11-09 to 11-12 after a run of older code, 78.77 with it, 85.15 without); off on iGPUs; `=0` / `=1` force it | the single-token GEMV issues all its rows' reads of a step first (bit-identical; the laptop iGPU, forced: 8 % slower, 5.23 -> 4.82 tok/s on the 27B; a B60, 2026-11-06, best of 2: 27B 22.39 -> 23.11, 35B 84.08 -> 83.88) | 7 |
 | `ARC_GDN_CHUNK=1` / `2` / `3` | off (`gdn_recur`) | the DeltaNet of prompt passes (32+ tokens) in chunks of 32 (QUEUE F33.1, 2026-11-09): `1` `gdn_chunk` (vector, 4 work-items per state row, any GPU), `2` its 16-float local reads, `3` on XMX: `gdn_chunk_x` (16-lane DPAS) or `gdn_chunk_x8` (8 lanes, the 140T), checked at start against `gdn_chunk`. Not bit-identical: KL (`bench\f33_sweep.ps1`) | 9 |
 | `ARC_GDN_XEMU=1` / `8` / `16` | off | with `ARC_GDN_CHUNK=3`: DPAS emulated on any GPU, in its own / the 8- / 16-lane form (tests) | 9 |
 | `ARC_ATTN_XMX=0` | on on discrete cards since 2026-11-10 (B60, 64K prompts: 4B +11.7 %, 9B +8.4 %, 27B +2.1 %, 35B +10.2 %), off on iGPUs; `=1` forces it | the prompt attention's integer dot products (`attn_q8`) as int8 DPAS, bit-identical, checked at start bit for bit (QUEUE F33.2, 2026-11-09; 16-lane DPAS, Qwen); `ARC_ATTN_XEMU=1`: emulated (tests) | 9 |
@@ -114,6 +114,18 @@ matrices this way.
 The same greedy answer (256 tokens of Python) plain, with `--mtp`, `--mtp --mtp-drafts 7`, with the DFlash2
 drafter (`--draft auto`), and with `ARC_GEMV_GRF=256` / `ARC_GVROWS=1,2,4` (the single-token GEMV's register file and
 rows per sub-group). The drafted runs are likely the largest gain: the B60 logs so far were all plain.
+
+**Measured 2026-11-12 (issue #4, package fffaf1a, one Pro B60):**
+
+| Switch | 27B | 35B-A3B | Taken |
+|---|---|---|---|
+| plain | 23.72 | 79.93 | |
+| `--mtp` | 49.94 (69.2 % accepted) | 110.06 (73.0 %) | (the server's default) |
+| `ARC_GEMV_GU=1` | 22.79 | 80.74 | no |
+| `ARC_GEMV_PF` (prefetch) | 22.46 without (on for dense) | **88.91 with** | **on for MoE too** |
+| `ARC_BATCH=16 / 32 / 128` | 21.25 / 22.67 / 22.02 | 85.11 / 83.42 / 76.66 | no (35B: to measure with the prefetch on) |
+| `ARC_GVROWS=1 / 2 / 4` | 20.41 / 23.09 / 22.60 | 79.62 / 80.75 / 80.87 | no |
+| `ARC_GEMV_GRF=256` | 21.53 | 78.80 | no |
 
 ## 3. Longer chunks and resident weights
 
@@ -634,6 +646,11 @@ known yet. Left: `attn_k` / `attn_v` (1,024 sub-groups, rows of 20 superblocks),
 each: its RoPE's `pow` / `cos` / `sin` in 4 lanes), and the codebook GEMVs themselves.
 
 ## 11. The H8 GEMMs with wider XMX tiles (QUEUE 33.4, 2026-11-11): `ARC_GEMM_XW=1`, `bench\xw_sweep.ps1`
+
+**A Pro B60, 2026-11-12 (issue #4, package fffaf1a), 27B, tok/s at 512 / 4K / 16K tokens:** default 674.3 / 992.9 /
+841.7; 32 x 64 585.2 / 944.6 / 717.3; 32 x 32 524.3 / 804.3 / 693.3; 16 x 64 505.5 / 750.5 / 780.4; 32 x 16 542.3 /
+747.2 / 541.9 (all identical logits). The default (gemm.cl's XMX kernel with 2D block loads) wins at every size, so
+the wide tiles stay off on discrete cards; they are the 140T's default (8-lane XMX, no 2D loads).
 
 `gemm.cl`'s XMX kernel gives a sub-group 16 or 32 tokens x 16 columns: each 64-value chunk of a column group's
 weights (1 KB) serves 16 / 32 tokens, and the activation rows are loaded again by every column group. `gemm_xw.cl`

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-12 (evening): the sums in pieces on by default; the GEMV prefetch for MoE models on discrete cards
+
+From a Pro B60 owner's runs (issue #4, package fffaf1a) and a Reddit user's two Arcs:
+- **`ARC_TP_PIPE` is on by default** (a split model's prompt sums in pieces, both link directions at once): the 27B's
+  4K prompt over 2 B60s 1,298.9 -> 1,368.8 tok/s (+5 %), over 4 B60s 1,629.6 -> 1,734.0 (+6 %); a 27B IQ4_XS 32K
+  prompt over two Arcs (the second on PCIe x4) 903.9 -> 1,033.7 (+14 %). The same logits bit for bit (laptop,
+  `ARC_TP_SIM`, 2 and 3 shards, against `ARC_TP_PIPE=0`). `ARC_TP_PIPE=0`: as before.
+- **The single-token GEMV's prefetch (`ARC_GEMV_PF`) for MoE models too** on discrete cards: the 35B-A3B's generation
+  79.93 -> 88.91 tok/s on a B60 (+11 %; dense models had it already). Bit-identical. An earlier run (2026-11-09, older
+  code) had shown the opposite; asked for a rerun. `ARC_GEMV_PF=0`: off.
+- **Measured and kept as they are:** `ARC_GEMV_GU=1` (gate and up in one launch) 22.79 against 23.72 on the 27B, so
+  off; the wide XMX tiles (`ARC_GEMM_XW`) slower than the B60's default at every size (27B 4K: 992.9 default, 944.6
+  at 32 x 64), so off on discrete cards; `ARC_BATCH` no gain on the 27B (35B: 85.1 at 16, not taken with the prefetch
+  on, to measure together).
+- **DeepSeek-V4.1-Flash ran on real hardware for the first time** (IQ2_XS, one B60, 1 TB of RAM): the expert file
+  (161.8 GB) written in 129 s, "The capital of France is" -> " Paris." (top token 0.90), 3.6 tok/s with 9 % of the
+  experts on the GPU, the rest from RAM.
+
 ## 2026-11-12 (evening): the GPU's fatal errors in words; the launcher's "Copy for an issue"; release names that sort
 
 - **A GPU error that ends the process now says what it was** (an `E` line): "device lost: the GPU was reset, by a

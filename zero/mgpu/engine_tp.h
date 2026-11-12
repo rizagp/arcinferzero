@@ -195,12 +195,15 @@ inline void Engine::tp_reduce(int rows) {
 // Per GPU and sum about 3 (N - 1) / N part sizes of f16 cross PCIe, against 1 + N in f32 for the one-step sum: 4 B60s
 // 2.25 f16 (1.1 f32) instead of 5 f32 part sizes, 4.4x fewer bytes; 2 GPUs 4x. (Why one buffer half is enough: a GPU writes this half
 // again two sums later, after a barrier the others reach only once their GPU finished reading it.)
-// ARC_TP_PIPE=1: the reduce-scatter in pieces, both directions of every GPU's link at once (tp_reduce_rs_pipe; after
-// manoreken2's HostCopy, PR #10: a block cut into pieces copied by two command lists, 1.85x on two B60s). Off by
-// default until measured on B60s / B580s. ARC_TP_PIPE_PIECES=N: pieces per GPU block (default: ~2 MB of f16 each, 2-8)
+// ARC_TP_PIPE (on unless =0): the reduce-scatter in pieces, both directions of every GPU's link at once (tp_reduce_rs_pipe; after
+// manoreken2's HostCopy, PR #10: a block cut into pieces copied by two command lists, 1.85x on two B60s). On by
+// default since 2026-11-12, measured faster everywhere it ran (the same logits bit for bit): 27B 4K prompt over 2 Pro
+// B60s 1,298.9 -> 1,368.8 tok/s, over 4 1,629.6 -> 1,734.0 (issue #4, package fffaf1a); a 27B IQ4_XS 32K prompt over
+// two Arcs, the second on PCIe x4, 903.9 -> 1,033.7 (Reddit). ARC_TP_PIPE=0: the three steps one after another, as
+// before. ARC_TP_PIPE_PIECES=N: pieces per GPU block (default: ~2 MB of f16 each, 2-8)
 constexpr int kTpPipeMax = 8;
 inline bool tp_pipe_on() {
-  static const bool on = getenv("ARC_TP_PIPE") && atoi(getenv("ARC_TP_PIPE")) != 0;
+  static const bool on = !getenv("ARC_TP_PIPE") || atoi(getenv("ARC_TP_PIPE")) != 0;
   return on;
 }
 inline int tp_pipe_pieces(int rows, int n, int E) {

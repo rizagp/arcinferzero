@@ -77,10 +77,10 @@ The limits:
 MTP / DFlash2 drafting and the NPU are off in a split model. Slots (batched decoding) work since 2026-11-02 (see
 below).
 
-### The sums in pieces (`ARC_TP_PIPE=1`, 2026-11-12, opt-in)
+### The sums in pieces (`ARC_TP_PIPE`, 2026-11-12, on by default since the same evening; `=0` off)
 
 The three steps above run one after another, and each uses one direction of a GPU's link at a time: step 1 sends
-(GPU -> host), steps 2 and 3 mostly receive (the kernels read host memory). `ARC_TP_PIPE=1` cuts every GPU's block
+(GPU -> host), steps 2 and 3 mostly receive (the kernels read host memory). The pieces (`ARC_TP_PIPE`) cut every GPU's block
 of rows into P pieces (2-8, ~2 MB of f16 each; `ARC_TP_PIPE_PIECES=N`), the same on every GPU, and overlaps them,
 after manoreken2's HostCopy (PR #10, two B60s: a 40 MB block 1.85x faster with a piece in each direction at once):
 1. Each GPU converts its part to f16 (`tp_half`), then a copy list of its own (`zrt::tp_copy_list`, a copy engine)
@@ -282,6 +282,12 @@ is one pointer test (logits bit-identical to the build before). A request's canc
 shard 0 and its answer shared, so every shard stops at the same point.
 
 Not with `--gpus` yet: MTP / DFlash2, images, the prompt and session caches on disk, the warm-up.
+
+**The sums in pieces by default (2026-11-12):** measured faster on every machine that ran it (27B 4K prompt: 2 Pro
+B60s 1,298.9 -> 1,368.8 tok/s, 4 Pro B60s 1,629.6 -> 1,734.0; a 27B IQ4_XS 32K prompt over two Arcs, the second
+on PCIe x4, 903.9 -> 1,033.7), so `ARC_TP_PIPE` is on unless `=0`. The gain is far below the ~2x the link's two
+directions suggested: most of a sum's time is not the copy itself (the waiting counts each GPU's work before it
+too). The next step is to overlap the sums with the next chunk's work (the `ARC_TP_OVERLAP` branch, stage 1).
 
 **`--ctx auto` on a split model (2026-11-12):** the dry probe is shard 0 of N (`tp_size` N, `tp_rank` 0: the
 largest shard, which takes the extra unit of a count that does not divide), so the context is what one GPU's share

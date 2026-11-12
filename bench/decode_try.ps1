@@ -11,9 +11,9 @@
 #   GVROWS=1/2/4   plain, rows per sub-group of the codebook GEMV (ARC_GVROWS; default: by matrix size)
 #   mtp MT_GRF=256 mtp, the 2-8 token GEMV of the verification with 256 registers, as before 2026-11-03 (ARC_GEMV_MT_GRF=256)
 #   mtp MT_GRF=128 the same with 128 registers (the discrete cards' default; iGPUs default to 256)
-#   GEMV_PF=0      dense models: plain, without the single-token GEMV issuing all its rows' reads of a step first
-#                  (ARC_GEMV_PF=0; on by default on discrete cards since 2026-11-08); MoE models: GEMV_PF=1 instead
-#                  (off for them since 2026-11-09, a B60's 35B 78.8 with it, 85.2 without)
+#   GEMV_PF=0      plain, without the single-token GEMV issuing all its rows' reads of a step first (ARC_GEMV_PF=0;
+#                  on by default on discrete cards: dense models since 2026-11-08, MoE models since 2026-11-12, a
+#                  B60's 35B 79.9 without it, 88.9 with)
 #   GV_IQ3S=1      plain, IQ3_S weights through gemv_v (straight into registers) instead of gemv's local window
 #                  (ARC_GV_IQ3S=1); also with GVROWS=2 / 4 (ARC_GVROWS: its rows per sub-group)
 #   BATCH=16/32/128  plain, kernels recorded into command lists of up to n kernels, each appended to the immediate
@@ -120,9 +120,8 @@ foreach ($model in $Models) {
   foreach ($g in 1, 2, 4) { Line "GVROWS=$g" (Invoke-Run $model @() @{ ARC_GVROWS = "$g" }) }
   Line "mtp MT_GRF=256" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "256" })
   Line "mtp MT_GRF=128" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "128" })
-  # (the prefetch is on by default on discrete cards for dense models, off for MoE ones since 2026-11-09: the other one)
-  if ($plain.moe) { Line "GEMV_PF=1" (Invoke-Run $model @() @{ ARC_GEMV_PF = "1" }) }
-  else { Line "GEMV_PF=0" (Invoke-Run $model @() @{ ARC_GEMV_PF = "0" }) }
+  # (the prefetch is on by default on discrete cards, dense and MoE models: the row without it)
+  Line "GEMV_PF=0" (Invoke-Run $model @() @{ ARC_GEMV_PF = "0" })
   Line "GV_IQ3S=1" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1" })
   foreach ($g in 2, 4) { Line "GV_IQ3S=1 GVROWS=$g" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1"; ARC_GVROWS = "$g" }) }
   foreach ($b in 16, 32, 128) { Same "BATCH=$b" (Invoke-Run $model @() @{ ARC_BATCH = "$b" }) $plain }
@@ -130,7 +129,7 @@ foreach ($model in $Models) {
   if ($plain.moe) {  # (MoE models: the experts' per-tile GEMVs of one token, rows per sub-group)
     # (XALL is on by default on discrete cards since 2026-11-09: the rows without it)
     Same "XALL=0" (Invoke-Run $model @() @{ ARC_XALL = "0" }) $plain
-    Same "XALL=0 GEMV_PF=1" (Invoke-Run $model @() @{ ARC_XALL = "0"; ARC_GEMV_PF = "1" }) $plain
+    Same "XALL=0 GEMV_PF=0" (Invoke-Run $model @() @{ ARC_XALL = "0"; ARC_GEMV_PF = "0" }) $plain
     Line "mtp XALL=0" (Invoke-Run $model @("--mtp") @{ ARC_XALL = "0" })
     foreach ($g in 2, 4) { Line "MOE_GR_GU=$g" (Invoke-Run $model @() @{ ARC_MOE_GR_GU = "$g" }) }
     foreach ($g in 2, 8) { Line "MOE_GR_DN=$g" (Invoke-Run $model @() @{ ARC_MOE_GR_DN = "$g" }) }

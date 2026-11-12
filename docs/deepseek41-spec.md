@@ -8,8 +8,15 @@ Engram 110.6 GB): it can only be run on a tester's machine.
 
 Implemented (`zero/engine_ds41.h`, `zero/kernels/ops_ds41.cl`, the MoE path of `zero/engine_moe.h` with `moe.cl
 -DROUTE_DS` and `-DSWI_CLAMP`), and checked against the f32 reference `tools/ref_forward` (`deepseek41_layers`,
-written from section 3) on synthetic models from `tools/make_tiny_deepseek41.py`. It has not run the real model yet;
-the accuracy check of the real model is against llama.cpp on the same prompts (the user's decision, 2026-11-11).
+written from section 3) on synthetic models from `tools/make_tiny_deepseek41.py`. The accuracy check of the real model
+is against llama.cpp on the same prompts (the user's decision, 2026-11-11).
+
+**First run of the real model (issue #4, 2026-11-12, package fffaf1a):** `DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS`
+on one Pro B60 with 1 TB of RAM. The expert file (161.8 GB) written in 129 s, 150.7 GiB of experts kept in RAM, a
+14.07 GiB expert cache on the GPU (9 %), 21.28 GiB of GPU buffers, loaded in 145 s. "The capital of France is" ->
+" Paris." (top token 0.8988), then "The quick brown fox jumps over the lazy dog." and the end-of-sentence token;
+13 tokens at 3.61 tok/s (57.9 % expert-cache hits, the misses from RAM at 6 GB/s). Next: KL against llama.cpp on
+the same file and prompts, and the speed (the expert cache's share, the first token's 17 s).
 
 The real file's metadata (`bin\gguf_dump.exe` on manoreken2's `DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XS.gguf`, issue
 #4, 2026-11-12): one file of 247.56 GiB, 1,043 tensors; every key the engine reads present with the values of
