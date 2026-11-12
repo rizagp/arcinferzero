@@ -225,6 +225,12 @@ struct Obj {
   }
 };
 
+// a PDF number as an int in [lo, hi] (not finite: lo): a double outside the target's range cast to it is undefined,
+// and a damaged or hostile PDF can hold 1e999 or -5 where a count or an object number belongs (audit 2026-11-13 #3)
+inline int num_i(double v, double lo, double hi) { return std::isfinite(v) ? (int)std::clamp(v, lo, hi) : (int)lo; }
+inline size_t num_z(double v, size_t hi) { return std::isfinite(v) && v > 0 ? (size_t)std::min(v, (double)hi) : 0; }
+inline uint32_t num_u(double v) { return std::isfinite(v) && v > 0 ? (uint32_t)std::min(v, 1e9) : 0u; }
+
 struct Lexer {
   const std::string& s;
   size_t i;
@@ -356,7 +362,7 @@ struct Lexer {
         if (i < s.size() && s[i] == 'R' && (i + 1 >= s.size() || ws(s[i + 1]) || delim(s[i + 1]))) {
           ++i;
           o->t = Obj::Ref;
-          o->ref = (int)o->n;
+          o->ref = num_i(o->n, -1, 1e9);
           return o;
         }
       }
@@ -504,7 +510,7 @@ class File {
       }
       if (!dest || dest->t != Obj::Arr || dest->a.empty()) return 0;
       const P& target = dest->a[0];
-      if (target->t == Obj::Num) return (int)target->n + 1;  // (a page index: remote-style destinations)
+      if (target->t == Obj::Num) return num_i(target->n, -1, 1e9) + 1;  // (a page index: remote-style destinations)
       const P pg = resolve(target);
       auto it = pg ? page_no.find(pg.get()) : page_no.end();
       return it == page_no.end() ? 0 : it->second;
@@ -640,15 +646,15 @@ class File {
       if (!np || !fp) continue;
       Lexer hx{body, 0};
       std::vector<std::pair<int, size_t>> idx;
-      for (int k = 0; k < (int)np->n; ++k) {
+      for (int k = 0; k < num_i(np->n, 0, 1e7); ++k) {
         P a = hx.value(), b = hx.value();
         if (!a || !b) break;
-        idx.push_back({(int)a->n, (size_t)b->n});
+        idx.push_back({num_i(a->n, -1, 1e9), num_z(b->n, body.size())});
       }
       if (!spend(hx.i)) break;
       for (const auto& [num, off] : idx) {
         if (objs_.count(num) && !objs_[num]->has_stream && objs_[num]->t != Obj::Null) continue;
-        const size_t at = (size_t)fp->n + off;
+        const size_t at = num_z(fp->n, body.size()) + off;
         Lexer lx{body, at};
         P o = lx.value();
         if (!spend(lx.i > at ? lx.i - at : 0)) break;
@@ -847,11 +853,11 @@ class Reader {
             if (!c0 || !n1) break;
             if (n1->t == Obj::Arr) {
               for (size_t j = 0; j < n1->a.size() && j < 65536; ++j)
-                if (P wv = f_.resolve(n1->a[j])) f.w[(uint32_t)c0->n + (uint32_t)j] = wv->n;
+                if (P wv = f_.resolve(n1->a[j])) f.w[num_u(c0->n) + (uint32_t)j] = wv->n;
               k += 2;
             } else if (k + 2 < W->a.size()) {
               P wv = f_.resolve(W->a[k + 2]);
-              for (uint32_t c = (uint32_t)c0->n; c <= (uint32_t)n1->n && c - (uint32_t)c0->n < 65536; ++c) f.w[c] = wv ? wv->n : f.dw;
+              for (uint32_t c = num_u(c0->n); c <= num_u(n1->n) && c - num_u(c0->n) < 65536; ++c) f.w[c] = wv ? wv->n : f.dw;
               k += 3;
             } else break;
           }
@@ -860,7 +866,7 @@ class Reader {
       P fc = f_.get(fo, "FirstChar"), W = f_.get(fo, "Widths");
       if (fc && W && W->t == Obj::Arr)
         for (size_t j = 0; j < W->a.size() && j < 256; ++j)
-          if (P wv = f_.resolve(W->a[j])) f.w[(uint32_t)fc->n + (uint32_t)j] = wv->n;
+          if (P wv = f_.resolve(W->a[j])) f.w[num_u(fc->n) + (uint32_t)j] = wv->n;
       // (no widths: one of the 14 standard fonts. A narrow guess, so the next word's start still shows its gap:
       //  a space too many costs less than words run together)
       if (f.w.empty()) f.dw = 300;
@@ -876,7 +882,7 @@ class Reader {
         for (auto& x : diff->a) {
           P v = f_.resolve(x);
           if (!v) continue;
-          if (v->t == Obj::Num) code = (uint32_t)v->n;
+          if (v->t == Obj::Num) code = num_u(v->n);
           else if (v->t == Obj::Name) {
             if (const uint32_t u = glyph_unicode(v->s)) { std::string s; put_utf8(s, u); f.map[code] = s; }
             ++code;

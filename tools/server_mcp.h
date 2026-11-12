@@ -186,7 +186,7 @@ struct Tool {
   bool read_only = false;
 };
 
-class Client {
+class Client : public std::enable_shared_from_this<Client> {
  public:
   explicit Client(Config c) : cfg_(std::move(c)) {}
   ~Client() { stop(); }
@@ -254,6 +254,12 @@ class Client {
   std::set<int64_t> waiting_;
   int64_t next_id_ = 1;
   std::atomic<bool> dead_{false}, tools_changed_{false};
+  // (a reader of this client was left behind, cleanup(): its handles stay open under it, so this client is never
+  //  started or cleaned up again; the manager makes a fresh one in its place)
+  std::atomic<bool> abandoned_{false};
+ public:
+  bool abandoned() const { return abandoned_; }
+ private:
   bool started_ = false;
   std::string start_error_, server_name_, instructions_, err_tail_;
   std::vector<Tool> tools_;
@@ -379,6 +385,7 @@ class Client {
   }
 
   void cleanup() {
+    if (abandoned_) return;  // (its left-behind reader still reads its handles: nothing here is closed again)
     {
       std::lock_guard<std::mutex> lk(write_mu_);  // (the reader thread may be answering a ping)
       if (in_) CloseHandle(in_), in_ = nullptr;  // (stdin closed: a well-behaved server ends by itself)
@@ -397,14 +404,36 @@ class Client {
     for (int k = 0; k < 20 && reader_.joinable() && !dead_; ++k) Sleep(100);
     if (out_) CancelIoEx(out_, nullptr);
     if (err_) CancelIoEx(err_, nullptr);
+    // (a reader that still does not end after 5 s of cancels: left behind, not waited for (audit 2026-11-13 #1). Its
+    //  Client is kept alive for good (graveyard: a few KB, never freed) and its pipe handles stay open, so the thread
+    //  reads nothing freed; it ends, and closes nothing, when the process holding the pipe does. Only a Client with no
+    //  owner left (its destructor) still waits, as before)
+    bool left = false;
     for (std::thread* t : {&reader_, &err_reader_}) {
       if (!t->joinable()) continue;
       HANDLE h = (HANDLE)t->native_handle();
       for (int k = 0; k < 100 && WaitForSingleObject(h, 50) == WAIT_TIMEOUT; ++k) CancelSynchronousIo(h);
+      if (WaitForSingleObject(h, 0) == WAIT_TIMEOUT) {
+        std::shared_ptr<Client> keep = weak_from_this().lock();
+        if (keep) {
+          static std::mutex gm;
+          static std::vector<std::shared_ptr<Client>>* graveyard = new std::vector<std::shared_ptr<Client>>;
+          {
+            std::lock_guard<std::mutex> g(gm);
+            graveyard->push_back(keep);
+          }
+          LOG_WRN("mcp %s: a reader thread did not end (a process outside the server's job still holds its pipe): "
+                  "left behind\n", cfg_.name.c_str());
+          t->detach();
+          left = true;
+          abandoned_ = true;
+          continue;
+        }
+      }
       t->join();
     }
-    if (out_) CloseHandle(out_), out_ = nullptr;
-    if (err_) CloseHandle(err_), err_ = nullptr;
+    if (!left && out_) CloseHandle(out_), out_ = nullptr;
+    if (!left && err_) CloseHandle(err_), err_ = nullptr;
     if (proc_) CloseHandle(proc_), proc_ = nullptr;
     if (job_) CloseHandle(job_), job_ = nullptr;
     dead_ = true;
@@ -592,6 +621,7 @@ inline std::shared_ptr<Client> client(const std::string& name, std::string& err)
       std::lock_guard<std::mutex> lk(manager().mu);
       auto& slot = manager().clients[name];
       if (slot && slot->cfg().key() != c.key()) old = std::move(slot);
+      if (slot && slot->abandoned()) slot.reset();  // (its reader was left behind: a fresh client, review 2026-11-12)
       if (!slot) slot = std::make_shared<Client>(c);
       cl = slot;
     }
@@ -723,7 +753,7 @@ inline Json server_json(const Config& c, const std::vector<std::string>& on) {
   {
     std::lock_guard<std::mutex> lk(manager().mu);
     auto it = manager().clients.find(c.name);
-    if (it != manager().clients.end() && it->second->cfg().key() == c.key()) cl = it->second;
+    if (it != manager().clients.end() && it->second->cfg().key() == c.key() && !it->second->abandoned()) cl = it->second;
   }
   s.set("running", cl && cl->running());
   if (cl && !cl->start_error().empty() && !cl->running()) s.set("error", cl->start_error());

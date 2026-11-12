@@ -25,7 +25,7 @@ The server (`serverz`) writes its log to stderr. `zero-server` and the launcher 
 | `--log-verbosity N`, `-lv N` | 0 errors only, 1 + warnings, 2 + info (default), 3 + debug. Names work too: `error`, `warn`, `info`, `debug`. `ARC_LOG_LEVEL` sets the same. |
 | `--log-timestamps on\|off` | the date and time in front (default on); off leaves the level letter |
 | `--log-colors auto\|on\|off` | colors for W / E / D; auto: in Windows Terminal only, never in a redirected log; on: always, a redirected `server.log` too |
-| `--log-file F` | every line to F as well (appended), except a crash report: that goes to stderr only (`server.log`). Not rotated. Refused when F is the file stderr already goes to (zero-server's `server.log`) |
+| `--log-file F` | every line to F as well (appended), except a crash report: that goes to stderr only (`server.log`). Not rotated: it grows for as long as servers append to it, so point it at a file you clear yourself. Refused when F is the file stderr already goes to (zero-server's `server.log`) |
 | `--log-disable` | no log, not even the `progress:` lines (zero-server's and the launcher's bars stay empty); a crash report is still written |
 
 runz and the other tools print as before, byte for byte: the bench scripts parse their output.
@@ -76,7 +76,7 @@ lines (the first 40, which name the build, system, GPU and switches, and the las
 
 `zero-server` moves the last log to `logs\server_<date>_<time>.log` at each start, for example
 `server_2026-11-12_14-13-48.log`. The names sort by time, and they keep `.log`, so a double-click opens them.
-- The newest 10 stay as they are.
+- The newest 10 stay as they are (if zipping fails, the logs stay unzipped, 30 at most).
 - Older ones each go into a zip of the same name (`server_2026-11-12_14-13-48.zip`), about 10x smaller, keeping
   their time. Every Windows opens a zip with a double-click.
 - A zip older than 90 days, or past 200 MB together, is removed, oldest first.
@@ -84,8 +84,8 @@ lines (the first 40, which name the build, system, GPU and switches, and the las
 ## `GET /metrics`
 
 Prometheus' text format. The names are vLLM's, with `inferzero:` in place of `vllm:`, so a vLLM Grafana dashboard
-works with that prefix changed. Numbers only, never a prompt's text. Every series has the label `model_name` (the served
-alias).
+works with that prefix changed. Numbers only, never a prompt's text. Every series but `http_requests_total` has the label `model_name` (the served
+alias); control bytes in a label show as `?`.
 
 | Kind | Names |
 |---|---|

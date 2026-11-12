@@ -132,6 +132,7 @@ inline std::string esc(const std::string& s) {  // (a label value)
   for (char ch : s) {
     if (ch == '\\' || ch == '"') o += '\\';
     if (ch == '\n') { o += "\\n"; continue; }
+    if ((unsigned char)ch < 0x20 || ch == 0x7f) { o += '?'; continue; }  // (CR, NUL, ESC from a model file: audit 2026-11-13 #6)
     o += ch;
   }
   return o;

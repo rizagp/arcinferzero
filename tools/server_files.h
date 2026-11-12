@@ -711,7 +711,7 @@ class Store {
       std::error_code ec2;
       for (const auto& f : fs::directory_iterator(d.path(), ec2)) {
         const std::string fn = f.path().filename().string();
-        if (!f.is_regular_file() || fn.rfind(".", 0) == 0 || fn == "chat.json" || fn == "chat.json.tmp") continue;
+        if (!f.is_regular_file() || fn.rfind(".", 0) == 0 || lower(fn) == "chat.json" || lower(fn) == "chat.json.tmp") continue;  // (case-blind, as Windows: audit 2026-11-13 #5)
         const uint64_t bytes = (uint64_t)f.file_size(ec2);
         std::error_code ec3;
         const auto ft = f.last_write_time(ec3);

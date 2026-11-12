@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-12 (evening): the fixes of DeepSeek's audit (docs/audit-2026-11-13.md)
+
+A static audit by DeepSeek-V4.1-Flash through Pi (read-only tools, no server), every finding checked in the code:
+- **MCP:** stopping an MCP server whose child left the job and still holds the pipe no longer hangs: a reader that
+  does not end after 5 s of cancels is left behind, its client kept alive so it reads nothing freed.
+- **Model files:** a GGUF may hold at most 1,000,000 tensors or keys, 64 M array elements and 1,024 split parts,
+  refused before anything is allocated (a crafted 1-2 GB file could ask for 10+ GB of RAM).
+- **PDFs:** object numbers, counts, page indexes and offsets range-checked before they are cast (undefined behaviour
+  on a hostile file's 1e999).
+- **The `--ctx auto` cache:** a damaged row is skipped and computed again ("invalid stoi argument" failed the load; a
+  row cut inside its digits gave a 12-token context); `ctx-auto.txt` keeps its newest 1,000 rows past 512 KB.
+- **Chats:** a `CHAT.JSON` in a chat's folder is the chat's own file (Windows' names are case-blind), not a user file.
+- **The log and `/metrics`:** control bytes from a model file or a request (CR, ESC, NUL) show as `?`.
+- `.gitignore`: video recordings under `tests/data/` too; `docs/logging.md`: three drifts corrected.
+- Results unchanged: runz's output and logits identical to 2026.11.12.15; the PDF tests (300 damaged PDFs) pass.
+
 ## 2026-11-12 (evening): the sums in pieces on by default; the GEMV prefetch for MoE models on discrete cards
 
 From a Pro B60 owner's runs (issue #4, package fffaf1a) and a Reddit user's two Arcs:

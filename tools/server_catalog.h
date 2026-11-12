@@ -1,4 +1,5 @@
 // The model catalog (the Hugging Face cache and extra folders), DFlash2 drafters, --ctx auto, --list-models.
+#include <charconv>  // (std::from_chars: cached_ctx)
 // Included by tools/server.cpp only, at the place it was cut from (after class Server); not a header of its
 // own. Split out of tools/server.cpp unchanged on 2026-10-24 (QUEUE item 11).
 
@@ -599,7 +600,14 @@ static bool cached_ctx(const std::string& key, AutoCtx& r) {
       a = b + 1;
     }
     if (c.size() < 2) continue;
-    r.ctx = std::stoi(c[0]);
+    // (a damaged row, a crash during the append or two servers appending at once, is skipped and the context computed
+    //  again: std::stoi threw "invalid stoi argument" out of the load, and a row cut inside its digits gave a 12-token
+    //  context. A real row holds 0 (nothing fits), a model's trained context when it is shorter than 4096 (bge: 512), or
+    //  4096 tokens or more; audit 2026-11-13 #4)
+    int v = -1;
+    const auto pr = std::from_chars(c[0].data(), c[0].data() + c[0].size(), v);
+    if (pr.ec != std::errc() || pr.ptr != c[0].data() + c[0].size() || (v != 0 && (v < 256 || v > (1 << 24)))) continue;
+    r.ctx = v;
     r.resident = c[1] == "1";
     double* mem[] = {&r.dev, &r.keep, &r.snap, &r.reserve, &r.weights, &r.mtp, &r.buffers, &r.context, &r.per_1k};
     for (size_t i = 0; i < 9 && i + 2 < c.size(); ++i) *mem[i] = atof(c[i + 2].c_str());
@@ -720,6 +728,23 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
   std::error_code ec;
   fs::create_directories(fs::path(ctx_cache_file()).parent_path(), ec);
   {
+    // (rows are only ever added: past 512 KB the file is rewritten with its newest 1,000 rows, so it cannot grow with
+    //  every settings change; a row lost this way is computed again when it is next needed)
+    if (fs::file_size(ctx_cache_file(), ec) > (512u << 10) && !ec) {
+      std::vector<std::string> rows;
+      {
+        std::ifstream in(ctx_cache_file());
+        for (std::string l; std::getline(in, l);) rows.push_back(l);
+      }
+      const size_t from = rows.size() > 1000 ? rows.size() - 1000 : 0;
+      const std::string tmp = ctx_cache_file() + ".tmp";
+      {
+        std::ofstream w(tmp, std::ios::trunc);
+        for (size_t i = from; i < rows.size(); ++i) w << rows[i] << "\n";
+      }
+      fs::rename(tmp, ctx_cache_file(), ec);
+      if (ec) fs::remove(tmp, ec);
+    }
     std::ofstream o(ctx_cache_file(), std::ios::app);
     o << key << "\t" << r.ctx << "\t" << (r.resident ? 1 : 0);
     for (double v : {r.dev, r.keep, r.snap, r.reserve, r.weights, r.mtp, r.buffers, r.context, r.per_1k}) o << "\t" << (long long)v;

@@ -27,6 +27,9 @@ tests/data/*.opus
 tests/data/*.ogg
 tests/data/*.webm
 tests/data/*.flac
+tests/data/*.mkv
+tests/data/*.mov
+tests/data/*.avi
 
 # Python and editor leftovers
 __pycache__/

@@ -198,6 +198,8 @@ class GgufFile {
   void open_parts() {
     const int64_t n = get_int("split.count", 1);
     if (n <= 1) return;
+    // (no real model has more than a few dozen parts; the part number is written with 5 digits)
+    if (n > 1024) throw std::runtime_error("gguf: " + path + ": split.count " + std::to_string(n) + " is not a real model's (at most 1,024 parts)");
     const size_t at = path.rfind("-00001-of-");
     if (at == std::string::npos) return;  // (a later part opened on its own: only its own tensors)
     for (int64_t k = 2; k <= n; ++k) {
@@ -287,6 +289,11 @@ class GgufFile {
         //  a damaged file, not a vector of gigabytes in memory)
         const uint64_t w = et == 8 ? 8 : et == 0 || et == 1 || et == 7 ? 1 : et == 2 || et == 3 ? 2 : et == 10 || et == 11 || et == 12 ? 8 : 4;
         if (n > (size_ - pos_) / w) throw std::runtime_error("gguf: truncated array");
+        // (each element is kept in 8 bytes or a string: 64 M elements at most, far past any vocabulary (262 K) or merge
+        //  list, so a crafted array cannot make the loader ask for gigabytes; audit 2026-11-13 #2)
+        // (strings: 16 M at most, each at least 32 bytes in memory for its 8 in the file)
+        if (n > (et == 8 ? (16ull << 20) : (64ull << 20)))
+          throw std::runtime_error("gguf: " + path + ": an array of " + std::to_string(n) + " elements (at most " + (et == 8 ? "16" : "64") + " M)");
         if (et == 8) { std::vector<std::string> v(n); for (auto& s : v) s = rd_str(); return v; }
         if (et == 6 || et == 12) { std::vector<double> v(n); for (auto& x : v) x = et == 6 ? rd<float>() : rd<double>(); return v; }
         std::vector<int64_t> v(n);
@@ -304,6 +311,11 @@ class GgufFile {
     // (a key-value pair takes 12 bytes or more, a tensor entry 24: counts the file cannot hold are refused before
     //  anything is allocated for them)
     if (nkv > (size_ - pos_) / 12 || nt > (size_ - pos_) / 24) throw std::runtime_error("gguf: bad tensor / key count");
+    // (and no more than a real model has: each entry takes ~130-140 bytes in memory against 12 / 24 in the file, so a
+    //  crafted 1-2 GB file could ask for 10+ GB before failing; a large model has a few thousand tensors and keys.
+    //  Audit 2026-11-13 #2)
+    if (nkv > 1000000 || nt > 1000000) throw std::runtime_error("gguf: " + path + ": " + std::to_string(nt) + " tensors / " +
+                                                                 std::to_string(nkv) + " keys is not a real model's (at most 1,000,000)");
     for (uint64_t i = 0; i < nkv; ++i) {
       std::string key = rd_str();
       uint32_t t = rd<uint32_t>();

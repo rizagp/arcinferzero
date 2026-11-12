@@ -66,6 +66,17 @@ inline void emit(int lvl, const char* s, size_t n) noexcept {
   const size_t pl = strlen(pre);
   snprintf(pre + pl, sizeof pre - pl, "%c ", kL[lvl < 0 ? 0 : lvl > 3 ? 3 : lvl]);
   const char* col = !c.colors ? "" : lvl == ERR ? "\x1b[31m" : lvl == WRN ? "\x1b[33m" : lvl == DBG ? "\x1b[90m" : "";
+  // (control bytes but the tab shown as '?': a CR or an escape in text from a model file or a request rewrote the
+  //  line on a console, or wrote console codes; audit 2026-11-13 #6. Copied only when there is one)
+  std::string clean;
+  for (size_t i = 0; i < n; ++i) {
+    const unsigned char ch = (unsigned char)s[i];
+    if ((ch < 0x20 && ch != '\t') || ch == 0x7f) {
+      if (clean.empty()) try { clean.assign(s, n); } catch (...) { break; }
+      clean[i] = '?';
+    }
+  }
+  if (!clean.empty()) s = clean.c_str();
   const int len = n > (size_t)INT32_MAX ? INT32_MAX : (int)n;
   bool locked = false;
   try {
