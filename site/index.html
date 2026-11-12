@@ -319,7 +319,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
     <div class="proof">
       <div><div class="eb">Core Ultra 5 125H</div><b>851<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 8K prompt, experts streamed from the SSD. A 131K-token context read in 6.7 minutes.</p></div>
       <div><div class="eb">Core Ultra 9 285H</div><b>302<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt on the Arc 140T's XMX. Flash Next generates 26 tok/s there with DFlash2.</p></div>
-      <div><div class="eb">1× Arc Pro B60</div><b>1,081<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt. The 35B reads 3,232 tok/s and generates 89 tok/s, 110 with MTP.</p></div>
+      <div><div class="eb">1× Arc Pro B60</div><b>1,292<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt. The 35B reads 3,232 tok/s and generates 89 tok/s, 110 with MTP.</p></div>
       <div><div class="eb">4× Arc Pro B60</div><b>4,290<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 16K prompt, one model split over four cards with tensor parallelism.</p></div>
     </div>
     <p class="src">Laptop: <code>bench/website_bench.ps1</code>, 2026-11-09. 285H and B60: measured by users on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a> and <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, 2026-11-06 to 11-13.</p>
@@ -341,7 +341,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <div class="cap"><span>Prompt · tok/s</span><span>4K prompt unless noted</span></div>
         <div class="row me"><span class="n">Core Ultra 5 125H<small>Xe-LPG · DP4a · 8K</small></span><span class="t"><span class="f" style="width:7.8%"></span></span><span class="v">135</span></div>
         <div class="row"><span class="n">Core Ultra 9 285H<small>Arc 140T · XMX · H8</small></span><span class="t"><span class="f" style="width:17.4%"></span></span><span class="v">302</span></div>
-        <div class="row"><span class="n">1× Arc Pro B60<small>XMX · H8</small></span><span class="t"><span class="f" style="width:62.3%"></span></span><span class="v">1,081</span></div>
+        <div class="row"><span class="n">1× Arc Pro B60<small>XMX · H8</small></span><span class="t"><span class="f" style="width:74.5%"></span></span><span class="v">1,292</span></div>
         <div class="row"><span class="n">2× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:78.9%"></span></span><span class="v">1,369</span></div>
         <div class="row"><span class="n">3× Arc Pro B60<small>512-token prompt</small></span><span class="t"><span class="f d" style="width:30.6%"></span></span><span class="v">531<small>pp512</small></span></div>
         <div class="row"><span class="n">4× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">1,734</span></div>
@@ -590,7 +590,7 @@ zero-server start -Model 27b -Slots 2</pre>
       <article class="card">
         <div class="eb">XMX</div>
         <h3>Prompts on the matrix engines</h3>
-        <p>The prompt GEMMs run as int8 DPAS, checked bit for bit against DP4a at start. H8 rotations with 4 column groups took the 27B from 766 to 1,024 tok/s at 4K, and fewer small kernels around them to 1,081.</p>
+        <p>The prompt GEMMs run as int8 DPAS, checked bit for bit against DP4a at start. H8 rotations with 4 column groups took the 27B from 766 to 1,024 tok/s at 4K, fewer small kernels around them to 1,081, and wider tiles (32 tokens x 64 columns per sub-group) to 1,292.</p>
       </article>
       <article class="card">
         <div class="eb">Tensor parallel</div>

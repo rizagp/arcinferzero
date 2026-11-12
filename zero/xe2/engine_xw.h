@@ -1,14 +1,17 @@
 // The H8R prompt GEMM on XMX with a wider tile per sub-group (QUEUE 33.4 / 33.4b, kernels/gemm_xw.cl and
 // gemm_xw8.cl): a part of class Engine (zero/engine.h), included inside the class body after zero/xe2/engine_xe2.h
-// and engine_h8.h; not a header of its own. On by default only in the Arc 140T preset (below); elsewhere off unless
-// asked for, every path unchanged without the switch.
+// and engine_h8.h; not a header of its own. On by default in the Arc 140T preset and where H8 is the default on a
+// discrete card (h8_auto_, below); elsewhere off unless asked for, every path unchanged without the switch.
 //
 // ARC_GEMM_XW=1: where H8R runs on XMX (h8_ with per-column scales: the Qwen dense models on discrete cards by
 // default, the Arc 140T preset's chunks of 512+ tokens, ARC_H8=1 elsewhere), the H8 GEMMs whose shape it takes (M a
 // multiple of XW_TM, N of 16 * XW_NC) go through the wide-tile kernel instead of gemm.cl / gemm_x8.cl; the others
 // stay. On by default in the Arc 140T preset since 2026-11-11 (32 x 16 tiles, 256 registers: its owner's sweep, issue
 // #5, 27B 512 / 4K / 16K prompts 147.6 / 214.1 / 205.4 -> 204.9 / 298.6 / 283.1 tok/s, logits identical; ARC_GEMM_XW=0:
-// off); elsewhere off until a B60 measures it.
+// off). On by default with h8_auto_ (the Qwen dense models on discrete cards with 16-lane XMX) since 2026-11-13: a Pro
+// B60's sweep (issue #4, bench\xw_sweep.ps1), 27B 512 / 4K / 16K prompts 691.1 / 1,066.5 / 978.9 -> 716.8 / 1,291.7 /
+// 1,169.5 tok/s with 32 x 64 tiles (32 x 32 739.5 / 1,267.5 / 1,147.6; 16 x 64 and 32 x 16 slower than the default),
+// logits identical at every shape.
 //   16-lane XMX (Xe2 / Xe3): gemm_xw.cl, XW_TM tokens x XW_NC 16-column groups (32 x 4 = 32 x 64).
 //   8-lane XMX (the 140T, Alchemist-kind): gemm_xw8.cl, coalesced loads (a group's weights in 4 block reads, an
 //   activation row in one), XW_TM x XW_NC (32 x 1 = 32 x 16, both halves, 256 registers; before 2026-11-11 16 x 16 at
@@ -57,10 +60,10 @@
     return t;
   }
   // (h8_ and xmx_ known: after the XMX and H8 checks of the constructor)
-  // (the 140T preset: on unless ARC_GEMM_XW=0; elsewhere ARC_GEMM_XW=1)
+  // (the 140T preset and h8_auto_ (discrete cards): on unless ARC_GEMM_XW=0; elsewhere ARC_GEMM_XW=1)
   bool xw_wanted() const {
     const char* e = getenv("ARC_GEMM_XW");
-    const bool on = e ? atoi(e) != 0 : p140_;
+    const bool on = e ? atoi(e) != 0 : (p140_ || h8_auto_);
     return h8_ && h8_row() && (xw_try() || (on && xmx_));
   }
   cl_kernel xw_kernel() {

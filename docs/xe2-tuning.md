@@ -23,7 +23,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GEMM_2D=0` / `ARC_GEMM_2D_PF=0` | on, where the driver offers them with XMX | the XMX prompt GEMM's activations by 2D block loads (one load for 8 token rows x 64 bytes), with a prefetch of the next 64 bytes; these switches turn them off | 8 |
 | `ARC_H8=0` | on for Qwen dense models on discrete cards with 16-lane XMX (with `ARC_GEMM_CG=4`), and in the 140T preset | H8 off (2026-11-08: B60 27B 512 / 4K / 16K 615 / 766 / 706 -> 677 / 1,024 / 937 tok/s with it) | 8 |
 | `ARC_H8=1` | off | the H8 GEMM (QUEUE 31.12): weights and activations Hadamard-rotated, int8 with one scale per column and per token; DPAS on XMX, DP4a else; iGPU too. Qwen models rotate the activations from f32 (`ARC_H8_INT=1`: from int8). `ARC_H8_SB=1`: one scale per 256 values, as the B60 ran it on 2026-11-06. `ARC_H8_D=1`: with random signs. On a B60's 27B the fastest so far (918 tok/s against 764); slower than the default on the laptop | 8 |
-| `ARC_GEMM_XW=1` | off; on in the Arc 140T preset (gemm_xw8 32 x 16 at 256 registers, 2026-11-11: 27B 4K prompt 214 -> 299 tok/s; `=0` off) | the H8 (per-column / per-token scale) prompt GEMMs through `gemm_xw.cl` (QUEUE 33.4, 2026-11-11): a sub-group holds 32 tokens x 64 columns instead of 16 or 32 x 16, so each 64-value chunk of activations is loaded once for 64 columns and each column group's weights once for 32 tokens (twice the DPAS work per byte loaded). Bit-identical to `gemm.cl` (checked at start bit for bit; the laptop with DPAS emulated: the 4B's logits identical at every shape). `_TM=16/32`, `_NC=1/2/4` (16-column groups), `_GRF=128`; `bench\xw_sweep.ps1`. ocloc `bmg`: 32 x 64 at 256 registers no spills (128 DPAS a superblock), at 128 registers 5.6 KB spilled; the smaller shapes no spills at either | 11 |
+| `ARC_GEMM_XW=1` | on where H8 is on by default on discrete cards since 2026-11-13 (gemm_xw 32 x 64: a B60's 27B 512 / 4K / 16K prompts 691 / 1,067 / 979 -> 717 / 1,292 / 1,170 tok/s) and in the Arc 140T preset (gemm_xw8 32 x 16 at 256 registers, 2026-11-11: 27B 4K prompt 214 -> 299 tok/s); off elsewhere; `=0` off | the H8 (per-column / per-token scale) prompt GEMMs through `gemm_xw.cl` (QUEUE 33.4, 2026-11-11): a sub-group holds 32 tokens x 64 columns instead of 16 or 32 x 16, so each 64-value chunk of activations is loaded once for 64 columns and each column group's weights once for 32 tokens (twice the DPAS work per byte loaded). Bit-identical to `gemm.cl` (checked at start bit for bit; the laptop with DPAS emulated: the 4B's logits identical at every shape). `_TM=16/32`, `_NC=1/2/4` (16-column groups), `_GRF=128`; `bench\xw_sweep.ps1`. ocloc `bmg`: 32 x 64 at 256 registers no spills (128 DPAS a superblock), at 128 registers 5.6 KB spilled; the smaller shapes no spills at either | 11 |
 | `ARC_GEMV_GU=1` | off | one token: the FFN's gate and up GEMVs in one launch of 2F rows instead of two of F (QUEUE 33.5, 2026-11-11), each row as in its own launch; bit-identical. The laptop: no faster (27B ~3 % slower); `decode_try.ps1` row `GEMV_GU=1` | 7 |
 | `ARC_X16_TM` / `_GRF` / `_CG` | 32 / 256 / 1 | its tiles and register file | 6 |
 | `ARC_GEMV_GRF=256` | 128 | the single-token GEMV's register file | 2 |
@@ -651,8 +651,16 @@ each: its RoPE's `pow` / `cos` / `sin` in 4 lanes), and the codebook GEMVs thems
 
 **A Pro B60, 2026-11-12 (issue #4, package fffaf1a), 27B, tok/s at 512 / 4K / 16K tokens:** default 674.3 / 992.9 /
 841.7; 32 x 64 585.2 / 944.6 / 717.3; 32 x 32 524.3 / 804.3 / 693.3; 16 x 64 505.5 / 750.5 / 780.4; 32 x 16 542.3 /
-747.2 / 541.9 (all identical logits). The default (gemm.cl's XMX kernel with 2D block loads) wins at every size, so
-the wide tiles stay off on discrete cards; they are the 140T's default (8-lane XMX, no 2D loads).
+747.2 / 541.9 (all identical logits). The default (gemm.cl's XMX kernel with 2D block loads) won at every size, and
+the wide tiles stayed off on discrete cards.
+
+**The same B60, 2026-11-13 (package 2026.11.13.04):** default 691.1 / 1,066.5 / 978.9; 32 x 64 **716.8 / 1,291.7 /
+1,169.5**; 32 x 32 739.5 / 1,267.5 / 1,147.6; 16 x 64 598.2 / 940.5 / 871.1; 32 x 16 636.9 / 955.9 / 884.1 (identical
+logits). The kernels did not change between the runs (`gemm_xw.cl` and its 2D loads date from 2026-11-11). The
+2026-11-12 run was on a slowed card: in that session the default's `--prof` passes fell from 486.6 to 421.3 tok/s and
+the measured bandwidth was 316 GB/s (433 on 2026-11-13), and that run's default (992.9) sits below the card's other
+runs of the day (1,068-1,081). So 32 x 64 is the default since 2026-11-13 wherever H8 is the default on a discrete
+card; the 140T keeps gemm_xw8 32 x 16 (8-lane XMX, no 2D loads).
 
 `gemm.cl`'s XMX kernel gives a sub-group 16 or 32 tokens x 16 columns: each 64-value chunk of a column group's
 weights (1 KB) serves 16 / 32 tokens, and the activation rows are loaded again by every column group. `gemm_xw.cl`

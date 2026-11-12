@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-13 (dawn): the wide-tile H8 GEMM on by default on discrete cards (a B60: 27B 4K prompt +21 %)
+
+- **`ARC_GEMM_XW` on by default where H8 is** (the Qwen dense models on discrete cards with 16-lane XMX; it was on only
+  in the Arc 140T preset): the H8 prompt GEMMs with 32 x 64 tiles per sub-group (`gemm_xw.cl`, QUEUE 33.4), checked
+  bit for bit at start. A Pro B60's sweep (issue #4, manoreken2, `bench\xw_sweep.ps1`), Qwen3.8 27B: 512 / 4K / 16K
+  prompts 691.1 / 1,066.5 / 978.9 -> **716.8 / 1,291.7 / 1,169.5 tok/s**, logits identical; 32 x 32 tiles 739.5 /
+  1,267.5 / 1,147.6, 16 x 64 and 32 x 16 slower than without. `ARC_GEMM_XW=0`: as before. The laptop's path unchanged
+  (runz's logits identical to release 2026.11.13.04). The run of 2026-11-12 that kept it off (the default faster at every
+  size) was on a slowed card: its default's passes fell from 486.6 to 421.3 tok/s and it measured 316 GB/s against 433
+  (docs/xe2-tuning.md section 11).
+- **The chunked DeltaNet on XMX stays off** (`ARC_GDN_CHUNK=3`, QUEUE 33.1): on the same B60 the 27B's 4K prompt 918.3
+  tok/s against 1,087.1 (`gdn_chunk_x` 886 ms against `gdn_recur`'s 290), KL 0.00102 against the sequential kernel;
+  the vector forms 886-893 tok/s.
+
 ## 2026-11-13 (before dawn): the Linux port, the expert file's writing through the platform layer
 
 - **`plat::DirectWriter`, `page_alloc` / `page_free`, `trim_working_set`, `replace_file`, `remove_file`,
