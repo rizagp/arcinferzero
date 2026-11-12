@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
   int reps = 200;
   for (int i = 1; i < argc; ++i)
     if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = std::max(10, atoi(argv[++i]));
-  if (!ze_load()) { fprintf(stderr, "cannot load ze_loader.dll (Level Zero, part of the Intel graphics driver)\n"); return 1; }
+  if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll (Level Zero, part of the Intel graphics driver)\n"); return 1; }
   HMODULE zl = GetModuleHandleA("ze_loader.dll");
   zeDeviceCanAccessPeer_ = (PFN_canAccessPeer)GetProcAddress(zl, "zeDeviceCanAccessPeer");
   ZE_CHECK(zeInit(1));
@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
     }
     if (here.size() > gpus.size()) { gpus = here; drv = d; }
   }
-  if (gpus.empty()) { fprintf(stderr, "no Level Zero GPU found\n"); return 1; }
+  if (gpus.empty()) { zlog::eprintf("no Level Zero GPU found\n"); return 1; }
   printf("GPUs: %zu\n", gpus.size());
   for (size_t i = 0; i < gpus.size(); ++i) {
     const Gpu& g = gpus[i];
@@ -127,7 +127,7 @@ int main(int argc, char** argv) {
   for (Gpu& g : gpus) {
     g.cl = make_list(ctx, g.dev, g.compute_ord);
     if (g.copy_ord != UINT32_MAX) g.cl_copy = make_list(ctx, g.dev, g.copy_ord);
-    if (!g.cl) { fprintf(stderr, "cannot create a command list on %s\n", g.p.name); return 1; }
+    if (!g.cl) { zlog::eprintf("cannot create a command list on %s\n", g.p.name); return 1; }
   }
 
   const size_t small = 20 * 1024, big = (size_t)40 << 20;  // a token's sync (5120 floats) / a prompt chunk's rows

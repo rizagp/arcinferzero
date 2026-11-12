@@ -55,7 +55,7 @@ static std::vector<float> rows_f32(const GgufFile& g, const std::string& name, i
 }
 
 int main(int argc, char** argv) {
-  if (argc < 2) { fprintf(stderr, "usage: npu_ffn model.gguf [layer] [tokens] [npu share] [reps]\n"); return 1; }
+  if (argc < 2) { zlog::eprintf("usage: npu_ffn model.gguf [layer] [tokens] [npu share] [reps]\n"); return 1; }
   setvbuf(stdout, nullptr, _IONBF, 0);
   const int L = argc > 2 ? atoi(argv[2]) : 11, M = argc > 3 ? atoi(argv[3]) : 4096, reps = argc > 5 ? atoi(argv[5]) : 6;
   const double share = argc > 4 ? atof(argv[4]) : 0.333;
@@ -64,22 +64,22 @@ int main(int argc, char** argv) {
   const GgufTensor& tg = gg.get(p + "ffn_gate.weight");
   const int K = (int)tg.dims[0], N = (int)tg.dims[1];
   const int Nn = std::max(64, (int)std::lround(N * share / 64.0) * 64), Ng = N - Nn;  // (both multiples of 16)
-  if (K % 256 || Ng % 16 || M % 128) { fprintf(stderr, "unsupported shape\n"); return 1; }
+  if (K % 256 || Ng % 16 || M % 128) { zlog::eprintf("unsupported shape\n"); return 1; }
   printf("layer %d ffn_gate / ffn_up: K %d, N %d -> GPU %d + NPU %d columns, %d tokens\n", L, K, N, Ng, Nn, M);
 
   // Level Zero for every device type first (the GPU runtime below asks for GPUs only, which would hide the NPU)
-  if (!ze_load() || zeInit(0) != ZE_RESULT_SUCCESS) { fprintf(stderr, "Level Zero init failed\n"); return 1; }
+  if (!ze_load() || zeInit(0) != ZE_RESULT_SUCCESS) { zlog::eprintf("Level Zero init failed\n"); return 1; }
   ClRt gpu;
   if (!gpu.init()) return 1;
   npu::Rt npu;
-  if (!npu.init()) { fprintf(stderr, "no NPU\n"); return 1; }
+  if (!npu.init()) { zlog::eprintf("no NPU\n"); return 1; }
 
   // ---- shared memory: the int8 rows and their scales (GPU writes, NPU reads), the NPU's two f16 outputs
   const size_t a_off = 0, sa_off = a_off + (size_t)M * K, cg_off = (sa_off + (size_t)M * 2 + 4095) / 4096 * 4096,
                cu_off = cg_off + (size_t)M * Nn * 2, total = (cu_off + (size_t)M * Nn * 2 + 65535) / 65536 * 65536;
   uint8_t* shm = (uint8_t*)VirtualAlloc(nullptr, total, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   if (!shm || npu::import_memory(zrt::ctx, shm, total) != shm || npu::import_memory(npu.ctx, shm, total) != shm) {
-    fprintf(stderr, "cannot map the shared memory into both contexts\n");
+    zlog::eprintf("cannot map the shared memory into both contexts\n");
     return 1;
   }
   auto view = [&](size_t off, size_t bytes) {  // a cl_mem of the GPU runtime on part of the shared block
@@ -155,10 +155,10 @@ int main(int argc, char** argv) {
   if (outs.size() != 2 || !npu.set(gr, "A", shm + a_off) || !npu.set(gr, "SA", shm + sa_off) || !npu.set(gr, "BG", bq[0]) ||
       !npu.set(gr, "BU", bq[1]) || !npu.set(gr, "SBG", bs[0]) || !npu.set(gr, "SBU", bs[1]) ||
       npu.g->pfnSetArgumentValue(gr, outs[0], shm + cg_off) != 0 || npu.g->pfnSetArgumentValue(gr, outs[1], shm + cu_off) != 0) {
-    fprintf(stderr, "cannot set the NPU graph's arguments\n");
+    zlog::eprintf("cannot set the NPU graph's arguments\n");
     return 1;
   }
-  if (!npu.initialize(gr)) { fprintf(stderr, "NPU graph initialize failed\n"); return 1; }
+  if (!npu.initialize(gr)) { zlog::eprintf("NPU graph initialize failed\n"); return 1; }
 
   // ---- the GPU's prompt GEMM (zero/kernels/gemm.cl as the engine builds it for W8 weights) on random W8
   const int SG = 16, nsb = K / 256, G = N / SG, TM = 16;
@@ -219,11 +219,11 @@ int main(int argc, char** argv) {
     rowq();
     clFinish(gpu.queue);
     const auto tn = now();
-    if (!npu.start(gr)) { fprintf(stderr, "NPU start failed\n"); exit(1); }
+    if (!npu.start(gr)) { zlog::eprintf("NPU start failed\n"); exit(1); }
     gemm(Ng);
     gemm(Ng);
     clFinish(gpu.queue);
-    if (!npu.wait()) { fprintf(stderr, "NPU run failed\n"); exit(1); }
+    if (!npu.wait()) { zlog::eprintf("NPU run failed\n"); exit(1); }
     npu_ms = ms_since(tn);
     merge(g_cg);
     clFinish(gpu.queue);

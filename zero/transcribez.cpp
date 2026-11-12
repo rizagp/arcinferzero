@@ -165,12 +165,12 @@ int main(int argc, char** argv) {
       gpu = g.get();
       be = std::move(g);
       if (gpu->npu())
-        fprintf(stderr, "whisper: NPU encoder: %.2f GiB of host memory, graphs %s\n", gpu->npu()->host_bytes / 1073741824.0,
+        zlog::eprintf("whisper: NPU encoder: %.2f GiB of host memory, graphs %s\n", gpu->npu()->host_bytes / 1073741824.0,
                 gpu->npu()->all_cached ? "from the cache" : "compiled");
     } else {
       throw std::runtime_error("--device " + device + ": gpu or npu (the CPU reference is tools\\ref_whisper)");
     }
-    fprintf(stderr, "whisper: %s loaded in %.1f s (%s, %.2f GiB GPU)\n", fs::path(model_dir).filename().string().c_str(),
+    zlog::eprintf("whisper: %s loaded in %.1f s (%s, %.2f GiB GPU)\n", fs::path(model_dir).filename().string().c_str(),
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), device.c_str(),
             gpu ? gpu->gpu_bytes / 1073741824.0 : 0.0);
     if (!dump_enc.empty() || !dump_lg.empty()) {  // checks: the first window, as tools/ref_whisper dumps it
@@ -228,13 +228,13 @@ int main(int argc, char** argv) {
             std::string bar(fill, '#');
             bar += std::string(W - fill, '.');
             const double left = speed > 0 ? (total - done) / speed : 0;
-            fprintf(stderr, "\r%s  [%s] %3d %%  %s / %s  %.0fx  ~%s left   ", name.c_str(), bar.c_str(),
+            zlog::eprintf("\r%s  [%s] %3d %%  %s / %s  %.0fx  ~%s left   ", name.c_str(), bar.c_str(),
                     total > 0 ? (int)(100 * done / total) : 0, mmss(done).c_str(), mmss(total).c_str(), speed, mmss(left).c_str());
           }
           return true;
         });
         const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - tf).count();
-        if (!json_progress) fprintf(stderr, "\n");
+        if (!json_progress) zlog::eprintf("\n");
         // outputs: --out a folder (or nothing: the transcripts folder) -> <stem><ext>; a file name (one input, one format)
         fs::path dir = out.empty() ? fs::path(app_dir()) / "transcripts" : fs::path(out);
         const bool to_file = !out.empty() && dir.has_extension() && files.size() == 1 && fmts.size() == 1;
@@ -251,13 +251,13 @@ int main(int argc, char** argv) {
           std::ofstream o(dst, std::ios::binary);
           o << render(fm, r, co, f.stem().string(), opt.task);
           if (!o) throw std::runtime_error("cannot write " + dst.string());
-          if (!json_progress) fprintf(stderr, "  %s\n", dst.string().c_str());
+          if (!json_progress) zlog::eprintf("  %s\n", dst.string().c_str());
         }
-        fprintf(stderr, "%s: %.1f s of audio in %.1f s (%.1fx realtime), %zu segments\n", name.c_str(), r.duration, el,
+        zlog::eprintf("%s: %.1f s of audio in %.1f s (%.1fx realtime), %zu segments\n", name.c_str(), r.duration, el,
                 r.duration / std::max(el, 1e-6), r.segments.size());
       } catch (const std::exception& e) {
         ++failed;
-        fprintf(stderr, "\n%s: error: %s\n", f.string().c_str(), e.what());
+        zlog::eprintf("\n%s: error: %s\n", f.string().c_str(), e.what());
       }
     }
     if (gpu && !gpu->prof_ms.empty()) {
@@ -265,14 +265,14 @@ int main(int argc, char** argv) {
       double tot = 0;
       for (auto& [k, ms] : gpu->prof_ms) { v.push_back({ms, k}); tot += ms; }
       std::sort(v.rbegin(), v.rend());
-      fprintf(stderr, "GPU time %.0f ms%s:\n", tot,
+      zlog::eprintf("GPU time %.0f ms%s:\n", tot,
               gpu->npu() ? (" (NPU encoder " + std::to_string((int)gpu->npu_ms) + " ms)").c_str() : "");
       for (auto& [ms, k] : v)
-        fprintf(stderr, "  %-14s %8.0f ms  %4.1f %%  (%lld launches)\n", k.c_str(), ms, 100 * ms / tot, (long long)gpu->prof_n[k]);
+        zlog::eprintf("  %-14s %8.0f ms  %4.1f %%  (%lld launches)\n", k.c_str(), ms, 100 * ms / tot, (long long)gpu->prof_n[k]);
     }
     return failed ? 1 : 0;
   } catch (const std::exception& e) {
-    fprintf(stderr, "error: %s\n", e.what());
+    zlog::eprintf("error: %s\n", e.what());
     return 1;
   }
 }

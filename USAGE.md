@@ -177,7 +177,8 @@ zero-server help                # the common commands and options; help options 
 
 The server log is `%USERPROFILE%\.inferzero\server.log`. Each start writes it anew; the earlier servers' logs are
 kept in `logs\` next to it, named by the local date and time of their last line
-(`server_2026-11-09_14-13-48.log`), the newest 10. The server uses port 8090. For scripts, `zero-server`'s
+(`server_2026-11-09_14-13-48.log`), the newest 10; older ones in a zip each (`server_<date>_<time>.zip`), kept 90 days
+or 200 MB at most. The log's format, its options and `/metrics`: [docs/logging.md](docs/logging.md). The server uses port 8090. For scripts, `zero-server`'s
 exit code says what happened: 0 ok, 1 a wrong option or value, 2 the server stopped while loading, 3 not ready within
 10 minutes, 4 the port is used by another program.
 

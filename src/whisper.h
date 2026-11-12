@@ -672,7 +672,7 @@ class Transcriber {
     auto since = [](clk::time_point a) { return std::chrono::duration<double, std::milli>(clk::now() - a).count(); };
     struct Report {
       const bool& on; double &a, &b, &c;
-      ~Report() { if (on) fprintf(stderr, "whisper times: mel %.0f ms, windows %.0f ms, word timestamps %.0f ms\n", a, b, c); }
+      ~Report() { if (on) zlog::eprintf("whisper times: mel %.0f ms, windows %.0f ms, word timestamps %.0f ms\n", a, b, c); }
     } report{times, t_mel, t_win, t_words};
     auto t0 = clk::now();
     const std::vector<float> mel = log_mel(x, m_.hp.n_mels, n_frames, content);
@@ -753,7 +753,7 @@ class Transcriber {
           lp = language_probs(allowed);
           wlang = lp[0].first;
           if (dbg && lp.size() > 1)
-            fprintf(stderr, "window %7.2f s: %s %.3f %s %.3f\n", time_offset, lp[0].first.c_str(), lp[0].second,
+            zlog::eprintf("window %7.2f s: %s %.3f %s %.3f\n", time_offset, lp[0].first.c_str(), lp[0].second,
                     lp[1].first.c_str(), lp[1].second);
           if (!opt.prefer_language.empty() && wlang != opt.prefer_language && lp[0].second < opt.prefer_below &&
               m_.sp.lang_token(opt.prefer_language) >= 0) {
@@ -806,7 +806,7 @@ class Transcriber {
           if (ambiguous && !silence(r, opt)) {
             Decoded r2 = decode_with_fallback(make_prompt(true), lp[1].first, opt, window_no);
             if (dbg)
-              fprintf(stderr, "lang %7.2f s: %s %.2f avg %.3f n %zu | %s %.2f avg %.3f n %zu\n", time_offset,
+              zlog::eprintf("lang %7.2f s: %s %.2f avg %.3f n %zu | %s %.2f avg %.3f n %zu\n", time_offset,
                       wlang.c_str(), lp[0].second, r.avg_logprob, r.tokens.size(), lp[1].first.c_str(), lp[1].second,
                       r2.avg_logprob, r2.tokens.size());
             if (r2.avg_logprob > r.avg_logprob) {
@@ -854,7 +854,7 @@ class Transcriber {
       const size_t before = res.segments.size();
       drop_unvoiced(res.segments, x, fixed ? lang : opt.expect_language);
       if (dbg && res.segments.size() != before)
-        fprintf(stderr, "whisper: %zu segments over silence / noise left out\n", before - res.segments.size());
+        zlog::eprintf("whisper: %zu segments over silence / noise left out\n", before - res.segments.size());
     }
     return res;
   }
@@ -1021,7 +1021,7 @@ class Transcriber {
       }
       v.lang = p[0].first != two[0] && p[0].second < 0.8f ? two[0] : p[0].first;
       if (dbg)
-        fprintf(stderr, "utt %7.2f-%7.2f s: %s %.3f\n", (seek + v.a) * 0.01, (seek + v.b) * 0.01, p[0].first.c_str(),
+        zlog::eprintf("utt %7.2f-%7.2f s: %s %.3f\n", (seek + v.a) * 0.01, (seek + v.b) * 0.01, p[0].first.c_str(),
                 p[0].second);
     }
     b_.part_done();
@@ -1042,9 +1042,9 @@ class Transcriber {
       if (r.lang != two[0] && r.b - r.a < 400) r.lang = two[0];
     join(runs);
     if (dbg && runs.size() > 1) {
-      fprintf(stderr, "runs %7.2f s:", (double)seek * kHop / kSampleRate);
-      for (const Run& r : runs) fprintf(stderr, " %s %.1f-%.1f", r.lang.c_str(), r.a * 0.01, r.b * 0.01);
-      fprintf(stderr, " (%zu utterances)\n", u.size());
+      zlog::eprintf("runs %7.2f s:", (double)seek * kHop / kSampleRate);
+      for (const Run& r : runs) zlog::eprintf(" %s %.1f-%.1f", r.lang.c_str(), r.a * 0.01, r.b * 0.01);
+      zlog::eprintf(" (%zu utterances)\n", u.size());
     }
     return runs;
   }

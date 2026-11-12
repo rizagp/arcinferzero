@@ -72,12 +72,12 @@ int main(int argc, char** argv) {
   try {
     return run(argc, argv);
   } catch (const std::exception& e) {
-    fprintf(stderr, "error: %s\n", e.what());
+    zlog::eprintf("error: %s\n", e.what());
     return 1;
   }
 }
 static int run(int argc, char** argv) {
-  if (argc < 4) { fprintf(stderr, "usage: ref_qwen3a mmproj.gguf audio out.bin [seconds]\n"); return 1; }
+  if (argc < 4) { zlog::eprintf("usage: ref_qwen3a mmproj.gguf audio out.bin [seconds]\n"); return 1; }
   GgufFile g(argv[1]);
   G = &g;
   std::vector<float> s = audio::decode_16k_file(argv[2], 0);
@@ -113,7 +113,7 @@ static int run(int argc, char** argv) {
       for (int i = 0; i < E; ++i) y[(size_t)t * E + i] += pe[(size_t)t * E + i];
     x.insert(x.end(), y.begin(), y.end());
     for (int t = 0; t < nt; ++t) win_of.push_back(c / 8);
-    fprintf(stderr, "\rconv chunk %d/%d", c + 1, nch);
+    zlog::eprintf("\rconv chunk %d/%d", c + 1, nch);
   }
   const int N = (int)win_of.size(), D = E / nh;
   for (int il = 0; il < L; ++il) {
@@ -153,7 +153,7 @@ static int run(int argc, char** argv) {
     for (float& a : u) a = gelu(a);
     const std::vector<float> d = linear(u, N, FF, p + "ffn_down");
     for (size_t i = 0; i < x.size(); ++i) x[i] += d[i];
-    fprintf(stderr, "\rlayer %d/%d     ", il + 1, L);
+    zlog::eprintf("\rlayer %d/%d     ", il + 1, L);
   }
   const std::vector<float> pw = W("a.post_ln.weight"), pb = W("a.post_ln.bias");
   for (int t = 0; t < N; ++t) layernorm(&x[(size_t)t * E], E, pw.data(), pb.data(), eps);
@@ -161,7 +161,7 @@ static int run(int argc, char** argv) {
   for (float& a : y) a = gelu(a);
   const std::vector<float> out = linear(y, N, (int)(y.size() / N), "mm.a.mlp.2");
   FILE* fo = fopen(argv[3], "wb");
-  if (!fo) { fprintf(stderr, "cannot write %s\n", argv[3]); return 1; }
+  if (!fo) { zlog::eprintf("cannot write %s\n", argv[3]); return 1; }
   fwrite(out.data(), 4, out.size(), fo);
   fclose(fo);
   printf("\n%d frames -> %d tokens x %d -> %s\n", F, N, (int)(out.size() / N), argv[3]);

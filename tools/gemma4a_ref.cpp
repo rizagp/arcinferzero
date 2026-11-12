@@ -182,13 +182,13 @@ static Vec conv(const Vec& in, int Ci, int T, int F, const Vec& w, const Vec& nw
 }
 
 int main(int argc, char** argv) {
-  if (argc < 3) { fprintf(stderr, "usage: gemma4a_ref mmproj.gguf clip\n"); return 1; }
+  if (argc < 3) { zlog::eprintf("usage: gemma4a_ref mmproj.gguf clip\n"); return 1; }
   const auto t0 = std::chrono::steady_clock::now();
   GgufFile f(argv[1]);
   G = &f;
   w16 = getenv("REF_AW") && std::string(getenv("REF_AW")) == "f16";
   const std::string clip = argv[2];
-  if (f.get_str("clip.audio.projector_type") != "gemma4a") { fprintf(stderr, "not a gemma4a mmproj\n"); return 1; }
+  if (f.get_str("clip.audio.projector_type") != "gemma4a") { zlog::eprintf("not a gemma4a mmproj\n"); return 1; }
   const int E = (int)f.get_int("clip.audio.embedding_length", 0), L = (int)f.get_int("clip.audio.block_count", 0);
   const int nh = (int)f.get_int("clip.audio.attention.head_count", 8), n_mel = (int)f.get_int("clip.audio.num_mel_bins", 128);
   const int D = E / nh, R = 13, CTX = 12;
@@ -333,13 +333,13 @@ int main(int argc, char** argv) {
     n_tok += N;
   }
   const int n_out = mmp.out;
-  fprintf(stderr, "f32 reference: %.1f s audio -> %d tokens in %.1f s (%d threads)%s\n", s16.size() / 16000.0, n_tok,
+  zlog::eprintf("f32 reference: %.1f s audio -> %d tokens in %.1f s (%d threads)%s\n", s16.size() / 16000.0, n_tok,
           std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), omp_get_max_threads(),
           w16 ? ", weights rounded to f16" : "");
   FILE* fg = fopen((clip + ".g4a.bin").c_str(), "rb");
   int hg[3] = {0, 0, 0};
   if (!fg || fread(hg, 4, 3, fg) != 3 || hg[0] != n_tok || hg[1] != n_out) {
-    fprintf(stderr, "no matching %s.g4a.bin (run vision_testz first)\n", clip.c_str());
+    zlog::eprintf("no matching %s.g4a.bin (run vision_testz first)\n", clip.c_str());
     return 1;
   }
   Vec gpu(ref.size());

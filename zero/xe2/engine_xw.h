@@ -34,7 +34,7 @@
     static const int e = getenv("ARC_GEMM_XW_TM") ? atoi(getenv("ARC_GEMM_XW_TM")) : 0;
     const int def = 32;
     if (e == 16 || e == 32) return e;
-    if (e) { static std::once_flag said; std::call_once(said, [&] { fprintf(stderr, "inferzero: ARC_GEMM_XW_TM=%d not supported (16 or 32): %d\n", e, def); }); }
+    if (e) { static std::once_flag said; std::call_once(said, [&] { zlog::eprintf("inferzero: ARC_GEMM_XW_TM=%d not supported (16 or 32): %d\n", e, def); }); }
     return def;
   }
   bool xw_grf256() const {
@@ -49,7 +49,7 @@
     if (e == 0) return def;
     if (e == 1 || e == 2 || (e == 4 && xw_lanes() == 16)) return e;
     static std::once_flag said;
-    std::call_once(said, [&] { fprintf(stderr, "inferzero: ARC_GEMM_XW_NC=%d not supported here: %d\n", e, def); });
+    std::call_once(said, [&] { zlog::eprintf("inferzero: ARC_GEMM_XW_NC=%d not supported here: %d\n", e, def); });
     return def;
   }
   static bool xw_try() {
@@ -109,10 +109,10 @@
       const bool ok = xw_check();
       it = known.emplace(key, ok).first;
       if (ok)
-        fprintf(stderr, "inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s\n",
+        zlog::eprintf("inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s\n",
                 xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "");
       else
-        fprintf(stderr, "inferzero: %s differs from gemm.cl or does not build: not used (please report)\n",
+        zlog::eprintf("inferzero: %s differs from gemm.cl or does not build: not used (please report)\n",
                 xw_lanes() == 8 ? "gemm_xw8" : "gemm_xw");
     }
     xw_ = it->second;
@@ -190,6 +190,6 @@
       bad += std::string(" build: ") + e.what();
     }
     for (cl_mem& b : bufs) free_buf(b);
-    if (!bad.empty()) fprintf(stderr, "inferzero: gemm_xw check:%s\n", bad.c_str());
+    if (!bad.empty()) zlog::eprintf("inferzero: gemm_xw check:%s\n", bad.c_str());
     return built && bad.empty();
   }

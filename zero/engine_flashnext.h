@@ -43,14 +43,14 @@
     // (BF16 mixer rows: always the f32 GEMMs, mode 1)
     static const int f32_mode = [] {
       const int m = hc_bf16() ? 1 : getenv("ARC_HC_F32") ? atoi(getenv("ARC_HC_F32")) : 4;
-      if (m < 0 || m > 4) fprintf(stderr, "ARC_HC_F32=%d: not 0..4, the int8 mixers\n", m);
+      if (m < 0 || m > 4) zlog::eprintf("ARC_HC_F32=%d: not 0..4, the int8 mixers\n", m);
       return m < 0 || m > 4 ? 0 : m;
     }();
     static bool hc_logged = false;
     if (!hc_logged) {
       hc_logged = true;
       static const char* names[] = {"int8", "f32 down + up", "f32 down", "f32 up", "two-pass int8 up"};
-      fprintf(stderr, "HC mixers of prompt chunks: %s (ARC_HC_F32=%d)\n", f32_mode >= 0 && f32_mode <= 4 ? names[f32_mode] : "int8", f32_mode);
+      zlog::eprintf("HC mixers of prompt chunks: %s (ARC_HC_F32=%d)\n", f32_mode >= 0 && f32_mode <= 4 ? names[f32_mode] : "int8", f32_mode);
     }
     const bool f32_down = f32_mode == 1 || f32_mode == 2, f32_up = f32_mode == 1 || f32_mode == 3;
     auto gemm_f32 = [&](cl_mem in, int ld_in, int K, int lo_in, const GpuWeight& w, int N, cl_mem C, int ldc) {

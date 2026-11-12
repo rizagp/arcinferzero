@@ -131,7 +131,7 @@
         const size_t n = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : 2;
         if (i - 1 + n > context.size()) context.resize(i - 1);
       }
-      fprintf(stderr, "asr: the glossary and prompt cut to their first %d tokens\n", kAsrContextTokens);
+      zlog::eprintf("asr: the glossary and prompt cut to their first %d tokens\n", kAsrContextTokens);
     }
     o.context = context;
     // (the language: one code fixes it, the model's own "language X<asr_text>"; a list fixes its first, "id,en":
@@ -148,7 +148,7 @@
       ++next;
       done = p.end;
       if (p.cut)
-        fprintf(stderr, "asr: %.1f-%.1f s: no room left to decode (%d audio tokens, %d tokens): its text's end is lost\n",
+        zlog::eprintf("asr: %.1f-%.1f s: no room left to decode (%d audio tokens, %d tokens): its text's end is lost\n",
                 p.start, p.end, p.audio_tokens, p.tokens);
       if (!p.text.empty()) {
         whisper::Segment g;
@@ -173,7 +173,7 @@
     double enc_ms = 0, pre_ms = 0, dec_ms = 0;
     int audio_tok = 0, tokens = 0, cut = 0;
     auto report = [&] {
-      fprintf(stderr, "asr: %.1f s of audio, %d parts%s: encoder %.0f ms, prompt %.0f ms (%d audio tokens), %d tokens in %.0f ms\n",
+      zlog::eprintf("asr: %.1f s of audio, %d parts%s: encoder %.0f ms, prompt %.0f ms (%d audio tokens), %d tokens in %.0f ms\n",
               r.duration, (int)parts.size(), cut ? " (some cut: see above)" : "", enc_ms, pre_ms, audio_tok, tokens, dec_ms);
     };
     const size_t B = (size_t)std::max(1, asr_parts());
@@ -190,7 +190,7 @@
           });
           break;
         } catch (const std::exception& e) {
-          fprintf(stderr, "asr: %.1f-%.1f s failed%s: %s\n", a, b, attempt ? "" : " (trying once more)", e.what());
+          LOG_WRN("Qwen3-ASR: %.1f-%.1f s of the audio failed%s: %s\n", a, b, attempt ? "" : " (trying once more)", e.what());
           if (attempt == 0) continue;
           if (!error) throw;
           char at[64];
@@ -267,7 +267,7 @@
           g.text = whisper::trim_copy(chat_asr(wav, g.end - g.start, lang, context));
           return;
         } catch (const std::exception& e) {
-          fprintf(stderr, "e4b: %.1f-%.1f s failed%s: %s\n", g.start, g.end, attempt ? "" : " (trying once more)", e.what());
+          LOG_WRN("Gemma 4 E4B transcript: %.1f-%.1f s of the audio failed%s: %s\n", g.start, g.end, attempt ? "" : " (trying once more)", e.what());
           if (attempt == 0) continue;
           j.err = e.what();
           if (j.err.empty()) j.err = "failed";

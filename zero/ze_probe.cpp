@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
   printf("OpenCL native binary: %zu bytes\n", bn);
 
   // 2. Level Zero: driver, device, context, immediate command list, module from that binary
-  if (!ze_load()) { fprintf(stderr, "cannot load ze_loader.dll\n"); return 1; }
+  if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll\n"); return 1; }
   ZE_CHECK(zeInit(1));
   uint32_t nd = 1;
   ze_driver_handle_t drv;
@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
     zeModuleBuildLogGetString(log, &ls, nullptr);
     std::string s(ls, 0);
     zeModuleBuildLogGetString(log, &ls, s.data());
-    fprintf(stderr, "zeModuleCreate (native) failed 0x%x: %s\n", mr, s.c_str());
+    zlog::eprintf("zeModuleCreate (native) failed 0x%x: %s\n", mr, s.c_str());
     return 1;
   }
   ze_kernel_desc_t kd{ZE_STYPE_KERNEL_DESC, nullptr, 0, "bw"};

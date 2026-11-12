@@ -20,10 +20,14 @@
     return out;
   }
   void chat(const HttpRequest& rq, HttpResponse& rs) {
+    const auto t_req = clk::now();  // (the request's arrival: time to first token, end to end)
     Json body;
     if (!Json::try_parse(rq.body, body)) return rs.send(400, "application/json", err("invalid JSON body").dump());
     if (ocr_ && ocr_batch(rq, body, rs)) return;  // (several images / PDFs at once: file by file, tools/server_ocr.h)
     if (ocr_ && ocr_pdf(rq, body, rs)) return;  // (an OCR model and a PDF: page by page, tools/server_ocr.h)
+    // (/metrics: in the server, waiting until past claim_slot; after the OCR batches, which call chat() per page: each
+    //  page is a request of its own, the batch not one more that would wait for ever, audit 2026-11-12)
+    const zmet::Inflight inflight_m;
     {  // the web UI's saved files ("file" parts): as text, or as references to the image / audio (server_files.h)
       bool any = false;
       for (const Json& m : body["messages"].items())
@@ -253,11 +257,11 @@
               if (is_img) {
                 const ImageRGB im = img::decode(bytes);
                 e = std::make_shared<std::vector<float>>(qvision_ ? qvision_->encode(im, n, gw, gh) : vision_->encode(im, n));
-                fprintf(stderr, "image %dx%d -> %d tokens, encoded in %.0f ms\n", im.w, im.h, n, ms_since(t0));
+                zlog::eprintf("image %dx%d -> %d tokens, encoded in %.0f ms\n", im.w, im.h, n, ms_since(t0));
               } else {
                 const std::vector<float> s16 = audio::decode_16k(bytes);
                 e = std::make_shared<std::vector<float>>(audio_->encode(s16, n));
-                fprintf(stderr, "audio %.1f s -> %d tokens, decoded and encoded in %.0f ms\n", s16.size() / 16000.0, n, ms_since(t0));
+                zlog::eprintf("audio %.1f s -> %d tokens, decoded and encoded in %.0f ms\n", s16.size() / 16000.0, n, ms_since(t0));
               }
               if (img_cache_.size() > 64 || img_cache_bytes_ + e->size() * 4 > (512u << 20)) {
                 img_cache_.clear();
@@ -301,6 +305,7 @@
     } slot_free{*this, my_slot};
     ++busy_;
     struct Idle { std::atomic<int>& b; ~Idle() { --b; } } idle{busy_};
+    const zmet::Running running_m;
     const std::string id = "chatcmpl-arc" + std::to_string(++counter_);
     const long long created = (long long)time(nullptr);
     if (stream) rs.sse_begin();
@@ -508,8 +513,9 @@
     last_gen_cut_ = (int)gen_cut;
     const double prompt_ms = ms_since(t_prompt);
     if (!ok || client_gone()) {
-      fprintf(stderr, "[%s] cancelled by the client after %.1f s: prompt %zu tok (cached %zu), processed up to %zu\n",
+      zlog::eprintf("[%s] cancelled by the client after %.1f s: prompt %zu tok (cached %zu), processed up to %zu\n",
               id.c_str(), prompt_ms / 1000, P.size(), start, done);
+      zmet::aborted(model_id_, P.size(), start, 0);
       return;
     }
 
@@ -589,7 +595,7 @@
         const std::string& a = pcs[k].args;
         if (!first && a.size() <= tc_sent[k].size()) continue;
         if (a.compare(0, tc_sent[k].size(), tc_sent[k]) != 0) {  // cannot happen: the arguments only grow
-          fprintf(stderr, "[%s] tool call %zu: streamed arguments diverged\n", id.c_str(), k);
+          zlog::eprintf("[%s] tool call %zu: streamed arguments diverged\n", id.c_str(), k);
           continue;
         }
         Json fn = Json::object();
@@ -695,7 +701,7 @@
               for (char c : x) o += c == '\n' ? std::string("\\n") : std::string(1, c);
               return o;
             };
-            fprintf(stderr, "tool fix: ...%s | refused [%s] took [%s]\n", vis(call.substr(call.size() > 60 ? call.size() - 60 : 0)).c_str(),
+            LOG_DBG("tool call fixed: ...%s | the model's token [%s] would have broken it, [%s] taken instead\n", vis(call.substr(call.size() > 60 ? call.size() - 60 : 0)).c_str(),
                     vis(tok_.piece(refused)).c_str(), t >= 0 ? vis(tok_.piece(t)).c_str() : "-");
           }
           ++n_tool_tok;
@@ -810,8 +816,9 @@
     if (!drafts.empty()) eng_.verify_done((int)acc);  // the loop ended before all drafts were decided
     const double gen_ms = ms_since(t_gen);
     if (finish == "cancelled") {
-      fprintf(stderr, "[%s] cancelled by the client after %zu generated tokens (%.1f s) | prompt %zu tok (cached %zu) %.1f s\n",
+      zlog::eprintf("[%s] cancelled by the client after %zu generated tokens (%.1f s) | prompt %zu tok (cached %zu) %.1f s\n",
               id.c_str(), gen.size(), gen_ms / 1000, P.size(), start, prompt_ms / 1000);
+      zmet::aborted(model_id_, P.size(), start, gen.size());
       return;
     }
     if (stream) {
@@ -863,16 +870,36 @@
     timings.set("predicted_n", gen.size());
     timings.set("predicted_ms", gen_ms);
     timings.set("predicted_per_second", gen.size() / std::max(gen_ms, 1e-3) * 1000.0);
-    fprintf(stderr, "[%s] prompt %zu tok (cached %zu) %.1f s (%.1f t/s) | gen %zu tok %.1f s (%.2f t/s) | %s", id.c_str(),
+    zlog::eprintf("[%s] prompt %zu tok (cached %zu) %.1f s (%.1f t/s) | gen %zu tok %.1f s (%.2f t/s) | %s", id.c_str(),
             P.size(), start, prompt_ms / 1000, (P.size() - start) / std::max(prompt_ms, 1e-3) * 1000, gen.size(), gen_ms / 1000,
             gen.size() / std::max(gen_ms, 1e-3) * 1000, finish.c_str());
-    if (n_drafts && !dr_steps[1]) fprintf(stderr, " | MTP %d/%d drafts accepted", n_accepted, n_drafts);
+    if (n_drafts && !dr_steps[1]) zlog::eprintf(" | MTP %d/%d drafts accepted", n_accepted, n_drafts);
     if (dr_steps[1])  // (DFlash2 drafted at least once: both drafters, each with its steps and accepted drafts)
-      fprintf(stderr, " | DFlash2 %d steps, %d/%d drafts accepted | MTP %d steps, %d/%d", dr_steps[1], dr_acc[1],
+      zlog::eprintf(" | DFlash2 %d steps, %d/%d drafts accepted | MTP %d steps, %d/%d", dr_steps[1], dr_acc[1],
               dr_drafts[1], dr_steps[0], dr_acc[0], dr_drafts[0]);
-    if (n_tool_fixed) fprintf(stderr, " | tool call: %d of %d tokens corrected", n_tool_fixed, n_tool_tok);
-    if (n_batched) fprintf(stderr, " | %d steps batched with other slots", n_batched);
-    fprintf(stderr, "\n");
+    if (n_tool_fixed) zlog::eprintf(" | tool call: %d of %d tokens corrected", n_tool_fixed, n_tool_tok);
+    if (n_batched) zlog::eprintf(" | %d steps batched with other slots", n_batched);
+    const double ttft_s = std::chrono::duration<double>(t_gen - t_req).count();
+    zlog::eprintf(" | first token %.2f s | context %zu of %d | slot %d\n", ttft_s, P.size() + gen.size(), eng_.ctx, my_slot);
+    try {  // (/metrics, tools/server_metrics.h; never a reason the answer fails)
+      zmet::Done d;
+      d.model = model_id_, d.finish = finish;
+      d.prompt = P.size(), d.cached = start, d.gen = gen.size();
+      d.ttft_s = ttft_s, d.e2e_s = std::chrono::duration<double>(clk::now() - t_req).count();
+      d.prefill_s = prompt_ms / 1000, d.decode_s = gen_ms / 1000;
+      d.drafts = (uint64_t)std::max(n_drafts, dr_drafts[0] + dr_drafts[1]);
+      d.accepted = (uint64_t)std::max(n_accepted, dr_acc[0] + dr_acc[1]);
+      d.kv = eng_.ctx > 0 ? (double)(P.size() + gen.size()) / eng_.ctx : 0;
+      zmet::request_done(d);
+    } catch (...) {}
+    // (-lv 3: llama.cpp's form of the same numbers)
+    LOG_DBG("[%s] prompt eval time = %10.2f ms / %5zu tokens (%8.2f ms per token, %8.2f tokens per second)\n", id.c_str(),
+            prompt_ms, P.size() - start, prompt_ms / std::max<double>(1, (double)(P.size() - start)),
+            (P.size() - start) / std::max(prompt_ms, 1e-3) * 1000);
+    LOG_DBG("[%s]        eval time = %10.2f ms / %5zu tokens (%8.2f ms per token, %8.2f tokens per second)\n", id.c_str(),
+            gen_ms, gen.size(), gen_ms / std::max<double>(1, (double)gen.size()), gen.size() / std::max(gen_ms, 1e-3) * 1000);
+    LOG_DBG("[%s]       total time = %10.2f ms / %5zu tokens\n", id.c_str(),
+            std::chrono::duration<double, std::milli>(clk::now() - t_req).count(), P.size() - start + gen.size());
     // (ARC_PROF_REQ=1: the GPU time by kernel of each request, for diagnosis; every kernel is timed, which costs time)
     static const bool prof_req = getenv("ARC_PROF_REQ") != nullptr;
     if (prof_req) {
@@ -880,10 +907,10 @@
       std::vector<std::pair<double, std::string>> rows;
       for (auto& [n, ms] : eng_.prof_ms) total += ms, rows.push_back({ms, n});
       std::sort(rows.rbegin(), rows.rend());
-      fprintf(stderr, "  GPU time %.1f ms:", total);
+      zlog::eprintf("  GPU time %.1f ms:", total);
       for (size_t r = 0; r < rows.size() && r < 12; ++r)
-        fprintf(stderr, " %s %.0f (%d)", rows[r].second.c_str(), rows[r].first, eng_.prof_n[rows[r].second]);
-      fprintf(stderr, "\n");
+        zlog::eprintf(" %s %.0f (%d)", rows[r].second.c_str(), rows[r].first, eng_.prof_n[rows[r].second]);
+      zlog::eprintf("\n");
       eng_.prof_ms.clear();
       eng_.prof_n.clear();
     }

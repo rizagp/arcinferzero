@@ -705,7 +705,7 @@ class Service {
         fix_wav_sizes(w);
       }
       side.set("path", w.string());
-      if (import_recording(side, bad).empty()) fprintf(stderr, "whisper: recording %s: %s\n", w.string().c_str(), bad.c_str());
+      if (import_recording(side, bad).empty()) zlog::eprintf("whisper: recording %s: %s\n", w.string().c_str(), bad.c_str());
     }
     worker_ = std::thread([this] { work(); });
     live_worker_ = std::thread([this] { live_work(); });
@@ -1641,7 +1641,7 @@ class Service {
             if (!s->stopped && now - s->last > std::chrono::seconds(kLiveIdle)) idle.push_back(s);
           lk.unlock();
           for (const auto& s : idle) {
-            fprintf(stderr, "whisper: live recording %s: no audio for %d s, stopped\n", s->id.c_str(), kLiveIdle);
+            zlog::eprintf("whisper: live recording %s: no audio for %d s, stopped\n", s->id.c_str(), kLiveIdle);
             live_stop(s);
           }
           continue;
@@ -1673,7 +1673,7 @@ class Service {
           segs = w.tr().run(t.x, o).segments;
         }
       } catch (const std::exception& e) {
-        fprintf(stderr, "whisper live: %s\n", e.what());
+        zlog::eprintf("whisper live: %s\n", e.what());
       }
       const double off = (double)t.from / 16000;
       std::lock_guard<std::mutex> lk(live_mu_);
@@ -1720,7 +1720,7 @@ class Service {
         continue;
       if (++s.votes[g.lang] >= 2) {
         s.opt.prefer_language = s.opt.expect_language = g.lang;
-        fprintf(stderr, "whisper: live recording %s: language %s preferred from here on\n", s.id.c_str(), g.lang.c_str());
+        zlog::eprintf("whisper: live recording %s: language %s preferred from here on\n", s.id.c_str(), g.lang.c_str());
         return;
       }
     }
@@ -1862,7 +1862,7 @@ class Service {
   // written whole or not at all (a crash in the middle leaves the old file); a failure is logged
   static bool write_atomic(const std::filesystem::path& p, const std::string& s) {
     if (files::write_shared(p, s)) return true;
-    fprintf(stderr, "whisper: cannot write %s\n", p.string().c_str());
+    LOG_WRN("transcripts: cannot write %s (disk full, or the file open elsewhere?): the earlier version is kept\n", p.string().c_str());
     return false;
   }
   // ---------------------------------------------------------------- merging (a meeting recorded in pieces)
@@ -2069,13 +2069,13 @@ class Service {
         mm.set("pieces", pieces);
         mm.set("keep", ext);
       });
-      fprintf(stderr, "transcripts: merged %zu pieces into %s (%.0f s, %zu segments)\n", ps.size(), nid.c_str(), total, nseg);
+      zlog::eprintf("transcripts: merged %zu pieces into %s (%.0f s, %zu segments)\n", ps.size(), nid.c_str(), total, nseg);
     } catch (const std::exception& e) {
       // (the partial audio goes: it can be gigabytes, and a disk that filled up stays full otherwise)
       std::error_code ec;
       fs::remove(wav, ec);
       fs::remove(dir / "source.m4a", ec);
-      fprintf(stderr, "transcripts: merging into %s failed: %s\n", nid.c_str(), e.what());
+      zlog::eprintf("transcripts: merging into %s failed: %s\n", nid.c_str(), e.what());
       finish("failed", e.what(), [](Json& mm) { mm.set("size", 0.0); });
     }
   }
@@ -2119,7 +2119,7 @@ class Service {
       if (e2) all = false;
     }
     if (all) fs::remove_all(dir, ec);
-    if (!all || ec) fprintf(stderr, "whisper: %s not deleted whole (a file of it is open); the next start deletes it\n", tid.c_str());
+    if (!all || ec) zlog::eprintf("whisper: %s not deleted whole (a file of it is open); the next start deletes it\n", tid.c_str());
     return all && !ec;
   }
   int queue_position(const std::string& tid) const {  // (lib_mu_ held)

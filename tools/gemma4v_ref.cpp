@@ -273,7 +273,7 @@ static void attention(const float* q, const float* k, const float* v, int N, int
 }
 
 int main(int argc, char** argv) {
-  if (argc < 3) { fprintf(stderr, "usage: gemma4v_ref mmproj.gguf image.png\n"); return 1; }
+  if (argc < 3) { zlog::eprintf("usage: gemma4v_ref mmproj.gguf image.png\n"); return 1; }
   const auto t0 = std::chrono::steady_clock::now();
   GgufFile f(argv[1]);
   G = &f;
@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
   std::vector<uint8_t> raw;
   {
     FILE* fr = fopen((img + ".g4v.rgb").c_str(), "rb");
-    if (!fr) { fprintf(stderr, "no %s.g4v.rgb: run vision_testz first\n", img.c_str()); return 1; }
+    if (!fr) { zlog::eprintf("no %s.g4v.rgb: run vision_testz first\n", img.c_str()); return 1; }
     fseek(fr, 0, SEEK_END);
     raw.resize(ftell(fr));
     fseek(fr, 0, SEEK_SET);
@@ -396,7 +396,7 @@ int main(int argc, char** argv) {
     rms(d.data(), N, E, tensor(b + "ffn_post_norm.weight").data(), eps);
 #pragma omp parallel for schedule(static)
     for (long long i = 0; i < (long long)x.size(); ++i) x[i] += d[i];
-    fprintf(stderr, "\rlayer %d / %d", il + 1, L);
+    zlog::eprintf("\rlayer %d / %d", il + 1, L);
   }
   // 3x3 average pooling, times sqrt(E), std bias / scale, RMS norm, projection
   const int px3 = nx / pool, py3 = ny / pool, M = px3 * py3;
@@ -422,7 +422,7 @@ int main(int argc, char** argv) {
   Vec ref((size_t)M * n_out);
   gemm(gp.data(), M, E, proj.data(), n_out, ref.data());
   const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-  fprintf(stderr, "\rf32 reference in %.1f s (%d threads; matrix products %.1f s, attention %.1f s)\n", secs,
+  zlog::eprintf("\rf32 reference in %.1f s (%d threads; matrix products %.1f s, attention %.1f s)\n", secs,
           omp_get_max_threads(), t_gemm, t_att);
   if (const char* vo = getenv("REF_VOUT")) {
     FILE* fo = fopen(vo, "wb");
@@ -435,7 +435,7 @@ int main(int argc, char** argv) {
   FILE* fg = fopen((img + ".g4v.bin").c_str(), "rb");
   int hg[3] = {0, 0, 0};
   if (!fg || fread(hg, 4, 3, fg) != 3 || hg[0] != M || hg[1] != n_out) {
-    fprintf(stderr, "no matching %s.g4v.bin to compare with\n", img.c_str());
+    zlog::eprintf("no matching %s.g4v.bin to compare with\n", img.c_str());
     return 0;
   }
   Vec gpu(ref.size());

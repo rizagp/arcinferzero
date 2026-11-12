@@ -23,6 +23,7 @@ struct HttpRequest {
   std::map<std::string, std::string> headers;  // lower-case keys
   bool local_peer = false;  // (the connection comes from this machine: 127.x.x.x or ::1, whatever the Host header says)
   bool remote = false;  // (a signed-in remote request through a tunnel: tools/server_remote.h, HttpServer::gate)
+  std::string peer;     // (the client's address, for the log: 127.0.0.1, 192.168.1.20)
   std::string header(const std::string& k) const {
     auto it = headers.find(k);
     return it == headers.end() ? "" : it->second;
@@ -48,6 +49,7 @@ class HttpResponse {
   }
   // A stream of another kind (application/x-ndjson, or named server-sent events): headers, then write().
   void begin_stream(const std::string& content_type) {
+    status_ = 200;
     std::string h = "HTTP/1.1 200 OK\r\nContent-Type: " + content_type + "\r\nCache-Control: no-cache\r\n";
     h += cors();
     h += "Connection: close\r\n\r\n";
@@ -57,6 +59,14 @@ class HttpResponse {
   bool write(const std::string& d) { return raw(d); }
   // Complete response with a body.
   void send(int status, const std::string& content_type, const std::string& body) {
+    status_ = status;
+    // (for the log only, never stops the reply; cleared by a later success: an inner request answered on the same
+    //  response (the file tools') must not leave its error on the outer reply's line)
+    if (status >= 400) {
+      try { err_ = error_text(body); } catch (...) {}
+    } else {
+      err_.clear();
+    }
     if (on_send) {
       done_ = true;
       on_send(status, body);
@@ -118,6 +128,7 @@ class HttpResponse {
         part = true;
       }
     }
+    status_ = part ? 206 : 200;
     std::string h = std::string("HTTP/1.1 ") + (part ? "206 Partial Content" : "200 OK") + "\r\n";
     h += "Content-Type: " + content_type + "\r\n";
     h += "Content-Length: " + std::to_string(b - a) + "\r\nAccept-Ranges: bytes\r\n";
@@ -143,6 +154,7 @@ class HttpResponse {
   }
   // Server-sent events: begin, then write events, then end (the connection is closed afterwards).
   void sse_begin() {
+    status_ = 200;
     if (on_event) return;
     std::string h = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n";
     h += cors();
@@ -158,6 +170,27 @@ class HttpResponse {
   std::function<bool()> gone_hook;
   bool done() const { return done_; }
   bool alive() const { return ok_; }
+  // (for the log: the status sent, 0 = none; the bytes written to the socket; an error reply's message)
+  int status() const { return status_; }
+  size_t bytes() const { return bytes_; }
+  const std::string& error() const { return err_; }
+  // an error body's "message" (the JSON error form), else its start, one line of at most 300 characters
+  static std::string error_text(const std::string& body) {
+    std::string m;
+    const size_t k = body.find("\"message\"");
+    if (k != std::string::npos) {
+      size_t q = body.find('"', body.find(':', k) + 1);
+      if (q != std::string::npos)
+        for (size_t i = q + 1; i < body.size() && body[i] != '"' && m.size() < 300; ++i) {
+          if (body[i] == '\\' && i + 1 < body.size()) ++i;
+          m += body[i];
+        }
+    }
+    if (m.empty()) m = body.substr(0, 300);
+    for (char& ch : m)
+      if (ch == '\n' || ch == '\r') ch = ' ';
+    return m;
+  }
   // The client closed the connection (or it broke) while the response is being prepared, e.g. Pi's Esc: the request
   // was read completely, so the socket becomes readable only with the end of the stream (or a reset). Polled
   // without blocking or writing anything (microseconds).
@@ -176,6 +209,9 @@ class HttpResponse {
  private:
   SOCKET s_;
   bool done_ = false, streaming_ = false, ok_ = true;
+  int status_ = 0;
+  size_t bytes_ = 0;
+  std::string err_;
   std::string cors() const {
     if (cors_origin.empty()) return "";
     return "Access-Control-Allow-Origin: " + cors_origin + "\r\nVary: Origin\r\n" +
@@ -199,6 +235,7 @@ class HttpResponse {
       if (n <= 0) { ok_ = false; break; }
       off += n;
     }
+    bytes_ += off;
     return ok_;
   }
 };
@@ -213,6 +250,8 @@ class HttpServer {
   // (the same, from the request line and headers alone, before the body is read: "" = go on, else a 401 and the
   //  connection closed)
   std::function<std::string(const HttpRequest&)> head_gate;
+  // (after each request the handler answered: the log's access line, the metrics; ms from the handler's start)
+  std::function<void(const HttpRequest&, const HttpResponse&, double ms)> on_done;
 
   // host may be an IPv4 / IPv6 literal or a name (localhost). An unknown host is an error: it must never silently
   // become INADDR_ANY (that exposed the server on every interface when --host was mistyped).
@@ -377,7 +416,16 @@ class HttpServer {
     const auto r = std::from_chars(f, l, out, base);
     return r.ec == std::errc() && r.ptr == l;
   }
+  // the access line's hook for a request answered outside run_handler (the gate, OPTIONS); never throws
+  void done_hook(const HttpRequest& rq, const HttpResponse& rs, double ms) noexcept {
+    if (!on_done) return;
+    try {
+      on_done(rq, rs, ms);
+    } catch (...) {}
+  }
+  // (refused before a handler: logged here, a warning: the request is not one the server reads)
   static void reply_close(SOCKET c, int status, const char* msg) {
+    LOG_WRN("HTTP %d, connection closed: %s\n", status, msg);
     HttpResponse rs(c);
     rs.close_after = true;
     rs.send(status, "application/json", std::string("{\"error\":{\"message\":\"") + msg + "\"}}");
@@ -403,10 +451,15 @@ class HttpServer {
     BOOL nodelay = TRUE;  // (streamed tokens go out at once)
     setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof nodelay);
     bool local_peer = false;
+    std::string peer;  // (the client's address, for the log)
     {
       sockaddr_storage sa{};
       int sl = sizeof sa;
       if (getpeername(c, (sockaddr*)&sa, &sl) == 0) {
+        char pb[64] = "";
+        if (sa.ss_family == AF_INET) inet_ntop(AF_INET, &((sockaddr_in*)&sa)->sin_addr, pb, sizeof pb);
+        else if (sa.ss_family == AF_INET6) inet_ntop(AF_INET6, &((sockaddr_in6*)&sa)->sin6_addr, pb, sizeof pb);
+        peer = pb;
         if (sa.ss_family == AF_INET) local_peer = (ntohl(((sockaddr_in*)&sa)->sin_addr.s_addr) >> 24) == 127;
         else if (sa.ss_family == AF_INET6) {
           const unsigned char* a6 = ((sockaddr_in6*)&sa)->sin6_addr.s6_addr;
@@ -447,9 +500,14 @@ class HttpServer {
       }
       HttpRequest rq;
       rq.local_peer = local_peer;
+      rq.peer = peer;
       const std::string head = buf.substr(0, he);
       size_t p = head.find("\r\n");
       const std::string line = head.substr(0, p);
+      // (a control byte in the request line (a bare line feed, an escape) is refused: the method and the path go into
+      //  the log and the metrics, where it would write lines or console codes of its own; audit 2026-11-12b #2)
+      for (const char ch : line)
+        if (((unsigned char)ch < 0x20 && ch != ' ') || ch == 0x7f) return reply_close(c, 400, "control character in the request line");
       const size_t s1 = line.find(' '), s2 = s1 == std::string::npos ? s1 : line.find(' ', s1 + 1);
       if (s2 == std::string::npos) return reply_close(c, 400, "malformed request line");
       rq.method = line.substr(0, s1);
@@ -573,13 +631,14 @@ class HttpServer {
         (void)e;
         g = 1;
       }
-      if (g == 1) {  // (answered by the gate: a login page, a sign-in, a refusal)
+      if (g == 1) {  // (answered by the gate: a login page, a sign-in, a refusal; logged too: a wrong password shows)
+        done_hook(rq, rs, 0);
         if (rs.streaming() || !rs.alive()) break;
         continue;
       }
       if (g == 2) {  // (a remote session: its origin was checked by the gate)
         rs.cors_origin = "";
-        if (rq.method == "OPTIONS") rs.send(204, "text/plain", "");
+        if (rq.method == "OPTIONS") rs.send(204, "text/plain", ""), done_hook(rq, rs, 0);
         else run_handler(rq, rs);
         if (rs.streaming() || !rs.alive()) break;
         continue;
@@ -599,7 +658,7 @@ class HttpServer {
                                      "pages of other local servers");
       }
       rs.cors_origin = origin;
-      if (rq.method == "OPTIONS") rs.send(204, "text/plain", "");
+      if (rq.method == "OPTIONS") rs.send(204, "text/plain", ""), done_hook(rq, rs, 0);
       else run_handler(rq, rs);
       if (rs.streaming() || !rs.alive()) break;
     }
@@ -608,6 +667,16 @@ class HttpServer {
   }
   // the handler, its exception as a 500 (or an error event in a stream that broke off), 404 when it sent nothing
   void run_handler(const HttpRequest& rq, HttpResponse& rs) {
+    const auto t0 = std::chrono::steady_clock::now();
+    struct Done {  // (also when the handler throws: after its 500 below)
+      HttpServer& s; const HttpRequest& rq; HttpResponse& rs; std::chrono::steady_clock::time_point t0;
+      ~Done() {
+        if (!s.on_done) return;
+        try {
+          s.on_done(rq, rs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        } catch (...) {}
+      }
+    } done{*this, rq, rs, t0};
     try {
       handler(rq, rs);
     } catch (const std::exception& e) {

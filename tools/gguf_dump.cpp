@@ -5,7 +5,7 @@
 #include <map>
 
 static int dump(int argc, char** argv) {
-  if (argc < 2) { fprintf(stderr, "usage: gguf_dump model.gguf [max_layer]\n"); return 1; }
+  if (argc < 2) { zlog::eprintf("usage: gguf_dump model.gguf [max_layer]\n"); return 1; }
   int max_layer = argc > 2 ? atoi(argv[2]) : 4;
   GgufFile f(argv[1]);
   for (auto& key : f.kv_order) {
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
   try {
     return dump(argc, argv);
   } catch (const std::exception& e) {
-    fprintf(stderr, "gguf_dump: %s\n", e.what());
+    zlog::eprintf("gguf_dump: %s\n", e.what());
     return 1;
   }
 }

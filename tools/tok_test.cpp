@@ -14,7 +14,7 @@ static std::string slurp(const char* p) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 4) { fprintf(stderr, "usage: tok_test model.gguf text.txt ids.txt\n"); return 1; }
+  if (argc < 4) { zlog::eprintf("usage: tok_test model.gguf text.txt ids.txt\n"); return 1; }
   GgufFile f(argv[1]);
   Tokenizer tok(f);
   const std::string text = slurp(argv[2]);

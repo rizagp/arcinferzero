@@ -94,7 +94,7 @@ static void report(const char* what, const std::vector<double>& ref, const std::
 }
 
 int main(int argc, char** argv) {
-  if (argc < 2) { fprintf(stderr, "usage: npu_quant_study model.gguf [layer] [tokens]\n"); return 1; }
+  if (argc < 2) { zlog::eprintf("usage: npu_quant_study model.gguf [layer] [tokens]\n"); return 1; }
   const int L = argc > 2 ? atoi(argv[2]) : 11, M = argc > 3 ? atoi(argv[3]) : 128;
   GgufFile g(argv[1]);
   const std::string p = "blk." + std::to_string(L) + ".";
@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
   std::vector<float> nw;
   for (const char* nm : {"post_attention_norm.weight", "ffn_norm.weight"})
     if (g.find(p + nm)) { nw = load_vec(g, p + nm); break; }
-  if (nw.size() != (size_t)K) { fprintf(stderr, "no FFN norm weights of size %d\n", K); return 1; }
+  if (nw.size() != (size_t)K) { zlog::eprintf("no FFN norm weights of size %d\n", K); return 1; }
   float nmax = 0, nmean = 0;
   for (float v : nw) { nmax = std::max(nmax, std::fabs(v)); nmean += std::fabs(v) / K; }
   printf("layer %d: up / gate %d x %d, down %d x %d, %d tokens; norm weights mean |w| %.3f, max %.3f\n", L, N, K, Nd, Kd, M, nmean, nmax);

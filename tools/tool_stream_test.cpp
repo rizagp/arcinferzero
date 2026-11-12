@@ -9,7 +9,7 @@
 
 static int failures = 0;
 static void fail(const char* what, const std::string& text, size_t n, const std::string& detail) {
-  if (++failures <= 10) fprintf(stderr, "FAIL %s at prefix %zu/%zu: %s\n  text: %s\n", what, n, text.size(), detail.c_str(), text.c_str());
+  if (++failures <= 10) zlog::eprintf("FAIL %s at prefix %zu/%zu: %s\n  text: %s\n", what, n, text.size(), detail.c_str(), text.c_str());
 }
 
 // A parsed object with repeated keys rebuilt the way Json::set builds it (first position, last value).

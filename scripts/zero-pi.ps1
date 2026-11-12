@@ -263,7 +263,7 @@ WHEN IT FAILS
   zero-server help errors         the full list of server messages and what to do
 
 FILES
-  %USERPROFILE%\.inferzero\server.log     server log (earlier starts': logs\server_<date>_<time>.log, the newest 10): load time, context, per-request prompt / generation speed,
+  %USERPROFILE%\.inferzero\server.log     server log (earlier starts': logs\server_<date>_<time>.log, the newest 10, older ones .zip): load time, context, per-request prompt / generation speed,
                                           system-prompt cache loads and saves
   %USERPROFILE%\.inferzero\server.json    what zero-server started (model, context, chunk)
   %USERPROFILE%\.inferzero\last-model.txt the model started last (zero-pi starts it again by default)

@@ -156,7 +156,7 @@
       const char* e = getenv("ARC_DRIVER_RESERVE_GB");
       double g = e ? atof(e) : 0.5;
       if (!(g >= 0.0 && g <= 8.0)) {
-        fprintf(stderr, "inferzero: ARC_DRIVER_RESERVE_GB=%s not in 0..8: 0.5\n", e);
+        zlog::eprintf("inferzero: ARC_DRIVER_RESERVE_GB=%s not in 0..8: 0.5\n", e);
         g = 0.5;
       }
       return g * 1073741824.0;
@@ -210,7 +210,7 @@
       slot_real_bytes_ = per;
       slot_est_bytes_ = est;
       if (per > est + est / 100 || getenv("ARC_SLOT_BYTES"))
-        fprintf(stderr, "inferzero: a slot takes %.1f MiB, slot_bytes() counts %.1f MiB\n", per / 1048576.0, est / 1048576.0);
+        zlog::eprintf("inferzero: a slot takes %.1f MiB, slot_bytes() counts %.1f MiB\n", per / 1048576.0, est / 1048576.0);
     }
     slot_ptrs_.assign(n, {});
     slot_host_.assign(n, SlotHost());

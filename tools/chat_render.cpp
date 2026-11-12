@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
       JinjaChat j(ts.str(), "<bos>", "<eos>");
       out = j.render(c["messages"], c["tools"], true, o.enable_thinking, o.reasoning_effort);
     } catch (const std::exception& e) {
-      fprintf(stderr, "template error: %s\n", e.what());
+      zlog::eprintf("template error: %s\n", e.what());
       return 2;
     }
   } else {

@@ -9,12 +9,12 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-  if (argc < 2) { fprintf(stderr, "usage: ssd_bench FILE [record_bytes] [seconds]\n"); return 1; }
+  if (argc < 2) { zlog::eprintf("usage: ssd_bench FILE [record_bytes] [seconds]\n"); return 1; }
   const size_t rec = argc > 2 ? (size_t)atoll(argv[2]) / 4096 * 4096 : 2232320;
   const double secs = argc > 3 ? atof(argv[3]) : 4.0;
   HANDLE h = CreateFileA(argv[1], GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                          FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
-  if (h == INVALID_HANDLE_VALUE) { fprintf(stderr, "cannot open %s\n", argv[1]); return 1; }
+  if (h == INVALID_HANDLE_VALUE) { zlog::eprintf("cannot open %s\n", argv[1]); return 1; }
   LARGE_INTEGER sz;
   GetFileSizeEx(h, &sz);
   const uint64_t n = (uint64_t)sz.QuadPart / rec;
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
       ov[i].hEvent = ev[i];
       ResetEvent(ev[i]);
       if (!ReadFile(h, buf[i], (DWORD)rec, nullptr, &ov[i]) && GetLastError() != ERROR_IO_PENDING) {
-        fprintf(stderr, "read failed %lu\n", GetLastError());
+        zlog::eprintf("read failed %lu\n", GetLastError());
         exit(1);
       }
     };

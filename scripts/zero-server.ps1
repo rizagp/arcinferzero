@@ -30,7 +30,8 @@
 #
 # The server keeps running after Pi exits, so the next session skips the model load and reuses the prompt cache.
 # Log: %USERPROFILE%\.inferzero\server.log (written anew at each start; the previous ones in
-#      logs\server_<date>_<time>.log, e.g. server_2026-11-09_14-13-48.log, the newest 10)
+#      logs\server_<date>_<time>.log, e.g. server_2026-11-09_14-13-48.log, the newest 10; older ones as .zip,
+#      90 days / 200 MB at most)
 param(
   [ValidateSet("start", "stop", "status", "restart", "clear-cache", "record", "record-stop", "record-status", "list", "ls",
     "logs", "log", "doctor", "version", "--version", "pull", "get", "presets", "save-preset", "pack", "remove-original", "help", "--help", "-h")] [string]$Action = "start",
@@ -521,7 +522,7 @@ The server is started as bin\serverz.exe with --ctx, --mtp (when the model has
 an MTP block or a Gemma drafter), --draft for the -nodf / -df variants, --think-budget 8192 and the options above;
 its other options (bin\serverz.exe --help) keep their defaults.
 
-Log: $log (earlier starts': logs\server_<date>_<time>.log next to it, the newest 10)
+Log: $log (earlier starts': logs\server_<date>_<time>.log next to it, the newest 10; older ones .zip)
 Everything (Pi launcher, server options, files): zero-pi --help
 "@
   # help <topic>: a part of the full text (its sections start at these lines)
@@ -1200,8 +1201,37 @@ if (Test-Path -LiteralPath $log) {
     $dest = Join-Path $logDir "server_$stamp.log"
     for ($k = 2; Test-Path -LiteralPath $dest; ++$k) { $dest = Join-Path $logDir "server_$stamp ($k).log" }  # (same second)
     Move-Item -LiteralPath $log -Destination $dest -ErrorAction Stop
+    # (the newest 10 as they are; older ones each in a .zip of the same name (server_<date>_<time>.zip: every
+    #  Windows opens it with a double-click, ~10x smaller), with its time; zips older than 90 days, or past 200 MB
+    #  together, removed oldest first)
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     Get-ChildItem -LiteralPath $logDir -Filter "server_*.log" | Sort-Object LastWriteTime -Descending |
-      Select-Object -Skip 10 | Remove-Item -Force -ErrorAction SilentlyContinue
+      Select-Object -Skip 10 | ForEach-Object {
+        $src = $_
+        $zip = Join-Path $logDir ($src.BaseName + ".zip")
+        $tmp = "$zip.tmp"  # (written whole, then put in place: a failure leaves the log and any earlier zip as they were)
+        $made = $false
+        try {
+          if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+          $za = [IO.Compression.ZipFile]::Open($tmp, [IO.Compression.ZipArchiveMode]::Create)
+          try {
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($za, $src.FullName, $src.Name, [IO.Compression.CompressionLevel]::Optimal)
+          } finally { $za.Dispose() }
+          Move-Item -LiteralPath $tmp -Destination $zip -Force
+          (Get-Item -LiteralPath $zip).LastWriteTime = $src.LastWriteTime
+          $made = $true
+        } catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        if ($made) { Remove-Item -LiteralPath $src.FullName -Force -ErrorAction SilentlyContinue }  # (kept if in use)
+      }
+    # (failsafe: logs that could not be zipped are kept, but never more than 30 in all)
+    Get-ChildItem -LiteralPath $logDir -Filter "server_*.log" | Sort-Object LastWriteTime -Descending |
+      Select-Object -Skip 30 | Remove-Item -Force -ErrorAction SilentlyContinue
+    $gzs = @(Get-ChildItem -LiteralPath $logDir -Filter "server_*.zip" | Sort-Object LastWriteTime -Descending)
+    $sum = 0
+    foreach ($g in $gzs) {
+      $sum += $g.Length
+      if ($g.LastWriteTime -lt (Get-Date).AddDays(-90) -or $sum -gt 200MB) { Remove-Item -LiteralPath $g.FullName -Force -ErrorAction SilentlyContinue }
+    }
   } catch {}
 }
 $p = Start-Process -FilePath $exe -ArgumentList $srvArgs -WorkingDirectory $root -WindowStyle Hidden -PassThru `
@@ -1255,9 +1285,11 @@ Say ("Ready after {0:N0} s: {1}, context {2:N0} (web UI {3}/)" -f ((Get-Date) - 
 Say "  engine: $(Engine-Text $Engine ([bool]$m.moe))"
 if ($true) {
   # the engine's own lines: the expert cache (MoE) or that the model has no experts to stream
-  $zl = @(Get-Content $log -ErrorAction SilentlyContinue | Where-Object { $_ -match "^(?:arc)?inferzero: (expert cache|cache filled|expert file written|memory limit)" })
+  # (the log's prefix, docs/logging.md: "2026-11-12 14:13:05.123 I ", or "I " without the time)
+  $pre = '^(?:(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} )?[EWID] )?'
+  $zl = @(Get-Content $log -ErrorAction SilentlyContinue | Where-Object { $_ -match "$pre(?:arc)?inferzero: (expert cache|cache filled|expert file written|memory limit)" })
   if ($zl.Count) {
-    foreach ($l in $zl) { Say ("  " + ($l -replace "^(?:arc)?inferzero: ", "") -replace ", file .*$", "") }
+    foreach ($l in $zl) { Say ("  " + ($l -replace "$pre(?:arc)?inferzero: ", "") -replace ", file .*$", "") }
   } elseif (-not $NoStream) {
     Say "  dense model: no MoE experts, so no SSD cache"
   }

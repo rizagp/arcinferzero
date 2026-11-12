@@ -455,7 +455,7 @@
     if (!mtp_file_) return;
     const int n = f_.adopt(*mtp_file_, mp);
     mtp_ext_ = true;
-    fprintf(stderr, "inferzero: MTP head %s (%d tensors)\n", mtp_file_->path.c_str(), n);
+    zlog::eprintf("inferzero: MTP head %s (%d tensors)\n", mtp_file_->path.c_str(), n);
   }
 
   void load_weights() {

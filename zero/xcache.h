@@ -307,7 +307,7 @@ struct XCache {
     const uint64_t lo = (uint64_t)base, hi = lo + bytes;
     for (size_t i = 0; i < (size_t)(NL + 1) * NE; ++i)
       if (xaddr[i] >= lo && xaddr[i] < hi) xaddr[i] = (uint64_t)big->addr[0];
-    fprintf(stderr, "inferzero: the GPU ran out of memory (other programs use the shared GPU memory too): expert "
+    LOG_ERR("inferzero: the GPU ran out of memory (other programs use the shared GPU memory too): expert "
                     "cache reduced by %.2f GiB to %.2f GiB\n", bytes / 1073741824.0, cache_bytes / 1073741824.0);
     return true;
   }
@@ -365,9 +365,9 @@ struct XCache {
       const double GiB = 1073741824.0;
       uint64_t pad = 0;
       for (int l = 0; l < NL; ++l) if (lrec[l]) pad += (G.rec[G.pool_of[l]] - lrec[l]) * nloc();
-      fprintf(stderr, "inferzero: %zu expert record sizes in %zu pools (records", xpools::sizes(lrec).size(), G.rec.size());
-      for (size_t p = 0; p < G.rec.size(); ++p) fprintf(stderr, " %.2f MB x %d layers", G.rec[p] / 1e6, G.layers[p]);
-      fprintf(stderr, "), padding %.2f GiB of %.2f GiB experts\n", pad / GiB, all_bytes() / GiB);
+      zlog::eprintf("inferzero: %zu expert record sizes in %zu pools (records", xpools::sizes(lrec).size(), G.rec.size());
+      for (size_t p = 0; p < G.rec.size(); ++p) zlog::eprintf(" %.2f MB x %d layers", G.rec[p] / 1e6, G.layers[p]);
+      zlog::eprintf("), padding %.2f GiB of %.2f GiB experts\n", pad / GiB, all_bytes() / GiB);
     }
     cache_bytes = 0;
     for (size_t p = 0; p < pools.size(); ++p) {
@@ -921,7 +921,7 @@ struct XCache {
         st.read(one, 0, true);
         if (memcmp(a, b, lrec[l])) { ++bad; if (first_bad < 0) first_bad = e; }
       }
-      if (bad) fprintf(stderr, "XVERIFY layer %d (%s): %d slots differ from the file (first expert %d)\n", l,
+      if (bad) zlog::eprintf("XVERIFY layer %d (%s): %d slots differ from the file (first expert %d)\n", l,
                        prompt ? "prompt" : "generation", bad, first_bad);
     }
     last_l = l;

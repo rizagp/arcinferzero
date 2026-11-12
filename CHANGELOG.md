@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-11-12: the server's log, as llama.cpp's; GET /metrics, as vLLM's
+
+[docs/logging.md](docs/logging.md) describes all of it.
+- **Every line has a time and a level:** `2026-11-12 14:58:09.716 I ...` (E / W / I / D). Each line is written whole
+  under one lock, so a line built in parts no longer gets another thread's text inside it. The old
+  `fprintf(stderr)` calls in `src/`, `zero/` and `tools/` go through the log (all but the CLI tools' usage texts and
+  the crash report) (`src/log.h`, force-included like the CPU check). runz and the tools print
+  as before, byte for byte: runz's output and logits were checked against 2026.11.12.12's.
+- **Options, llama.cpp's names:** `--log-verbosity N` / `-lv N` (0 errors ... 3 debug; `ARC_LOG_LEVEL`),
+  `--log-timestamps`, `--log-colors`, `--log-file`, `--log-disable`.
+- **At start:** the build, Windows, CPU and RAM, the GPU (name, driver, EUs, clock, memory, XMX), and every `ARC_*`
+  switch set (secrets as "(set)").
+- **At each model load:** the model's shape (arch, layers, heads, vocab, trained context, experts, file). With
+  `--ctx auto`, how the GPU memory was shared out: kept free, snapshots, encoders and speech, weights, drafter, buffers,
+  context per 1K tokens, what is left.
+- **Per request:** an access line (method, path, status, bytes, time, client). Polls show at debug only. An error
+  reply is a W / E line with its message (an overflow says the prompt and the context sizes). The completion line
+  adds the time to the first token, the context used / served and the slot. At `-lv 3`, llama.cpp's
+  `prompt eval time` / `eval time` / `total time` lines.
+- **Loading:** the `progress:` lines (read by zero-server and the launcher, without the prefix) are one per 5 points or
+  2 s: ~20 a load instead of ~100.
+- **`GET /metrics`:** Prometheus' format with vLLM's names under `inferzero:`. Requests running / waiting, context use,
+  tokens, prefix-cache hits, drafts accepted, finish reasons, HTTP requests, and histograms of the time to the first
+  token, the end-to-end latency, the time per token, the prompt and generation times and sizes. Numbers only.
+- **Old logs:** the newest 10 as `.log`, older ones each in a zip of the same name (about 10x smaller), and those older than 90
+  days or past 200 MB removed.
+
 ## 2026-11-12: Pi's context for every model counts speech to text
 
 - **Pi's model list now gives each model the context a switch to it would really get.** With Whisper or Qwen3-ASR

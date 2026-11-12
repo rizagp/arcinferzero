@@ -34,12 +34,12 @@ static void open_package(const std::string& gguf) {
   const std::string path = (std::filesystem::path(gguf).parent_path() / F->get_str("inferzero.experts_file")).string();
   PX = new PackExperts;
   PX->f = fopen(path.c_str(), "rb");
-  if (!PX->f) { fprintf(stderr, "cannot open %s\n", path.c_str()); exit(1); }
+  if (!PX->f) { zlog::eprintf("cannot open %s\n", path.c_str()); exit(1); }
   struct { uint32_t magic, version; uint64_t fp, layers, experts, bytes; } h{};
-  if (fread(&h, sizeof h, 1, PX->f) != 1 || h.magic != 0x58435241u) { fprintf(stderr, "not an expert file: %s\n", path.c_str()); exit(1); }
+  if (fread(&h, sizeof h, 1, PX->f) != 1 || h.magic != 0x58435241u) { zlog::eprintf("not an expert file: %s\n", path.c_str()); exit(1); }
   PX->layers.resize(h.layers);
-  if (fread(PX->layers.data(), sizeof(PackExperts::Layer), h.layers, PX->f) != h.layers) { fprintf(stderr, "short expert file header\n"); exit(1); }
-  fprintf(stderr, "ref_forward: experts from the package's expert file %s\n", path.c_str());
+  if (fread(PX->layers.data(), sizeof(PackExperts::Layer), h.layers, PX->f) != h.layers) { zlog::eprintf("short expert file header\n"); exit(1); }
+  zlog::eprintf("ref_forward: experts from the package's expert file %s\n", path.c_str());
 }
 // one superblock from its GPU raw form back to GGUF bytes (the inverse of gpu_raw_sb)
 static void gguf_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
@@ -77,7 +77,7 @@ static const std::vector<uint8_t>& pack_matrix(int il, int m, int e, int N, int 
   for (int i = 0; i < m; ++i) off += L.part[i];
   std::vector<uint8_t> raw(raw_row * N);
   _fseeki64(PX->f, (long long)off, SEEK_SET);
-  if (fread(raw.data(), 1, raw.size(), PX->f) != raw.size()) { fprintf(stderr, "short read in the expert file\n"); exit(1); }
+  if (fread(raw.data(), 1, raw.size(), PX->f) != raw.size()) { zlog::eprintf("short read in the expert file\n"); exit(1); }
   std::vector<uint8_t> out(row * N), sb(bb * nsb);
   for (int n = 0; n < N; ++n) {
     for (size_t b = 0; b < nsb; ++b) gguf_sb(ty, raw.data() + n * raw_row + b * bp, sb.data() + b * bb);
@@ -416,8 +416,8 @@ static void gemma4_layers(const std::vector<int>& toks, std::vector<float>& x) {
   if (const char* ef = getenv("REF_EMB")) {
     FILE* fe = fopen(ef, "rb");
     int hd[3] = {0, 0, 0};
-    if (!fe || fread(hd, 4, 3, fe) != 3 || hd[1] != E || hd[2] < 0 || hd[2] + hd[0] > T) { fprintf(stderr, "REF_EMB: bad file\n"); exit(1); }
-    if (fread(&x[(size_t)hd[2] * E], 4, (size_t)hd[0] * E, fe) != (size_t)hd[0] * E) { fprintf(stderr, "REF_EMB: short file\n"); exit(1); }
+    if (!fe || fread(hd, 4, 3, fe) != 3 || hd[1] != E || hd[2] < 0 || hd[2] + hd[0] > T) { zlog::eprintf("REF_EMB: bad file\n"); exit(1); }
+    if (fread(&x[(size_t)hd[2] * E], 4, (size_t)hd[0] * E, fe) != (size_t)hd[0] * E) { zlog::eprintf("REF_EMB: short file\n"); exit(1); }
     fclose(fe);
   }
   // per-layer embeddings (E2B / E4B, as llama.cpp gemma3n / gemma4 and the engine's ple_inputs): per layer NPL values,
@@ -656,7 +656,7 @@ static void gemma4_layers(const std::vector<int>& toks, std::vector<float>& x) {
         for (int i = 0; i < E; ++i) x[(size_t)t * E + i] = (x[(size_t)t * E + i] + y[(size_t)t * E + i]) * scale;
       }
     }
-    fprintf(stderr, "\rlayer %d/%d", il + 1, nl);
+    zlog::eprintf("\rlayer %d/%d", il + 1, nl);
   }
 }
 
@@ -704,7 +704,7 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
       for (int i = 0; i < HD; ++i) bx += !std::isfinite(xn[(size_t)(T - 1) * HD + i]);
       for (int i = 0; i < hp("hyper_connection.low_rank"); ++i) bl += !std::isfinite(lo[(size_t)(T - 1) * hp("hyper_connection.low_rank") + i]);
       for (int i = 0; i < HD; ++i) bg += !std::isfinite(gate[(size_t)(T - 1) * HD + i]);
-      fprintf(stderr, "\nmixer %s last row: non-finite xn %d lo %d gate %d (lo size %zu, T %d)\n", pre.c_str(), bx, bl, bg, lo.size(), T);
+      zlog::eprintf("\nmixer %s last row: non-finite xn %d lo %d gate %d (lo size %zu, T %d)\n", pre.c_str(), bx, bl, bg, lo.size(), T);
     }
     mixed.assign((size_t)T * E, 0.0f);
     for (int t = 0; t < T; ++t)
@@ -1029,7 +1029,7 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
     }
     hc_combine(d, inject);
     dump_res();
-    fprintf(stderr, "\rlayer %d/%d", il + 1, nl);
+    zlog::eprintf("\rlayer %d/%d", il + 1, nl);
   }
   if (fdump) fclose(fdump);
   // the final mixer is the output norm
@@ -1038,7 +1038,7 @@ static void qwen4exp_layers(const std::vector<int>& toks, std::vector<float>& x)
     int bad_r = 0, bad_m = 0;
     for (int i = 0; i < HD; ++i) bad_r += !std::isfinite(res[(size_t)(T - 1) * HD + i]);
     for (int i = 0; i < E; ++i) bad_m += !std::isfinite(mixed[(size_t)(T - 1) * E + i]);
-    fprintf(stderr, "\nlast row: non-finite streams %d, mixer output %d\n", bad_r, bad_m);
+    zlog::eprintf("\nlast row: non-finite streams %d, mixer output %d\n", bad_r, bad_m);
   }
   x = mixed;
 }
@@ -1066,7 +1066,7 @@ static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& 
   const double bfast = F->get_float(A + ".rope.scaling.yarn_beta_fast", 32), bslow = F->get_float(A + ".rope.scaling.yarn_beta_slow", 1);
   auto ints = [&](const std::string& k) {
     const std::vector<int64_t>* v = F->get_ints(A + "." + k);
-    if (!v) { fprintf(stderr, "deepseek41: no %s\n", k.c_str()); exit(1); }
+    if (!v) { zlog::eprintf("deepseek41: no %s\n", k.c_str()); exit(1); }
     return *v;
   };
   auto floats = [&](const std::string& k, int n, double def) {
@@ -1426,10 +1426,10 @@ static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& 
       for (int e = 0; e < NE; ++e) id[e] = e;
       std::stable_sort(id.begin(), id.end(), [&](int a, int b) { return sb[a] > sb[b]; });
       if (getenv("REF_ROUTES") && t == T - 1) {  // (debug: the last token's choice and the margin to the next)
-        fprintf(stderr, "\nlayer %d experts", il);
-        for (int k = 0; k <= NU && k < NE; ++k) fprintf(stderr, " %d(%.4f)", id[k], sb[id[k]]);
-        fprintf(stderr, "\nrouter:");
-        for (int e = 0; e < NE; ++e) fprintf(stderr, " %.4f", z[(size_t)t * NE + e]);
+        zlog::eprintf("\nlayer %d experts", il);
+        for (int k = 0; k <= NU && k < NE; ++k) zlog::eprintf(" %d(%.4f)", id[k], sb[id[k]]);
+        zlog::eprintf("\nrouter:");
+        for (int e = 0; e < NE; ++e) zlog::eprintf(" %.4f", z[(size_t)t * NE + e]);
       }
       double sum = 0;
       for (int k = 0; k < NU; ++k) sum += s[id[k]];
@@ -1453,7 +1453,7 @@ static void deepseek41_layers(const std::vector<int>& toks, std::vector<float>& 
     hc_post(f, Xr, fpost, fcomb, X);
     pre_in = fpre;
     if (fdump) fwrite(&X[(size_t)(T - 1) * HCD], 4, HCD, fdump);
-    fprintf(stderr, "\rlayer %d/%d", il + 1, nl);
+    zlog::eprintf("\rlayer %d/%d", il + 1, nl);
   }
   if (fdump) fclose(fdump);
   hc_pre(X, pre_in, x);
@@ -1467,7 +1467,7 @@ static void softcap(std::vector<float>& l) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 3) { fprintf(stderr, "usage: ref_forward model.gguf ids\n"); return 1; }
+  if (argc < 3) { zlog::eprintf("usage: ref_forward model.gguf ids\n"); return 1; }
   GgufFile f(argv[1]);
   F = &f;
   A = f.get_str("general.architecture");
@@ -1505,8 +1505,8 @@ int main(int argc, char** argv) {
   if (const char* ef = getenv("REF_EMB"); ef && A != "gemma4") {
     FILE* fe = fopen(ef, "rb");
     int hd[3] = {0, 0, 0};
-    if (!fe || fread(hd, 4, 3, fe) != 3 || hd[1] != E || hd[2] < 0 || hd[2] + hd[0] > T) { fprintf(stderr, "REF_EMB: bad file\n"); exit(1); }
-    if (fread(&x[(size_t)hd[2] * E], 4, (size_t)hd[0] * E, fe) != (size_t)hd[0] * E) { fprintf(stderr, "REF_EMB: short file\n"); exit(1); }
+    if (!fe || fread(hd, 4, 3, fe) != 3 || hd[1] != E || hd[2] < 0 || hd[2] + hd[0] > T) { zlog::eprintf("REF_EMB: bad file\n"); exit(1); }
+    if (fread(&x[(size_t)hd[2] * E], 4, (size_t)hd[0] * E, fe) != (size_t)hd[0] * E) { zlog::eprintf("REF_EMB: short file\n"); exit(1); }
     fclose(fe);
   }
 
@@ -1674,7 +1674,7 @@ int main(int argc, char** argv) {
       }
     }
     for (size_t i = 0; i < x.size(); ++i) x[i] += d[i];
-    fprintf(stderr, "\rlayer %d/%d", il + 1, nl);
+    zlog::eprintf("\rlayer %d/%d", il + 1, nl);
   }
   // (qwen4exp: no output norm, the final hyper-connection mixer is one)
   const std::vector<float> on = f.find("output_norm.weight") ? vecf("output_norm.weight") : std::vector<float>();

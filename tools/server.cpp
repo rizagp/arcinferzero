@@ -39,6 +39,8 @@
 #include "xlsx.h"
 #include "server_terminal.h"
 #include "server_remote.h"
+#include "server_metrics.h"  // (GET /metrics: Prometheus, vLLM's names)
+#include "server_startup.h"  // (the log's first lines)
 #include "../src/crash_log.h"  // (a crash names its stack in the log)
 #include <atomic>
 #include <condition_variable>
@@ -270,7 +272,7 @@ class Server {
     defaults_.top_k = (int)g.get_int("general.sampling.top_k", 20);
     defaults_.min_p = (float)g.get_float("general.sampling.min_p", 0.0);
     ocr_ = ocr_model(g, model_id_);  // (tools/server_ocr.h)
-    if (ocr_) fprintf(stderr, "OCR mode: requests with an image get this model's own task prompts (tools/server_ocr.h)\n");
+    if (ocr_) zlog::eprintf("OCR mode: requests with an image get this model's own task prompts (tools/server_ocr.h)\n");
     gemma_ = e.hp.gemma;
     rings_ = e.hp.swa_rings;
     if (gemma_) {
@@ -947,6 +949,7 @@ int main(int argc, char** argv) {
         if (std::string(argv[j]) == "--speech-reserve") speech = (size_t)std::max(0.0, atof(argv[j + 1]));
       return list_models(speech);
     }
+  zlog::start();  // (the log's prefixes and whole lines: src/log.h; --log-* below)
   std::string model, host = "127.0.0.1", alias;
   int port = 8080;
   bool swap = true, help = false, web_tools = true, terminal = true, precise = false;
@@ -988,7 +991,9 @@ int main(int argc, char** argv) {
       {"--whisper", "auto (or on), off, or a faster-whisper folder with model.bin"},
       {"--asr", "auto (or on), off, or a Qwen3-ASR .gguf file"}, {"--asr-slots", "1..4"},
       {"--whisper-device", "gpu or npu"}, {"--whisper-max-minutes", "minutes, 1..600"}, {"--no-terminal", ""},
-      {"--no-prefix-cache", ""}, {"--prefix-cache-gb", "GiB"}, {"--list-models", ""}, {"--help", ""}};
+      {"--no-prefix-cache", ""}, {"--prefix-cache-gb", "GiB"}, {"--list-models", ""}, {"--help", ""},
+      {"--log-verbosity", "0 errors, 1 warnings, 2 info, 3 debug (or error / warn / info / debug)"},
+      {"--log-timestamps", "on or off"}, {"--log-colors", "auto, on or off"}, {"--log-file", "a file"}, {"--log-disable", ""}};
   auto takes = [&](std::string o) {  // (what option o takes, as " (...)")
     if (o == "-m") o = "--model";
     if (o == "-c") o = "--ctx";
@@ -1008,6 +1013,33 @@ int main(int argc, char** argv) {
       return v;
     };
     if (a == "-m" || a == "--model") model = next();
+    else if (a == "--log-verbosity" || a == "-lv") {  // (the log: src/log.h)
+      const std::string v = next();
+      int l = 2;
+      if (!zlog::level_name(v, l)) throw std::runtime_error(a + ": expected 0-3 or error / warn / info / debug (got " + v + ")");
+      zlog::cfg().level = l;
+    } else if (a == "--log-timestamps" || a == "--log-colors") {
+      const std::string v = next();
+      if (v != "on" && v != "off" && !(v == "auto" && a == "--log-colors")) throw std::runtime_error(a + ": expected on or off" + takes(a));
+      if (a == "--log-timestamps") zlog::cfg().stamps = v == "on";
+      else if (v != "auto") zlog::cfg().colors = v == "on";
+    } else if (a == "--log-file") {
+      const std::string f = next();
+      FILE* lf = fopen(f.c_str(), "ab");
+      if (!lf) throw std::runtime_error("--log-file: cannot open " + f);
+      // (the file stderr already goes to, e.g. zero-server's server.log: two writers on one file would overwrite each
+      //  other's lines; refused, audit 2026-11-12b #6)
+      BY_HANDLE_FILE_INFORMATION a1{}, a2{};
+      const HANDLE he = (HANDLE)_get_osfhandle(_fileno(stderr)), hf = (HANDLE)_get_osfhandle(_fileno(lf));
+      if (he != INVALID_HANDLE_VALUE && GetFileInformationByHandle(he, &a1) && GetFileInformationByHandle(hf, &a2) &&
+          a1.dwVolumeSerialNumber == a2.dwVolumeSerialNumber && a1.nFileIndexHigh == a2.nFileIndexHigh &&
+          a1.nFileIndexLow == a2.nFileIndexLow) {
+        fclose(lf);
+        throw std::runtime_error("--log-file: " + f + " is the file stderr already goes to (every line is there "
+                                 "already); name another file, or leave the option out");
+      }
+      zlog::cfg().file = lf;
+    } else if (a == "--log-disable") zlog::cfg().disabled = true;
     else if (a == "--host") host = next();
     else if (a == "--port") port = to_int(a, next());
     else if (a == "--ctx" || a == "-c") {
@@ -1021,23 +1053,23 @@ int main(int argc, char** argv) {
     else if (a == "--expert-ram-gb") so.eo.expert_ram_gb = to_double(a, next());
     else if (a == "--driver-reserve-gb") {  // (Engine::driver_slack reads it, once, before any engine exists)
       const double g = to_double(a, next());
-      if (!(g >= 0.0 && g <= 8.0)) { fprintf(stderr, "inferzero-server: --driver-reserve-gb: 0 to 8 GiB\n"); return 1; }
+      if (!(g >= 0.0 && g <= 8.0)) { LOG_ERR("inferzero-server: --driver-reserve-gb: 0 to 8 GiB\n"); return 1; }
       _putenv_s("ARC_DRIVER_RESERVE_GB", std::to_string(g).c_str());
     }
     else if (a == "--no-stream") so.eo.stream_experts = false;
     else if (a == "--pack") {  // make an inferzero package of a MoE GGUF, then exit
       const std::string src = next();
       try {
-        fprintf(stderr, "inferzero: making a package of %s (reads the whole model once)\n", src.c_str());
+        zlog::eprintf("inferzero: making a package of %s (reads the whole model once)\n", src.c_str());
         const zpack::Result r = zpack::make_package(src);
-        fprintf(stderr, "inferzero: package ready in %.0f s\n  %s (%.2f GB)\n  %s (%.2f GB)\n"
+        zlog::eprintf("inferzero: package ready in %.0f s\n  %s (%.2f GB)\n  %s (%.2f GB)\n"
                         "The original GGUF is no longer needed to run this model with inferzero: the model list now\n"
                         "picks the package. The engine's own expert file for the GGUF moved into the package, so loading\n"
                         "the GGUF itself (by its path) would write that file again; keep the GGUF only as a backup.\n",
                 r.seconds, r.gguf.c_str(), r.rest_bytes / 1e9, r.experts.c_str(), r.expert_bytes / 1e9);
         return 0;
       } catch (const std::exception& e) {
-        fprintf(stderr, "inferzero: --pack failed: %s\n", e.what());
+        zlog::eprintf("inferzero: --pack failed: %s\n", e.what());
         return 1;
       }
     }
@@ -1128,7 +1160,7 @@ int main(int argc, char** argv) {
     //  for the whole process, so a model switch keeps it)
     if (precise) {
       _putenv_s("ARC_FN_PRECISE", "1");
-      fprintf(stderr, "precise mode: on (Qwen3.8 Flash Next: BF16 hyper-connection rows and router, two int8 passes)\n");
+      zlog::eprintf("precise mode: on (Qwen3.8 Flash Next: BF16 hyper-connection rows and router, two int8 passes)\n");
     }
     if (port < 1 || port > 65535) throw std::runtime_error("--port: expected 1..65535 (got " + std::to_string(port) + ")");
     if (host.empty()) throw std::runtime_error("--host: an address or name is required");
@@ -1178,11 +1210,11 @@ int main(int argc, char** argv) {
     if (!word(asr_opt)) check("--asr", asr_opt, false, ".gguf");
   }
   } catch (const std::exception& e) {
-    fprintf(stderr, "inferzero-server: %s\n", e.what());
+    LOG_ERR("inferzero-server: %s\n", e.what());
     return 2;
   }
   if (model.empty() || help) {
-    fprintf(stderr,
+    zlog::raw(  // (the usage text as it is, without the log's prefix; also to --log-file)
             "usage: inferzero-server -m model.gguf [options]   OpenAI-compatible server (API at /v1, web UI at /)\n"
             "       inferzero-server -m none [options]         speech to text only (Qwen3-ASR, --whisper auto for\n"
             "                                                 Whisper too); a chat request naming a model loads it later\n"
@@ -1257,6 +1289,11 @@ int main(int argc, char** argv) {
             "  GPU: picked at start: Xe2 / Xe3 GPUs (no 8-lane sub-groups) get 16-lane kernels, and XMX for the prompt\n"
             "  GEMMs when their results match the DP4a kernels' on a test (ARC_NO_XMX=1: DP4a; ARC_NO_SG8=1: 16 lanes)\n"
             "  --kernels DIR         kernel folder (default zero\\kernels);  --webui DIR  web UI folder\n"
+            "  --log-verbosity N, -lv N  the log: 0 errors, 1 + warnings, 2 + info (default), 3 + debug (every\n"
+            "                        request's access line, llama.cpp's timing lines); also ARC_LOG_LEVEL\n"
+            "  --log-timestamps on|off  the date and time in front of each line (default on);  --log-colors auto|on|off\n"
+            "  --log-file F          every line to F as well;  --log-disable  no log at all (docs/logging.md; GET /metrics:\n"
+            "                        Prometheus, vLLM's names with inferzero:)\n"
             "  --session-cache-gb N  disk space for saved conversations, all models together (default 0 = off; zero-server\n"
             "                        and the launcher: 8): switching between conversations loads the other one's state\n"
             "                        instead of processing its prompt again (other models' go first, oldest first)\n"
@@ -1302,6 +1339,7 @@ int main(int argc, char** argv) {
   };
   if (so.eo.kernel_dir == "kernels" || so.eo.kernel_dir == "zero/kernels") so.eo.kernel_dir = find_dir(so.eo.kernel_dir);
   if (so.webui.empty()) so.webui = find_dir("webui");
+  srvstart::print(exe_dir, false);  // (the log's first lines: build, system, switches; tools/server_startup.h)
   if (alias.empty()) alias = std::filesystem::path(model).stem().string();
   // -m none: speech to text only (transcripts), a chat model loaded later by the first request naming one; with no
   // speech option given, Qwen3-ASR alone (the default transcript model, ~3.7 GB of GPU memory)
@@ -1320,13 +1358,16 @@ int main(int argc, char** argv) {
   try {
     wh = srvsp::start(whisper_opt, whisper_dev, asr_opt, whisper_max_min, so);
   } catch (const std::exception& e) {
-    fprintf(stderr, "inferzero-server: --whisper: %s\n", e.what());
+    LOG_ERR("inferzero-server: --whisper: %s\n", e.what());
     return 1;
   }
   if (no_chat && !wh) {
-    fprintf(stderr, "inferzero-server: -m none with --whisper off --asr off: nothing to run\n");
+    LOG_ERR("inferzero-server: -m none with --whisper off --asr off: nothing to run\n");
     return 1;
   }
+  // (the GPU line: its probe starts the GPU runtime, which hides the NPU driver from a later zeInit(0), so only after
+  //  the NPU's start above and the speech service's (--whisper-device npu), audit 2026-11-12)
+  srvstart::print(exe_dir, true);
   // Settings can load and unload the speech models whatever the start said, unless it said off: without --whisper the
   // cache's Whisper is offered (unloaded), without --asr its Qwen3-ASR, and the service exists with nothing loaded when
   // a chat model started alone. Before, Settings said "not on this server" with the models on the disk.
@@ -1342,17 +1383,17 @@ int main(int argc, char** argv) {
   std::unique_ptr<Loaded> cur;
   std::string unloaded_path;  // (the chat model unloaded in Settings: first in /v1/models while none is loaded)
   if (no_chat)
-    fprintf(stderr, "no chat model (-m none): speech to text only; a chat request naming a model loads it\n");
+    zlog::eprintf("no chat model (-m none): speech to text only; a chat request naming a model loads it\n");
   else
     try {  // (a model that cannot load: its reason, not a silent abort)
       cur = load_model(model, alias, so);
     } catch (const std::exception& e) {
-      fprintf(stderr, "inferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
+      LOG_ERR("inferzero-server: cannot load %s: %s\n", model.c_str(), e.what());
       // (one that does not fit next to speech to text, models switchable: the server starts without it, as -m none,
       //  so the web UI can free memory and load it; else the reason and the end, as before)
       const bool fit = std::string(e.what()).find("does not fit in the GPU memory") != std::string::npos;
       if (!(fit && swap && wh && wh->gpu_bytes())) return 1;  // (speech to text loaded: it holds the memory)
-      fprintf(stderr, "starting without a chat model (unload speech to text in the web UI's Settings, GPU memory, then a "
+      zlog::eprintf("starting without a chat model (unload speech to text in the web UI's Settings, GPU memory, then a "
                       "request naming the model loads it)\n");
     }
   ServeOpts cur_so = so;  // (the loaded model's options: a change of --slots loads it again with them)
@@ -1417,7 +1458,53 @@ int main(int argc, char** argv) {
   remote::access().load();
   http.gate = [](HttpRequest& rq, HttpResponse& rs) { return remote::access().gate(rq, rs); };
   http.head_gate = [](const HttpRequest& rq) { return remote::access().head_gate(rq); };
+  // the log's access line for every request the handler answered (docs/logging.md) and /metrics' HTTP counts:
+  // polling (GETs that succeed: the web UI's and the launcher's /props, /health, /v1/models) only at -lv 3; an error
+  // reply a warning (5xx an error) with its message
+  http.on_done = [](const HttpRequest& rq, const HttpResponse& rs, double ms) {
+    const int st = rs.status();
+    // (the method as one of HTTP's, else "other": a client's own word must not make series or lines of its own)
+    static const char* kMethods[] = {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"};
+    std::string method = "other";
+    for (const char* m : kMethods)
+      if (rq.method == m) method = m;
+    zmet::http_done(method, rq.path, st);
+    // (the path in one line: a control character in it (a bare line feed in the request line) would write lines
+    //  of its own into the log, which zero-server reads)
+    std::string path = rq.path.substr(0, 300);
+    for (char& c : path)
+      if ((unsigned char)c < 0x20 || c == 0x7f) c = '?';
+    const bool poll = rq.method == "GET" || rq.method == "HEAD" || rq.method == "OPTIONS" || rq.path == "/tokenize" ||
+                      rq.path == "/detokenize";
+    if (poll) {  // (a poll that keeps failing, e.g. /health without a model: logged once per path and status, again
+                 //  after it succeeded)
+      static std::mutex mu;
+      static std::map<std::string, int> last;
+      std::lock_guard<std::mutex> lk(mu);
+      if (st < 400) {
+        last.erase(path);
+      } else {
+        if (last.size() > 256) last.clear();
+        int& l = last[path];
+        if (l == st) return;
+        l = st;
+      }
+    }
+    const bool quiet = st < 400 && poll;
+    const int lvl = st >= 500 && !poll ? zlog::ERR : st >= 400 ? zlog::WRN : quiet ? zlog::DBG : zlog::INF;
+    char sz[32];
+    const double b = (double)rs.bytes();
+    if (b < 1024) snprintf(sz, sizeof sz, "%.0f B", b);
+    else if (b < 1048576) snprintf(sz, sizeof sz, "%.1f KB", b / 1024);
+    else snprintf(sz, sizeof sz, "%.1f MB", b / 1048576);
+    zlog::log(lvl, "%s %s %d %s %.0f ms %s%s%s%s\n", method.c_str(), path.c_str(), st, sz, ms,
+              rq.peer.empty() ? "-" : rq.peer.c_str(), rq.remote ? " (remote)" : "", rs.error().empty() ? "" : " | ",
+              rs.error().c_str());
+  };
   http.handler = [&](const HttpRequest& rq, HttpResponse& rs) {
+    // (Prometheus: numbers only, vLLM's names with inferzero:, tools/server_metrics.h)
+    if (rq.path == "/metrics" && rq.method == "GET")
+      return rs.send(200, "text/plain; version=0.0.4; charset=utf-8", zmet::render());
     // (remote access settings: this computer only; the gate refuses them for remote sessions)
     if (rq.path == "/v1/remote/config" && !rq.remote) {
       // (this computer: with --host, a peer on the network is not "remote" but must not set the password either)
@@ -1877,9 +1964,9 @@ int main(int argc, char** argv) {
       const std::string path = cur->path, al = cur->alias;
       const ServeOpts prev = cur_so;
       const auto t0 = clk::now();
-      fprintf(stderr, "slots: %d -> %d, loading %s again\n", cur->eng->slot_count(), n, al.c_str());
+      zlog::eprintf("slots: %d -> %d, loading %s again\n", cur->eng->slot_count(), n, al.c_str());
       if (cur->srv) cur->srv->save_held();
-      cur.reset();
+      cur.reset(), zmet::unloaded();
       ServeOpts s2 = prev;
       s2.eo.slots = n;
       s2.ctx_auto = true;
@@ -1888,15 +1975,15 @@ int main(int argc, char** argv) {
         cur = load_model(path, al, s2);
         cur_so = s2;
         so.eo.slots = n;  // (the next model switches too)
-        fprintf(stderr, "slots: %d, loaded in %.1f s\n", n, ms_since(t0) / 1000);
+        zlog::eprintf("slots: %d, loaded in %.1f s\n", n, ms_since(t0) / 1000);
         return reply();
       } catch (const std::exception& e) {
-        fprintf(stderr, "slots: could not load %s with %d slots: %s; loading it as before\n", al.c_str(), n, e.what());
+        zlog::eprintf("slots: could not load %s with %d slots: %s; loading it as before\n", al.c_str(), n, e.what());
         std::string also;
         try {
           cur = load_model(path, al, prev);
         } catch (const std::exception& e2) {
-          cur.reset();
+          cur.reset(), zmet::unloaded();
           also = std::string("; loading it as before failed too: ") + e2.what();
         }
         return fail(500, std::string("could not load the model with ") + std::to_string(n) + " slots: " + e.what() + also);
@@ -1964,17 +2051,17 @@ int main(int argc, char** argv) {
         if (cur && !can_unload()) return fail(409, "this model could not be loaded again by a request (--no-swap, or a file "
                                                     "outside the model folders): restart the server instead");
         if (cur) {
-          fprintf(stderr, "unloading %s (asked)\n", cur->alias.c_str());
+          zlog::eprintf("unloading %s (asked)\n", cur->alias.c_str());
           if (cur->srv) cur->srv->save_held();
           unloaded_path = cur->path;
-          cur.reset();
+          cur.reset(), zmet::unloaded();
         }
         return rs.send(200, "application/json", state().dump());
       }
       if (which != "whisper" && which != "asr") return fail(400, "which: \"model\", \"whisper\" or \"asr\"");
       if (!wh) return fail(400, "this server runs no speech to text (--whisper off --asr off)");
       std::string bad;
-      fprintf(stderr, "%s %s (asked)\n", load ? "loading" : "unloading", which == "asr" ? "Qwen3-ASR" : "Whisper");
+      zlog::eprintf("%s %s (asked)\n", load ? "loading" : "unloading", which == "asr" ? "Qwen3-ASR" : "Whisper");
       if (!wh->set_loaded(which, load, wh->gpu_turn, bad)) return fail(409, bad);
       std::unique_lock<std::shared_mutex> lk(swap_mu);  // (the memory --ctx auto keeps for speech, /props: as it is now)
       so.whisper_bytes = wh->gpu_bytes() ? wh->gpu_bytes() + (128u << 20) : 0;
@@ -2318,9 +2405,9 @@ int main(int argc, char** argv) {
         if (m && (!cur || m->alias != cur->alias)) {
           const std::string prev_path = cur ? cur->path : std::string(), prev_alias = cur ? cur->alias : std::string();
           const auto t0 = clk::now();
-          fprintf(stderr, "switching model: %s -> %s\n", prev_alias.c_str(), m->alias.c_str());
+          zlog::eprintf("switching model: %s -> %s\n", prev_alias.c_str(), m->alias.c_str());
           if (cur && cur->srv) cur->srv->save_held();  // (switching back later loads the conversation instead of redoing it)
-          cur.reset();  // frees the GPU memory first
+          cur.reset(), zmet::unloaded();  // frees the GPU memory first
           ServeOpts s2 = so;
           s2.ctx_auto = true;  // the --ctx given at start was for the first model
           s2.eo.mtp = m->mtp;  // the variant's settings: MTP block / drafter, image projector
@@ -2334,12 +2421,12 @@ int main(int argc, char** argv) {
             s2.warm_prompt = false;  // (the waiting request warms it)
             cur = load_model(m->path, m->alias, s2);
             cur_so = s2;
-            fprintf(stderr, "switched to %s in %.1f s\n", m->alias.c_str(), ms_since(t0) / 1000);
+            zlog::eprintf("switched to %s in %.1f s\n", m->alias.c_str(), ms_since(t0) / 1000);
             // (zero-pi starts with this model next time; not for the transcript service's Gemma 4 E4B requests, which
             //  carry "x-arc-speech: 1" (tools/server_speech.h attach_e4b): the user did not choose that model)
             if (rq.header("x-arc-speech").empty()) std::ofstream(app_dir() + "/last-model.txt") << m->path << "\n";
           } catch (const std::exception& e) {
-            fprintf(stderr, "could not load %s: %s; %s\n", m->path.c_str(), e.what(),
+            zlog::eprintf("could not load %s: %s; %s\n", m->path.c_str(), e.what(),
                     prev_path.empty() ? "no model was loaded before it" : ("loading " + prev_alias + " again").c_str());
             ServeOpts s3 = so;
             s3.ctx_auto = true;
@@ -2356,9 +2443,9 @@ int main(int argc, char** argv) {
             try {  // (that failing too leaves no model: requests get 503 until one names a model that loads)
               if (!prev_path.empty()) cur = load_model(prev_path, prev_alias, s3), cur_so = s3;
             } catch (const std::exception& e2) {
-              cur.reset();
+              cur.reset(), zmet::unloaded();
               also = std::string("; loading ") + prev_alias + " again failed too: " + e2.what();
-              fprintf(stderr, "could not load %s again: %s; no model loaded\n", prev_alias.c_str(), e2.what());
+              zlog::eprintf("could not load %s again: %s; no model loaded\n", prev_alias.c_str(), e2.what());
             }
             Json err = Json::object(), r = Json::object();
             err.set("message", std::string("could not load model ") + want + ": " + e.what() + also);
@@ -2386,12 +2473,12 @@ int main(int argc, char** argv) {
     cur->srv->handle(rq, rs);
   };
   if (!http.listen(host, port)) {
-    fprintf(stderr, "cannot listen on %s:%d\n", host.c_str(), port);
+    LOG_ERR("cannot listen on %s:%d: another program (often a server started earlier) may use the port; stop it, or start this one with --port N\n", host.c_str(), port);
     return 1;
   }
-  fprintf(stderr, "listening on http://%s:%d  (OpenAI API at /v1, web UI at /)\n", host.c_str(), port);
+  zlog::eprintf("listening on http://%s:%d  (OpenAI API at /v1, web UI at /)\n", host.c_str(), port);
   if (host != "127.0.0.1" && host != "localhost" && host != "::1")  // (review 6.2: there is no authentication)
-    fprintf(stderr, "warning: listening on %s: anyone who can reach this address can use the model (no API key)\n",
+    zlog::eprintf("warning: listening on %s: anyone who can reach this address can use the model (no API key)\n",
             host.c_str());
   // (the saved transcripts' queue: started once the server answers; stopped before the locals its GPU turns use go)
   if (wh) wh->start_library(std::filesystem::path(app_dir()) / "transcripts");

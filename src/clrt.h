@@ -22,7 +22,7 @@ struct ClRt {
   cl_command_queue queue = nullptr;
 
   bool init(bool profiling = true) {
-    if (!cl_load()) { fprintf(stderr, "cannot load OpenCL.dll\n"); return false; }
+    if (!cl_load()) { zlog::eprintf("cannot load OpenCL.dll\n"); return false; }
     cl_uint np = 0;
     CL_CHECK(clGetPlatformIDs(0, nullptr, &np));
     std::vector<cl_platform_id> plats(np);
@@ -31,7 +31,7 @@ struct ClRt {
       cl_uint nd = 0;
       if (clGetDeviceIDs(p, CL_DEVICE_TYPE_GPU, 1, &device, &nd) == CL_SUCCESS && nd > 0) { platform = p; break; }
     }
-    if (!platform) { fprintf(stderr, "no OpenCL GPU found\n"); return false; }
+    if (!platform) { zlog::eprintf("no OpenCL GPU found\n"); return false; }
     cl_int err;
     ctx = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err);
     CL_CHECK(err);
@@ -105,7 +105,7 @@ struct ClRt {
     if (logn > 2) {
       std::string log(logn, '\0');
       clGetProgramBuildInfo(prog, device, CL_PROGRAM_BUILD_LOG, logn, log.data(), nullptr);
-      if (err != CL_SUCCESS || log.find("warning") != std::string::npos) fprintf(stderr, "build log:\n%s\n", log.c_str());
+      if (err != CL_SUCCESS || log.find("warning") != std::string::npos) zlog::eprintf("build log:\n%s\n", log.c_str());
     }
     CL_CHECK(err);
     return prog;
@@ -143,7 +143,7 @@ struct ClRt {
 
 inline std::string read_file(const std::string& path) {
   std::ifstream f(path, std::ios::binary);
-  if (!f) { fprintf(stderr, "cannot open %s\n", path.c_str()); exit(1); }
+  if (!f) { zlog::eprintf("cannot open %s\n", path.c_str()); exit(1); }
   std::stringstream ss;
   ss << f.rdbuf();
   return ss.str();

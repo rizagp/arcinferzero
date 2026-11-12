@@ -202,7 +202,7 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   try {
     ExpertStore st;
     st.open_or_build(src, source, pre, n_exp, r.experts);
-    if (!st.built) fprintf(stderr, "inferzero: the expert file was already there: %s\n", r.experts.c_str());
+    if (!st.built) zlog::eprintf("inferzero: the expert file was already there: %s\n", r.experts.c_str());
     r.expert_bytes = st.file_bytes;
   } catch (...) {
     drop_tmp();
@@ -231,7 +231,7 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     }
     if (!ok) {  // (the package works without it; only remove-original refuses then)
       fs::remove(rec, e2);
-      fprintf(stderr, "inferzero: could not write %s: zero-server remove-original will not delete the original\n",
+      zlog::eprintf("inferzero: could not write %s: zero-server remove-original will not delete the original\n",
               rec.string().c_str());
     }
   }

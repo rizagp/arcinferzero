@@ -357,7 +357,7 @@
     static const int tm = [] {
       const int t = getenv("ARC_GEMM_TM") ? atoi(getenv("ARC_GEMM_TM")) : 16;
       if (t == 16 || t == 32) return t;
-      fprintf(stderr, "inferzero: ARC_GEMM_TM=%d not supported (16 or 32): 16\n", t);
+      zlog::eprintf("inferzero: ARC_GEMM_TM=%d not supported (16 or 32): 16\n", t);
       return 16;
     }();
     return tm;
@@ -592,7 +592,7 @@
           }
         for (cl_mem* m : {&q8, &h8, &a8, &s8, &b8, &c8}) free_buf(*m);
         const bool faster = best[1] < 0.97 * best[0];
-        fprintf(stderr, "inferzero: XMX speed check (a 512 x 17408 x 5120 GEMM): DP4a %.1f ms, XMX %.1f ms: %s\n",
+        zlog::eprintf("inferzero: XMX speed check (a 512 x 17408 x 5120 GEMM): DP4a %.1f ms, XMX %.1f ms: %s\n",
                 best[0], best[1], faster ? "XMX" : "DP4a");
         if (!faster) {
           xmx_slow_ = true;
@@ -602,10 +602,10 @@
     } catch (const zrt::GpuWaitError&) {
       throw;  // (a split model's GPU that hangs: not a verdict on XMX, which is kept for the process)
     } catch (const std::exception& e) {
-      fprintf(stderr, "inferzero: XMX kernels do not build here (%s): DP4a\n", e.what());
+      zlog::eprintf("inferzero: XMX kernels do not build here (%s): DP4a\n", e.what());
       return false;
     }
-    if (!bad.empty()) fprintf(stderr, "inferzero: %s results differ from DP4a (%s ): %s (please report)\n", mode ? "H8 XMX" : "XMX", bad.c_str(), mode ? "H8 off" : "DP4a");
+    if (!bad.empty()) zlog::eprintf("inferzero: %s results differ from DP4a (%s ): %s (please report)\n", mode ? "H8 XMX" : "XMX", bad.c_str(), mode ? "H8 off" : "DP4a");
     return bad.empty();
   }
 

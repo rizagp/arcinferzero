@@ -11,7 +11,7 @@ typedef ze_result_t (*PFN_ext)(ze_driver_handle_t, uint32_t*, ze_driver_extensio
 
 int main() {
   HMODULE h = LoadLibraryA("ze_loader.dll");
-  if (!h) { fprintf(stderr, "cannot load ze_loader.dll\n"); return 1; }
+  if (!h) { zlog::eprintf("cannot load ze_loader.dll\n"); return 1; }
   auto zeInit_ = (ze_result_t(*)(uint32_t))(void*)GetProcAddress(h, "zeInit");
   auto zeDriverGet_ = (ze_result_t(*)(uint32_t*, ze_driver_handle_t*))(void*)GetProcAddress(h, "zeDriverGet");
   auto zeDeviceGet_ = (ze_result_t(*)(ze_driver_handle_t, uint32_t*, ze_device_handle_t*))(void*)GetProcAddress(h, "zeDeviceGet");
@@ -20,7 +20,7 @@ int main() {
   auto zeDeviceGetMemoryProperties_ = (ze_result_t(*)(ze_device_handle_t, uint32_t*, ze_device_memory_properties_t*))(
       void*)GetProcAddress(h, "zeDeviceGetMemoryProperties");
   auto zeDriverGetExtensionProperties_ = (PFN_ext)(void*)GetProcAddress(h, "zeDriverGetExtensionProperties");
-  if (!zeInit_ || !zeDriverGet_ || !zeDeviceGet_ || !zeDeviceGetProperties_) { fprintf(stderr, "missing entry points\n"); return 1; }
+  if (!zeInit_ || !zeDriverGet_ || !zeDeviceGet_ || !zeDeviceGetProperties_) { zlog::eprintf("missing entry points\n"); return 1; }
   const ze_result_t ri = zeInit_(0);  // (0: every device type; 1 would be GPUs only, 2 NPUs (VPUs) only)
   printf("zeInit(0): 0x%x\n", ri);
   if (ri != ZE_RESULT_SUCCESS) return 1;

@@ -6,7 +6,7 @@
 
 int main() {
   HMODULE h = LoadLibraryA("ze_loader.dll");
-  if (!h) { fprintf(stderr, "cannot load ze_loader.dll\n"); return 1; }
+  if (!h) { zlog::eprintf("cannot load ze_loader.dll\n"); return 1; }
 #define P(name, type) auto name = (type)(void*)GetProcAddress(h, #name)
   P(zeInit, ze_result_t (*)(uint32_t));
   P(zeDriverGet, ze_result_t (*)(uint32_t*, ze_driver_handle_t*));
@@ -14,8 +14,8 @@ int main() {
   P(zeDeviceGetProperties, ze_result_t (*)(ze_device_handle_t, ze_device_properties_t*));
   P(zeDriverGetExtensionFunctionAddress, ze_result_t (*)(ze_driver_handle_t, const char*, void**));
 #undef P
-  if (!zeInit || !zeDriverGetExtensionFunctionAddress) { fprintf(stderr, "missing entry points\n"); return 1; }
-  if (zeInit(0) != ZE_RESULT_SUCCESS) { fprintf(stderr, "zeInit failed\n"); return 1; }
+  if (!zeInit || !zeDriverGetExtensionFunctionAddress) { zlog::eprintf("missing entry points\n"); return 1; }
+  if (zeInit(0) != ZE_RESULT_SUCCESS) { zlog::eprintf("zeInit failed\n"); return 1; }
   uint32_t nd = 0;
   zeDriverGet(&nd, nullptr);
   std::vector<ze_driver_handle_t> drv(nd);

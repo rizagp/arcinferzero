@@ -155,7 +155,7 @@ class WhisperNpuEncoder {
     if (!gr) throw std::runtime_error(std::string("whisper: the NPU did not compile the ") + what + " graph");
     compile_ms += ms;
     all_cached = all_cached && cached;
-    fprintf(stderr, "whisper: NPU %s graph %s in %.0f ms\n", what, cached ? "loaded" : "compiled", ms);
+    zlog::eprintf("whisper: NPU %s graph %s in %.0f ms\n", what, cached ? "loaded" : "compiled", ms);
     return gr;
   }
   // x [M][K] . dq(B)^T + b: B int8 [N][K] with scales [N][K/32][1], b f16 [N]

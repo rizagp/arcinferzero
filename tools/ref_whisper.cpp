@@ -295,7 +295,7 @@ std::string json_escape(const std::string& s) {
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    fprintf(stderr, "usage: ref_whisper <model folder> <audio> [--lang auto|id|...] [--beam N] [--words] [--from s] [--to s]\n"
+    zlog::eprintf("usage: ref_whisper <model folder> <audio> [--lang auto|id|...] [--beam N] [--words] [--from s] [--to s]\n"
                     "                   [--prompt text] [--json out.json] [--dump-encoder f] [--dump-logits f]\n");
     return 1;
   }
@@ -323,13 +323,13 @@ int main(int argc, char** argv) {
     }
     const auto t0 = std::chrono::steady_clock::now();
     Model m(argv[1]);
-    fprintf(stderr, "whisper: %d mels, d %d, %d heads, encoder %d layers, decoder %d, vocab %d, %zu languages\n", m.hp.n_mels,
+    zlog::eprintf("whisper: %d mels, d %d, %d heads, encoder %d layers, decoder %d, vocab %d, %zu languages\n", m.hp.n_mels,
             m.hp.d, m.hp.n_head, m.hp.enc_layers, m.hp.dec_layers, m.hp.n_vocab, m.sp.languages.size());
     std::ifstream fin(std::filesystem::path(argv[2]), std::ios::binary);
     if (!fin) throw std::runtime_error(std::string("cannot read ") + argv[2]);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
     const std::vector<float> audio = audio::decode_16k(bytes, 0);
-    fprintf(stderr, "audio: %.1f s\n", audio.size() / 16000.0);
+    zlog::eprintf("audio: %.1f s\n", audio.size() / 16000.0);
     CpuBackend be(m);
     if (!dump_enc.empty() || !dump_lg.empty()) {  // the first window alone, greedy, no fallback
       int nf = 0, content = 0;
@@ -357,7 +357,7 @@ int main(int argc, char** argv) {
           be.append(0, &t, 1, 1, lg.data());
         }
       }
-      fprintf(stderr, "dumped in %.1f s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+      zlog::eprintf("dumped in %.1f s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
       return 0;
     }
     Transcriber tr(m, be);
@@ -366,11 +366,11 @@ int main(int argc, char** argv) {
       for (; shown < segs.size(); ++shown)
         printf("[%7.2f -> %7.2f] %s %s\n", segs[shown].start, segs[shown].end, segs[shown].lang.c_str(), segs[shown].text.c_str());
       fflush(stdout);
-      fprintf(stderr, "  %.0f / %.0f s\n", done, total);
+      zlog::eprintf("  %.0f / %.0f s\n", done, total);
       return true;
     });
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    fprintf(stderr, "transcribed %.1f s of audio in %.1f s (%.2fx realtime)\n", r.duration, secs, r.duration / secs);
+    zlog::eprintf("transcribed %.1f s of audio in %.1f s (%.2fx realtime)\n", r.duration, secs, r.duration / secs);
     if (!json_out.empty()) {
       std::ofstream o(json_out, std::ios::binary);
       o << "{\"duration\": " << r.duration << ", \"segments\": [";
@@ -388,7 +388,7 @@ int main(int argc, char** argv) {
     }
     return 0;
   } catch (const std::exception& e) {
-    fprintf(stderr, "error: %s\n", e.what());
+    zlog::eprintf("error: %s\n", e.what());
     return 1;
   }
 }

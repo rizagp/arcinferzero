@@ -122,7 +122,7 @@ static std::vector<uint8_t> serialize(ze_graph_compiler_version_info_t cv, const
 }
 
 int main(int argc, char** argv) {
-  if (!ze_load() || zeInit(0) != ZE_RESULT_SUCCESS) { fprintf(stderr, "Level Zero init failed\n"); return 1; }
+  if (!ze_load() || zeInit(0) != ZE_RESULT_SUCCESS) { zlog::eprintf("Level Zero init failed\n"); return 1; }
   auto getExt = (ze_result_t(*)(ze_driver_handle_t, const char*, void**))(void*)GetProcAddress(
       GetModuleHandleA("ze_loader.dll"), "zeDriverGetExtensionFunctionAddress");
   uint32_t nd = 0;
@@ -140,19 +140,19 @@ int main(int argc, char** argv) {
     zeDeviceGetProperties(x, &p);
     if (p.type == 5) { ndrv = d; dev = x; }
   }
-  if (!dev || !getExt) { fprintf(stderr, "no NPU\n"); return 1; }
+  if (!dev || !getExt) { zlog::eprintf("no NPU\n"); return 1; }
   ze_graph_dditable_t* g = nullptr;
-  if (getExt(ndrv, "ZE_extension_graph_1_8", (void**)&g) != 0 || !g) { fprintf(stderr, "no graph extension\n"); return 1; }
+  if (getExt(ndrv, "ZE_extension_graph_1_8", (void**)&g) != 0 || !g) { zlog::eprintf("no graph extension\n"); return 1; }
   ze_device_graph_properties_t gp{};
   gp.stype = ZE_STYPE_DEVICE_GRAPH_PROPERTIES;
   g->pfnDeviceGetGraphProperties(dev, &gp);
   ze_context_desc_t cd{ZE_STYPE_CONTEXT_DESC, nullptr, 0};
   ze_context_handle_t ctx = nullptr;
-  if (zeContextCreate(ndrv, &cd, &ctx) != 0) { fprintf(stderr, "zeContextCreate failed\n"); return 1; }
+  if (zeContextCreate(ndrv, &cd, &ctx) != 0) { zlog::eprintf("zeContextCreate failed\n"); return 1; }
   ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 0, 0, 0};
   ze_command_list_handle_t cl = nullptr;
   const ze_result_t rcl = zeCommandListCreateImmediate(ctx, dev, &qd, &cl);
-  if (rcl != 0) { fprintf(stderr, "zeCommandListCreateImmediate failed: 0x%x\n", rcl); return 1; }
+  if (rcl != 0) { zlog::eprintf("zeCommandListCreateImmediate failed: 0x%x\n", rcl); return 1; }
 
   struct Case { int M, K, N, reps; };
   std::vector<Case> cases;
@@ -196,7 +196,7 @@ int main(int argc, char** argv) {
     void *A = nullptr, *B = nullptr, *C = nullptr;
     const size_t sa = (size_t)c.M * c.K * 2, sb = (size_t)c.N * c.K * 2, sc = (size_t)c.M * c.N * 2;
     if (zeMemAllocHost(ctx, &hd, sa, 4096, &A) || zeMemAllocHost(ctx, &hd, sb, 4096, &B) || zeMemAllocHost(ctx, &hd, sc, 4096, &C)) {
-      fprintf(stderr, "zeMemAllocHost failed\n");
+      zlog::eprintf("zeMemAllocHost failed\n");
       return 1;
     }
     std::mt19937 rng(7);
@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
     g->pfnSetArgumentValue(gr, 2, C);
     ze_result_t r = g->pfnAppendGraphInitialize(cl, gr, nullptr, 0, nullptr);
     if (r == 0) r = zeCommandListHostSynchronize(cl, UINT64_MAX);
-    if (r != 0) { fprintf(stderr, "graph initialize failed: 0x%x\n", r); return 1; }
+    if (r != 0) { zlog::eprintf("graph initialize failed: 0x%x\n", r); return 1; }
     double best = 1e30;
     std::vector<double> times;
     for (int rep = 0; rep < c.reps; ++rep) {
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
       r = g->pfnAppendGraphExecute(cl, gr, nullptr, nullptr, 0, nullptr);
       if (r == 0) r = zeCommandListHostSynchronize(cl, UINT64_MAX);
       const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count();
-      if (r != 0) { fprintf(stderr, "graph execute failed: 0x%x\n", r); return 1; }
+      if (r != 0) { zlog::eprintf("graph execute failed: 0x%x\n", r); return 1; }
       best = std::min(best, ms);
       times.push_back(ms);
     }

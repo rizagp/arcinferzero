@@ -250,7 +250,7 @@ static std::vector<ModelInfo> scan_models() {
     for (const auto& d : extra_model_dirs()) {
       const int r = folder_reachable(fs::path(d));
       if (r == 1) scan_hub(fs::path(d), prio);
-      else if (r == 0) fprintf(stderr, "model folder %s did not answer within 2 s (drive asleep or hung?): skipped\n", d.c_str());
+      else if (r == 0) zlog::eprintf("model folder %s did not answer within 2 s (drive asleep or hung?): skipped\n", d.c_str());
       ++prio;
     }
   }
@@ -351,7 +351,7 @@ static std::vector<ModelInfo> scan_models() {
         m.note = "made before 2026-11-10 (its keys are arcinferzero.*): a package: delete its folder, then load the original "
                  "GGUF or pack it again (the launcher: More > Pack; or zero-server pack -Model <it>); a GSQ conversion: convert it again (setup -Models 35b-gsq)";
         std::lock_guard<std::mutex> lk(told_mu);
-        if (told.insert(m.path).second) fprintf(stderr, "inferzero: %s\n", e.what());
+        if (told.insert(m.path).second) zlog::eprintf("inferzero: %s\n", e.what());
       }
     }
     bool mmproj = false, drafter = false, audio = false;
@@ -685,7 +685,7 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
       mo.context = mp.context;
       mo.per_1k = ((double)probe.ctx_bytes(cc + 4096) - (double)probe.ctx_bytes(cc)) / 4.0;
     }
-    fprintf(stderr, "--ctx auto: %d tokens with %s weights (trained %d; %.2f GiB of GPU memory without the context, "
+    zlog::eprintf("--ctx auto: %d tokens with %s weights (trained %d; %.2f GiB of GPU memory without the context, "
                     "%.2f GiB with it, device %.2f GiB)\n", ctx, res ? "resident" : "just-in-time", trained, base / gib,
             (base + probe.ctx_bytes(cc)) / gib, probe.device_mem() / gib);
     return ctx;

@@ -22,7 +22,7 @@
 #include <cstdio>
 
 int main(int argc, char** argv) {
-  if (argc < 4) { fprintf(stderr, "usage: asr_testz model.gguf mmproj.gguf audio [--ref F] [--enc-out F] [--seconds S] [--lang L] [--context T] [--no-text]\n"); return 1; }
+  if (argc < 4) { zlog::eprintf("usage: asr_testz model.gguf mmproj.gguf audio [--ref F] [--enc-out F] [--seconds S] [--lang L] [--context T] [--no-text]\n"); return 1; }
   std::string ref, enc_out, lang, context, save_wav, kl_files;
   double seconds = 0, start = 0, parts = 0, max_part = 1200;
   bool text = true, warm = false;
@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
   double budget = 0;  // (as the server: the GEMM form just in time, docs/qwen3-asr.md)
   for (int i = 4; i < argc; ++i) {
     const std::string a = argv[i];
-    auto next = [&]() -> std::string { if (i + 1 >= argc) { fprintf(stderr, "%s needs a value\n", a.c_str()); exit(1); } return argv[++i]; };
+    auto next = [&]() -> std::string { if (i + 1 >= argc) { zlog::eprintf("%s needs a value\n", a.c_str()); exit(1); } return argv[++i]; };
     if (a == "--ref") ref = next();
     else if (a == "--enc-out") enc_out = next();
     else if (a == "--save-wav") save_wav = next();
@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     else if (a == "--warm") warm = true;
     else if (a == "--no-text") text = false;
     else if (a == "--kl-files") kl_files = next();
-    else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 1; }
+    else { zlog::eprintf("unknown option %s\n", a.c_str()); return 1; }
   }
   try {
     const auto td = std::chrono::steady_clock::now();
@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
            res.tokens * 1000.0 / std::max(1.0, res.decode_ms), (res.encode_ms + res.prefill_ms + res.decode_ms) / 1000,
            s.size() / 16000.0);
   } catch (const std::exception& ex) {
-    fprintf(stderr, "error: %s\n", ex.what());
+    zlog::eprintf("error: %s\n", ex.what());
     return 1;
   }
   return 0;

@@ -77,7 +77,7 @@
     static const int cg = [] {
       const int c = getenv("ARC_GEMM_CG") ? atoi(getenv("ARC_GEMM_CG")) : 1;
       if (c == 1 || c == 2 || c == 4) return c;
-      fprintf(stderr, "inferzero: ARC_GEMM_CG=%d not supported (1, 2 or 4): 1\n", c);
+      zlog::eprintf("inferzero: ARC_GEMM_CG=%d not supported (1, 2 or 4): 1\n", c);
       return 1;
     }();
     // (asked for with ARC_GEMM_CG: on any GPU, the DP4a GEMM of iGPUs without the xe2_ switches too)
@@ -187,7 +187,7 @@
       const bool ok = attnx_check();
       it = known.emplace(key, ok).first;
       if (ok)
-        fprintf(stderr, "inferzero: prompt attention on XMX%s (bit-identical to attn_q8, checked)\n",
+        zlog::eprintf("inferzero: prompt attention on XMX%s (bit-identical to attn_q8, checked)\n",
                 attn_xemu() ? " (DPAS emulated: tests)" : "");
     }
     if (it->second) k_attn_q8_ = kernel("attnx", attnx_defs(), "attn_q8");
@@ -230,7 +230,7 @@
       size_t diff = 0;
       for (size_t i = 0; i < out.size(); ++i) diff += memcmp(&res[0][i], &res[1][i], 4) != 0;
       if (diff) {
-        fprintf(stderr, "inferzero: prompt attention on XMX differs from attn_q8 in %zu of %zu values: attn_q8 "
+        zlog::eprintf("inferzero: prompt attention on XMX differs from attn_q8 in %zu of %zu values: attn_q8 "
                         "(please report)\n", diff, out.size());
         ok = false;
       }
@@ -238,7 +238,7 @@
       for (cl_mem& m : bufs) free_buf(m);
       throw;
     } catch (const std::exception& e) {
-      fprintf(stderr, "inferzero: prompt attention on XMX does not build here (%s): attn_q8\n", e.what());
+      zlog::eprintf("inferzero: prompt attention on XMX does not build here (%s): attn_q8\n", e.what());
       built = false;
     }
     for (cl_mem& m : bufs) free_buf(m);
@@ -271,7 +271,7 @@
       const bool ok = gdnx_check();
       it = known.emplace(key, ok).first;
       if (ok)
-        fprintf(stderr, "inferzero: chunked DeltaNet on XMX, %d lanes%s (results checked against gdn_chunk)\n",
+        zlog::eprintf("inferzero: chunked DeltaNet on XMX, %d lanes%s (results checked against gdn_chunk)\n",
                 gdnx_8() ? 8 : 16, gdn_xemu() ? " (DPAS emulated: tests)" : "");
     }
     gdnx_ = it->second;
@@ -344,16 +344,16 @@
       for (cl_mem& m : bufs) free_buf(m);
       throw;  // (a GPU that hangs: not a verdict on the kernel)
     } catch (const std::exception& e) {
-      fprintf(stderr, "inferzero: the chunked DeltaNet on XMX does not build here (%s): gdn_chunk instead\n", e.what());
+      zlog::eprintf("inferzero: the chunked DeltaNet on XMX does not build here (%s): gdn_chunk instead\n", e.what());
       ok = false;
       worst = -1.0;
     }
     for (cl_mem& m : bufs) free_buf(m);
     if (!ok && worst >= 0.0)
-      fprintf(stderr, "inferzero: the chunked DeltaNet on XMX differs from gdn_chunk (%.2e of the result): gdn_chunk "
+      zlog::eprintf("inferzero: the chunked DeltaNet on XMX differs from gdn_chunk (%.2e of the result): gdn_chunk "
                       "instead (please report)\n", worst);
     else if (ok && gdn_xemu())
-      fprintf(stderr, "inferzero: chunked DeltaNet XMX check: largest difference %.2e of the result\n", worst);
+      zlog::eprintf("inferzero: chunked DeltaNet XMX check: largest difference %.2e of the result\n", worst);
     return ok;
   }
 
@@ -370,7 +370,7 @@
     static const int tm = [] {
       const int t = getenv("ARC_X16_TM") ? atoi(getenv("ARC_X16_TM")) : 32;
       if (t == 8 || t == 16 || t == 32) return t;
-      fprintf(stderr, "inferzero: ARC_X16_TM=%d not supported (8, 16 or 32): 32\n", t);
+      zlog::eprintf("inferzero: ARC_X16_TM=%d not supported (8, 16 or 32): 32\n", t);
       return 32;
     }();
     return tm;
@@ -388,7 +388,7 @@
     static const int cg = [] {
       const int c = getenv("ARC_X16_CG") ? atoi(getenv("ARC_X16_CG")) : 1;
       if (c == 1 || c == 2 || c == 4) return c;
-      fprintf(stderr, "inferzero: ARC_X16_CG=%d not supported (1, 2 or 4): 1\n", c);
+      zlog::eprintf("inferzero: ARC_X16_CG=%d not supported (1, 2 or 4): 1\n", c);
       return 1;
     }();
     return (N / 16) % cg == 0 ? cg : 1;
@@ -420,7 +420,7 @@
       const bool ok = x16_check();
       it = known.emplace(key, ok).first;
       if (ok)
-        fprintf(stderr, "inferzero: f16 XMX on for the W8 prompt GEMMs%s (results checked against DP4a)\n",
+        zlog::eprintf("inferzero: f16 XMX on for the W8 prompt GEMMs%s (results checked against DP4a)\n",
                 x16_emu_ ? " (DPAS emulated: tests)" : "");
     }
     x16_ = it->second;
@@ -572,12 +572,12 @@
       for (cl_mem& m : bufs) free_buf(m);
       throw;  // (a split model's GPU that hangs: not a verdict on the kernels, which is kept per device)
     } catch (const std::exception& e) {
-      fprintf(stderr, "inferzero: the f16 XMX kernels do not build here (%s): not used\n", e.what());
+      zlog::eprintf("inferzero: the f16 XMX kernels do not build here (%s): not used\n", e.what());
       built = false;
     }
     for (cl_mem& m : bufs) free_buf(m);
     if (!built) return false;
-    if (!bad.empty()) fprintf(stderr, "inferzero: f16 XMX results differ from DP4a (%s ): not used (please report)\n", bad.c_str());
-    else if (getenv("ARC_X16_TRY")) fprintf(stderr, "inferzero: f16 XMX check: largest error %.2e of the result\n", worst);
+    if (!bad.empty()) zlog::eprintf("inferzero: f16 XMX results differ from DP4a (%s ): not used (please report)\n", bad.c_str());
+    else if (getenv("ARC_X16_TRY")) zlog::eprintf("inferzero: f16 XMX check: largest error %.2e of the result\n", worst);
     return bad.empty();
   }

@@ -9,20 +9,20 @@
 
 static std::vector<float> load(const char* p) {
   FILE* f = fopen(p, "rb");
-  if (!f) { fprintf(stderr, "cannot open %s\n", p); exit(1); }
+  if (!f) { zlog::eprintf("cannot open %s\n", p); exit(1); }
   _fseeki64(f, 0, SEEK_END);
   std::vector<float> v((size_t)_ftelli64(f) / 4);
   _fseeki64(f, 0, SEEK_SET);
-  if (fread(v.data(), 4, v.size(), f) != v.size()) { fprintf(stderr, "cannot read %s\n", p); exit(1); }
+  if (fread(v.data(), 4, v.size(), f) != v.size()) { zlog::eprintf("cannot read %s\n", p); exit(1); }
   fclose(f);
   return v;
 }
 
 int main(int argc, char** argv) {
-  if (argc < 4) { fprintf(stderr, "usage: npu_kl a.bin b.bin vocab\n"); return 1; }
+  if (argc < 4) { zlog::eprintf("usage: npu_kl a.bin b.bin vocab\n"); return 1; }
   const std::vector<float> a = load(argv[1]), b = load(argv[2]);
   const size_t V = (size_t)atoll(argv[3]);
-  if (!V || a.size() != b.size() || a.size() % V) { fprintf(stderr, "sizes differ or are not a multiple of the vocabulary\n"); return 1; }
+  if (!V || a.size() != b.size() || a.size() % V) { zlog::eprintf("sizes differ or are not a multiple of the vocabulary\n"); return 1; }
   const size_t T = a.size() / V;
   double sum = 0, mx = 0;
   size_t same = 0;

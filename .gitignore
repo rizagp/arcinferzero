@@ -17,6 +17,16 @@ bin/
 
 # Large reference logits for the accuracy tests (19-20 MB each); remove this line to include them
 tests/data/*.bin
+# Recordings: never committed (AGENTS.md; audit 2026-11-12b #1)
+tests/data/*.m4a
+tests/data/*.aac
+tests/data/*.mp3
+tests/data/*.wav
+tests/data/*.mp4
+tests/data/*.opus
+tests/data/*.ogg
+tests/data/*.webm
+tests/data/*.flac
 
 # Python and editor leftovers
 __pycache__/

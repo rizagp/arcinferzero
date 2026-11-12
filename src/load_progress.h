@@ -1,6 +1,7 @@
 // Loading progress for whoever starts the server and waits for it (scripts/zero-server.ps1, the launcher): lines
 //   progress: P % <what>        (P 0-100; -1: a step without a measure, shown as busy)
-// on stderr (the server's log), each step's first and last line and at most one every 0.3 s between. The engine
+// on stderr (the server's log) without the log's prefix (zlog::raw), each step's first and last line and between
+// them one per 5 points or 2 s. The engine
 // counts the weight bytes it uploads (begin / add), the expert file and the expert cache count their layers / bytes
 // (step), the speech models their layers.
 #pragma once
@@ -28,12 +29,13 @@ inline void print(bool force) {
   if (!s.on) return;
   const auto now = std::chrono::steady_clock::now();
   const int pct = s.total > 0 ? (int)(100.0 * std::min(s.done, s.total) / s.total) : -1;
-  // (the same percentage of the same step: never twice; a step's first and last line: without the 0.3 s wait)
-  if (pct == s.last_pct || (!force && now - s.last < std::chrono::milliseconds(300))) return;
+  // (the same percentage of the same step: never twice; a step's first and last line: always; between them a line
+  //  when it moved 5 points or 2 s went by: ~20 lines a load where there were ~100 (the log's readers, 2026-11-12))
+  if (pct == s.last_pct) return;
+  if (!force && pct - s.last_pct < 5 && now - s.last < std::chrono::seconds(2)) return;
   s.last_pct = pct;
   s.last = now;
-  fprintf(stderr, "progress: %d %% %s\n", pct, s.what.c_str());
-  fflush(stderr);
+  zlog::raw("progress: %d %% %s\n", pct, s.what.c_str());  // (no prefix: zero-server.ps1 and the launcher read it)
 }
 // a step measured in units of `total` (bytes: shown in GB); done reported as it grows
 inline void step(const std::string& what, double done, double total) {

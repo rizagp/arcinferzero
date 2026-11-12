@@ -87,17 +87,17 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt_in, 
     if (f.empty() && !quiet)
       throw std::runtime_error("--asr auto: no Qwen3-ASR GGUF in the Hugging Face cache (hf download unsloth/Qwen3-ASR-1.7B-GGUF)");
     if (f.empty()) {
-      fprintf(stderr, "asr: no Qwen3-ASR GGUF in the Hugging Face cache: Whisper transcribes (docs/qwen3-asr.md)\n");
+      zlog::eprintf("asr: no Qwen3-ASR GGUF in the Hugging Face cache: Whisper transcribes (docs/qwen3-asr.md)\n");
     } else {
       try {
         loadp::label("Qwen3-ASR");
         wh->load_asr(f, so.eo.kernel_dir, so.asr_slots);
-        fprintf(stderr, "asr: %s, %d parts at a time (%s %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->asr_parts(),
+        zlog::eprintf("asr: %s, %d parts at a time (%s %.2f GiB GPU)\n", wh->asr_id.c_str(), wh->asr_parts(),
                 asr_alone ? "alone, no Whisper:" : "Whisper and Qwen3-ASR", wh->gpu_bytes() / 1073741824.0);
       } catch (const std::exception& e) {
         if (!quiet) throw;  // (asked for: the server says why and stops)
         loadp::label("model");  // (its engine threw before taking the label)
-        fprintf(stderr, "asr: %s could not be loaded (%s): Whisper transcribes (docs/qwen3-asr.md)\n", f.c_str(), e.what());
+        zlog::eprintf("asr: %s could not be loaded (%s): Whisper transcribes (docs/qwen3-asr.md)\n", f.c_str(), e.what());
       }
     }
   }
@@ -107,7 +107,7 @@ inline std::unique_ptr<srvwh::Service> start(const std::string& whisper_opt_in, 
   so.whisper_bytes = wh->gpu_bytes() + (128u << 20);  // (+ the word-timing buffers it grows later)
   so.whisper_props = wh->props();
   if (!asr_alone)
-    fprintf(stderr, "whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",
+    zlog::eprintf("whisper: %s on the %s in %.1f s (%.2f GiB GPU)\n", wh->id.c_str(), whisper_dev == "npu" ? "NPU + iGPU" : "iGPU",
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), wh->gpu_bytes() / 1073741824.0);
   return wh;
 }

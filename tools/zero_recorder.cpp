@@ -277,7 +277,7 @@ struct Track {
     }
   }
   void fail(HRESULT hr) {  // (a device unplugged or changed, an app closed: closed, tried again every second)
-    if (!down) fprintf(stderr, "zero-recorder: %s: lost (0x%08lx), recording silence until it is back\n", what.c_str(), (unsigned long)hr);
+    if (!down) zlog::eprintf("zero-recorder: %s: lost (0x%08lx), recording silence until it is back\n", what.c_str(), (unsigned long)hr);
     if (kind == Process && (!proc || WaitForSingleObject(proc, 0) == WAIT_OBJECT_0)) pid = 0;  // (the app ended)
     close();
     down = true;
@@ -285,7 +285,7 @@ struct Track {
   }
   void retry() {
     if (!down || now_seconds() < retry_at) return;
-    if (open()) fprintf(stderr, "zero-recorder: %s: back\n", what.c_str());
+    if (open()) zlog::eprintf("zero-recorder: %s: back\n", what.c_str());
     else retry_at = now_seconds() + 1;
   }
   // (every 2 s) the recorded app ended (an app started again has a new process), or another default device
@@ -293,7 +293,7 @@ struct Track {
     if (down) return;
     if (kind == Process) {
       if (proc && WaitForSingleObject(proc, 0) == WAIT_OBJECT_0) {
-        fprintf(stderr, "zero-recorder: %s: the app ended, recording silence until it runs again\n", what.c_str());
+        zlog::eprintf("zero-recorder: %s: the app ended, recording silence until it runs again\n", what.c_str());
         close();
         pid = 0;
         down = true;
@@ -308,7 +308,7 @@ struct Track {
         SUCCEEDED(en->GetDefaultAudioEndpoint(kind == Mic ? eCapture : eRender, kind == Mic ? eCommunications : eConsole, &dev)) &&
         SUCCEEDED(dev->GetId(&id)) && id) {
       if (!dev_id.empty() && dev_id != id) {
-        fprintf(stderr, "zero-recorder: %s: another default device, opened instead\n", what.c_str());
+        zlog::eprintf("zero-recorder: %s: another default device, opened instead\n", what.c_str());
         close();
         down = true;
         retry_at = 0;
@@ -428,10 +428,10 @@ int main(int argc, char** argv) {
   const std::string cmd = argv[1];
   if (cmd == "stop") {
     HANDLE e = open_stop(EVENT_MODIFY_STATE);
-    if (!e) { fprintf(stderr, "zero-recorder: no recording runs\n"); return 1; }
+    if (!e) { zlog::eprintf("zero-recorder: no recording runs\n"); return 1; }
     SetEvent(e);
     CloseHandle(e);
-    fprintf(stderr, "zero-recorder: stopping\n");
+    zlog::eprintf("zero-recorder: stopping\n");
     return 0;
   }
   if (cmd == "status") {
@@ -458,11 +458,11 @@ int main(int argc, char** argv) {
   }
   if (HANDLE old = OpenEventW(SYNCHRONIZE, FALSE, kStopEventOld)) {  // (an older recorder records)
     CloseHandle(old);
-    fprintf(stderr, "zero-recorder: a recording already runs (zero-recorder stop ends it)\n");
+    zlog::eprintf("zero-recorder: a recording already runs (zero-recorder stop ends it)\n");
     return 1;
   }
   HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, kStopEvent);
-  if (GetLastError() == ERROR_ALREADY_EXISTS) { fprintf(stderr, "zero-recorder: a recording already runs (zero-recorder stop ends it)\n"); return 1; }
+  if (GetLastError() == ERROR_ALREADY_EXISTS) { zlog::eprintf("zero-recorder: a recording already runs (zero-recorder stop ends it)\n"); return 1; }
   SetConsoleCtrlHandler(on_ctrl, TRUE);
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
@@ -483,13 +483,13 @@ int main(int argc, char** argv) {
       t->app = app;
       t->pid = pid_of(app);
       t->what = app + "'s sound";
-      if (!t->pid) { fprintf(stderr, "zero-recorder: %s is not running\n", app.c_str()); return 1; }
+      if (!t->pid) { zlog::eprintf("zero-recorder: %s is not running\n", app.c_str()); return 1; }
     }
     tracks.push_back(std::move(t));
   }
   for (auto& t : tracks)
     if (!t->open()) {
-      fprintf(stderr, "zero-recorder: cannot open %s%s\n", t->what.c_str(),
+      zlog::eprintf("zero-recorder: cannot open %s%s\n", t->what.c_str(),
               t->kind == Track::Process ? " (process loopback needs Windows 10 2004 or later)" : "");
       return 1;
     }
@@ -522,7 +522,7 @@ int main(int argc, char** argv) {
   for (int k = 2; fs::exists(wav) || fs::exists(fs::path(wav).replace_extension(".json")); ++k)
     wav = dir / fs::path(std::string(when) + " " + clean + " (" + std::to_string(k) + ").wav");
   std::fstream f(wav, std::ios::binary | std::ios::in | std::ios::out | std::ios::trunc);
-  if (!f) { fprintf(stderr, "zero-recorder: cannot write %s\n", wav.string().c_str()); return 1; }
+  if (!f) { zlog::eprintf("zero-recorder: cannot write %s\n", wav.string().c_str()); return 1; }
   const int ch = (int)tracks.size();
   wav_header(f, ch, 0);
   Json m = Json::object(), sp = Json::array();
@@ -547,7 +547,7 @@ int main(int argc, char** argv) {
     s.set("microphone", mic);
     std::ofstream(state_file(), std::ios::binary) << s.dump();
   }
-  fprintf(stderr, "zero-recorder: recording %s%s into %s (zero-recorder stop, or Ctrl+C, ends it)\n", mic ? "the microphone + " : "",
+  zlog::eprintf("zero-recorder: recording %s%s into %s (zero-recorder stop, or Ctrl+C, ends it)\n", mic ? "the microphone + " : "",
           tracks.back()->what.c_str(), wav.string().c_str());
 
   // the loop: the packets drained as their events come; every 100 ms what is 0.3 s old written (late packets placed
@@ -587,7 +587,7 @@ int main(int argc, char** argv) {
       }
       f.write((const char*)buf.data(), (std::streamsize)(buf.size() * 2));
       written += n;
-      if (!f) { fprintf(stderr, "zero-recorder: cannot write the recording (disk full?)\n"); finishing = true; }
+      if (!f) { zlog::eprintf("zero-recorder: cannot write the recording (disk full?)\n"); finishing = true; }
     }
     if (now - last_header >= 1 || finishing) {
       wav_header(f, ch, written);
@@ -599,7 +599,7 @@ int main(int argc, char** argv) {
   f.close();
   fs::remove(state_file(), ec);
   const double secs = (double)written / kRate;
-  fprintf(stderr, "zero-recorder: %.0f s recorded (%llu packets)\n", secs, (unsigned long long)(tracks[0]->packets + tracks.back()->packets));
+  zlog::eprintf("zero-recorder: %.0f s recorded (%llu packets)\n", secs, (unsigned long long)(tracks[0]->packets + tracks.back()->packets));
 
   // to the server: the transcript library (the Meetings tab), or a note for its next start
   m.set("seconds", secs);
@@ -607,8 +607,8 @@ int main(int argc, char** argv) {
   std::ofstream(side, std::ios::binary) << m.dump();
   std::string reply;
   const int st = post_local("/v1/transcripts/import", m.dump(), reply);
-  if (st == 200) fprintf(stderr, "zero-recorder: handed to the server: the Meetings tab transcribes it now\n");
-  else fprintf(stderr, "zero-recorder: the server %s: it takes the recording at its next start\n",
+  if (st == 200) zlog::eprintf("zero-recorder: handed to the server: the Meetings tab transcribes it now\n");
+  else zlog::eprintf("zero-recorder: the server %s: it takes the recording at its next start\n",
                st ? ("said " + std::to_string(st) + " " + reply.substr(0, 200)).c_str() : "is not running");
   SetEvent(g_done);  // (after the hand-over: a closed console waits for it)
   CloseHandle(stop);

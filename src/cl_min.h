@@ -137,7 +137,7 @@ inline bool cl_load() {
   if (!h) return false;
 #define CL_RESOLVE(ret, name, args)                       \
   name = (PFN_##name)(void*)GetProcAddress(h, #name);     \
-  if (!name) { fprintf(stderr, "missing %s\n", #name); return false; }
+  if (!name) { zlog::eprintf("missing %s\n", #name); return false; }
   CL_FUNCS(CL_RESOLVE)
 #undef CL_RESOLVE
   return true;
@@ -147,7 +147,7 @@ inline bool cl_load() {
   do {                                                                              \
     cl_int _e = (expr);                                                             \
     if (_e != CL_SUCCESS) {                                                         \
-      fprintf(stderr, "OpenCL error %d at %s:%d: %s\n", _e, __FILE__, __LINE__, #expr); \
+      zlog::eprintf("OpenCL error %d at %s:%d: %s\n", _e, __FILE__, __LINE__, #expr); \
       exit(1);                                                                      \
     }                                                                               \
   } while (0)

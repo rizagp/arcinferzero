@@ -134,7 +134,7 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
     // (the file named at the end of each answer: its name in the chat's files, else its full path; with the copy's
     //  name after "; in this chat's files as")
     const std::string where = ocr_md_where(md);
-    fprintf(stderr, "OCR mode: %s, pages %d-%d of %d%s\n", pdf.name.c_str(), first, n, pages,
+    zlog::eprintf("OCR mode: %s, pages %d-%d of %d%s\n", pdf.name.c_str(), first, n, pages,
             md.md.empty() ? "" : (", saved to " + md.md.filename().string()).c_str());  // (the file's name only: no user's path in the log)
     if (first > pages) {
       const std::string note = "[OCR: every page of " + pdf.name + " is read (" + std::to_string(pages) + ")]";
@@ -463,7 +463,7 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
       std::ofstream f(m.md_chat, std::ios::binary | std::ios::app);
       ok = (bool)(f << piece).flush();
     }
-    if (!ok) fprintf(stderr, "OCR: could not write %s\n", m.md.filename().string().c_str());
+    if (!ok) LOG_WRN("OCR: could not add this page to %s (file open elsewhere, or disk full?): the page's text is only in the chat\n", m.md.filename().string().c_str());
     if (m.in_chat || !m.md_chat.empty()) files::store().refresh();  // (in the Files panel with its new size)
     return ok;
   }
@@ -680,7 +680,7 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
       d.set("content", t);
       if (!rs.sse_event(chunk(id, created, d, Json()).dump())) gone = true;
     };
-    fprintf(stderr, "OCR mode: %d files, from file %d page %d%s\n", nf, fk + 1, fp,
+    zlog::eprintf("OCR mode: %d files, from file %d page %d%s\n", nf, fk + 1, fp,
             !saving ? "" : per_file ? ", one .md each" : (", saved to " + md.md.filename().string()).c_str());
     OcrTally tally;
     std::string failed;
@@ -1074,7 +1074,7 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
     out.set("reasoning_effort", Json());
     out.set("temperature", 0.0);
     out.set("max_tokens", std::max(4096.0, in["max_tokens"].as_number(0)));
-    fprintf(stderr, "OCR mode: %d image(s), task prompt \"%.60s%s\"\n", (int)images.size(), prompt.c_str(),
+    zlog::eprintf("OCR mode: %d image(s), task prompt \"%.60s%s\"\n", (int)images.size(), prompt.c_str(),
             prompt.size() > 60 ? "..." : "");
     return out;
   }

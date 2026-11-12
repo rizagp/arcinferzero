@@ -160,7 +160,7 @@ inline bool ze_load() {
   if (!m) return false;
 #define ZE_LOAD(ret, name, args) \
   name = (PFN_##name)GetProcAddress(m, #name); \
-  if (!name) { fprintf(stderr, "ze_loader.dll: %s missing\n", #name); return false; }
+  if (!name) { zlog::eprintf("ze_loader.dll: %s missing\n", #name); return false; }
   ZE_FUNCS(ZE_LOAD)
 #undef ZE_LOAD
   return true;
@@ -171,7 +171,7 @@ inline void (*ze_fail_hook)() = nullptr;  // (diagnostics printed before exiting
   do {                                                                                              \
     const ze_result_t r_ = (x);                                                                     \
     if (r_ != ZE_RESULT_SUCCESS) {                                                                  \
-      fprintf(stderr, "Level Zero error 0x%x at %s:%d: %s\n", r_, __FILE__, __LINE__, #x);          \
+      LOG_ERR("Level Zero error 0x%x at %s:%d: %s\n", r_, __FILE__, __LINE__, #x);          \
       if (ze_fail_hook) ze_fail_hook();                                                             \
       fflush(stderr);                                                                               \
       _Exit(1); /* (not exit(): after a lost device the driver's cleanup can hang the process) */   \

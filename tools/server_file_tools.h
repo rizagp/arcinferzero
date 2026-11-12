@@ -665,7 +665,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         const std::string piece = "\n\n## " + head + "\n\n" + got;
         notes += piece;
         if (!notes_path.empty()) std::ofstream(notes_path, std::ios::binary | std::ios::app) << piece;
-        fprintf(stderr, "digest_file: %s, %s read (%.0f s so far)\n", i.name.c_str(), head.c_str(),
+        zlog::eprintf("digest_file: %s, %s read (%.0f s so far)\n", i.name.c_str(), head.c_str(),
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
       }
       if (!notes_path.empty() && notes.find("\n<!-- done -->") == std::string::npos) {

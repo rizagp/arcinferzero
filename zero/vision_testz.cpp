@@ -188,7 +188,7 @@ static int audio_main(Engine& eng, const char* mmproj, const std::string& clip) 
 
 int main(int argc, char** argv) {
   if (argc < 4) {
-    fprintf(stderr, "usage: vision_testz model.gguf mmproj.gguf image.(png|jpg) [max_tokens]\n");
+    zlog::eprintf("usage: vision_testz model.gguf mmproj.gguf image.(png|jpg) [max_tokens]\n");
     return 1;
   }
   try {
@@ -301,7 +301,7 @@ int main(int argc, char** argv) {
       printf("model: %s\n", text.c_str());
     }
   } catch (const std::exception& e) {
-    fprintf(stderr, "error: %s\n", e.what());
+    zlog::eprintf("error: %s\n", e.what());
     return 1;
   }
   return 0;

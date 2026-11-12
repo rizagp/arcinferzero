@@ -20,7 +20,7 @@ static std::string own_mmproj(const std::string& model) {
   for (const auto& de : model_dir_files(model))
     others += de.path().extension() == ".gguf" && lower_ascii(de.path().filename().string()).find("mmproj") != std::string::npos;
   if (others)
-    fprintf(stderr, "vision: %d projector file(s) next to the model, none named after it (a folder of several models): "
+    zlog::eprintf("vision: %d projector file(s) next to the model, none named after it (a folder of several models): "
                     "--mmproj FILE uses one\n", others);
   return "";
 }
@@ -58,7 +58,7 @@ struct TpHold {
   void operator()(TpEngine* t) const {
     if (t && t->faulted()) {
       t->disarm(true);
-      fprintf(stderr, "multi-GPU: the split model's memory is left after a GPU fault: restart the server to free it\n");
+      zlog::eprintf("multi-GPU: the split model's memory is left after a GPU fault: restart the server to free it\n");
       return;
     }
     delete t;
@@ -75,7 +75,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   auto L = std::make_unique<Loaded>();
   L->alias = alias;
   L->path = model;
-  fprintf(stderr, "inferzero-server: loading %s\n", model.c_str());
+  zlog::eprintf("inferzero-server: loading %s\n", model.c_str());
   const ServeOpts so_given = so;  // (failsafe: a split that cannot load loads on one GPU with these)
   if (so.gpus > 1) {  // (what a split model does not do yet: see ServeOpts::gpus)
     so.eo.mtp = false;
@@ -90,14 +90,14 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (eo.mtp && eo.dflash.empty() && so.dflash_auto) {  // (before --ctx auto: the drafter takes GPU memory)
     eo.dflash = find_dflash(model);
     dfl_auto = !eo.dflash.empty();
-    if (!eo.dflash.empty()) fprintf(stderr, "DFlash2 drafter found: %s (--no-dflash: MTP block only)\n", eo.dflash.c_str());
+    if (!eo.dflash.empty()) zlog::eprintf("DFlash2 drafter found: %s (--no-dflash: MTP block only)\n", eo.dflash.c_str());
   }
   if (eo.mtp && !eo.mtp_block && eo.dflash.empty()) {
-    fprintf(stderr, "--draft dflash: no DFlash2 drafter for this model, the MTP block drafts\n");
+    zlog::eprintf("--draft dflash: no DFlash2 drafter for this model, the MTP block drafts\n");
     eo.mtp_block = true;
   }
   if (eo.mtp && !eo.dflash.empty())
-    fprintf(stderr, "drafting: %s\n", eo.mtp_block ? "DFlash2 and the MTP block, picked per step" : "DFlash2 only (no MTP block)");
+    zlog::eprintf("drafting: %s\n", eo.mtp_block ? "DFlash2 and the MTP block, picked per step" : "DFlash2 only (no MTP block)");
   // Gemma 4 with an image projector: an image's tokens attend to each other both ways, so one image is one forward
   // step; the steps must hold the largest image (resident E4B weights otherwise step through prompts in 512s)
   if (so.mmproj != "-") {
@@ -110,12 +110,14 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     if (gemma && so.mmproj.empty()) proj = !model_mmprojs(model).empty();
     if (gemma && (proj || !so.mmproj.empty())) eo.min_chunk = std::max(so.img_max, 2048);
   }
+  AutoCtx used_ctx;  // (--ctx auto's count, for the log's memory line)
+  bool have_ctx = false;
   if (so.ctx_auto) {
     const size_t enc = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;
-    if (enc) fprintf(stderr, "--ctx auto: %.2f GiB kept for the image / audio encoders%s\n", enc / 1073741824.0, so.whisper_bytes ? " and speech to text" : "");
+    if (enc) zlog::eprintf("--ctx auto: %.2f GiB kept for the image / audio encoders%s\n", enc / 1073741824.0, so.whisper_bytes ? " and speech to text" : "");
     AutoCtx a = auto_ctx(model, eo, so.budget_given, enc);
     if (dfl_auto && eo.mtp_block && a.ctx < kDflashMinCtx) {  // (a drafter that leaves little context: the MTP block only)
-      fprintf(stderr, "DFlash2 drafter not used: it would leave %d tokens of context (--dflash DIR: use it anyway)\n", a.ctx);
+      zlog::eprintf("DFlash2 drafter not used: it would leave %d tokens of context (--dflash DIR: use it anyway)\n", a.ctx);
       eo.dflash.clear();
       a = auto_ctx(model, eo, so.budget_given, enc);
     }
@@ -132,6 +134,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
       throw std::runtime_error(b);
     }
     eo.ctx = a.ctx;
+    used_ctx = a, have_ctx = true;
     if (!so.budget_given) eo.w8_budget_gb = a.resident ? 1e9 : eo.w8_budget_gb;
     // (the weights the probe put in host memory: the load puts the same, not fewer when RAM got scarcer since, so the
     //  context chosen still fits on the GPU)
@@ -144,7 +147,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     try {
       L->tp.reset(new TpEngine(model, eo, so.gpus));
     } catch (const std::exception& e) {
-      fprintf(stderr, "multi-GPU: %s; loading %s on one GPU instead\n", e.what(), alias.c_str());
+      zlog::eprintf("multi-GPU: %s; loading %s on one GPU instead\n", e.what(), alias.c_str());
       ServeOpts one = so_given;
       one.gpus = 1;
       return load_model(model, alias, one);
@@ -156,16 +159,55 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   }
   Engine& eng = *L->eng;
   L->tok = std::make_unique<Tokenizer>(eng.gguf());
-  fprintf(stderr, "loaded in %.1f s | %d layers | ctx %d%s | chunk %d | GPU %.2f GiB%s | weights %s\n", eng.load_ms / 1000,
+  zlog::eprintf("loaded in %.1f s | %d layers | ctx %d%s | chunk %d | GPU %.2f GiB%s | weights %s\n", eng.load_ms / 1000,
           eng.hp.n_layer, eng.ctx, eng.slot_count() > 1 ? (" in each of " + std::to_string(eng.slot_count()) + " slots").c_str() : "",
           eng.max_chunk, eng.gpu_bytes / 1073741824.0, so.gpus > 1 ? (" on each of " + std::to_string(so.gpus) + " GPUs").c_str() : "",
           eng.w8_resident ? "W8 resident" : "W8 just-in-time");
+  try {  // (the log's model and memory lines, docs/logging.md; /metrics' model_info: never a reason the load fails)
+    const auto& h = eng.hp;
+    // (general.file_type as llama.cpp names it: the main quant; a mixed file such as UD-Q4_K_XL says its base)
+    static const std::map<int, const char*> kFt = {
+        {0, "F32"}, {1, "F16"}, {2, "Q4_0"}, {3, "Q4_1"}, {7, "Q8_0"}, {8, "Q5_0"}, {9, "Q5_1"}, {10, "Q2_K"},
+        {11, "Q3_K_S"}, {12, "Q3_K_M"}, {13, "Q3_K_L"}, {14, "Q4_K_S"}, {15, "Q4_K_M"}, {16, "Q5_K_S"}, {17, "Q5_K_M"},
+        {18, "Q6_K"}, {19, "IQ2_XXS"}, {20, "IQ2_XS"}, {21, "Q2_K_S"}, {22, "IQ3_XS"}, {23, "IQ3_XXS"}, {24, "IQ1_S"},
+        {25, "IQ4_NL"}, {26, "IQ3_S"}, {27, "IQ3_M"}, {28, "IQ2_S"}, {29, "IQ2_M"}, {30, "IQ4_XS"}, {31, "IQ1_M"},
+        {32, "BF16"}, {36, "TQ1_0"}, {37, "TQ2_0"}};
+    std::string ftype = "unknown";
+    try {
+      const int ft = (int)eng.gguf().get_int("general.file_type", -1);
+      const auto it = kFt.find(ft);
+      ftype = it != kFt.end() ? it->second : ft >= 0 ? "type " + std::to_string(ft) : "unknown";
+    } catch (const std::exception&) {}
+    zlog::eprintf("model: %s, %d layers, embedding %d, heads %d / kv %d, head %d, ffn %d, vocab %d, trained ctx %lld%s, "
+                  "file %.2f GiB, %s\n", h.arch.c_str(), h.n_layer, h.n_embd, h.n_head, h.n_head_kv, h.head_dim,
+                  h.n_ff, h.n_vocab, (long long)eng.gguf().get_int(h.arch + ".context_length", 0),
+                  h.n_expert ? (", experts " + std::to_string(h.n_expert) + " (" + std::to_string(h.n_expert_used) + " used)").c_str() : "",
+                  gguf_bytes(model) / 1073741824.0, ftype.c_str());
+    // (only when the count is known: an old ctx-auto.txt row has no parts; "left" only for one slot on one GPU: with
+    //  --slots the context is one slot's, with --gpus the count is one GPU's (the split's own load checks each))
+    if (have_ctx && used_ctx.dev > 0 && used_ctx.weights > 0) {
+      const double g = 1073741824.0;
+      const bool one = eng.slot_count() <= 1 && so.gpus <= 1;
+      const double left = used_ctx.dev - used_ctx.keep - used_ctx.snap - used_ctx.reserve - used_ctx.weights -
+                          used_ctx.mtp - used_ctx.buffers - used_ctx.context;
+      char tail[64] = "";
+      if (one) snprintf(tail, sizeof tail, " + left %.2f", left / g);
+      LOG_INF("memory (--ctx auto): device %.2f GiB = kept free %.2f + snapshots %.2f + encoders / speech %.2f + "
+              "weights %.2f + MTP / drafter %.2f + buffers %.2f + context %.2f%s (%.1f MiB per 1K tokens)%s\n",
+              used_ctx.dev / g, used_ctx.keep / g, used_ctx.snap / g, used_ctx.reserve / g, used_ctx.weights / g,
+              used_ctx.mtp / g, used_ctx.buffers / g, used_ctx.context / g, one ? "" : " (one slot, one GPU)",
+              used_ctx.per_1k / 1048576.0, tail);
+    }
+    zmet::loaded(alias, h.arch, eng.ctx, so.gpus, (double)eng.gpu_bytes);
+  } catch (const std::exception& e) {
+    LOG_WRN("model information incomplete: %s\n", e.what());
+  }
   bool warmed = false;  // (the kernels compiled now, first start after an update: the audio encoder's too, below)
   if (so.gpus == 1) {  // compile kernels before serving (all of the generation's after an update; --gpus: not yet)
     const auto tw = std::chrono::steady_clock::now();
     loadp::busy("warming up the kernels (first start after an update: up to a minute)");
     if ((warmed = eng.warm_up_once(L->tok->encode("Hi", false)[0], so.warm_prompt)))
-      fprintf(stderr, "kernels warmed up for this model in %.1f s (once after an update)\n",
+      zlog::eprintf("kernels warmed up for this model in %.1f s (once after an update)\n",
               std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
   }
   if (const char* f = getenv("ARC_FAIL_PASS")) eng.fail_after = atol(f);  // (tests: a pass that throws, see Engine)
@@ -188,11 +230,11 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
         if (so.img_min > 0) v->min_tokens = so.img_min;
         if (so.img_max > 0) v->max_tokens = so.img_max;
         v->min_tokens = std::min(v->min_tokens, v->max_tokens);
-        fprintf(stderr, "vision: %s (Qwen3-VL, %d layers, %d..%d tokens per image, encoded on the GPU)\n", mmproj.c_str(),
+        zlog::eprintf("vision: %s (Qwen3-VL, %d layers, %d..%d tokens per image, encoded on the GPU)\n", mmproj.c_str(),
                 v->n_layer, v->min_tokens, v->max_tokens);
         srv.set_qvision(std::move(v));
       } catch (const std::exception& e) {
-        fprintf(stderr, "vision disabled: %s\n", e.what());
+        zlog::eprintf("vision disabled: %s\n", e.what());
       }
     }
   }
@@ -218,10 +260,10 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
         if (so.img_min > 0) v->min_tokens = so.img_min;
         if (so.img_max > 0) v->max_tokens = so.img_max;
         v->min_tokens = std::min(v->min_tokens, v->max_tokens);
-        fprintf(stderr, "vision: %s (%s, %d..%d tokens per image)\n", mmproj.c_str(), what.c_str(), v->min_tokens, v->max_tokens);
+        zlog::eprintf("vision: %s (%s, %d..%d tokens per image)\n", mmproj.c_str(), what.c_str(), v->min_tokens, v->max_tokens);
         srv.set_vision(std::move(v));
       } catch (const std::exception& e) {
-        fprintf(stderr, "vision disabled: %s\n", e.what());
+        zlog::eprintf("vision disabled: %s\n", e.what());
       }
       try {
         auto width_ok = [&](const GemmaAudioEncoder& a) {  // (a projector of another model size)
@@ -232,7 +274,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
         if (GgufFile(mmproj).get_str("clip.audio.projector_type", "") == "gemma4a") {
           auto a = std::make_unique<AudioGemma4A>(mmproj, eng);
           width_ok(*a);
-          fprintf(stderr, "audio: %d-layer conformer on the GPU (25 tokens per second of audio)\n", a->n_layer);
+          zlog::eprintf("audio: %d-layer conformer on the GPU (25 tokens per second of audio)\n", a->n_layer);
           if (warmed) {
             // (first start after an update: one second of silence through the encoder, so that its kernels compile now
             //  and not in a first meeting or voice message (E4B: 89 s of audio encoded in 21.6 s, then 0.5 s for 29 s);
@@ -242,28 +284,28 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
             try {  // (a warm-up that fails leaves audio on: the first clip compiles the kernels then, as before)
               int n = 0;
               a->encode(std::vector<float>(16000, 0.0f), n);
-              fprintf(stderr, "audio encoder warmed up in %.1f s\n",
+              zlog::eprintf("audio encoder warmed up in %.1f s\n",
                       std::chrono::duration<double>(std::chrono::steady_clock::now() - tw).count());
             } catch (const std::exception& e) {
-              fprintf(stderr, "audio encoder warm-up skipped: %s\n", e.what());
+              zlog::eprintf("audio encoder warm-up skipped: %s\n", e.what());
             }
           }
           srv.set_audio(std::move(a));
         } else {
           auto a = std::make_unique<AudioGemma4>(mmproj);
           width_ok(*a);
-          fprintf(stderr, "audio: %d-sample frames at %d Hz (%.0f tokens per second of audio)\n", a->frame, a->rate, (double)a->rate / a->frame);
+          zlog::eprintf("audio: %d-sample frames at %d Hz (%.0f tokens per second of audio)\n", a->frame, a->rate, (double)a->rate / a->frame);
           srv.set_audio(std::move(a));
         }
       } catch (const std::exception& e) {
-        fprintf(stderr, "audio disabled: %s\n", e.what());
+        zlog::eprintf("audio disabled: %s\n", e.what());
       }
     }
   }
   srv.default_think_budget_ = so.think_budget;
   srv.default_preserve_ = so.preserve_thinking;
   if (so.preserve_thinking && !srv.can_preserve_)
-    fprintf(stderr, "--preserve-thinking: this model's chat template has no such option (Qwen3.6 has it; Qwen3.8 always keeps the reasoning)\n");
+    zlog::eprintf("--preserve-thinking: this model's chat template has no such option (Qwen3.6 has it; Qwen3.8 always keeps the reasoning)\n");
   // (saved states only load into the same layout: no MTP block (-std) and DFlash2 without the MTP block (-df) each
   // keep their own folders next to the plain one; auto and -nodf share one: DFlash2 saves no state of its own, its
   // context rings start empty after a load — give it a suffix once that changes)
@@ -286,6 +328,6 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
     srv.open_sessions(dir + "/" + mp.stem().string() + "-" + std::to_string(std::filesystem::file_size(mp, ec)) + layout,
                       so.sess_gb);
   }
-  fprintf(stderr, "serving %s as \"%s\"\n", model.c_str(), alias.c_str());
+  zlog::eprintf("serving %s as \"%s\"\n", model.c_str(), alias.c_str());
   return L;
 }

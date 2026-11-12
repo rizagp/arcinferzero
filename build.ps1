@@ -36,7 +36,7 @@ foreach ($src in $Sources) {
   #  overwritten return address ends the process instead of running code; the code itself is the same (2026-11-09))
   # (/FI src\cpu_check.h: a CPU without AVX2 / FMA gets a line saying so instead of an illegal instruction, audit
   #  2026-11-12 #4)
-  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 /FI`"$root\src\cpu_check.h`" $fp /EHsc /bigobj /MT /W4 /permissive- /Zc:__cplusplus /guard:cf /d1trimfile:`"$root\\`" /external:I`"$root\third_party`" /external:W0 /openmp /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
+  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 /FI`"$root\src\cpu_check.h`" /FI`"$root\src\log.h`" $fp /EHsc /bigobj /MT /W4 /permissive- /Zc:__cplusplus /guard:cf /d1trimfile:`"$root\\`" /external:I`"$root\third_party`" /external:W0 /openmp /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
          "/Fe`"$out\$name.exe`" /Fo`"$out\\`" `"$full`" " +
          "/link /guard:cf /CETCOMPAT /MANIFEST:EMBED /MANIFESTINPUT:`"$root\tools\utf8.manifest`""  # (UTF-8 code page: paths with any characters)
   cmd /c $cmd

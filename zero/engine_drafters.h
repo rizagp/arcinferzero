@@ -275,7 +275,7 @@
       clFinish(cl_.queue);
     }
     has_mtp = dfl_ = true;
-    fprintf(stderr, "DFlash2 drafter: %d layers, block %d, %zu target layers, %s\n", nl, dfl_B_, dfl_tl_.size(), path.c_str());
+    zlog::eprintf("DFlash2 drafter: %d layers, block %d, %zu target layers, %s\n", nl, dfl_B_, dfl_tl_.size(), path.c_str());
   }
   void dfl_buffers() {
     const int E = hp.n_embd, M = max_chunk;

@@ -19,7 +19,7 @@ template <typename T> static T dev_val(cl_device_id d, cl_device_info p) {
 }
 
 int main() {
-  if (!cl_load()) { fprintf(stderr, "cannot load OpenCL.dll\n"); return 1; }
+  if (!cl_load()) { zlog::eprintf("cannot load OpenCL.dll\n"); return 1; }
   cl_uint np = 0;
   CL_CHECK(clGetPlatformIDs(0, nullptr, &np));
   std::vector<cl_platform_id> plats(np);

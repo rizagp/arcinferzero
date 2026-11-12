@@ -16,7 +16,7 @@
     xc_->init(hp.n_layer + 1, hp.n_expert, getenv("ARC_XSTAGE") ? atoi(getenv("ARC_XSTAGE")) : 64);
     if (tp_moe()) xc_->set_range((int)tpe_.first, (int)tpe_.second);  // (multi-GPU: this GPU's experts only)
     if (xc_->st.built)
-      fprintf(stderr, "inferzero: expert file written in %.1f s\n", xc_->st.build_ms / 1000);
+      zlog::eprintf("inferzero: expert file written in %.1f s\n", xc_->st.build_ms / 1000);
     // (ARC_XRAM_GB overrides the option)
     const double ram_gb = getenv("ARC_XRAM_GB") ? atof(getenv("ARC_XRAM_GB")) : opt.expert_ram_gb;
     uint64_t ram = 0;
@@ -38,7 +38,7 @@
       };
       xc_->st.ram_free = [](char* p) { zrt::mem_free(zrt::ctx, p); };
       xc_->st.set_ram(ram);
-      fprintf(stderr, "inferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
+      zlog::eprintf("inferzero: experts read from the SSD are also kept in RAM, up to %.1f GiB\n", ram / 1073741824.0);
     }
   }
   void size_expert_cache() {
@@ -62,7 +62,7 @@
       // (+ kernels and host side, the server's state snapshots, and what the caller keeps for its encoders)
       const uint64_t used = gpu_bytes + xc_->stage_bytes + (uint64_t)(0.1 * GiB) + snapshot_bytes() * std::max(opt.slots, 1) + opt.stream_reserve;
       want = limit > used ? limit - used : 0;
-      fprintf(stderr, "inferzero: memory limit %.2f GiB (GPU share %.2f - %.1f for the driver), model + buffers %.2f GiB\n",
+      zlog::eprintf("inferzero: memory limit %.2f GiB (GPU share %.2f - %.1f for the driver), model + buffers %.2f GiB\n",
               limit / GiB, share / GiB, driver_slack() / GiB, used / GiB);
     }
     want = std::min(want, all);
@@ -80,10 +80,10 @@
                       (tp_moe() ? ".gpu" + std::to_string(opt.tp_rank) + "of" + std::to_string(opt.tp_size) : std::string()) + ".lru";
     if (!getenv("ARC_XWARM") || atoi(getenv("ARC_XWARM")) != 0) {
       xc_->warm();
-      fprintf(stderr, "inferzero: cache filled from the SSD: %.2f GB in %.1f s\n", xc_->warm_bytes / 1e9, xc_->warm_ms / 1000);
+      zlog::eprintf("inferzero: cache filled from the SSD: %.2f GB in %.1f s\n", xc_->warm_bytes / 1e9, xc_->warm_ms / 1000);
     }
     zrt::print_memory();
-    fprintf(stderr, "inferzero: expert cache %.2f GiB (%.0f %% of %.2f GiB experts, %d slots), staging %.0f MiB, file %s\n",
+    zlog::eprintf("inferzero: expert cache %.2f GiB (%.0f %% of %.2f GiB experts, %d slots), staging %.0f MiB, file %s\n",
             xc_->cache_bytes / GiB, 100.0 * xc_->cache_bytes / all, all / GiB, xc_->slots(), xc_->stage_bytes / 1048576.0,
             xc_->st.path.c_str());
   }
@@ -132,11 +132,11 @@
           }
         return false;
       };
-      if (tl[0] < 0 || tl[0] > max_t) fprintf(stderr, "XCHECK layer %d T %d: tile count %d\n", L.il, T, tl[0]);
+      if (tl[0] < 0 || tl[0] > max_t) zlog::eprintf("XCHECK layer %d T %d: tile count %d\n", L.il, T, tl[0]);
       for (int t = 0; t < std::min(tl[0], max_t); ++t) {
         const int e = tl[1 + 3 * t];
         if (e < 0 || e >= hp.n_expert || !valid(xa[e])) {
-          fprintf(stderr, "XCHECK layer %d T %d tile %d/%d: expert %d address %llx not in the cache\n", L.il, T, t, tl[0], e,
+          zlog::eprintf("XCHECK layer %d T %d tile %d/%d: expert %d address %llx not in the cache\n", L.il, T, t, tl[0], e,
                   e >= 0 && e < hp.n_expert ? (unsigned long long)xa[e] : 0ull);
           fflush(stderr);
           _Exit(3);
@@ -144,7 +144,7 @@
       }
       if (gemm)
         for (int e = 0; e < hp.n_expert; ++e)
-          if (!valid(xa[e])) { fprintf(stderr, "XCHECK layer %d gemm: expert %d address invalid\n", L.il, e); _Exit(3); }
+          if (!valid(xa[e])) { zlog::eprintf("XCHECK layer %d gemm: expert %d address invalid\n", L.il, e); _Exit(3); }
     }
     // prompt chunks use nearly every expert (128 tokens: ~98 %): read the next layer's missing ones while the GPU
     // works on this one (not across the chunk's end: the next chunk's layer 0 has this layer's parity at times)
@@ -376,7 +376,7 @@
       zrt::sync();
     }
     xc_->pin(L.il, base, li.rec);
-    fprintf(stderr, "inferzero: MTP head experts on the GPU: %.2f GiB (%s)\n", bytes / 1073741824.0,
+    zlog::eprintf("inferzero: MTP head experts on the GPU: %.2f GiB (%s)\n", bytes / 1073741824.0,
             ggml_type_name(li.type[0]));
   }
 

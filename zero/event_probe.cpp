@@ -59,13 +59,13 @@ int main(int argc, char** argv) {
     else if (!strcmp(argv[i], "--sim") && i + 1 < argc) sim = std::max(2, atoi(argv[++i]));
   }
   setvbuf(stdout, nullptr, _IONBF, 0);  // (output redirected to a file: none lost if an error ends the process)
-  if (!ze_load()) { fprintf(stderr, "cannot load ze_loader.dll (Level Zero, part of the Intel graphics driver)\n"); return 1; }
+  if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll (Level Zero, part of the Intel graphics driver)\n"); return 1; }
   HMODULE zl = GetModuleHandleA("ze_loader.dll");
   AppendSignal = (PFN_sig)GetProcAddress(zl, "zeCommandListAppendSignalEvent");
   AppendWait = (PFN_wait)GetProcAddress(zl, "zeCommandListAppendWaitOnEvents");
   AppendReset = (PFN_reset)GetProcAddress(zl, "zeCommandListAppendEventReset");
   GetExt = (PFN_ext)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
-  if (!AppendSignal || !AppendWait || !AppendReset) { fprintf(stderr, "ze_loader.dll lacks the event functions\n"); return 1; }
+  if (!AppendSignal || !AppendWait || !AppendReset) { zlog::eprintf("ze_loader.dll lacks the event functions\n"); return 1; }
   ZE_CHECK(zeInit(1));
   uint32_t nd = 0;
   ZE_CHECK(zeDriverGet(&nd, nullptr));
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     }
     if (here.size() > devs.size()) { devs = here; drv = d; }
   }
-  if (devs.empty()) { fprintf(stderr, "no Level Zero GPU found\n"); return 1; }
+  if (devs.empty()) { zlog::eprintf("no Level Zero GPU found\n"); return 1; }
   std::vector<Gpu> g(sim ? sim : devs.size());
   for (size_t i = 0; i < g.size(); ++i) {
     g[i].dev = devs[sim ? 0 : i];

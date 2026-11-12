@@ -223,7 +223,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // (a split model's pipelined sums, ARC_TP_PIPE: copies still queued after a failure read tp_h_ and host memory;
     //  they drain once the compute list has: every wait of that list comes after its signal)
     if (zrt::D().cl_tp) zrt::list_wait(zrt::D().cl_tp);
-    if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
+    if (npu_runs_) zlog::eprintf("ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
@@ -273,7 +273,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  4B 2 -> 3 22.9 -> 24.8; 9B 2 and 3 alike (15.8 / 15.6); 27B 3 = 5 = 7; Gemma's drafter unchanged at 2)
     if (!opt.dflash.empty()) opt.mtp = true;
     if (!opt.mtp_block && opt.dflash.empty()) {  // (no drafter to draft instead)
-      if (opt.mtp) fprintf(stderr, "inferzero: --draft dflash without a DFlash2 drafter: the MTP block drafts\n");
+      if (opt.mtp) zlog::eprintf("inferzero: --draft dflash without a DFlash2 drafter: the MTP block drafts\n");
       opt.mtp_block = true;
     }
     if (opt.mtp_drafts <= 0) opt.mtp_drafts = !opt.dflash.empty() ? 7 : mtp_block_drafts();
@@ -312,7 +312,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     const bool sg8_igpu = cl_.sg8 && zrt::integrated();
     if (!opt.dry && cl_.xmx && sg8_igpu && !xmx_force && !p140_ && !getenv("ARC_XMX_TRY")) {
       static bool said = false;
-      if (!said) fprintf(stderr, "inferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
+      if (!said) zlog::eprintf("inferzero: XMX off on this 8-lane GPU (slower than DP4a on a 140T); ARC_XMX_FORCE=1 to try it\n");
       said = true;
     }
     if (!opt.dry && ((cl_.xmx && (!sg8_igpu || xmx_force || p140_)) || getenv("ARC_XMX_TRY"))) {  // (ARC_XMX_TRY=1: the check on any GPU, tests)
@@ -331,13 +331,13 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
           x2d_ = x2d_wanted();
           xmx_known = xmx_check() ? 1 : 0;
           if (x2d_ && !xmx_known && !xmx_slow_) {
-            fprintf(stderr, "inferzero: 2D block loads (ARC_GEMM_2D) do not build or differ: not used\n");
+            zlog::eprintf("inferzero: 2D block loads (ARC_GEMM_2D) do not build or differ: not used\n");
             x2d_ = false;
             xmx_known = xmx_check() ? 1 : 0;
           }
           x2d_known = x2d_ && xmx_known ? 1 : 0;
           slow_known = xmx_slow_ ? 1 : 0;
-          if (xmx_known) fprintf(stderr, "inferzero: XMX on for the prompt GEMMs (results checked against DP4a)%s\n",
+          if (xmx_known) zlog::eprintf("inferzero: XMX on for the prompt GEMMs (results checked against DP4a)%s\n",
                                  x2d_known ? ", with 2D block loads" : "");
         }
       }
@@ -358,7 +358,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       auto it = h8_known.find(key);
       if (it == h8_known.end()) it = h8_known.emplace(key, xmx_check(1)).first;
       if (!it->second) {
-        fprintf(stderr, "inferzero: the H8 XMX kernels differ from DP4a or do not build: H8 off, XMX kept (please report)\n");
+        zlog::eprintf("inferzero: the H8 XMX kernels differ from DP4a or do not build: H8 off, XMX kept (please report)\n");
         p140_ = false;
         h8_auto_ = false;
         h8_ = false;
@@ -375,7 +375,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (p140_) {
       static std::once_flag said;
       std::call_once(said, [] {
-        fprintf(stderr, "inferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, DP4a below (ARC_140T=0: off)\n", kP140Min);
+        zlog::eprintf("inferzero: Arc 140T preset: XMX + H8 for prompt chunks of %d+ tokens, DP4a below (ARC_140T=0: off)\n", kP140Min);
       });
     }
     if (!opt.dry) x16_init();  // (the f16 XMX prompt GEMM: zero/xe2/engine_xe2.h)
@@ -395,7 +395,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       load_weights();
       tp_loaded();  // (a split model: the host copies of its cut tensors freed)
       if (host_bytes_ && !opt.dry)
-        fprintf(stderr, "inferzero: %.2f GiB of the weights in host memory (outside the GPU share); prompt chunks of %d, "
+        zlog::eprintf("inferzero: %.2f GiB of the weights in host memory (outside the GPU share); prompt chunks of %d, "
                         "sliding-window rings of %d rows\n", host_bytes_ / 1073741824.0, max_chunk,
                 std::min(ctx, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256));
       if (!opt.dry) loadp::step(loadp::st().what, total, total);
@@ -965,7 +965,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  of 0 and a launch skipped without a word, the output left as it was: such values are ignored, with a note)
     static const int force = [] {
       const int v = getenv("ARC_GVROWS") ? atoi(getenv("ARC_GVROWS")) : 0;
-      if (v < 0 || v > 8) fprintf(stderr, "inferzero: ARC_GVROWS=%d ignored (1-8)\n", v);
+      if (v < 0 || v > 8) zlog::eprintf("inferzero: ARC_GVROWS=%d ignored (1-8)\n", v);
       return v >= 1 && v <= 8 ? v : 0;
     }();
     // (a per-type rule tuned on single matrices repeated in bench/gemv_bench, e.g. IQ4_XS one row, IQ3_XXS four,

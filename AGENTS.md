@@ -40,6 +40,9 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
   running at the same time caused device-lost errors.
 - **Multi-GPU without several GPUs:** `ARC_TP_SIM=1` runs a split model's shards on one GPU (correctness only, not
   speed).
+- **Messages on stderr** go through the log (`src/log.h`, [docs/logging.md](docs/logging.md)): `LOG_ERR / LOG_WRN /
+  LOG_INF / LOG_DBG`, not `fprintf(stderr)`; a line a program reads (`progress:`) through `zlog::raw`. Off in runz and
+  the tools, which print as before.
 - **Temporary files** (scripts, logs, test outputs) go in a temp folder, never in the repository. Never commit
   `tests/data` recordings. Never delete model files (`.gguf`).
 - **Shell:**

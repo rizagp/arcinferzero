@@ -83,7 +83,7 @@ struct cl_buffer_region { size_t origin, size; };
   do {                                                                                       \
     cl_int _e = (expr);                                                                      \
     if (_e != CL_SUCCESS) {                                                                  \
-      fprintf(stderr, "inferzero error %d at %s:%d: %s\n", _e, __FILE__, __LINE__, #expr); \
+      zlog::eprintf("inferzero error %d at %s:%d: %s\n", _e, __FILE__, __LINE__, #expr); \
       fflush(stderr);                                                                        \
       _Exit(1); /* (as ZE_CHECK: exit() runs destructors under running threads) */            \
     }                                                                                        \
@@ -197,7 +197,7 @@ inline BatchFns& batch_fns() {
       if (ext && ext(driver, "zeCommandListImmediateAppendCommandListsExp", &p) == 0) b.append = (decltype(b.append))p;
     }
     b.ok = b.create && b.close && b.reset && b.append;
-    fprintf(stderr, b.ok ? "inferzero: ARC_BATCH=%d: kernels recorded in lists of up to %d\n"
+    zlog::eprintf(b.ok ? "inferzero: ARC_BATCH=%d: kernels recorded in lists of up to %d\n"
                          : "inferzero: ARC_BATCH=%d: this driver cannot append lists to an immediate list; off\n",
             batch_max(), batch_max());
     return b;
@@ -334,7 +334,7 @@ inline ze_command_list_handle_t copy_list() {
   if (D().cl_copy) return D().cl_copy;
   int ord = 0, idx = 0;
   D().cl_copy = new_copy_list(&D().cl_copy_kind, &ord, &idx);
-  fprintf(stderr, "inferzero: expert copies on a %s (queue group %d, queue %d)\n", D().cl_copy_kind, ord, idx);
+  zlog::eprintf("inferzero: expert copies on a %s (queue group %d, queue %d)\n", D().cl_copy_kind, ord, idx);
   return D().cl_copy;
 }
 // A split model's pipelined sums (zero/mgpu/engine_tp.h, ARC_TP_PIPE): a copy list of their own next to `cl`, on the
@@ -345,7 +345,7 @@ inline ze_command_list_handle_t tp_copy_list() {
   const char* kind = "";
   int ord = 0, idx = 0;
   D().cl_tp = new_copy_list(&kind, &ord, &idx);
-  fprintf(stderr, "inferzero: GPU %d: the split model's sums copy on a %s (queue group %d, queue %d)\n", D().index, kind,
+  zlog::eprintf("inferzero: GPU %d: the split model's sums copy on a %s (queue group %d, queue %d)\n", D().index, kind,
           ord, idx);
   return D().cl_tp;
 }
@@ -467,7 +467,7 @@ inline void* device_alloc(size_t n) {
     snprintf(msg, sizeof msg, "device allocation of %.1f MB failed on GPU %d (0x%x; %.2f GiB allocated)", n / 1e6,
              D().index, r, D().device_bytes / 1073741824.0);
     if (oom_throws) throw std::runtime_error(msg);
-    fprintf(stderr, "inferzero: %s\n", msg);
+    zlog::eprintf("inferzero: %s\n", msg);
     fflush(stderr);
     _Exit(1);
   }
@@ -503,12 +503,12 @@ inline bool video_budget(uint64_t& budget, uint64_t& usage) {
 }
 inline int note_layer = -1, note_T = -1;  // (diagnostics: the layer and rows the engine is working on)
 inline void print_memory() {
-  if (note_layer >= 0) fprintf(stderr, "  (layer %d, %d rows)\n", note_layer, note_T);
+  if (note_layer >= 0) zlog::eprintf("  (layer %d, %d rows)\n", note_layer, note_T);
   uint64_t b = 0, u = 0;
   MEMORYSTATUSEX ms{sizeof ms};
   GlobalMemoryStatusEx(&ms);
   if (video_budget(b, u))
-    fprintf(stderr, "  GPU memory: Windows budget %.2f GiB, in use %.2f GiB (allocated by the engine %.2f GiB); RAM free %.2f GiB\n",
+    zlog::eprintf("  GPU memory: Windows budget %.2f GiB, in use %.2f GiB (allocated by the engine %.2f GiB); RAM free %.2f GiB\n",
             b / 1073741824.0, u / 1073741824.0, D().device_bytes / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
 }
 // memory the engine allocated itself (host USM, device pools) as a buffer kernels can take as an argument
@@ -584,7 +584,7 @@ inline cl_int clEnqueueCopyBuffer(cl_command_queue, cl_mem src, cl_mem dst, size
   if (ev) *ev = nullptr;
   if (!n) return CL_SUCCESS;
   if (so + n > src->size || doff + n > dst->size) {  // (refused as OpenCL does, not copied over what follows)
-    fprintf(stderr, "inferzero: copy of %zu bytes past a buffer's end (source %zu + %zu of %zu, destination %zu + %zu of %zu; refused)\n",
+    zlog::eprintf("inferzero: copy of %zu bytes past a buffer's end (source %zu + %zu of %zu, destination %zu + %zu of %zu; refused)\n",
             n, so, n, src->size, doff, n, dst->size);
     return -30;
   }
@@ -593,7 +593,7 @@ inline cl_int clEnqueueCopyBuffer(cl_command_queue, cl_mem src, cl_mem dst, size
 }
 inline bool out_of_bounds(const char* what, cl_mem b, size_t off, size_t n) {
   if (b && off + n <= b->size) return false;
-  fprintf(stderr, "inferzero: %s of %zu bytes at offset %zu past the end of a %zu-byte buffer (refused)\n", what, n,
+  zlog::eprintf("inferzero: %s of %zu bytes at offset %zu past the end of a %zu-byte buffer (refused)\n", what, n,
           off, b ? b->size : (size_t)0);
   return true;
 }
@@ -729,7 +729,7 @@ inline std::string watch_args(const std::vector<ZKernel::Arg>& args) {
   return s;
 }
 inline void watch_print(const WatchEntry& e, const char* what) {
-  fprintf(stderr, "%s #%llu %s: %s ms, global %u x %u x %u, local %u x %u x %u, args %s\n", what, (unsigned long long)e.seq,
+  zlog::eprintf("%s #%llu %s: %s ms, global %u x %u x %u, local %u x %u x %u, args %s\n", what, (unsigned long long)e.seq,
           e.name.c_str(), e.ms < 0 ? "not finished" : std::to_string((long long)std::llround(e.ms)).c_str(), e.gs[0], e.gs[1],
           e.gs[2], e.ls[0], e.ls[1], e.ls[2], watch_args(e.args).c_str());
 }
@@ -762,7 +762,7 @@ inline void watch_wait(ZKernel* k, ze_event_handle_t ev, bool keep, const uint32
       break;
     }
     if (r != ZE_RESULT_NOT_READY) {
-      fprintf(stderr, "Level Zero error 0x%x waiting for kernel #%llu %s after %.0f ms; the last launches, oldest first:\n", r,
+      LOG_ERR("Level Zero error 0x%x waiting for kernel #%llu %s after %.0f ms; the last launches, oldest first:\n", r,
               (unsigned long long)e.seq, k->name.c_str(), ms);
       std::lock_guard<std::mutex> g(watch_mu);
       for (uint64_t s = watch_seq > 63 ? watch_seq - 63 : 1; s <= watch_seq; ++s) watch_print(watch_ring[s % 64], "  launch");
@@ -851,7 +851,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   for (cl_uint d = 0; d < dim; ++d) {
     if (g[d] == 0) return CL_SUCCESS;  // (nothing to run: no launch, rather than a zero-size one the driver may refuse)
     if (g[d] > UINT32_MAX) {           // (a size past 32 bits would run a truncated grid)
-      fprintf(stderr, "inferzero: %s: global size %zu past 32 bits (refused)\n", k->name.c_str(), g[d]);
+      zlog::eprintf("inferzero: %s: global size %zu past 32 bits (refused)\n", k->name.c_str(), g[d]);
       return -63;  // (CL_INVALID_GLOBAL_WORK_SIZE)
     }
     gs[d] = (uint32_t)g[d];
@@ -875,7 +875,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
     // OpenCL would run a smaller last work-group; here the last group runs whole and its extra work-items would
     // read and write past the data. A launch like that is a bug in the caller (round the global size and give the
     // kernel a bounds check), so it fails loudly instead of corrupting memory.
-    fprintf(stderr, "inferzero: %s: global size %u x %u x %u is not a multiple of the work-group %u x %u x %u\n",
+    zlog::eprintf("inferzero: %s: global size %u x %u x %u is not a multiple of the work-group %u x %u x %u\n",
             k->name.c_str(), gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
     return -54;  // (CL_INVALID_WORK_GROUP_SIZE)
   }
@@ -899,13 +899,13 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   static long launches = 0;
   if (fake_oom && ++launches % fake_oom == 0 && r == ZE_RESULT_SUCCESS) {
     zrt::sync();  // (the kernel was appended: let it finish, then report the failure as if it had not been)
-    fprintf(stderr, "(test: launch %ld of %s reported as out of device memory)\n", launches, k->name.c_str());
+    zlog::eprintf("(test: launch %ld of %s reported as out of device memory)\n", launches, k->name.c_str());
     if (zrt::oom_hook && zrt::oom_hook()) return CL_SUCCESS;
   }
   for (int i = 0; r == (ze_result_t)0x70000003 && i < 8 && zrt::oom_hook && zrt::oom_hook(); ++i)  // (out of device memory)
     r = zeCommandListAppendLaunchKernel(zrt::imm(), k->k, &gc, sig, 0, nullptr);
   if (r != ZE_RESULT_SUCCESS) {
-    fprintf(stderr, "Level Zero error 0x%x launching %s (global %u x %u x %u, local %u x %u x %u)\n", r, k->name.c_str(),
+    LOG_ERR("Level Zero error 0x%x launching %s (global %u x %u x %u, local %u x %u x %u)\n", r, k->name.c_str(),
             gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
     if (ze_fail_hook) ze_fail_hook();
     fflush(stderr);
@@ -919,7 +919,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   if (sync_each) {
     const ze_result_t s = zeCommandListHostSynchronize(zrt::D().cl, UINT64_MAX);
     if (s != ZE_RESULT_SUCCESS) {
-      fprintf(stderr, "Level Zero error 0x%x running %s (global %u x %u x %u, local %u x %u x %u)\n", s, k->name.c_str(),
+      LOG_ERR("Level Zero error 0x%x running %s (global %u x %u x %u, local %u x %u x %u)\n", s, k->name.c_str(),
               gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
       if (ze_fail_hook) ze_fail_hook();
       fflush(stderr);
@@ -970,7 +970,7 @@ struct ClRt {
   cl_command_queue queue = (cl_command_queue)1;
 
   bool init(bool = true) {
-    if (!zrt::rcl::load()) { fprintf(stderr, "cannot load OpenCL.dll (needed to compile kernels)\n"); return false; }
+    if (!zrt::rcl::load()) { LOG_ERR("cannot load OpenCL.dll (needed to compile kernels): is the Intel graphics driver installed?\n"); return false; }
     char name[256] = {}, drv[256] = {};
     zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102B, sizeof(name) - 1, name, nullptr);  // CL_DEVICE_NAME
     zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102D, sizeof(drv) - 1, drv, nullptr);   // CL_DRIVER_VERSION
@@ -982,7 +982,7 @@ struct ClRt {
         for (size_t i = 0; i < ret / sizeof(size_t) && i < 8; ++i) sg8 = sg8 || sz[i] == 8;
       }
       if (getenv("ARC_NO_SG8") && atoi(getenv("ARC_NO_SG8")) != 0) sg8 = false;
-      if (!sg8) fprintf(stderr, "inferzero: no 8-lane sub-groups on this GPU: 16-lane kernels\n");
+      if (!sg8) zlog::eprintf("inferzero: no 8-lane sub-groups on this GPU: 16-lane kernels\n");
     }
     {  // CL_DEVICE_EXTENSIONS: DPAS from OpenCL C (Engine::xmx_check decides whether it is used); ARC_NO_XMX=1: off
       std::string ext(16384, '\0');
@@ -1000,7 +1000,7 @@ struct ClRt {
     // a second engine in the process (the server switching models, after the first one freed its memory) keeps the
     // runtime: the context, its command lists and events, the staging buffer (all of zrt:: belongs to that context)
     if (zrt::ctx) return true;
-    if (!ze_load()) { fprintf(stderr, "cannot load ze_loader.dll (Level Zero)\n"); return false; }
+    if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll (Level Zero)\n"); return false; }
     ZE_CHECK(zeInit(1));
     // the first driver whose device is a GPU (zeInit(1) lists GPU drivers only; after a zeInit(0) of the NPU
     // experiment, ARC_NPU=1, the NPU's driver is listed too and could come first)
@@ -1017,7 +1017,7 @@ struct ClRt {
       p.stype = ZE_STYPE_DEVICE_PROPERTIES;
       if (zeDeviceGetProperties(x, &p) == 0 && p.type == 1) { drvh = d; zrt::dev0.dev = x; break; }
     }
-    if (!drvh) { fprintf(stderr, "no Level Zero GPU driver\n"); return false; }
+    if (!drvh) { LOG_ERR("no Level Zero GPU driver: is the Intel graphics driver installed (Arc or Core Ultra graphics)?\n"); return false; }
     uint32_t nm = 1;
     ze_device_memory_properties_t mp{};
     mp.stype = ZE_STYPE_DEVICE_MEMORY_PROPERTIES;
@@ -1089,7 +1089,7 @@ struct ClRt {
       path = cache_dir + "\\" + hex + ".bin";
       // (ARC_KLIST=1: which cached binary holds which options, for reading its assembly: ocloc disasm)
       static const bool klist = getenv("ARC_KLIST") && atoi(getenv("ARC_KLIST")) != 0;
-      if (klist) fprintf(stderr, "kernel binary %s.bin: %s\n", hex, opts.c_str());
+      if (klist) zlog::eprintf("kernel binary %s.bin: %s\n", hex, opts.c_str());
       std::ifstream f(path, std::ios::binary);
       if (f) bin.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
       if (!bin.empty()) kcache_touch(path);  // (its last use, for the sweep's trim)
@@ -1109,7 +1109,7 @@ struct ClRt {
         zrt::rcl::getProgramBuildInfo(prog, zrt::rcl::device, 0x1183, ln, log.data(), nullptr);
         zrt::rcl::releaseProgram(prog);
         if (soft_fail) throw std::runtime_error("kernel build failed: " + log.substr(0, 200));
-        fprintf(stderr, "build log:\n%s\n", log.c_str());
+        zlog::eprintf("build log:\n%s\n", log.c_str());
         CL_CHECK(err);
       }
       size_t bn = 0;
@@ -1166,7 +1166,7 @@ struct ClRt {
       if (log) zeModuleBuildLogDestroy(log);  // (before the throw: it was left behind on a soft failure)
       delete p;
       if (soft_fail) throw std::runtime_error("zeModuleCreate failed: " + s.substr(0, 200));
-      fprintf(stderr, "zeModuleCreate failed 0x%x: %s\n", r, s.c_str());
+      zlog::eprintf("zeModuleCreate failed 0x%x: %s\n", r, s.c_str());
       fflush(stderr);
       _Exit(1);
     }
@@ -1181,7 +1181,7 @@ struct ClRt {
     if (r != ZE_RESULT_SUCCESS) {
       delete k;
       if (soft_fail) throw std::runtime_error(std::string("zeKernelCreate failed: ") + name);
-      fprintf(stderr, "zeKernelCreate(%s) failed 0x%x\n", name, r);
+      zlog::eprintf("zeKernelCreate(%s) failed 0x%x\n", name, r);
       exit(1);
     }
     // The expert kernels (-DXCACHE) reach memory that is not one of their arguments (each expert's address comes from
@@ -1194,7 +1194,7 @@ struct ClRt {
       ze_kernel_properties_t kp{};
       kp.stype = (ze_structure_type_t)0x1e;
       if (zeKernelGetProperties(k->k, &kp) == ZE_RESULT_SUCCESS && (kp.privateMemSize || kp.spillMemSize))
-        fprintf(stderr, "kernel %s: private %u bytes, spill %u bytes per work-item/thread [%s]\n", name, kp.privateMemSize,
+        zlog::eprintf("kernel %s: private %u bytes, spill %u bytes per work-item/thread [%s]\n", name, kp.privateMemSize,
                 kp.spillMemSize, prog->opts.c_str());
     }
     return k;
@@ -1217,7 +1217,7 @@ struct ClRt {
 
 inline std::string read_file(const std::string& path) {
   std::ifstream f(path, std::ios::binary);
-  if (!f) { fprintf(stderr, "cannot open %s\n", path.c_str()); exit(1); }
+  if (!f) { zlog::eprintf("cannot open %s\n", path.c_str()); exit(1); }
   std::stringstream ss;
   ss << f.rdbuf();
   return ss.str();

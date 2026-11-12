@@ -56,14 +56,14 @@ struct Npu {
     const ze_result_t r = g->pfnCreate(ctx, dev, &gd, &gr);
     ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (r != 0) {
-      fprintf(stderr, "graph create failed: 0x%x\n", r);
+      zlog::eprintf("graph create failed: 0x%x\n", r);
       uint32_t ln = 0;
       if (g->pfnBuildLogGetString && g->pfnBuildLogGetString(gr, &ln, nullptr) == 0 && ln) {
         std::string log(ln, '\0');
         g->pfnBuildLogGetString(gr, &ln, log.data());
-        fprintf(stderr, "build log: %s\n", log.c_str());
+        zlog::eprintf("build log: %s\n", log.c_str());
       }
-      if (getenv("NPU_DUMP")) fprintf(stderr, "%s\n", ir.xml().c_str());
+      if (getenv("NPU_DUMP")) zlog::eprintf("%s\n", ir.xml().c_str());
       return nullptr;
     }
     return gr;
@@ -83,14 +83,14 @@ struct Npu {
       g->pfnGetArgumentProperties(gr, i, &ap);
       if (!strcmp(ap.name, name) || (!strcmp(name, "out") && ap.type != 0)) return (int)i;
     }
-    fprintf(stderr, "no graph argument %s; the graph has:", name);
+    zlog::eprintf("no graph argument %s; the graph has:", name);
     for (uint32_t i = 0; i < pr.numGraphArgs; ++i) {
       ze_graph_argument_properties_t ap{};
       ap.stype = ZE_STYPE_GRAPH_ARGUMENT_PROPERTIES;
       g->pfnGetArgumentProperties(gr, i, &ap);
-      fprintf(stderr, " [%u %s type %u]", i, ap.name, ap.type);
+      zlog::eprintf(" [%u %s type %u]", i, ap.name, ap.type);
     }
-    fprintf(stderr, "\n");
+    zlog::eprintf("\n");
     return -1;
   }
   bool set(ze_graph_handle_t gr, const char* name, void* p) {
@@ -118,7 +118,7 @@ int main(int argc, char** argv) {
   const std::string modes = argc > 5 ? argv[5] : "f16,i8,w8";
   setvbuf(stdout, nullptr, _IONBF, 0);
   Npu n;
-  if (!n.init()) { fprintf(stderr, "NPU init failed\n"); return 1; }
+  if (!n.init()) { zlog::eprintf("NPU init failed\n"); return 1; }
   printf("NPU, compiler %u.%u; C[%d][%d] = A[%d][%d] . B[%d][%d]^T\n", n.gp.compilerVersion.major, n.gp.compilerVersion.minor, M,
          N, M, K, N, K);
   // data: activations ~ N(0, 1) with a few large channels, weights ~ N(0, 0.02)
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
       A = in("A", M);
       B = in("B", N);
     } else {
-      fprintf(stderr, "unknown mode %s\n", mode.c_str());
+      zlog::eprintf("unknown mode %s\n", mode.c_str());
       continue;
     }
     if (mode == "fqn" || mode == "fqi") {
@@ -226,9 +226,9 @@ int main(int argc, char** argv) {
       ir.result(ir.matmul_tb("C", A, B));
     }
     double cms = 0;
-    if (getenv("NPU_TRACE")) fprintf(stderr, "[%s] compiling\n", mode.c_str());
+    if (getenv("NPU_TRACE")) zlog::eprintf("[%s] compiling\n", mode.c_str());
     ze_graph_handle_t gr = n.compile(ir, cms);
-    if (getenv("NPU_TRACE")) fprintf(stderr, "[%s] compiled %p\n", mode.c_str(), (void*)gr);
+    if (getenv("NPU_TRACE")) zlog::eprintf("[%s] compiled %p\n", mode.c_str(), (void*)gr);
     if (!gr) continue;
     // inputs in host memory the NPU reads, the output it writes
     const bool a8 = mode == "i8" || mode == "fqi", b16 = mode == "f16" || mode == "fq" || mode == "fqn" || conv || bconst;
@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
     void* pha = n.host((size_t)M * 2);
     void* plb = n.host((size_t)N * 2);
     void* phb = n.host((size_t)N * 2);
-    if (!pa || !pb || !psa || !psb || !pc || !pla || !pha || !plb || !phb) { fprintf(stderr, "host allocation failed\n"); return 1; }
+    if (!pa || !pb || !psa || !psb || !pc || !pla || !pha || !plb || !phb) { zlog::eprintf("host allocation failed\n"); return 1; }
     // (fq: the bounds +- 127 * scale, so the 255 levels are the int8 grid of i8)
     for (int i = 0; i < M; ++i) { ((uint16_t*)pha)[i] = npu::f2h(127.0f * sa[i]); ((uint16_t*)pla)[i] = npu::f2h(-127.0f * sa[i]); }
     for (int i = 0; i < N; ++i) { ((uint16_t*)phb)[i] = npu::f2h(127.0f * sb[i]); ((uint16_t*)plb)[i] = npu::f2h(-127.0f * sb[i]); }
@@ -274,9 +274,9 @@ int main(int argc, char** argv) {
       if (!n.set(gr, "HB", phb)) return 1;
     }
     if (!n.set(gr, "out", pc)) return 1;
-    if (getenv("NPU_TRACE")) fprintf(stderr, "[%s] running\n", mode.c_str());
+    if (getenv("NPU_TRACE")) zlog::eprintf("[%s] running\n", mode.c_str());
     const double ms = n.run(gr, reps);
-    if (ms < 0) { fprintf(stderr, "%s: execute failed\n", mode.c_str()); continue; }
+    if (ms < 0) { zlog::eprintf("%s: execute failed\n", mode.c_str()); continue; }
     // the same scheme on the CPU (exact integer sums times the scales; f16 inputs as stored), and plain f32
     double e_scheme = 0, e_f32 = 0, r2 = 0;
     const int rows = std::min(M, 32);

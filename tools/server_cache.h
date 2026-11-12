@@ -39,7 +39,7 @@
     if (rq.method == "DELETE") {
       r.set("deleted", (int)saved_.size());
       r.set("freed_bytes", (double)total);
-      fprintf(stderr, "session cache: cleared %zu saved conversations (%.1f GiB)\n", saved_.size(), total / 1073741824.0);
+      zlog::eprintf("session cache: cleared %zu saved conversations (%.1f GiB)\n", saved_.size(), total / 1073741824.0);
       while (!saved_.empty()) forget(saved_.size() - 1);
       cur_saved_ = false;
       for (auto& x : slots_) x.cur_saved = false;
@@ -135,7 +135,7 @@
       std::filesystem::remove(file, ec);
       cached_.clear();
       last_gen_cut_ = 0;
-      fprintf(stderr, "system-prompt cache: could not load %s\n", file.c_str());
+      LOG_WRN("system-prompt cache: could not read %s (damaged, or from another version): deleted; the system prompt is processed again and saved anew\n", file.c_str());
       return;
     }
     std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now(), ec);  // recently used
@@ -143,7 +143,7 @@
     cached_ = toks;
     last_gen_cut_ = 0;
     cur_saved_ = false;
-    fprintf(stderr, "system-prompt cache: loaded %zu tokens%s%s in %.2f s\n", n, folder.empty() ? "" : " for ",
+    zlog::eprintf("system-prompt cache: loaded %zu tokens%s%s in %.2f s\n", n, folder.empty() ? "" : " for ",
             folder.c_str(), ms_since(t0) / 1000);
   }
   // after a write: the folder's 2 latest versions (or the 8 latest folder-less prompts), then all models' files
@@ -228,15 +228,15 @@
       if (ok) std::filesystem::rename(file + ".tmp", file, e);
       if (!ok || e) {
         std::filesystem::remove(file + ".tmp", e);
-        fprintf(stderr, "system-prompt cache: could not write %s\n", file.c_str());
+        LOG_WRN("system-prompt cache: could not write %s (disk full or the folder not writable?): not saved; the next start processes the system prompt again\n", file.c_str());
         return;
       }
       try {  // (runs on the writer thread: an exception there would end the server)
         prune_prefix(dir, group, file, cap);
       } catch (const std::exception& x) {
-        fprintf(stderr, "system-prompt cache: pruning %s: %s\n", dir.c_str(), x.what());
+        zlog::eprintf("system-prompt cache: pruning %s: %s\n", dir.c_str(), x.what());
       }
-      fprintf(stderr, "system-prompt cache: saved %zu tokens%s%s (%.0f MB) in %.2f s\n", n, folder.empty() ? "" : " for ",
+      zlog::eprintf("system-prompt cache: saved %zu tokens%s%s (%.0f MB) in %.2f s\n", n, folder.empty() ? "" : " for ",
               folder.c_str(), std::filesystem::file_size(file, e) / 1048576.0, ms_since(t0) / 1000);
     };
     // (the host snapshot taken at n equals the current state: written once, taken again after loading)
@@ -311,7 +311,7 @@
     uint64_t total = 0;
     for (auto& s : saved_) total += s.bytes;
     const uint64_t others = prune_other_sessions(sess_dir_, total, sess_cap_);
-    fprintf(stderr, "session cache: %s, %zu saved conversations (%.1f GiB; all models %.1f of %.1f GiB)\n", dir.c_str(),
+    zlog::eprintf("session cache: %s, %zu saved conversations (%.1f GiB; all models %.1f of %.1f GiB)\n", dir.c_str(),
             saved_.size(), total / 1073741824.0, (total + others) / 1073741824.0, cap_gb);
   }
 
@@ -366,7 +366,7 @@
       ++n;
     }
     if (n)
-      fprintf(stderr, "session cache: removed %zu saved conversations of other models (%.1f GiB) to stay under %.1f GiB\n",
+      zlog::eprintf("session cache: removed %zu saved conversations of other models (%.1f GiB) to stay under %.1f GiB\n",
               n, freed / 1073741824.0, cap / 1073741824.0);
     return total;
   }
@@ -432,7 +432,7 @@
           if (!w || e) {
             std::filesystem::remove(file + ".tmp", e);
             *failed = true;
-            fprintf(stderr, "session cache: could not write %s\n", file.c_str());
+            LOG_WRN("session cache: could not write %s (disk full or the folder not writable?)\n", file.c_str());
           }
         });
     } else {
@@ -445,7 +445,7 @@
       if (!ok) std::filesystem::remove(file + ".tmp", ec);
     }
     if (!ok) {
-      fprintf(stderr, "session cache: could not save the conversation (%zu tokens)\n", cached_.size());
+      LOG_WRN("session cache: the conversation (%zu tokens) was not saved (see the line before); it is processed again when it comes back\n", cached_.size());
       return;
     }
     // older states of the same conversation: everything they could resume, this one resumes too
@@ -458,7 +458,7 @@
     try {  // the other models' first (a file system error leaves them)
       prune_other_sessions(sess_dir_, total, sess_cap_);
     } catch (const std::exception& x) {
-      fprintf(stderr, "session cache: pruning other models: %s\n", x.what());
+      zlog::eprintf("session cache: pruning other models: %s\n", x.what());
     }
     while (total > sess_cap_ && saved_.size() > 1) {  // least recently used first (never the one just saved)
       auto lru = std::min_element(saved_.begin(), saved_.end() - 1, [](auto& a, auto& b) { return a.used < b.used; });
@@ -466,7 +466,7 @@
       forget(lru - saved_.begin());
     }
     cur_saved_ = true;
-    fprintf(stderr, "session cache: saved a conversation of %zu tokens (%.0f MB) in %.2f s%s\n", cached_.size(),
+    zlog::eprintf("session cache: saved a conversation of %zu tokens (%.0f MB) in %.2f s%s\n", cached_.size(),
             bytes / 1048576.0, ms_since(t0) / 1000, bg ? " (to memory; written to disk in the background)" : "");
   }
   // Before a request: keep the held conversation if the request does not continue it, and bring back a saved one
@@ -493,7 +493,7 @@
     const bool ok = f && with_file(f, [&] { return read_header(f, tmp) && eng_.load_state(f); });
     if (f) fclose(f);
     if (!ok) {  // unreadable or from another layout: forget it; the engine was reset
-      fprintf(stderr, "session cache: could not load %s\n", s.file.c_str());
+      LOG_WRN("session cache: could not read %s (damaged, or from another version): forgotten; the conversation is processed again\n", s.file.c_str());
       forget(bi);
       cached_.clear();
       last_gen_cut_ = 0;
@@ -504,6 +504,6 @@
     last_gen_cut_ = s.gen_cut;
     s.used = ++use_clock_;
     cur_saved_ = true;
-    fprintf(stderr, "session cache: loaded a conversation of %zu tokens (%.0f MB) in %.2f s, %d prompt tokens reusable\n",
+    zlog::eprintf("session cache: loaded a conversation of %zu tokens (%.0f MB) in %.2f s, %d prompt tokens reusable\n",
             s.tokens.size(), s.bytes / 1048576.0, ms_since(t0) / 1000, bu);
   }

@@ -142,7 +142,7 @@ struct Rt {
         if (g->pfnBuildLogGetString && g->pfnBuildLogGetString(gr, &ln, nullptr) == 0 && ln) {
           std::string log(ln, '\0');
           g->pfnBuildLogGetString(gr, &ln, log.data());
-          fprintf(stderr, "NPU build log: %s\n", log.c_str());
+          zlog::eprintf("NPU build log: %s\n", log.c_str());
         }
         if (gr) g->pfnDestroy(gr);
         return nullptr;
@@ -193,11 +193,11 @@ struct Rt {
   bool set(ze_graph_handle_t gr, const char* name, void* p, bool output = false) {
     const int i = arg(gr, name, output);
     if (i < 0) {
-      fprintf(stderr, "NPU graph has no %s %s\n", output ? "output" : "input", name);
+      zlog::eprintf("NPU graph has no %s %s\n", output ? "output" : "input", name);
       return false;
     }
     const ze_result_t r = g->pfnSetArgumentValue(gr, (uint32_t)i, p);
-    if (r != 0) fprintf(stderr, "NPU set argument %s (%d) to %p: 0x%x\n", name, i, p, r);
+    if (r != 0) zlog::eprintf("NPU set argument %s (%d) to %p: 0x%x\n", name, i, p, r);
     return r == 0;
   }
   // the output argument whose name starts with prefix + "_" (the producing layer's output name), or -1
@@ -229,20 +229,20 @@ struct Rt {
   bool initialize(ze_graph_handle_t gr) {
     const ze_result_t a = g->pfnAppendGraphInitialize(cl, gr, nullptr, 0, nullptr);
     const ze_result_t s = a == 0 ? zeCommandListHostSynchronize(cl, UINT64_MAX) : 0;
-    if (a != 0 || s != 0) fprintf(stderr, "NPU graph initialize: append 0x%x, synchronize 0x%x\n", a, s);
+    if (a != 0 || s != 0) zlog::eprintf("NPU graph initialize: append 0x%x, synchronize 0x%x\n", a, s);
     return a == 0 && s == 0;
   }
   bool start(ze_graph_handle_t gr) {
     const ze_result_t r = g->pfnAppendGraphExecute(cl, gr, nullptr, nullptr, 0, nullptr);
     pending = r == 0;
-    if (r != 0) fprintf(stderr, "NPU graph execute: 0x%x\n", r);
+    if (r != 0) zlog::eprintf("NPU graph execute: 0x%x\n", r);
     return r == 0;
   }
   bool pending = false;  // (a run started and not waited for: an exception between start and wait leaves one)
   bool wait() {
     const ze_result_t r = zeCommandListHostSynchronize(cl, UINT64_MAX);
     pending = false;
-    if (r != 0) fprintf(stderr, "NPU synchronize: 0x%x\n", r);
+    if (r != 0) zlog::eprintf("NPU synchronize: 0x%x\n", r);
     return r == 0;
   }
 };

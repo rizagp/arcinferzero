@@ -58,11 +58,11 @@ static uint32_t probe(ze_context_handle_t ctx, const char* who, uint8_t* mem, si
 }
 
 int main() {
-  if (!ze_load() || zeInit(0) != ZE_RESULT_SUCCESS) { fprintf(stderr, "Level Zero init failed\n"); return 1; }
+  if (!ze_load() || zeInit(0) != ZE_RESULT_SUCCESS) { zlog::eprintf("Level Zero init failed\n"); return 1; }
   ze_driver_handle_t gdrv = nullptr, ndrv = nullptr;
   ze_device_handle_t gdev = nullptr, ndev = nullptr;
   ze_context_handle_t gctx = nullptr, nctx = nullptr;
-  if (!find_ctx(1, gdrv, gdev, gctx) || !find_ctx(5, ndrv, ndev, nctx)) { fprintf(stderr, "GPU or NPU missing\n"); return 1; }
+  if (!find_ctx(1, gdrv, gdev, gctx) || !find_ctx(5, ndrv, ndev, nctx)) { zlog::eprintf("GPU or NPU missing\n"); return 1; }
   const size_t bytes = 64u << 20;
   uint8_t* mem = (uint8_t*)VirtualAlloc(nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   if (!mem) return 1;
@@ -75,7 +75,7 @@ int main() {
   if (zeCommandListCreateImmediate(gctx, gdev, &qd, &cl) != 0) return 1;
   const uint8_t pat = 0xa7;
   if (zeCommandListAppendMemoryFill(cl, gp, &pat, 1, bytes, nullptr, 0, nullptr) != 0 || zeCommandListHostSynchronize(cl, UINT64_MAX) != 0) {
-    fprintf(stderr, "GPU fill failed\n");
+    zlog::eprintf("GPU fill failed\n");
     return 1;
   }
   size_t bad = 0;

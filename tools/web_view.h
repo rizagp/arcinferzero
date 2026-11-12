@@ -137,7 +137,7 @@ class Proxy {
             static std::atomic<int> logged{0};
             const int n = ++logged;  // (the first 20, then every 100th with the count: never silent, never flooding, R19)
             if (n <= 20 || n % 100 == 0)
-              fprintf(stderr, "web_view: proxy refused a connection from process %lu (not the web_view browser; %d so far)\n",
+              zlog::eprintf("web_view: proxy refused a connection from process %lu (not the web_view browser; %d so far)\n",
                       (unsigned long)pid, n);
             refuse(c, "this proxy serves the web_view browser only");
           }
@@ -374,7 +374,7 @@ inline bool edge_run(const std::wstring& args, int ms, std::string* out, std::st
     if (QueryInformationJobObject(job, JobObjectExtendedLimitInformation, &q, sizeof q, nullptr) &&
         q.PeakJobMemoryUsed + (16u << 20) >= li.JobMemoryLimit) {  // (within 16 MB of it: an allocation was refused, R18)
       err = "the page reached the browser's 3 GB memory limit: it was stopped (the screenshot may be blank)";
-      fprintf(stderr, "web_view: %s\n", err.c_str());
+      zlog::eprintf("web_view: %s\n", err.c_str());
     }
   }
   TerminateJobObject(job, 1);  // (its renderer and GPU processes too)

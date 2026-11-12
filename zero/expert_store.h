@@ -97,7 +97,7 @@ struct ExpertStore {
       if (!e2) {
         const std::string lru_old = old_path.substr(0, old_path.size() - 8) + ".lru";
         if (fs::exists(lru_old, ec)) fs::rename(lru_old, path.substr(0, path.size() - 8) + ".lru", ec);
-        fprintf(stderr, "inferzero: the expert file %s moved to %s\n", old_path.c_str(), path.c_str());
+        zlog::eprintf("inferzero: the expert file %s moved to %s\n", old_path.c_str(), path.c_str());
       } else {
         path = old_path;  // (could not move it: used where it is)
       }
@@ -135,13 +135,13 @@ struct ExpertStore {
         std::error_code e3;
         if (f.is_regular_file(e3)) bytes += f.file_size(e3);
       }
-      fprintf(stderr, "inferzero: %s (%.1f GB) holds the expert file of %s, which no longer exists: the folder can be deleted\n",
+      zlog::eprintf("inferzero: %s (%.1f GB) holds the expert file of %s, which no longer exists: the folder can be deleted\n",
               d.path().string().c_str(), bytes / 1e9, src.c_str());
     }
     for (const auto& f : fs::directory_iterator(fs::path(app_dir()) / "zero", ec)) {
       std::error_code e2;
       if (f.is_regular_file(e2) && f.path().extension() == ".experts")
-        fprintf(stderr, "inferzero: %s (%.1f GB): an expert file from before 2026-11-09; it moves next to its model when "
+        zlog::eprintf("inferzero: %s (%.1f GB): an expert file from before 2026-11-09; it moves next to its model when "
                         "that is loaded, and can be deleted if that model is gone\n",
                 f.path().string().c_str(), f.file_size(e2) / 1e9);
     }
@@ -213,7 +213,7 @@ struct ExpertStore {
           const std::string lru = def_path.substr(0, def_path.size() - 8) + ".lru";
           std::error_code ec2;
           if (fs::exists(lru, ec2)) fs::rename(lru, fixed_path.substr(0, fixed_path.size() - 8) + ".lru", ec2);
-          fprintf(stderr, "inferzero: the expert file %s moved into the package\n", def_path.c_str());
+          zlog::eprintf("inferzero: the expert file %s moved into the package\n", def_path.c_str());
         }
       }
       path = fixed_path;
@@ -414,7 +414,7 @@ struct ExpertStore {
   }
   void build(const GgufFile& f, const std::vector<std::string>& prefixes, uint64_t fp) {
     const auto t0 = std::chrono::steady_clock::now();
-    fprintf(stderr, "inferzero: writing the expert file %s (%.1f GB, once per model)\n", path.c_str(), file_bytes / 1e9);
+    zlog::eprintf("inferzero: writing the expert file %s (%.1f GB, once per model)\n", path.c_str(), file_bytes / 1e9);
     const std::string tmp = path + ".tmp";
     // unbuffered writes (4 KB multiples from page-aligned buffers): 15 GB through the Windows file cache filled the
     // RAM (3.9 GB left, paging) on the 32 GB laptop
@@ -502,9 +502,9 @@ struct ExpertStore {
       SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
       ++n_done;
       if (loadp::st().on) loadp::step("writing the expert file (once per model)", (double)n_done, (double)n_all);
-      else fprintf(stderr, "\r  layer %zu / %zu", n_done, n_all);  // (the command-line tools: their own line)
+      else zlog::eprintf("\r  layer %zu / %zu", n_done, n_all);  // (the command-line tools: their own line)
     }
-    if (!loadp::st().on) fprintf(stderr, "\n");
+    if (!loadp::st().on) zlog::eprintf("\n");
     CloseHandle(out.h);
     out.h = INVALID_HANDLE_VALUE;
     if (!MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))  // (an old file of the same name: replaced)

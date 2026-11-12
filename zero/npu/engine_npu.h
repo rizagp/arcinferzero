@@ -88,7 +88,7 @@ void npu_setup() {
   if (!npu_wanted() || opt.dry) return;
   // (Qwen3.5 / 3.6 / 3.8 dense and MoE, Flash Next (its attn_qkv shares), Gemma 4 (its FFN, f16))
   if (!hp.gemma && !hp.hc && hp.arch != "qwen35" && hp.arch != "qwen35moe") {
-    fprintf(stderr, "ARC_NPU: Qwen3.5 / 3.6 / 3.8 and Gemma 4 models only; off for this one\n");
+    zlog::eprintf("ARC_NPU: Qwen3.5 / 3.6 / 3.8 and Gemma 4 models only; off for this one\n");
     return;
   }
   // (measured 2026-10-25: the NPU's share pays off where the GPU decodes the weights per chunk (W8 just in time: the
@@ -96,14 +96,14 @@ void npu_setup() {
   //  +4-6 % at KL 0.008-0.013, E4B 0 %), and MoE models' few dense matrices do not pay for the NPU's overhead (35B -5 %,
   //  Gemma 4 26B -1-8 %): off there unless --npu force. On: Qwen3.8 27B +15 %, Gemma 4 12B +10 %)
   if ((w8_resident || hp.moe) && npu_level() < 2) {
-    fprintf(stderr, "ARC_NPU: off for this model (%s: no gain measured); --npu force uses it anyway\n",
+    zlog::eprintf("ARC_NPU: off for this model (%s: no gain measured); --npu force uses it anyway\n",
             hp.moe ? "a mixture of experts" : "its W8 weights stay resident");
     return;
   }
   const auto t0 = std::chrono::steady_clock::now();
   npu_ = std::make_unique<npu::Rt>();
   if (!npu_->init()) {
-    fprintf(stderr, "ARC_NPU: no NPU (Level Zero graph extension) found: %s; off\n", npu_->why.c_str());
+    zlog::eprintf("ARC_NPU: no NPU (Level Zero graph extension) found: %s; off\n", npu_->why.c_str());
     npu_.reset();
     return;
   }
@@ -354,14 +354,14 @@ __kernel void npu_put(__global const half* c16, int nn, __global float* out, int
     npu_sth_ = buf(sth);
   }
   auto count = [&](auto pred) { return (int)std::count_if(npu_layers_.begin(), npu_layers_.end(), pred); };
-  fprintf(stderr, "ARC_NPU: NPU shares (chunks of >= %d rows): ffn_gate / up %d of %d columns %s in %d layers, "
+  zlog::eprintf("ARC_NPU: NPU shares (chunks of >= %d rows): ffn_gate / up %d of %d columns %s in %d layers, "
                   "ffn_down %d of %d f16 in %d, attn_qkv %d of %d f16 in %d (ARC_NPU_SHARE / _DOWN / _QKV); set up in %.1f s\n",
           npu_min_, npu_nn_, F, hp.gemma ? "f16" : "int8", count([](const NpuLayer& n) { return n.on; }), nd, E,
           count([](const NpuLayer& n) { return n.down.on; }), nq, Cq, count([](const NpuLayer& n) { return n.qkv.on; }),
           std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
   // (the shared block is system RAM the GPU's budget (--ctx auto, the expert cache) does not count: on an iGPU the
   //  same RAM as the GPU share. The NPU's weight rows are decoded per layer by the GPU into it: no copy of them stays)
-  fprintf(stderr, "ARC_NPU: %.2f GiB of system RAM outside the GPU budget (the shared block); %.0f MiB GPU staging\n",
+  zlog::eprintf("ARC_NPU: %.2f GiB of system RAM outside the GPU budget (the shared block); %.0f MiB GPU staging\n",
           npu_shm_bytes_ / 1073741824.0, (stq + sth) / 1048576.0);
 }
 
@@ -408,7 +408,7 @@ ze_graph_handle_t npu_graph16(int kind, int Mp, const NpuMat& m) {
       !npu_->set(gr, "B", npu_shm_ + npu_wq_[kind + 2]) || !npu_->set(gr, "SB", npu_shm_ + npu_ws_[kind + 2]))
     throw std::runtime_error("ARC_NPU: cannot set the NPU f16 graph's arguments");
   if (!npu_->initialize(gr)) throw std::runtime_error("ARC_NPU: NPU f16 graph initialize failed");
-  fprintf(stderr, "ARC_NPU: f16 graph %s for %d rows %s in %.0f ms\n", kind == 0 ? "ffn_down" : "attn_qkv", Mp,
+  zlog::eprintf("ARC_NPU: f16 graph %s for %d rows %s in %.0f ms\n", kind == 0 ? "ffn_down" : "attn_qkv", Mp,
           cached ? "loaded" : "compiled", ms);
   return npu_graphs16_[{kind, Mp}] = gr;
 }
@@ -442,7 +442,7 @@ ze_graph_handle_t npu_graph_gu16(int Mp) {
       !npu_->set(gr, "SBG", npu_shm_ + npu_ws_[0]) || !npu_->set(gr, "SBU", npu_shm_ + npu_ws_[1]))
     throw std::runtime_error("ARC_NPU: cannot set the NPU f16 gate / up graph's arguments");
   if (!npu_->initialize(gr)) throw std::runtime_error("ARC_NPU: NPU f16 gate / up graph initialize failed");
-  fprintf(stderr, "ARC_NPU: f16 graph ffn_gate / up for %d rows %s in %.0f ms\n", Mp, cached ? "loaded" : "compiled", ms);
+  zlog::eprintf("ARC_NPU: f16 graph ffn_gate / up for %d rows %s in %.0f ms\n", Mp, cached ? "loaded" : "compiled", ms);
   return npu_graphs16_[{2, Mp}] = gr;
 }
 
@@ -591,7 +591,7 @@ ze_graph_handle_t npu_graph(int Mp) {
       !npu_->set(gr, "SBG", npu_shm_ + npu_ws_[0]) || !npu_->set(gr, "SBU", npu_shm_ + npu_ws_[1]))
     throw std::runtime_error("ARC_NPU: cannot set the NPU graph's arguments");
   if (!npu_->initialize(gr)) throw std::runtime_error("ARC_NPU: NPU graph initialize failed");
-  fprintf(stderr, "ARC_NPU: graph for %d rows %s in %.0f ms\n", Mp, cached ? "loaded" : "compiled", ms);
+  zlog::eprintf("ARC_NPU: graph for %d rows %s in %.0f ms\n", Mp, cached ? "loaded" : "compiled", ms);
   return npu_graphs_[Mp] = gr;
 }
 

@@ -50,7 +50,7 @@ static void warn_gpu_neighbours() {
   }
   CloseHandle(snap);
   if (!found.empty())
-    fprintf(stderr, "note: other GPU processes are running: %s. They share the iGPU and its memory, so the speeds "
+    zlog::eprintf("note: other GPU processes are running: %s. They share the iGPU and its memory, so the speeds "
                     "measured now are not representative.\n", found.c_str());
 }
 
@@ -91,11 +91,11 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     prompt.resize(bench_pp);
     for (int i = 0; i < bench_pp; ++i) prompt[i] = 1000 + (i * 7919) % 50000;
   }
-  if (prompt.empty()) { fprintf(stderr, "no tokens\n"); return 1; }
+  if (prompt.empty()) { zlog::eprintf("no tokens\n"); return 1; }
   if (bench_batch > 1) {  // batched decoding over the split model's slots: bit-identical to each slot alone, then the speed
     const int NS = bench_batch, K = 8;
-    if (!tp.batch_ok() || tp.slot_count() < NS) { fprintf(stderr, "--bench-batch: no batched decoding for this model\n"); return 1; }
-    if ((int)prompt.size() < NS + 8) { fprintf(stderr, "--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS + 8); return 1; }
+    if (!tp.batch_ok() || tp.slot_count() < NS) { zlog::eprintf("--bench-batch: no batched decoding for this model\n"); return 1; }
+    if ((int)prompt.size() < NS + 8) { zlog::eprintf("--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS + 8); return 1; }
     const size_t V = (size_t)tp.vocab();
     auto fnv = [&](const float* p) {
       uint64_t h = 1469598103934665603ull;
@@ -154,14 +154,14 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
   }
   if (!kl_ref.empty()) {  // (--kl-ref with every position's reference log-probs: the prompt fed token by token, as --kl-decode)
     FILE* fi = fopen(kl_ref.c_str(), "rb");
-    if (!fi) { fprintf(stderr, "cannot open %s\n", kl_ref.c_str()); return 1; }
+    if (!fi) { zlog::eprintf("cannot open %s\n", kl_ref.c_str()); return 1; }
     _fseeki64(fi, 0, SEEK_END);
     std::vector<float> ref((size_t)_ftelli64(fi) / 4);
     _fseeki64(fi, 0, SEEK_SET);
     const size_t got = fread(ref.data(), 4, ref.size(), fi);
     fclose(fi);
     const size_t V = (size_t)tp.vocab();
-    if (got != ref.size() || ref.size() != V * prompt.size()) { fprintf(stderr, "reference must hold every position\n"); return 1; }
+    if (got != ref.size() || ref.size() != V * prompt.size()) { zlog::eprintf("reference must hold every position\n"); return 1; }
     double sum = 0, mxk = 0;
     int agree = 0;
     for (size_t r = 0; r < prompt.size(); ++r) {
@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
   try {
     return run_main(argc, argv);
   } catch (const std::exception& e) {
-    fprintf(stderr, "error: %s\n", e.what());
+    zlog::eprintf("error: %s\n", e.what());
     return 1;
   }
 }
@@ -327,7 +327,7 @@ static int run_main(int argc, char** argv) {
   for (int i = 2; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* {  // (an option's value; missing at the end of the line: an error, not argv[argc])
-      if (i + 1 >= argc) { fprintf(stderr, "%s: missing value\n", a.c_str()); exit(1); }
+      if (i + 1 >= argc) { zlog::eprintf("%s: missing value\n", a.c_str()); exit(1); }
       return argv[++i];
     };
     if (a == "--tokens") tokens_arg = next();
@@ -360,7 +360,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--npu") {  // the NPU next to the GPU for prompt chunks (zero/npu): on, off, force
       const std::string v = next();
       eo.npu = v == "on" ? 1 : v == "off" ? 0 : v == "force" ? 2 : -2;
-      if (eo.npu == -2) { fprintf(stderr, "--npu: on, off or force\n"); return 1; }
+      if (eo.npu == -2) { zlog::eprintf("--npu: on, off or force\n"); return 1; }
     }
     else if (a == "--mtp") eo.mtp = true;
     else if (a == "--dflash") { eo.dflash = next(); eo.mtp = true; }  // DFlash2 drafter folder
@@ -368,7 +368,7 @@ static int run_main(int argc, char** argv) {
       const std::string d = next();
       if (d == "mtp") eo.dflash.clear();
       else if (d == "dflash") eo.mtp_block = false;
-      else if (d != "auto") { fprintf(stderr, "--draft: auto, mtp or dflash\n"); return 1; }
+      else if (d != "auto") { zlog::eprintf("--draft: auto, mtp or dflash\n"); return 1; }
     }
     else if (a == "--mtp-drafts") eo.mtp_drafts = atoi(next());
     else if (a == "--mtp-model") { eo.mtp_model = next(); eo.mtp = true; }  // (an MTP head / drafter file of its own)
@@ -390,7 +390,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--budget") eo.w8_budget_gb = atof(next());
     else if (a == "--gpus") gpus = std::max(1, atoi(next()));
     else if (!a.empty() && a[0] != '-' && text_prompt.empty()) text_prompt = a;  // PROMPT (special tokens parsed)
-    else { fprintf(stderr, "unknown option %s (--help: the options)\n", a.c_str()); return 1; }
+    else { zlog::eprintf("unknown option %s (--help: the options)\n", a.c_str()); return 1; }
   }
   std::vector<int> toks = parse_ids(tokens_arg);
   if (!text_prompt.empty()) {  // the vocabulary is read from the GGUF before the engine loads
@@ -443,7 +443,7 @@ static int run_main(int argc, char** argv) {
     const double GiB = 1073741824.0, share = (double)eng.device_mem(), lim = share - Engine::driver_slack();
     fflush(stdout);
     if ((double)eng.gpu_bytes > lim) {
-      fprintf(stderr, "inferzero: does not fit: %.2f GiB of GPU memory for a context of %d, over the %.2f GiB share "
+      zlog::eprintf("inferzero: does not fit: %.2f GiB of GPU memory for a context of %d, over the %.2f GiB share "
                       "less %.1f for the driver; expect paging and far lower speeds (a smaller --ctx fits)\n",
               eng.gpu_bytes / GiB, eng.ctx, share / GiB, Engine::driver_slack() / GiB);
       if (must_fit) return 3;  // (--must-fit: bench\website_bench.ps1 records the size as not fitting)
@@ -458,7 +458,7 @@ static int run_main(int argc, char** argv) {
     //  mid past the rings' reach: the copy taken on the way)
     const int a = 2000, mid = eng.ring_cap() + 1000, tail = 600;
     if (!eng.hp.swa_rings || (int)toks.size() < a + mid + tail) {
-      fprintf(stderr, "--ring-snap-test: a Gemma 4 model and a prompt of at least %d tokens\n", a + mid + tail);
+      zlog::eprintf("--ring-snap-test: a Gemma 4 model and a prompt of at least %d tokens\n", a + mid + tail);
       return 1;
     }
     auto feed = [&](int from, int to) {
@@ -507,7 +507,7 @@ static int run_main(int argc, char** argv) {
   if (snap_test) {
     const int n = (int)toks.size(), a = std::max(1, n / 3) | 1;
     const int mid = std::max(n / 3, eng.ds_window() + 2) / 2 * 2, tail = n - a - mid;
-    if (tail < 4) { fprintf(stderr, "--snap-test: a prompt of at least %d tokens\n", a + mid + 4); return 1; }
+    if (tail < 4) { zlog::eprintf("--snap-test: a prompt of at least %d tokens\n", a + mid + 4); return 1; }
     auto feed = [&](const int* t, int n) {
       std::vector<float> l;
       for (int p = 0; p < n;) {
@@ -598,7 +598,7 @@ static int run_main(int argc, char** argv) {
   }
   if (bench_batch > 1) {  // batched decoding (forward_batch) over 1..N slots holding the prompt, against one slot alone
     const int NS = bench_batch;
-    if ((int)toks.size() < NS) { fprintf(stderr, "--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS); return 1; }
+    if ((int)toks.size() < NS) { zlog::eprintf("--bench-batch %d: the prompt needs at least %d tokens\n", NS, NS); return 1; }
     eng.add_slots(NS);
     for (int s = 0; s < NS; ++s) {
       eng.bind(s);
@@ -693,7 +693,7 @@ static int run_main(int argc, char** argv) {
     // slot 0; interleaved: A in slot 0, B in slot 1, every call alternating; batched (dense / MoE Qwen): the one-by-one
     // tokens of both slots in one pass (forward_batch), then the drafted ones alternating. The FNV hash of every
     // logits row read is compared.
-    if (toks.size() < 8) { fprintf(stderr, "--slots-check needs a prompt of at least 8 tokens\n"); return 1; }
+    if (toks.size() < 8) { zlog::eprintf("--slots-check needs a prompt of at least 8 tokens\n"); return 1; }
     eng.add_slots(2);
     {  // (--ctx auto counts with slot_bytes(): it must not count less than a slot takes)
       const bool ok = eng.slot_real_bytes_ <= eng.slot_est_bytes_ + eng.slot_est_bytes_ / 100;
@@ -929,7 +929,7 @@ static int run_main(int argc, char** argv) {
               int id[KT];
               float bl[KT];
               for (int k = 0; k < KT; ++k) {
-                if (fread(&id[k], 4, 1, klr) != 1 || fread(&bl[k], 4, 1, klr) != 1) { fprintf(stderr, "--ppl-kl: file too short\n"); return 1; }
+                if (fread(&id[k], 4, 1, klr) != 1 || fread(&bl[k], 4, 1, klr) != 1) { zlog::eprintf("--ppl-kl: file too short\n"); return 1; }
               }
               double kl = 0, pb_top = 0, pq_top = 0;
               for (int k = 0; k < KT; ++k) {
@@ -1006,11 +1006,11 @@ static int run_main(int argc, char** argv) {
     printf("weights read: %.0f MB per token, %.1f GB/s%s\n", gb * 1000 / n_gen, gb / ms * 1000,
            peak_note(eng, gb / ms * 1000).c_str());
   } else {
-    if (toks.empty()) { fprintf(stderr, "no tokens\n"); return 1; }
+    if (toks.empty()) { zlog::eprintf("no tokens\n"); return 1; }
     if (kl_decode) {
       // the single-token (decode) path at every prompt position against the reference log-probs of that position
       FILE* fi = fopen(kl_ref.c_str(), "rb");
-      if (!fi) { fprintf(stderr, "cannot open %s\n", kl_ref.c_str()); return 1; }
+      if (!fi) { zlog::eprintf("cannot open %s\n", kl_ref.c_str()); return 1; }
       _fseeki64(fi, 0, SEEK_END);  // (64-bit: references of more than 2 GB)
       std::vector<float> ref((size_t)_ftelli64(fi) / 4);
       _fseeki64(fi, 0, SEEK_SET);
@@ -1020,7 +1020,7 @@ static int run_main(int argc, char** argv) {
       // (ARC_KL_FROM=N: the reference holds positions N.. only (tools/ref_forward REF_ALL_FROM); the tokens before N go
       //  in as a prompt, the rest one by one)
       const size_t from = getenv("ARC_KL_FROM") ? std::min<size_t>(atoi(getenv("ARC_KL_FROM")), toks.size() - 1) : 0;
-      if (got != ref.size() || ref.size() != V * (toks.size() - from)) { fprintf(stderr, "reference must hold every position\n"); return 1; }
+      if (got != ref.size() || ref.size() != V * (toks.size() - from)) { zlog::eprintf("reference must hold every position\n"); return 1; }
       double sum = 0, mxk = 0;
       int agree = 0;
       if (from > 0) eng.forward(toks.data(), (int)from);

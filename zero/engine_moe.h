@@ -89,7 +89,7 @@
       if (!getenv("ARC_MOE_TM_SMALL")) return -1;
       const int v = atoi(getenv("ARC_MOE_TM_SMALL"));
       if (v == 0 || v == 1 || v == 2 || v == 4 || v == 8 || v == 16) return v;
-      fprintf(stderr, "inferzero: ARC_MOE_TM_SMALL=%d ignored (0, 1, 2, 4, 8 or 16)\n", v);
+      zlog::eprintf("inferzero: ARC_MOE_TM_SMALL=%d ignored (0, 1, 2, 4, 8 or 16)\n", v);
       return -1;
     }();
     const int tm_dec = tm_small < 0 ? (T <= 2 ? 2 : T <= 4 ? 4 : 8) : tm_small > 0 ? tm_small : tm_std;
