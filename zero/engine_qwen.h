@@ -17,8 +17,11 @@
       else gdn_ab(L, Mp, a_in);
     } else {
       const bool npu = npu_qkv_start(L, T, Mp);  // (ARC_NPU=1: the NPU's share of attn_qkv, zero/npu/engine_npu.h)
-      if (!npu) matmul("gemm_qkv", L.qkv, Mp, big_, C, 0, false, a_in);
-      matmul("gemm_z", L.z, Mp, z_, Di, 0, false, a_in);
+      {
+        H8Share sh(this);  // (one rotation of the input for both, engine_h8.h)
+        if (!npu) matmul("gemm_qkv", L.qkv, Mp, big_, C, 0, false, a_in);
+        matmul("gemm_z", L.z, Mp, z_, Di, 0, false, a_in);
+      }
       gdn_ab(L, Mp, a_in);
       if (npu) npu_qkv_finish(L, Mp);
     }
@@ -219,6 +222,7 @@
     if (!L.wk.N) {  // (q, k, v stacked: one matmul, see load_attn)
       matmul("gemm_qkv", L.wq, Mp, big_, ldq, 0, false, a_in);
     } else {
+      H8Share sh(this);  // (one rotation of the input for the three, engine_h8.h)
       matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
       matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, false, a_in);
       matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, false, a_in);
@@ -296,6 +300,7 @@
     if (!L.wk.N) {  // (q, k, v stacked: float weights, see load_attn)
       matmul("gemm_qkv", L.wq, Mp, big_, ldq, 0, false, a_in);
     } else {
+      H8Share sh(this);  // (one rotation of the input for the three, engine_h8.h)
       matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
       matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd * 2, false, a_in);
       matmul("gemm_v", L.wv, Mp, big_, ldq, nh * hd * 2 + nkv * hd, false, a_in);
@@ -386,10 +391,12 @@
     if (!L.up.N) {  // (gate and up stacked, rows [gate | up] as below: one matmul; Qwen3 dense, see load_weights)
       matmul("gemm_gateup", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
     } else if (fused) {
+      H8Share sh(this);  // (one rotation of the input for both, engine_h8.h)
       matmul("gemm_gate", L.gate, Mp, big_, F, 0, 0, a_in);
       matmul("gemm_up", L.up, Mp, big_, F, 0, 2, a_in);
     } else if (gemv_gu(L.gate, L.up, Mp, big_)) {  // (one token, ARC_GEMV_GU=1: both in one launch, the same rows)
     } else {
+      H8Share sh(this);
       matmul("gemm_gate", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
       matmul("gemm_up", L.up, Mp, big_, 2 * F, F, 0, a_in);
     }

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-12 (late): H8 prompt GEMMs on the same input rotate it once
+
+- **The H8 prompt GEMMs** (on by default on discrete cards; `ARC_H8=1` elsewhere) rotated their input before each
+  GEMM, even when the next GEMM reads the same input: q / k / v, gate / up, and DeltaNet's qkv / z. Those now rotate
+  it once (QUEUE 33.3; `ARC_H8_REUSE=0` rotates before each as before). The same kernel on the same input, so the
+  results are bit-identical (4B and 27B logits, a 711-token prompt, on and off; a split over two shards with
+  `ARC_TP_SIM`; the default laptop path's logits identical to release 2026.11.12.17).
+- Laptop, `ARC_H8=1 --bench-pp 2048`, alternated, 2 rounds of 3 runs: `h8_act` 800 -> 512 launches and 111 -> 83 ms
+  on the 4B, 400 -> 256 and 463-501 -> 344-347 ms on the 27B; the prompt 4B 922-927 -> 934-937 tok/s, 27B 118.9-121.6
+  -> 120.9-123.4 tok/s (about +1-2 %). On a B60 `h8_act` was 14 % of the GEMMs' time (2026-11-06): to be measured
+  there.
+
 ## 2026-11-12 (night): Gemma's long-prompt attention, three shapes measured at 32K (none faster); the Linux plan
 
 - **Gemma 4 12B, 32K-token prompt, one run each on the laptop** (the head-512 global attention, `attn_fa_gh`; the

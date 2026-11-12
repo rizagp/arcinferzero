@@ -156,8 +156,35 @@
     size_t gws[2] = {(size_t)N * (hb / 4), (size_t)(K / hb)}, lws[2] = {(size_t)hb / 4, 1};
     run("h8_weights", k, 2, gws, lws);
   }
+  // GEMMs in a row on the same input (q / k / v, gate / up, qkv / z) rotate it once (QUEUE 33.3): the caller holds an
+  // H8Share around them, nothing in its scope writes aq_ / asc_, and a later GEMM with the same rows, K and scale
+  // form finds h8_aq_ / h8_asc_ as the first one left them. The same kernel on the same input: bit-identical.
+  // ARC_H8_REUSE=0 rotates before each GEMM as before.
+  int h8_share_ = 0, h8_last_M_ = -1, h8_last_K_ = -1, h8_last_a32_ = -1;
+  cl_mem h8_last_aq_ = nullptr;  // (the input it was rotated from: a two-pass model swaps aq_)
+  static bool h8_reuse_env() {
+    static const bool on = !getenv("ARC_H8_REUSE") || atoi(getenv("ARC_H8_REUSE")) != 0;
+    return on;
+  }
+  struct H8Share {
+    Engine* e;
+    explicit H8Share(Engine* en) : e(en) {
+      e->h8_share_ = h8_reuse_env() ? 1 : 0;
+      e->h8_last_K_ = -1;
+    }
+    ~H8Share() {
+      e->h8_share_ = 0;
+      e->h8_last_K_ = -1;
+    }
+    H8Share(const H8Share&) = delete;
+    H8Share& operator=(const H8Share&) = delete;
+  };
   // this GEMM's input (aq_ / asc_, per-32 scales when act32) rotated into h8_aq_ / h8_asc_
   void h8_act(int Mp, int K, bool act32) {
+    if (h8_share_) {
+      if (h8_last_K_ == K && h8_last_M_ == Mp && h8_last_a32_ == (act32 ? 1 : 0) && h8_last_aq_ == aq_) return;
+      h8_last_K_ = K, h8_last_M_ = Mp, h8_last_a32_ = act32 ? 1 : 0, h8_last_aq_ = aq_;
+    }
     const int hb = h8_block(K);
     int a32 = act32 ? 1 : 0, M = Mp, KK = K;
     if (h8_row()) {
