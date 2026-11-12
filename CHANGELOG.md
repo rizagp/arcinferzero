@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-12: the 35B MoE's generation on discrete cards back to its speed
+
+- **`ARC_GEMV_SMALL_WG` is off again by default** (discrete cards, `zero/xe2/`). A Pro B60's `decode_try` on package
+  18acafc (issue #4, best of 2): the 35B-A3B generated 55.85 tok/s with it and 80.35 without (+44 %), the same tokens;
+  the 27B 23.52 with it, 23.57 without. The single-token GEMV of the small matrices goes back to work-groups of 256,
+  as before 2026-11-10. Bit-identical (only the work-group size changes). iGPUs unchanged (they always used 256).
+  `ARC_GEMV_SMALL_WG=1` turns it on; `bench\decode_try.ps1` now has a `SMALL_WG=1` row instead of `SMALL_WG=0`.
+
 ## 2026-11-12: DeepSeek-V4.1's indexer scores faster, the same results
 
 - The indexer's scores take a lane per compressed row: each row's index key is read once for all its heads (the

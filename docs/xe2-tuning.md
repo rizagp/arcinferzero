@@ -33,7 +33,7 @@ All the switches (environment variables; each is read once per process):
 | `ARC_GDN_CHUNK=1` / `2` / `3` | off (`gdn_recur`) | the DeltaNet of prompt passes (32+ tokens) in chunks of 32 (QUEUE F33.1, 2026-11-09): `1` `gdn_chunk` (vector, 4 work-items per state row, any GPU), `2` its 16-float local reads, `3` on XMX: `gdn_chunk_x` (16-lane DPAS) or `gdn_chunk_x8` (8 lanes, the 140T), checked at start against `gdn_chunk`. Not bit-identical: KL (`bench\f33_sweep.ps1`) | 9 |
 | `ARC_GDN_XEMU=1` / `8` / `16` | off | with `ARC_GDN_CHUNK=3`: DPAS emulated on any GPU, in its own / the 8- / 16-lane form (tests) | 9 |
 | `ARC_ATTN_XMX=0` | on on discrete cards since 2026-11-10 (B60, 64K prompts: 4B +11.7 %, 9B +8.4 %, 27B +2.1 %, 35B +10.2 %), off on iGPUs; `=1` forces it | the prompt attention's integer dot products (`attn_q8`) as int8 DPAS, bit-identical, checked at start bit for bit (QUEUE F33.2, 2026-11-09; 16-lane DPAS, Qwen); `ARC_ATTN_XEMU=1`: emulated (tests) | 9 |
-| `ARC_GEMV_SMALL_WG=0` | on on discrete cards since 2026-11-10 (a B60's 27B: no gain, 23.71 without against 23.72 tok/s; gemm_ab 13.35 -> 12.72 ms), off on iGPUs; `=1` forces it | the single-token GEMV of a matrix with at most 512 sub-groups (DeltaNet's alpha / beta, 96 rows; MoE routers) in work-groups of 4 sub-groups instead of 16, spread over more Xe cores; bit-identical |10 |
+| `ARC_GEMV_SMALL_WG=1` | off (on on discrete cards 2026-11-10 to 11-12: a B60's 27B no gain, 23.71 without against 23.72 tok/s, gemm_ab 13.35 -> 12.72 ms; its 35B 80.35 without against 55.85 tok/s, package 18acafc); `=1` forces it | the single-token GEMV of a matrix with at most 512 sub-groups (DeltaNet's alpha / beta, 96 rows; MoE routers) in work-groups of 4 sub-groups instead of 16, spread over more Xe cores; bit-identical |10 |
 | `ARC_WIDE_ROWS=0` | on (every GPU) since 2026-11-10 | the 1-8 token row kernels that quantize for the next GEMV (`swiglu_quant` on the Qwen and MoE paths, `rmsnorm_quant`, `gated_norm_quant`, `attn_gate_quant`) in one work-group per row, as before; by default their superblocks spread over many work-groups; bit-identical |10 |
 | `ARC_XALL=0` | on on discrete cards since 2026-11-09, off on iGPUs; `=1` forces it | MoE models, one token: with every expert in the GPU's cache, the layers skip reading their experts' ids on the host (the same tokens; a B60's 35B 78.77 -> 88.05 tok/s, host waits 43 -> 3 a token) | 5 |
 | `ARC_LAUNCH_STATS=1` | off | kernel launches and host time per token | 5 |
@@ -618,12 +618,18 @@ Since 2026-11-10, both bit-identical:
   sub-group per superblock, as Gemma's `swiglu_quant` already did; `rmsnorm_quant` one work-group per 16 superblocks,
   each summing the whole row's squares the same way. `=0` as before.
 - **`ARC_GEMV_SMALL_WG`** (discrete cards): the single-token GEMV of a matrix with at most 512 sub-groups in
-  work-groups of 64 instead of 256 (alpha / beta: 6 -> 24 work-groups). `=0` as before.
+  work-groups of 64 instead of 256 (alpha / beta: 6 -> 24 work-groups). Off by default again since 2026-11-12 (see
+  below); `=1` turns it on.
 
-`decode_try.ps1` has rows for both off (`WIDE_ROWS=0`, `SMALL_WG=0`, `both off`), their tokens checked against plain.
+`decode_try.ps1` had rows for both off (`WIDE_ROWS=0`, `SMALL_WG=0`, `both off`); since 2026-11-12 it has
+`WIDE_ROWS=0` and `SMALL_WG=1`, their tokens checked against plain.
 **Measured on a B60 (issue #4, package 97d225b):** 27B plain 23.72 tok/s, WIDE_ROWS=0 23.19 (+2.3 % with it),
 SMALL_WG=0 23.71 (no gain), both off 23.18; `swiglu_quant` 31.4 -> 8.8 ms per 32 steps, `rmsnorm_quant` 29.0 -> 25.1
-(its work-group still sums the whole row: the next lever for it is a two-stage sum). Left: `attn_k` / `attn_v` (1,024 sub-groups, rows of 20 superblocks), `attn_prep` (23 us
+(its work-group still sums the whole row: the next lever for it is a two-stage sum).
+**Measured on the 35B (2026-11-12, package 18acafc):** plain 55.85 tok/s, SMALL_WG=0 80.35, both off 80.50,
+GEMV_PF=1 79.12, all with the same tokens. So `ARC_GEMV_SMALL_WG` is off by default again; why the 64-item
+work-groups cost ~5.5 ms a token on the MoE model only (its profile: 10.3 ms of GPU time in a 20.4 ms step) is not
+known yet. Left: `attn_k` / `attn_v` (1,024 sub-groups, rows of 20 superblocks), `attn_prep` (23 us
 each: its RoPE's `pow` / `cos` / `sin` in 4 lanes), and the codebook GEMVs themselves.
 
 ## 11. The H8 GEMMs with wider XMX tiles (QUEUE 33.4, 2026-11-11): `ARC_GEMM_XW=1`, `bench\xw_sweep.ps1`

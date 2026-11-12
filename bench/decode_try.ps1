@@ -24,8 +24,9 @@
 #   WIDE_ROWS=0    plain, the row kernels that quantize for the next GEMV (swiglu_quant, rmsnorm_quant,
 #                  gated_norm_quant, attn_gate_quant) in one work-group per row, as before 2026-11-10
 #                  (ARC_WIDE_ROWS=0); tokens checked against plain
-#   SMALL_WG=0     plain, the GEMV of matrices with few rows (DeltaNet's alpha / beta, MoE routers) in work-groups
-#                  of 256 as before 2026-11-10 (ARC_GEMV_SMALL_WG=0); also both off; tokens checked against plain
+#   SMALL_WG=1     plain, the GEMV of matrices with few rows (DeltaNet's alpha / beta, MoE routers) in work-groups
+#                  of 64 (ARC_GEMV_SMALL_WG=1; the default 2026-11-10 to 11-12, off since: the B60's 35B 30 % slower
+#                  with it); tokens checked against plain
 #   GEMV_GU=1      dense models: plain, the FFN gate and up GEMVs in one launch instead of two (ARC_GEMV_GU=1,
 #                  QUEUE 33.5; bit-identical; MoE models take their own FFN, so it equals plain there); tokens checked
 #   (at the end, per model: a --prof-gen table, the GPU time of a generation step by kernel)
@@ -93,10 +94,10 @@ foreach ($model in $Models) {
   $null = Invoke-Run $model @("--n", "8") @{}  # (warm-up: the first run after a start is slower)
   $plain = Invoke-Run $model @() @{}
   Line "plain" $plain
-  # (2026-11-10: the wide row kernels and the small GEMV work-groups, on by default on discrete cards: without them)
+  # (2026-11-10: the wide row kernels, on by default: without them; the small GEMV work-groups, off by default
+  #  since 2026-11-12: with them)
   Same "WIDE_ROWS=0" (Invoke-Run $model @() @{ ARC_WIDE_ROWS = "0" }) $plain
-  Same "SMALL_WG=0" (Invoke-Run $model @() @{ ARC_GEMV_SMALL_WG = "0" }) $plain
-  Same "both off" (Invoke-Run $model @() @{ ARC_WIDE_ROWS = "0"; ARC_GEMV_SMALL_WG = "0" }) $plain
+  Same "SMALL_WG=1" (Invoke-Run $model @() @{ ARC_GEMV_SMALL_WG = "1" }) $plain
   Same "GEMV_GU=1" (Invoke-Run $model @() @{ ARC_GEMV_GU = "1" }) $plain
   # (meant bit for bit, so checked bit for bit: every one of 32 steps' logits against plain's)
   $lg = @()
