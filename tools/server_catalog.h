@@ -73,16 +73,28 @@ static std::vector<std::string> extra_model_dirs() {
 //  every server start: each folder is first listed by a detached thread and skipped if that takes over 2 s)
 // 1: listed, 2: not a readable folder, 0: no answer within 2 s
 static int folder_reachable(const std::filesystem::path& d) {
-  // (a folder whose last check still hangs: skipped at once, not another thread left hanging on it per model list)
+  // (a folder whose last check still hangs: skipped at once, not another thread left hanging on it per model list.
+  //  One that hung or could not be read is remembered for 60 s, so a dead drive costs at most one 2-s wait a
+  //  minute instead of one per model list; the map is swept when it grows. Audit 2026-11-12 #10)
+  struct Seen {
+    std::shared_ptr<std::atomic<int>> st;
+    std::chrono::steady_clock::time_point at;
+  };
   static std::mutex mu;
-  static std::map<std::string, std::shared_ptr<std::atomic<int>>> pending;
+  static std::map<std::string, Seen> pending;
+  const auto now = std::chrono::steady_clock::now();
   {
     std::lock_guard<std::mutex> lk(mu);
     auto it = pending.find(d.string());
     if (it != pending.end()) {
-      if (it->second->load() == 0) return 0;
+      const int v = it->second.st->load();
+      if (v == 0) return 0;
+      if (v == 2 && now - it->second.at < std::chrono::seconds(60)) return 2;
       pending.erase(it);
     }
+    if (pending.size() > 64)
+      for (auto i = pending.begin(); i != pending.end();)
+        i = i->second.st->load() != 0 && now - i->second.at >= std::chrono::seconds(60) ? pending.erase(i) : std::next(i);
   }
   auto st = std::make_shared<std::atomic<int>>(0);
   try {  // (no thread to be had: the folder is skipped this time, the model list still answers)
@@ -97,9 +109,9 @@ static int folder_reachable(const std::filesystem::path& d) {
   }
   for (int i = 0; i < 100 && st->load() == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
   const int r = st->load();
-  if (r == 0) {  // (still hanging: remembered until its thread answers)
+  if (r != 1) {  // (still hanging: remembered until its thread answers; not readable: for 60 s)
     std::lock_guard<std::mutex> lk(mu);
-    pending[d.string()] = st;
+    pending[d.string()] = Seen{st, std::chrono::steady_clock::now()};
   }
   return r;
 }

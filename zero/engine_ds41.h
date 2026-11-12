@@ -558,6 +558,9 @@
   void ds_norm_rope(cl_mem src, cl_mem dst, int K, int nrows, cl_mem w, int ty, int rpp, int pmul, int poff, float sign,
                     int drow0 = 0, bool to_kv = false) {
     if (nrows <= 0) return;
+    // (audit 2026-11-12 #6: the kernel holds a row in float v[32] per lane, 16 lanes, in pairs: K / 16 values a lane,
+    //  at most 32 and even. Callers pass 512 and 128, both checked at load; this keeps a new caller from overflowing)
+    if (K <= 0 || K > 512 || K % 32) throw std::logic_error("ds_norm_rope: rows of " + std::to_string(K) + " (must be <= 512, a multiple of 32)");
     cl_kernel k = kernel("ops", to_kv ? ds_kv_defs() + " -DDS_DST_KV" : std::string(), "ds_norm_rope");
     int d0 = drow0, KK = K, un = w ? 1 : src == dst && !to_kv ? 2 : 0, R = hp.n_rot, rp = rpp, pm = pmul, po = poff;
     float eps = hp.eps, sg = sign;

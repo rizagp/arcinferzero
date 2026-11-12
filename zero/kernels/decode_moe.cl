@@ -93,6 +93,9 @@ __kernel void moe_gateup_q(__global const uchar* rg, __global const uchar* ru, i
                            __global const char* aq, __global const float* asc, int M, __global const int* tiles,
                            __global const int* stok, __global float* h XARGS_GU) {
   __local uint win_all[16][WIN_CALLS * 16];
+  // (win_all holds 16 sub-groups' windows: the launches use work-groups of 256 or 64. A larger group would share
+  //  windows, a silent race: it returns instead. Audit 2026-11-12 #7; uniform over the group, before any barrier)
+  if (get_num_sub_groups() > 16) return;
   __local uint* win = win_all[get_sub_group_id() & 15];
   MOE_LGRID
   MOE_LAUX
@@ -267,6 +270,9 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
                          __global const float* hsc, int S, __global const int* tiles, __global const float* swt,
                          __global float* y XARGS_D) {
   __local uint win_all[16][WIN_CALLS * 16];
+  // (win_all holds 16 sub-groups' windows: the launches use work-groups of 256 or 64. A larger group would share
+  //  windows, a silent race: it returns instead. Audit 2026-11-12 #7; uniform over the group, before any barrier)
+  if (get_num_sub_groups() > 16) return;
   __local uint* win = win_all[get_sub_group_id() & 15];
   MOE_LGRID
   MOE_LAUX

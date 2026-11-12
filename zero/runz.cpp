@@ -411,6 +411,9 @@ static int run_main(int argc, char** argv) {
     printf("%zu tokens -> %s\n", toks.size(), dump_ids.c_str());
     return 0;
   }
+  // (audit 2026-11-12 #1: 0 divided the text into chunks by zero, a negative value gave 0 chunks; a chunk needs a
+  //  scored position: j from ppl_ctx / 2 up to ppl_ctx - 1, so at least 3; 2 printed nan)
+  if (!ppl_file.empty() && ppl_ctx < 3) throw std::runtime_error("--ppl-ctx must be at least 3");
   const int need = std::max((bench_pp > 0 ? bench_pp : (int)toks.size()) + n_gen + 16 + (bench_batch > 1 ? 1024 : 0),
                             ppl_file.empty() ? 0 : ppl_ctx + 16);
   if (!ppl_file.empty() && chunk == 0) chunk = std::min(ppl_ctx, 8192);  // (longer chunks: fed in pieces of 8192)
@@ -866,8 +869,11 @@ static int run_main(int argc, char** argv) {
     const bool add_bos = eng.gguf().get_int("tokenizer.ggml.add_bos_token", 0) != 0;
     int nchunks = (int)(all.size() / ppl_ctx);
     if (ppl_chunks > 0) nchunks = std::min(nchunks, ppl_chunks);
+    if (nchunks <= 0)  // (a text shorter than one chunk: nothing to score, the result would be nan)
+      throw std::runtime_error("--perplexity: the text has " + std::to_string(all.size()) + " tokens, fewer than one chunk of --ppl-ctx " + std::to_string(ppl_ctx));
     if (!ppl_dump.empty()) {  // write the chunks' token ids (one comma-separated line per chunk) for ref_forward
       FILE* fo = fopen(ppl_dump.c_str(), "w");
+      if (!fo) throw std::runtime_error("cannot write " + ppl_dump);
       for (int ch = 0; ch < nchunks; ++ch) {
         for (int j = 0; j < ppl_ctx; ++j) fprintf(fo, j ? ",%d" : "%d", all[(size_t)ch * ppl_ctx + j]);
         fprintf(fo, "\n");

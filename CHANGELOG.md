@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-11-12: the fixes of the static audit (docs/audit-2026-11-12.md)
+
+Every finding of the audit fixed (numbers as in the audit):
+- **Kernel cache (#3):** one folder per driver (`kernels\drv-<version>\`); at start the old flat files, other
+  drivers' folders unused for 7 days and temporary files older than an hour are removed, and the current folder is
+  trimmed to `ARC_KCACHE_GB` (default 2 GB) by last use. Each process writes under a name of its own before the
+  rename, so two compiling the same kernel cannot install a mixed file. The first start after the update compiles
+  every kernel once (the laptop's 1.4 GB / 2,797 old files and its warm-up markers went).
+- **Launcher (#12):** a Hugging Face file name with `..`, a drive letter or a UNC prefix is refused before anything
+  is written (it could write outside the cache). **(#13)** the alias and the drafter path are quoted when the server
+  starts. **(#11)** `make-package.ps1` keeps the newest 3 packages in `dist\` (`ARC_DIST_KEEP`).
+- **Server:** a request body has a total deadline, 60 s plus 10 s per MiB (#14: a client trickling one byte every
+  29 s held a connection); the MCP client keeps a reply only for a request that waits for it (#16); the terminal
+  and MCP pipe readers are cancelled with `CancelSynchronousIo`, and a terminal read that still never ends is left
+  behind instead of waited for (#15); a folder that cannot be read is remembered for 60 s (#10); the web UI shows a
+  stored chat's image or audio only from an address `safeUrl` accepts (#17).
+- **Engine and tools:** `runz --ppl-ctx` below 3 and a text shorter than one chunk are refused (#1: 0 divided by zero, 2 gave nan); the DXGI adapter loop stops on
+  any error (#5); `ds_norm_rope` refuses rows it cannot hold (#6); `ARC_GVROWS` outside 1-8 and `ARC_MOE_TM_SMALL`
+  outside 0 / 1 / 2 / 4 / 8 / 16 are ignored with a note (#8); the GEMV and MoE kernels laid out for 16 sub-groups
+  return in a larger work-group instead of sharing windows (#7; logits bit-identical, four models); the bandwidth
+  probe's allocation throws instead of ending runz.
+- **Build:** the three f32 references `ref_qwen3a`, `gemma4v_ref` and `gemma4a_ref` are built `/fp:precise` like the
+  others (#2); every program checks for AVX2 / FMA at start and says so instead of dying with an illegal
+  instruction (#4, `src/cpu_check.h`, force-included).
+- **Rules:** AGENTS.md says a kernel launched without a local size must not depend on it (#9).
+- **Measured for the audit's "needs a GPU" #1:** split-K is not bit-identical to one pass (the pieces' sums in
+  another order): 27B, KL against `ARC_GEMM_SPLIT=0` mean 0.00067, max 0.0017, the same greedy tokens.
+
 ## 2026-11-12: a split model's prompt sums in pieces (opt-in, `ARC_TP_PIPE=1`)
 
 - **The f16 reduce-scatter of prompt chunks can run in pieces** (`zero/mgpu/engine_tp.h`, `tp_reduce_rs_pipe`),

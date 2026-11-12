@@ -1094,9 +1094,12 @@ $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ct
   (-not $extraGiven -or ($st -and "$(if ($st.extra) { $st.extra } else { '|think 8192' })" -eq $extraKey)) -and
   (-not $st -or "$(if ($st.engine) { $st.engine } else { 'opencl' })" -eq $Engine)
 $useMtp = [bool]$m.mtp  # (the variant's setting; -NoMtp picked the variant without it)
-$srvArgs = @("-m", "`"$($m.path)`"", "--port", $Port, "--ctx", $ctxArg, "--alias", $m.alias, "--think-budget", $ThinkBudget) + $extra
+# (Start-Process joins its arguments with spaces and quotes none: every value that can hold a space is quoted here,
+#  as the model's path already was; an alias or a drafter path with a space split in two, audit 2026-11-12 #13)
+function Quote-Arg($x) { '"' + ([string]$x).Replace('"', '') + '"' }
+$srvArgs = @("-m", (Quote-Arg $m.path), "--port", $Port, "--ctx", $ctxArg, "--alias", (Quote-Arg $m.alias), "--think-budget", $ThinkBudget) + $extra
 if ($useMtp) { $srvArgs += "--mtp" }
-if ($useMtp -and $m.draft -and $m.draft -ne "auto") { $srvArgs += @("--draft", $m.draft) }  # (-nodf: MTP block only, -df: DFlash2 only)
+if ($useMtp -and $m.draft -and $m.draft -ne "auto") { $srvArgs += @("--draft", (Quote-Arg $m.draft)) }  # (-nodf: MTP block only, -df: DFlash2 only)
 if ($Chunk -gt 0) { $srvArgs += @("--chunk", $Chunk) }
 if ($SessionCacheGb -gt 0) { $srvArgs += @("--session-cache-gb", $SessionCacheGb) }  # saved conversations on disk (default 8 GB, 0 = off)
 if ($novision -eq "1") { $srvArgs += "--no-mmproj" }

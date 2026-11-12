@@ -1393,8 +1393,11 @@ function mediaEl(m, alt) {
     c.title = m.id.replace(/^project:[^/]*\//, "") + " (in the project's folder)";
     return c;
   }
-  if (m.kind === "audio") { const a = document.createElement("audio"); a.controls = true; a.src = m.url; return a; }
-  if (m.kind === "image") { const im = document.createElement("img"); im.src = m.url; im.alt = alt; return im; }
+  // (the same check as the link below: a stored or imported chat's url is untrusted; one that fails it falls through
+  //  to a chip without a link. Audit 2026-11-12 #17)
+  const okUrl = m.url && safeUrl(m.url);
+  if (m.kind === "audio" && okUrl) { const a = document.createElement("audio"); a.controls = true; a.src = m.url; return a; }
+  if (m.kind === "image" && okUrl) { const im = document.createElement("img"); im.src = m.url; im.alt = alt; return im; }
   const c = document.createElement("a");  // (documents and videos: a chip that opens the saved file)
   c.className = "chip"; c.target = "_blank"; c.rel = "noopener";
   if (m.url && safeUrl(m.url)) c.href = m.url;

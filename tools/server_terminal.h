@@ -9,6 +9,8 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -148,34 +150,46 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   const bool in_job = job && AssignProcessToJobObject(job, pi.hProcess);
   ResumeThread(pi.hThread);
   CloseHandle(pi.hThread);
-  // the output, read on its own thread (a full pipe would stop the command): the first part and the last part
-  std::string head, tail;
-  size_t total = 0;
-  std::atomic<bool> read_done{false};
+  // the output, read on its own thread (a full pipe would stop the command): the first part and the last part.
+  // (Its state is shared with the thread, which owns the read handle too: a read that never ends, a process outside
+  //  the job holding the pipe, leaves the thread behind instead of this call waiting for it in join(); audit
+  //  2026-11-12 #15. CancelIoEx is only best effort on a synchronous pipe)
+  struct Out {
+    HANDLE rd = nullptr;
+    std::mutex mu;
+    std::string head, tail;
+    size_t total = 0;
+    std::atomic<bool> done{false};
+    ~Out() { if (rd) CloseHandle(rd); }
+  };
+  std::shared_ptr<Out> out;
   std::thread reader;
   try {  // (no reader thread: the command is stopped and its handles closed, not left running with a full pipe)
-  reader = std::thread([&] {
-    char b[8192];
-    DWORD n;
-    while (ReadFile(rd, b, sizeof b, &n, nullptr) && n) {
-      total += n;
-      try {  // (out of memory: this part is left out, counted in total, and the pipe still drained; an exception
-             //  leaving the thread would end the whole server)
-        const size_t room = kMaxOut * 3 / 4 > head.size() ? kMaxOut * 3 / 4 - head.size() : 0;
-        head.append(b, std::min<size_t>(room, n));
-        if (n > room) {
-          tail.append(b + room, n - room);
-          if (tail.size() > kMaxOut / 4 * 2) tail.erase(0, tail.size() - kMaxOut / 4);
-        }
-      } catch (...) {}
-    }
-    read_done = true;
-  });
+    out = std::make_shared<Out>();
+    out->rd = rd;
+    reader = std::thread([o = out] {
+      char b[8192];
+      DWORD n;
+      while (ReadFile(o->rd, b, sizeof b, &n, nullptr) && n) {
+        std::lock_guard<std::mutex> lk(o->mu);
+        o->total += n;
+        try {  // (out of memory: this part is left out, counted in total, and the pipe still drained; an exception
+               //  leaving the thread would end the whole server)
+          const size_t room = kMaxOut * 3 / 4 > o->head.size() ? kMaxOut * 3 / 4 - o->head.size() : 0;
+          o->head.append(b, std::min<size_t>(room, n));
+          if (n > room) {
+            o->tail.append(b + room, n - room);
+            if (o->tail.size() > kMaxOut / 4 * 2) o->tail.erase(0, o->tail.size() - kMaxOut / 4);
+          }
+        } catch (...) {}
+      }
+      o->done = true;
+    });
   } catch (...) {
     if (in_job) TerminateJobObject(job, 1);
     TerminateProcess(pi.hProcess, 1);
     CloseHandle(pi.hProcess);
-    CloseHandle(rd);
+    if (!out) CloseHandle(rd);  // (else out's last owner closes it)
     if (job) CloseHandle(job);
     throw;
   }
@@ -196,12 +210,24 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   if (in_job) TerminateJobObject(job, 1);  // (what it left running in the background ends with it: its pipe closes)
   // (a process that left the job, e.g. one started through COM or WMI, may still hold the pipe: the read ends after
   //  2 s at most instead of waiting for it)
-  for (int k = 0; k < 20 && !read_done; ++k) Sleep(100);
-  if (!read_done) CancelIoEx(rd, nullptr);
-  reader.join();
-  CloseHandle(rd);
+  for (int k = 0; k < 20 && !out->done; ++k) Sleep(100);
+  if (!out->done) CancelIoEx(out->rd, nullptr);
+  {  // (a synchronous read: CancelSynchronousIo on the reading thread, tried again while it lives, see server_mcp.h)
+    HANDLE h = (HANDLE)reader.native_handle();
+    for (int k = 0; k < 20 && !out->done && WaitForSingleObject(h, 50) == WAIT_TIMEOUT; ++k) CancelSynchronousIo(h);
+  }
+  if (out->done) reader.join();
+  else reader.detach();  // (it ends, and closes the pipe, when the process holding it does)
   CloseHandle(pi.hProcess);
   if (job) CloseHandle(job);
+  std::string head, tail;
+  size_t total = 0;
+  {
+    std::lock_guard<std::mutex> lk(out->mu);
+    head = out->head;
+    tail = out->tail;
+    total = out->total;
+  }
   if (tail.size() > kMaxOut / 4) tail.erase(0, tail.size() - kMaxOut / 4);
   r.truncated = total > head.size() + tail.size();
   r.output = head + (r.truncated ? "\n[... " + std::to_string(total - head.size() - tail.size()) + " bytes left out ...]\n" : "") + tail;

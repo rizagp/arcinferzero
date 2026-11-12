@@ -24,6 +24,19 @@ function Get-HfToken {
   if (Test-Path $f) { return (Get-Content $f -Raw).Trim() }
   return ""
 }
+# A repository file's path inside the snapshot folder, or an error: a name from a pasted link or a repository's own
+# listing may hold "..", a drive letter or a UNC prefix, and Join-Path would then write outside the cache (audit
+# 2026-11-12 #12; the C++ side refuses the same with files::safe_name / proj::)
+function Get-HfLocalPath([string]$snap, [string]$f) {
+  $rel = $f -replace "/", "\"
+  if ($rel -match '^\\' -or $rel -match '^[A-Za-z]:' -or $rel -match '(^|\\)\.\.(\\|$)' -or $rel -match '[<>:"|?*]') {
+    throw "$f is not a path inside the repository"
+  }
+  $root = [IO.Path]::GetFullPath($snap).TrimEnd('\') + '\'
+  $full = [IO.Path]::GetFullPath((Join-Path $snap $rel))
+  if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw "$f leaves the cache folder" }
+  return $full
+}
 # downloads $Files of $Repo (paths as the repository lists them, e.g. IQ3_S/x.gguf) and returns the snapshot folder
 function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)) {
   $token = Get-HfToken
@@ -50,7 +63,7 @@ function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)
   foreach ($f in $Files) {
     $e = $tree | Where-Object { $_.path -eq $f } | Select-Object -First 1
     if (-not $e) { throw "$Repo has no file $f" }
-    $dst = Join-Path $snap ($f -replace "/", "\")
+    $dst = Get-HfLocalPath $snap $f
     New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
     $size = [int64]$e.size
     if ((Test-Path $dst) -and (Get-Item $dst).Length -eq $size) { Write-Host "    $f is there"; continue }

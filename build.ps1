@@ -16,10 +16,12 @@ foreach ($src in $Sources) {
   $full = Join-Path $root $src
   $name = [IO.Path]::GetFileNameWithoutExtension($full)
   # (_CRT_SECURE_NO_WARNINGS: no "getenv / fopen may be unsafe" deprecation notes)
-  # (the f32 references and checks, ref_forward / tests / vision_testz: /fp:precise; the rest /fp:fast;
+  # (the f32 references and checks: /fp:precise, every ref_* and *_ref program (ref_forward, ref_whisper, ref_qwen3a,
+  #  gemma4v_ref, gemma4a_ref; the last three got /fp:fast before 2026-11-12, audit #2), tests, vision_testz; the rest
+  #  /fp:fast;
   #  /utf-8: the sources are UTF-8, their string literals stay byte for byte;
   #  /W4 /permissive-: our own sources build warning-free, third_party is an external include without warnings)
-  $fp = if ($name -match '^(ref_forward|ref_whisper|test_|vision_test)') { '/fp:precise' } else { '/fp:fast' }
+  $fp = if ($name -match '^(ref_|test_|vision_test)' -or $name -match '_ref$') { '/fp:precise' } else { '/fp:fast' }
   # (/bigobj: serverz has more sections than a default object file holds;
   #  /MT: the C++ runtime inside each exe, so a PC without the Visual C++ Redistributable runs them; /openmp: the
   #  OpenMP runtime vcomp140.dll, which may be shipped next to them (copied into bin below). The LLVM OpenMP of
@@ -32,7 +34,9 @@ foreach ($src in $Sources) {
   #  bit-identical (Gemma 4 E4B, 2026-11-03). /GS, /DYNAMICBASE, /NXCOMPAT and /HIGHENTROPYVA are MSVC's x64 defaults.
   #  /CETCOMPAT (linker only): the exes may run with the CPU's shadow stack (Intel CET, Core Ultra has it), so an
   #  overwritten return address ends the process instead of running code; the code itself is the same (2026-11-09))
-  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 $fp /EHsc /bigobj /MT /W4 /permissive- /Zc:__cplusplus /guard:cf /d1trimfile:`"$root\\`" /external:I`"$root\third_party`" /external:W0 /openmp /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
+  # (/FI src\cpu_check.h: a CPU without AVX2 / FMA gets a line saying so instead of an illegal instruction, audit
+  #  2026-11-12 #4)
+  $cmd = "$pre" + "cl /nologo /utf-8 /std:c++20 /O2 /Oi /arch:AVX2 /FI`"$root\src\cpu_check.h`" $fp /EHsc /bigobj /MT /W4 /permissive- /Zc:__cplusplus /guard:cf /d1trimfile:`"$root\\`" /external:I`"$root\third_party`" /external:W0 /openmp /D_CRT_SECURE_NO_WARNINGS /I`"$root\third_party`" " +
          "/Fe`"$out\$name.exe`" /Fo`"$out\\`" `"$full`" " +
          "/link /guard:cf /CETCOMPAT /MANIFEST:EMBED /MANIFESTINPUT:`"$root\tools\utf8.manifest`""  # (UTF-8 code page: paths with any characters)
   cmd /c $cmd

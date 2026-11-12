@@ -154,7 +154,28 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     cl_program p = cl_.build(src, "-cl-std=CL3.0");
     progs_.push_back(p);
     cl_kernel k = cl_.kernel(p, "rd_block");
-    cl_mem b = buf(bytes), o = buf(64);
+    // (an allocation that fails throws here instead of ending the process: a GPU share nearly full of a model left
+    //  runz exiting instead of printing without the "% of" figure; its caller catches it. Audit 2026-11-12)
+    cl_mem b = nullptr, o = nullptr;
+    {
+      const bool was = zrt::oom_throws;
+      zrt::oom_throws = true;
+      try {
+        b = buf(bytes);
+        o = buf(64);
+      } catch (...) {
+        zrt::oom_throws = was;
+        clReleaseKernel(k);  // (before its module goes, in release_all, as below)
+        if (b) {
+          free_buf(b);
+          gpu_bytes -= 64;  // (buf counted o before it failed)
+        } else {
+          gpu_bytes -= bytes;
+        }
+        throw;
+      }
+      zrt::oom_throws = was;
+    }
     double best = 1e30;
     for (int r = 0; r < 6; ++r) {
       set_args(k, 0, b, o, per_item);
@@ -940,10 +961,16 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  eh_proj 0.78 -> 0.61 ms; tiny matrices equal; 16 Oct)
   }
   static int gemv_v_rows(const GpuWeight& w) {
-    static const int force = getenv("ARC_GVROWS") ? atoi(getenv("ARC_GVROWS")) : 0;  // (tuning)
+    // (tuning; 1-8 rows a sub-group. Audit 2026-11-12 #8: a negative value or one above the matrix's rows gave a grid
+    //  of 0 and a launch skipped without a word, the output left as it was: such values are ignored, with a note)
+    static const int force = [] {
+      const int v = getenv("ARC_GVROWS") ? atoi(getenv("ARC_GVROWS")) : 0;
+      if (v < 0 || v > 8) fprintf(stderr, "inferzero: ARC_GVROWS=%d ignored (1-8)\n", v);
+      return v >= 1 && v <= 8 ? v : 0;
+    }();
     // (a per-type rule tuned on single matrices repeated in bench/gemv_bench, e.g. IQ4_XS one row, IQ3_XXS four,
     // was no faster in the model, where each matrix streams once: 4.68 / 4.67 / 4.79 vs 4.68 / 4.51 / 4.65 tok/s)
-    if (force) return force;
+    if (force && force <= w.N) return force;
     // codebook types (IQ1 / IQ2 / IQ3_XXS) 4 rows where the others take 2: 27B (mostly these types in the FFN) 181.8 ->
     // 179.2 ms a token, every one of 4 alternated runs (2026-11-04; bench/gemv_bench IQ2_XS gate 62.9 -> 69.1 GB/s);
     // bit-identical (a row's sums are the same, only which sub-group computes it changes). ARC_GV4=0: 2 as before
@@ -1168,7 +1195,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (Mp % tm || N % 16 || K % 256)
       throw std::runtime_error(std::string("gemm ") + name + ": shape " + std::to_string(Mp) + " x " + std::to_string(N) + " x " +
                                std::to_string(K) + " is not a multiple of " + std::to_string(tm) + " x 16 x 256");
-    // (ARC_GEMM_SPLIT: superblocks per split-K piece, default 17; 0: no split-K)
+    // (ARC_GEMM_SPLIT: superblocks per split-K piece, default 17; 0: no split-K. Not bit-identical to one pass: the
+    //  pieces' float sums are added in another order. 27B, 600-token prompt + 8 tokens, against ARC_GEMM_SPLIT=0:
+    //  KL mean 0.00067, max 0.0017, the same greedy tokens (laptop, 2026-11-12, audit "needs a GPU" #1))
     static const int sk_sb = getenv("ARC_GEMM_SPLIT") ? std::max(0, atoi(getenv("ARC_GEMM_SPLIT"))) : 17;
     // (the fused SwiGLU needs the whole sum in one piece: silu(gate) * (u1 + u2), not silu(gate) * u1 + u2; no model
     //  fuses it over rows longer than 8192 yet)

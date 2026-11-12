@@ -17,6 +17,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -248,6 +249,9 @@ class Client {
   std::mutex start_mu_, mu_, write_mu_;
   std::condition_variable cv_;
   std::map<int64_t, Json> replies_;
+  // (the ids of requests waiting for their answer: a reply is kept only for one of them. Before, every numeric id
+  //  the child sent was kept, and an answer after its request timed out stayed forever: audit 2026-11-12 #16)
+  std::set<int64_t> waiting_;
   int64_t next_id_ = 1;
   std::atomic<bool> dead_{false}, tools_changed_{false};
   bool started_ = false;
@@ -387,12 +391,18 @@ class Client {
     } else if (job_) {
       TerminateJobObject(job_, 1);
     }
-    // (a grandchild outside the job may still hold a pipe: the reads are cancelled rather than waited for)
+    // (a grandchild outside the job may still hold a pipe: the reads are cancelled rather than waited for. These are
+    //  synchronous reads, which CancelIoEx only may cancel: CancelSynchronousIo on the reading thread does, tried
+    //  again until the thread ends, as a thread between two reads has nothing to cancel yet. Audit 2026-11-12 #15)
     for (int k = 0; k < 20 && reader_.joinable() && !dead_; ++k) Sleep(100);
     if (out_) CancelIoEx(out_, nullptr);
     if (err_) CancelIoEx(err_, nullptr);
-    if (reader_.joinable()) reader_.join();
-    if (err_reader_.joinable()) err_reader_.join();
+    for (std::thread* t : {&reader_, &err_reader_}) {
+      if (!t->joinable()) continue;
+      HANDLE h = (HANDLE)t->native_handle();
+      for (int k = 0; k < 100 && WaitForSingleObject(h, 50) == WAIT_TIMEOUT; ++k) CancelSynchronousIo(h);
+      t->join();
+    }
     if (out_) CloseHandle(out_), out_ = nullptr;
     if (err_) CloseHandle(err_), err_ = nullptr;
     if (proc_) CloseHandle(proc_), proc_ = nullptr;
@@ -461,7 +471,9 @@ class Client {
     }
     if (!has_id || !m["id"].is_number()) return;
     std::lock_guard<std::mutex> lk(mu_);
-    replies_[m["id"].as_int()] = std::move(m);
+    const int64_t rid = m["id"].as_int();
+    if (!waiting_.count(rid)) return;  // (nobody asked, or the request gave up)
+    replies_[rid] = std::move(m);
     cv_.notify_all();
   }
 
@@ -487,7 +499,17 @@ class Client {
     {
       std::lock_guard<std::mutex> lk(mu_);
       id = next_id_++;
+      waiting_.insert(id);
     }
+    struct Waiting {  // (on every way out: answered, an error, a timeout, a cancel, the server gone)
+      Client* self;
+      int64_t id;
+      ~Waiting() {
+        std::lock_guard<std::mutex> lk(self->mu_);
+        self->waiting_.erase(id);
+        self->replies_.erase(id);
+      }
+    } waiting{this, id};
     Json m = Json::object();
     m.set("jsonrpc", "2.0");
     m.set("id", (double)id);

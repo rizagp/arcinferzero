@@ -1,6 +1,7 @@
 // Small OpenCL runtime helpers: device selection, program build, timing.
 #pragma once
 #include "app_dir.h"
+#include "kcache.h"
 #include "cl_min.h"
 #include <string>
 #include <vector>
@@ -41,7 +42,10 @@ struct ClRt {
     clGetDeviceInfo(device, CL_DEVICE_NAME, sizeof(name) - 1, name, nullptr);
     clGetDeviceInfo(device, CL_DRIVER_VERSION, sizeof(drv) - 1, drv, nullptr);
     device_id = std::string(name) + "|" + drv;
-    if (!getenv("ARC_NO_KCACHE")) cache_dir = app_dir() + "\\kernels";
+    if (!getenv("ARC_NO_KCACHE")) {  // (a folder per driver, swept once per process: kcache.h)
+      cache_dir = kcache_dir(app_dir() + "\\kernels", drv);
+      kcache_sweep(app_dir() + "\\kernels", cache_dir);
+    }
     return true;
   }
 
@@ -61,8 +65,10 @@ struct ClRt {
         const size_t bn = bin.size();
         cl_int st = CL_SUCCESS, err = CL_SUCCESS;
         cl_program p = bn ? clCreateProgramWithBinary(ctx, 1, &device, &bn, &bp, &st, &err) : nullptr;
-        if (p && err == CL_SUCCESS && st == CL_SUCCESS && clBuildProgram(p, 1, &device, opts.c_str(), nullptr, nullptr) == CL_SUCCESS)
+        if (p && err == CL_SUCCESS && st == CL_SUCCESS && clBuildProgram(p, 1, &device, opts.c_str(), nullptr, nullptr) == CL_SUCCESS) {
+          kcache_touch(path);
           return p;
+        }
         if (p) clReleaseProgram(p);
       }
     }
@@ -75,11 +81,12 @@ struct ClRt {
         if (clGetProgramInfo(prog, CL_PROGRAM_BINARIES, sizeof(bp), &bp, nullptr) == CL_SUCCESS) {
           std::error_code ec;
           std::filesystem::create_directories(cache_dir, ec);
-          const std::string tmp = path + ".tmp";
+          const std::string tmp = kcache_tmp(path);  // (this process's own name)
           std::ofstream o(tmp, std::ios::binary);
           o.write((const char*)bin.data(), (std::streamsize)bn);
           o.close();
-          std::filesystem::rename(tmp, path, ec);
+          if (!o.fail()) std::filesystem::rename(tmp, path, ec);  // (a short write, disk full, is never installed)
+          else std::filesystem::remove(tmp, ec);
         }
       }
     }

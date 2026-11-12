@@ -53,4 +53,18 @@ Copy-Item $omp $bin
 $zip = Join-Path $dist "$name.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
+# older packages go: dist\ kept every one, a full copy of the sources each (43 folders, audit 2026-11-12 #11). The
+# newest ARC_DIST_KEEP (default 3) folders and zips stay; the released zips are on GitHub. Only names of this
+# script's own form are touched.
+$keep = if ($env:ARC_DIST_KEEP -match '^\d+$') { [Math]::Max(1, [int]$env:ARC_DIST_KEEP) } else { 3 }
+$pkgRe = '^(arc)?inferzero-\d{4}\.\d{2}\.\d{2}-[0-9a-f]{7}(-dirty)?-win64$'
+foreach ($kind in @("dir", "zip")) {
+  $items = @(Get-ChildItem $dist | Where-Object {
+      if ($kind -eq "dir") { $_.PSIsContainer -and $_.Name -match $pkgRe } else { -not $_.PSIsContainer -and $_.BaseName -match $pkgRe -and $_.Extension -eq ".zip" } } |
+    Sort-Object LastWriteTime -Descending)
+  foreach ($old in ($items | Select-Object -Skip $keep)) {
+    if ($old.FullName -eq $stage -or $old.FullName -eq $zip) { continue }
+    Remove-Item $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
 Write-Host ("{0} ({1:N1} MB): unpack it anywhere, then run setup.cmd (or zero-launcher.cmd once a model is there)" -f $zip, ((Get-Item $zip).Length / 1MB))

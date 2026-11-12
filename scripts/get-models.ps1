@@ -25,8 +25,9 @@ foreach ($g in ($hf | ForEach-Object { $s = $_.Substring(3) -split "/", 3; [pscu
     foreach ($p in @($files | Where-Object { $_ -match "mmproj" })) {
       foreach ($dir in @($models | ForEach-Object { Split-Path ($_ -replace "/", "\") } | Sort-Object -Unique)) {
         if ($dir -ne (Split-Path ($p -replace "/", "\"))) {  # (Split-Path of a bare name: "", the snapshot itself)
-          $to = if ($dir) { Join-Path $snap $dir } else { $snap }
-          Copy-Item (Join-Path $snap ($p -replace "/", "\")) (Join-Path $to (Split-Path $p -Leaf)) -Force
+          # (both inside the snapshot: Get-HfLocalPath refuses a path that leaves it, audit 2026-11-12 #12)
+          $to = if ($dir) { Get-HfLocalPath $snap $dir } else { $snap }
+          Copy-Item (Get-HfLocalPath $snap $p) (Join-Path $to (Split-Path $p -Leaf)) -Force
         }
       }
     }

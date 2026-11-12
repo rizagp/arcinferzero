@@ -5,6 +5,7 @@
 // OpenCL.dll (loaded under other names) and the kernel cache (%USERPROFILE%\.inferzero\kernels) is the one the OpenCL engine used.
 #pragma once
 #include "../src/app_dir.h"
+#include "../src/kcache.h"
 #include "ze_min.h"
 #include <dxgi1_4.h>
 #pragma comment(lib, "dxgi.lib")
@@ -479,12 +480,14 @@ inline bool video_budget(uint64_t& budget, uint64_t& usage) {
   IDXGIFactory4* f = nullptr;
   if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&f))) return false;
   bool ok = false;
-  IDXGIAdapter1* a1 = nullptr;
-  for (UINT i = 0; !ok && f->EnumAdapters1(i, &a1) != DXGI_ERROR_NOT_FOUND; ++i) {
-    DXGI_ADAPTER_DESC1 d;
-    a1->GetDesc1(&d);
+  // (audit 2026-11-12 #5: any failure ends the walk; before, an error other than NOT_FOUND ran the body with the
+  //  adapter the last pass had released)
+  for (UINT i = 0; !ok; ++i) {
+    IDXGIAdapter1* a1 = nullptr;
+    if (f->EnumAdapters1(i, &a1) != S_OK || !a1) break;
+    DXGI_ADAPTER_DESC1 d{};
     IDXGIAdapter3* a3 = nullptr;
-    if (d.VendorId == 0x8086 && SUCCEEDED(a1->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&a3))) {
+    if (SUCCEEDED(a1->GetDesc1(&d)) && d.VendorId == 0x8086 && SUCCEEDED(a1->QueryInterface(__uuidof(IDXGIAdapter3), (void**)&a3))) {
       DXGI_QUERY_VIDEO_MEMORY_INFO m{};
       if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &m))) {
         budget = m.Budget;
@@ -990,7 +993,10 @@ struct ClRt {
       }
       if (getenv("ARC_NO_XMX") && atoi(getenv("ARC_NO_XMX")) != 0) xmx = false;
     }
-    if (!getenv("ARC_NO_KCACHE")) cache_dir = app_dir() + "\\kernels";
+    if (!getenv("ARC_NO_KCACHE")) {  // (a folder per driver, swept once per process: src/kcache.h)
+      cache_dir = kcache_dir(app_dir() + "\\kernels", drv);
+      kcache_sweep(app_dir() + "\\kernels", cache_dir);
+    }
     // a second engine in the process (the server switching models, after the first one freed its memory) keeps the
     // runtime: the context, its command lists and events, the staging buffer (all of zrt:: belongs to that context)
     if (zrt::ctx) return true;
@@ -1086,6 +1092,7 @@ struct ClRt {
       if (klist) fprintf(stderr, "kernel binary %s.bin: %s\n", hex, opts.c_str());
       std::ifstream f(path, std::ios::binary);
       if (f) bin.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+      if (!bin.empty()) kcache_touch(path);  // (its last use, for the sweep's trim)
     }
     bool cached = !bin.empty();
   compile:
@@ -1119,7 +1126,7 @@ struct ClRt {
       if (!path.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(cache_dir, ec);
-        const std::string tmp = path + ".tmp";
+        const std::string tmp = kcache_tmp(path);  // (this process's own: two compiling the same kernel mixed one file)
         bool ok = false;
         {
           std::ofstream o(tmp, std::ios::binary);

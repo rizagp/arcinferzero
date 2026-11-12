@@ -84,7 +84,14 @@
     //  TM 16 spilled 4 KB per thread in verification. Each slot's terms are the same at any TM: bit-identical)
     // (2..8 rows, a batched step or a verification pass: tiles of 2 / 4 / 8 slots, as many as an expert can get; TM 16
     //  ran mostly empty rows: Flash Next 2 slots gate / up 34.8 -> 29.1 ms per step. ARC_MOE_TM_SMALL=n: TM n, 0: TM 16)
-    static const int tm_small = getenv("ARC_MOE_TM_SMALL") ? atoi(getenv("ARC_MOE_TM_SMALL")) : -1;
+    // (audit 2026-11-12 #8: only the tile sizes the kernels were written and measured for; another value is ignored)
+    static const int tm_small = [] {
+      if (!getenv("ARC_MOE_TM_SMALL")) return -1;
+      const int v = atoi(getenv("ARC_MOE_TM_SMALL"));
+      if (v == 0 || v == 1 || v == 2 || v == 4 || v == 8 || v == 16) return v;
+      fprintf(stderr, "inferzero: ARC_MOE_TM_SMALL=%d ignored (0, 1, 2, 4, 8 or 16)\n", v);
+      return -1;
+    }();
     const int tm_dec = tm_small < 0 ? (T <= 2 ? 2 : T <= 4 ? 4 : 8) : tm_small > 0 ? tm_small : tm_std;
     const int tm = T == 1 && !q2g ? 1 : q2f ? (T <= 4 ? 4 : 8) : hp.moe_std ? (T <= 8 ? tm_dec : tm_std) : 16, n = T * NU;
     const std::string defs = "-cl-intel-256-GRF-per-thread -DNE=" + std::to_string(hp.n_expert) +

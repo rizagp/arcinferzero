@@ -784,6 +784,9 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
                    __global const float* asc, __global const ushort* absum, int M, __global float* C, int c_off,
                    int accumulate GU2_ARG) {
   __local uint win_all[16][WIN_CALLS * 16];
+  // (win_all holds 16 sub-groups' windows: the launches use work-groups of 256 or 64. A larger group would share
+  //  windows, a silent race: it returns instead. Audit 2026-11-12 #7; uniform over the group, before any barrier)
+  if (get_num_sub_groups() > 16) return;
   __local uint* win = win_all[get_sub_group_id() & 15];
 #ifdef GRID_OFF
   __local uint lgrid[GRID_N];
@@ -1433,6 +1436,9 @@ __kernel void gemv_mt(__global const uchar* raw, int N, int K, __global const ui
   // Same integer sums and float expression per (row, token) as the row-outer form: bit-identical.
   // (TB 8: GROWS 2 keeps the decoded rows and the 2 x 8 accumulators in registers.)
   __local uint win_all[16][WIN_CALLS * 16];
+  // (win_all holds 16 sub-groups' windows: the launches use work-groups of 256 or 64. A larger group would share
+  //  windows, a silent race: it returns instead. Audit 2026-11-12 #7; uniform over the group, before any barrier)
+  if (get_num_sub_groups() > 16) return;
   __local uint* win = win_all[get_sub_group_id() & 15];
 #ifdef GRID_OFF
   __local uint lgrid[GRID_N];

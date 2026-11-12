@@ -185,7 +185,7 @@ class HttpResponse {
   static const char* reason(int s) {
     switch (s) {
       case 200: return "OK"; case 204: return "No Content"; case 301: return "Moved Permanently"; case 400: return "Bad Request"; case 403: return "Forbidden";
-      case 404: return "Not Found"; case 405: return "Method Not Allowed"; case 409: return "Conflict";
+      case 404: return "Not Found"; case 405: return "Method Not Allowed"; case 408: return "Request Timeout"; case 409: return "Conflict";
       case 413: return "Payload Too Large"; case 415: return "Unsupported Media Type"; case 416: return "Range Not Satisfiable";
       case 429: return "Too Many Requests"; case 500: return "Internal Server Error"; case 502: return "Bad Gateway";
       case 507: return "Insufficient Storage";
@@ -493,6 +493,13 @@ class HttpServer {
         }
         ~BodyHold() { total.fetch_sub(n); }
       } hold{body_bytes_};
+      // (a total deadline for the body, as the headers have one: 60 s plus 10 s per MiB of it, at least 100 KB/s; each
+      //  read only had 30 s, re-armed every read, so a client sending a byte every 29 s held a connection, one of 64,
+      //  for hours (audit 2026-11-12 #14). An upload slower than 100 KB/s over its whole length is cut too)
+      const auto t_body = std::chrono::steady_clock::now();
+      auto body_late = [&](size_t bytes) {
+        return std::chrono::steady_clock::now() - t_body > std::chrono::seconds(60 + 10 * (long long)(bytes >> 20));
+      };
       // (both framings: refused, as RFC 9112 advises, instead of taking one and reading the rest as another request)
       if (rq.headers.count("transfer-encoding") && rq.headers.count("content-length"))
         return reply_close(c, 400, "Transfer-Encoding and Content-Length together");
@@ -510,6 +517,7 @@ class HttpServer {
             const int n = recv(c, tmp, sizeof tmp, 0);
             if (n <= 0) { closesocket(c); return; }
             buf.append(tmp, n);
+            if (body_late(rq.body.size())) return reply_close(c, 408, "request body too slow");
           }
           size_t len = 0;
           if (!parse_size(buf.substr(0, le), 16, len)) return reply_close(c, 400, "malformed chunk size");
@@ -522,6 +530,7 @@ class HttpServer {
               const int n = recv(c, tmp, sizeof tmp, 0);
               if (n <= 0) { closesocket(c); return; }
               buf.append(tmp, n);
+              if (body_late(rq.body.size())) return reply_close(c, 408, "request body too slow");
             }
             buf.erase(0, te + 4);
             break;
@@ -530,6 +539,7 @@ class HttpServer {
             const int n = recv(c, tmp, sizeof tmp, 0);
             if (n <= 0) { closesocket(c); return; }
             buf.append(tmp, n);
+            if (body_late(rq.body.size() + len)) return reply_close(c, 408, "request body too slow");
           }
           if (buf.compare(le + 2 + len, 2, "\r\n") != 0) return reply_close(c, 400, "malformed chunk (no CRLF after its data)");
           rq.body.append(buf, le + 2, len);
@@ -545,6 +555,7 @@ class HttpServer {
           const int n = recv(c, tmp, sizeof tmp, 0);
           if (n <= 0) { closesocket(c); return; }
           buf.append(tmp, n);
+          if (body_late(len)) return reply_close(c, 408, "request body too slow");
         }
         rq.body = buf.substr(0, len);
         buf.erase(0, len);

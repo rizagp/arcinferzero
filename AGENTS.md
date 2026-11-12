@@ -30,6 +30,10 @@ Their speed can only be measured by users who have those cards (GitHub issue #4)
   - multi-GPU code in `zero/mgpu/` and `zero/kernels/tp.cl`;
   - code only for discrete cards in `zero/xe2/` and kernel files of its own;
   - the iGPU path must stay bit-identical when such code is added.
+- **Work-group sizes:** a kernel launched without a local size (`run(..., nullptr)`) gets the driver's suggestion
+  shrunk until it divides the grid (`zero/clrt.h`), so its group size depends on the data: such a kernel must not
+  depend on `get_local_size()` beyond size-agnostic loops (`for (i = get_local_id(0); i < n; i += get_local_size(0))`).
+  A kernel whose local memory is laid out per sub-group (`win_all[16]`) gets an explicit size (audit 2026-11-12 #9).
 - **Build:** `.\build.ps1 zero\runz.cpp zero\serverz.cpp` (and the other `.cpp` you touched). After any change to
   the engine or kernels, rebuild **both** runz and serverz before testing: a stale serverz looks like a crash.
 - **Before any GPU test:** list running `serverz` / `runz` processes (`Get-Process serverz,runz`); a user's server
