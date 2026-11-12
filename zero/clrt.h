@@ -982,7 +982,12 @@ struct ClRt {
         for (size_t i = 0; i < ret / sizeof(size_t) && i < 8; ++i) sg8 = sg8 || sz[i] == 8;
       }
       if (getenv("ARC_NO_SG8") && atoi(getenv("ARC_NO_SG8")) != 0) sg8 = false;
-      if (!sg8) zlog::eprintf("inferzero: no 8-lane sub-groups on this GPU: 16-lane kernels\n");
+      // (once per process, naming the GPU: the query is the OpenCL device's, GPU 0's, at every runtime start, so a
+      //  split model printed the same line once per GPU and once more (Reddit 2026-11-12); a split model's GPUs are all
+      //  of GPU 0's kind, engine_tp.h refuses others)
+      static std::atomic<bool> said{false};
+      if (!sg8 && !said.exchange(true))
+        zlog::eprintf("inferzero: GPU 0 (%s): no 8-lane sub-groups, so the 16-lane kernels\n", name);
     }
     {  // CL_DEVICE_EXTENSIONS: DPAS from OpenCL C (Engine::xmx_check decides whether it is used); ARC_NO_XMX=1: off
       std::string ext(16384, '\0');
