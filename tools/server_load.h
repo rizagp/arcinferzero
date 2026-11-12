@@ -115,14 +115,30 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (so.ctx_auto) {
     const size_t enc = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;
     if (enc) zlog::eprintf("--ctx auto: %.2f GiB kept for the image / audio encoders%s\n", enc / 1073741824.0, so.whisper_bytes ? " and speech to text" : "");
-    AutoCtx a = auto_ctx(model, eo, so.budget_given, enc);
+    // (a split model, --gpus N: the probe is shard 0 of N, the largest (it takes the extra unit of a count that does
+    //  not divide, the shared expert, ...): its weights, buffers and its share of the KV against GPU 0's memory. Before,
+    //  it sized the whole model on one GPU, where a model bigger than one GPU got the 4096 floor. A model that cannot be
+    //  split: the one-GPU probe, as the load then falls back to one GPU)
+    auto probe = [&](EngineOptions o) {
+      if (so.gpus > 1) {
+        EngineOptions s = o;
+        s.tp_size = so.gpus, s.tp_rank = 0;
+        try {
+          return auto_ctx(model, s, so.budget_given, enc);
+        } catch (const std::exception& e) {
+          LOG_WRN("--ctx auto: the split over %d GPUs could not be sized (%s): sized as on one GPU\n", so.gpus, e.what());
+        }
+      }
+      return auto_ctx(model, o, so.budget_given, enc);
+    };
+    AutoCtx a = probe(eo);
     if (dfl_auto && eo.mtp_block && a.ctx < kDflashMinCtx) {  // (a drafter that leaves little context: the MTP block only)
       zlog::eprintf("DFlash2 drafter not used: it would leave %d tokens of context (--dflash DIR: use it anyway)\n", a.ctx);
       eo.dflash.clear();
-      a = auto_ctx(model, eo, so.budget_given, enc);
+      a = probe(eo);
     }
-    // (a split model, --gpus: the probe sizes it as on one GPU (docs/multi-gpu.md), where a model bigger than one GPU
-    //  never fits: the floor as before; its own load checks each GPU's memory)
+    // (a split model whose shard does not fit either: the floor, as before; the split's own load checks each GPU and
+    //  falls back to one GPU, where the refusal below then speaks)
     if (a.ctx <= 0 && so.gpus > 1) a.ctx = 4096;
     if (a.ctx <= 0) {  // (refused here, before any GPU memory is taken: a switch goes back to the model before it)
       char b[400];
@@ -216,6 +232,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   srv.model_bytes_ = gguf_bytes(model);
   srv.whisper_props_ = so.whisper_props;
   srv.speech_reserve_ = so.whisper_bytes;
+  srv.gpus_ = L->tp ? so.gpus : 1;  // (a split that fell back to one GPU says 1)
   std::string mmproj = so.mmproj;
   if (!eng.hp.gemma && mmproj != "-") {
     // Qwen vision (dense and MoE): --mmproj, or the model's own mmproj-*.gguf next to it (model_mmprojs) with a

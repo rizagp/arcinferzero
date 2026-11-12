@@ -563,6 +563,7 @@ static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
          (eo.slots > 1 ? "|slots" + std::to_string(eo.slots) + "/" + std::to_string(Engine::kSlotCtxFloor) : std::string()) +
          "|md" + std::to_string(eo.mtp_drafts) + "|" +  // (DFlash2 drafter: its weights and buffers; 4-bit V)
          (eo.min_chunk ? "/" + std::to_string(eo.min_chunk) : std::string()) + "|" + (eo.mtp ? "mtp" : "-") + "|" + (eo.attn_int8 ? "i8" : "f32") + "|" + std::to_string(device_global_mem()) +
+         (eo.tp_size > 1 ? "|tp" + std::to_string(eo.tp_size) + (getenv("ARC_TP_SIM") ? "sim" : "") : std::string()) +  // (a split model: shard 0's memory)
          "|kf" + std::string(getenv("ARC_G4_KF16") ? getenv("ARC_G4_KF16") : "") + "/" +
          std::string(getenv("ARC_Q3_KF32") ? getenv("ARC_Q3_KF32") : "") +  // (the float K rows' size)
          "|m25";  // engine memory layout version (m25: Gemma 4's K rows in f16, 2026-11-11; m24: 0 when nothing fits, not raised to 4096) (m2: Q8_0 not stored twice, m4: MoE stacked router, m5: 3 MTP drafts
@@ -658,7 +659,8 @@ static AutoCtx auto_ctx(const std::string& model, EngineOptions eo, bool budget_
     Engine probe(model, e2);
     res = probe.w8_resident;
     const double gib = 1073741824.0,
-                 budget = probe.device_mem() - Engine::driver_slack() - probe.snapshot_bytes() - (double)reserve;
+                 budget = probe.device_mem() / (e2.tp_size > 1 && getenv("ARC_TP_SIM") ? e2.tp_size : 1) -
+                          Engine::driver_slack() - probe.snapshot_bytes() - (double)reserve;  // (ARC_TP_SIM: every shard on GPU 0)
     const double base = (double)probe.gpu_bytes - (double)probe.ctx_bytes(e2.ctx);
     // (--slots N: N - 1 more KV caches, states and snapshots of the same context)
     auto need = [&](int c) { return base + probe.ctx_bytes(c) + (double)(std::max(eo.slots, 1) - 1) * probe.slot_bytes(c); };
@@ -736,11 +738,27 @@ static int auto_ctx_tokens(const std::string& model, bool mtp, bool vision) {
   }
 }
 
+// (a model's ctx for the list: as a split over gpus GPUs where it can be split, counted as server_load.h's split load
+//  counts it (no MTP block or drafter, no image encoder: a split runs without them yet; the speech reserve kept), so
+//  the list's row and the server's are one; else as on one GPU, which is what the server then loads)
+static AutoCtx list_ctx(const std::string& path, const EngineOptions& eo, size_t enc, size_t speech, int gpus) {
+  if (gpus > 1) {
+    EngineOptions s = eo;
+    s.tp_size = gpus, s.tp_rank = 0;
+    s.mtp = false, s.dflash.clear(), s.mtp_block = EngineOptions().mtp_block;
+    try {
+      AutoCtx a = auto_ctx(path, s, false, speech);
+      if (a.ctx <= 0) a.ctx = 4096;  // (as server_load.h: the floor, the split's own load decides)
+      return a;
+    } catch (const std::exception&) {}
+  }
+  return auto_ctx(path, eo, false, enc);
+}
 // --list-models: the catalog as JSON (scripts\zero-server.ps1 and zero-pi read it). ctx: the context --ctx auto chose
 // for this GPU memory (with --mtp when the model has a drafter, default chunk), computed now if not known yet.
 // speech: GPU bytes a running server keeps for speech to text (its /props speech_reserve_bytes, given by
 // --speech-reserve N): kept free as a load does (server_load.h), so each model's ctx is what a switch would give.
-static int list_models(size_t speech = 0) {
+static int list_models(size_t speech = 0, int gpus = 1) {
   Json out = Json::array();
   std::map<std::string, std::string> dflash;  // model file -> its DFlash2 drafter (one search per file, not per variant)
   for (const ModelInfo& m : scan_models()) {
@@ -780,11 +798,11 @@ static int list_models(size_t speech = 0) {
     if (m.supported)
       try {
         const size_t enc = (m.vision ? encoder_reserve(m.path, "", 0) : 0) + speech;
-        a = auto_ctx(m.path, eo, false, enc);
+        a = list_ctx(m.path, eo, enc, speech, gpus);
         // (the drafter only where it leaves kDflashMinCtx tokens of context: the server drops it there too)
         if (!eo.dflash.empty() && eo.mtp_block && a.ctx < kDflashMinCtx) {
           eo.dflash.clear();
-          a = auto_ctx(m.path, eo, false, enc);
+          a = list_ctx(m.path, eo, enc, speech, gpus);
           j.set("dflash", false);
         }
       } catch (const std::exception&) {}

@@ -15,6 +15,7 @@ inline std::string version(const std::filesystem::path& exe_dir) {
   std::ifstream f(exe_dir / "PREBUILT.txt");
   std::string l;
   if (f && std::getline(f, l) && !l.empty()) {
+    if (l.size() >= 3 && (unsigned char)l[0] == 0xEF && (unsigned char)l[1] == 0xBB && (unsigned char)l[2] == 0xBF) l.erase(0, 3);
     while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
     return l;
   }

@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-12 (evening): the GPU's fatal errors in words; the launcher's "Copy for an issue"; release names that sort
+
+- **A GPU error that ends the process now says what it was** (an `E` line): "device lost: the GPU was reset, by a
+  driver timeout or a fault; the process must restart", "out of memory: other programs, or this one, use the GPU
+  memory", "not initialized: the Level Zero driver did not start", on `ZE_CHECK`'s line and on the kernel launch and
+  wait errors. A device allocation that fails is an `E` line too (it was an `I`), with what to do, followed by the GPU
+  budget, its use, the engine's allocations and the free RAM (the line `ZE_CHECK` already printed).
+- **The launcher's log tab: "Copy for an issue".** The log since the start (its first lines name the build, system,
+  GPU and switches) as a GitHub code block, with your user folder as `%USERPROFILE%` and your user name taken out of
+  paths; 2,040 lines at most (the first 40 and the last 2,000).
+- **Release names that sort (manoreken2, issue #4):** GitHub lists files by name, so `2026.11.12.13` came after
+  `2026.11.12.9`. From tomorrow the counter has two digits (`2026.11.13.01`), and `scripts\make-package.ps1 -Release
+  <number>` puts it in the package's name (`inferzero-2026.11.13.01-<commit>-win64.zip`); without it, as before.
+
+## 2026-11-12: a split model's automatic context sized per GPU; -Gpus in zero-server, zero-pi and the launcher
+
+- **`--ctx auto` with `--gpus N`** sizes the context for one GPU's share (a dry probe of shard 0 of N) instead of the
+  whole model on one GPU: a model bigger than one card got only 4,096 tokens (e.g. a 27B over two B580s). Laptop:
+  the 27B's weights per GPU 10.94 -> 5.47 GiB on 2 GPUs, the context's cost per 1K tokens halved; the 4B split over 2
+  (`ARC_TP_SIM`) loaded at 262,144 tokens, 5.41 GiB on each GPU. A model that cannot be split is sized as on one GPU.
+- **Start a split model from the scripts:** `zero-server -Gpus N`, `zero-pi --gpus N`, a "GPUs (one model split)"
+  field in the launcher (kept on a restart like `-Slots`; the memory estimate per GPU). `serverz --list-models --gpus N`
+  and `/props` "gpus": Pi's model list gives each model the context a split server loads it with.
+
 ## 2026-11-12: the server's log, as llama.cpp's; GET /metrics, as vLLM's
 
 [docs/logging.md](docs/logging.md) describes all of it.

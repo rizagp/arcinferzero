@@ -44,6 +44,7 @@ param(
   [string]$Vision = "",
   [switch]$NoStream,
   [int]$Slots = 0,
+  [int]$Gpus = 0,
   [string]$Npu = "",
   [switch]$Precise,
   [switch]$NoPrecise,
@@ -117,7 +118,7 @@ New-Item -ItemType Directory -Force $stateDir | Out-Null
 # zero-server's own option names (the launcher's "Save as preset" writes the same). start -Preset <name> takes them;
 # an option given on the command line wins over the preset's.
 $presetDir = Join-Path $stateDir "presets"
-$presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Npu", "Precise",
+$presetKeys = @("Model", "Ctx", "Chunk", "SessionCacheGb", "Port", "NoMtp", "Vision", "NoStream", "Slots", "Gpus", "Npu", "Precise",
   "NoPrecise", "Whisper", "WhisperDevice", "Asr", "WhisperMaxMinutes", "AsrSlots", "MtpDrafts", "DFlash", "DriverReserveGb",
   "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
   "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Drafter")
@@ -276,15 +277,16 @@ function Sync-PiModels {
   $cfgPath = Join-Path $env:USERPROFILE ".pi\agent\models.json"
   $before = if (Test-Path $cfgPath) { (Get-Item $cfgPath).LastWriteTime } else { $null }
   $id = Get-Running
-  $n = 0; $sr = 0
+  $n = 0; $sr = 0; $ng = 1
   if ($id) {
     try {
       $p = Invoke-RestMethod "$base/props" -TimeoutSec 5
       $n = [int]$p.n_ctx
       if ($p.PSObject.Properties["speech_reserve_bytes"]) { $sr = [double]$p.speech_reserve_bytes }  # (speech to text's GPU memory: the other models' contexts keep it free, as a switch does)
+      if ($p.PSObject.Properties["gpus"]) { $ng = [int]$p.gpus }  # (a split server: every model's context as split)
     } catch {}
   }
-  try { $ids = @(Update-PiModels $exe $base $id $n $sr) } catch { Say "  (Pi's model list not updated: $_)"; return }
+  try { $ids = @(Update-PiModels $exe $base $id $n $sr $ng) } catch { Say "  (Pi's model list not updated: $_)"; return }
   if ((Test-Path $cfgPath) -and (Get-Item $cfgPath).LastWriteTime -ne $before) { Say "Pi's model list updated: $($ids.Count) models" }
 }
 
@@ -338,6 +340,7 @@ Common options for start / restart:
   -Npu on|off        part of each prompt on the NPU (27B, Gemma 4 12B)
   -Whisper auto|off  speech to text (Transcripts / Meetings tabs)
   -Slots <N>         conversations at once          -ListenHost 0.0.0.0   reachable from other computers
+  -Gpus <N>          one model split over N GPUs (Qwen3.5 / 3.6 / 3.8; the context sized per GPU)
   -DryRun            check the options, print the server's command line and a GPU memory estimate; start nothing
 
 More: zero-server help options (every option) | help writing (values, paths) | help errors (what a message means)
@@ -407,6 +410,9 @@ Options for start / restart:
                                  GPU memory, more context
   -SessionCacheGb <N>            save conversations to disk when switching sessions (GB, all models together; default 8, 0 = off)
   -NoMtp                         no speculative decoding
+  -Gpus <N>                      split the model over N GPUs (2-64, 1 = one GPU; Qwen3.5 / 3.6 / 3.8 dense, 35B-A3B):
+                                 each GPU holds 1 / N of the weights and the KV, the context is sized for that
+                                 share (docs/multi-gpu.md). Kept on a restart and a model switch, like -Slots
   -Slots <N>                     hold N conversations at once (default 1): two Pi sessions each keep their own
                                  KV cache and states and take turns step by step (a prompt piece, a token), so
                                  neither waits for the other's whole answer; while both write, their next tokens
@@ -1029,6 +1035,9 @@ if ($drafterPick -and $m -ne $none -and $m.mtp) {
 # a restart (another model, other options) keeps the running server's slots unless -Slots is given: zero-pi on
 # another model dropped them (and the second Pi / client then waited for the only slot)
 if (-not $PSBoundParameters.ContainsKey("Slots") -and $st -and "$($st.extra)" -match "--slots (\d+)") { $Slots = [int]$Matches[1] }
+# (-Gpus: kept the same way; -Gpus 1 goes back to one GPU)
+if (-not $PSBoundParameters.ContainsKey("Gpus") -and $st -and "$($st.extra)" -match "--gpus (\d+)") { $Gpus = [int]$Matches[1] }
+if ($Gpus -lt 0 -or $Gpus -gt 64) { throw "-Gpus: expected 1 to 64 (got $Gpus)" }
 # -Npu on: the NPU next to the GPU for prompts (serverz --npu on). A start on another model (zero-pi, Pi's /model
 # inside the server) and a restart keep a running server's setting (-Npu off turns it off); a start after stop is off
 # unless -Npu on is given (a restart dropped it: the 27B lost the NPU when -Whisper was added)
@@ -1047,7 +1056,7 @@ if (-not $Whisper -and $Action -in "start", "restart" -and $st -and "$($st.extra
 if (-not $Asr -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match '--asr ("[^"]*"|[^\s|]+)') { $Asr = $Matches[1].Trim('"') }
 if ($AsrSlots -le 0 -and $Action -in "start", "restart" -and $st -and "$($st.extra)" -match "--asr-slots ([0-9]+)") { $AsrSlots = [int]$Matches[1] }
 if ($AsrSlots -lt 0 -or $AsrSlots -gt 4) { throw "-AsrSlots: expected 1 to 4 (got $AsrSlots)" }
-$ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot)
+$ctxArg = if ($Ctx) { $Ctx } elseif ($Slots -gt 1 -or $Gpus -gt 1) { "auto" } elseif ($m.ctx) { "$($m.ctx)" } else { "auto" }  # (the listed context is for one slot on one GPU)
 $novision = $(if ($m.vision -eq $false) { "1" } else { "0" })
 # the other options, as server arguments (also kept in the state file: a change restarts the server)
 $extra = @()
@@ -1069,6 +1078,7 @@ if ($DriverReserveGb -ge 0) {
   $extra += @("--driver-reserve-gb", $DriverReserveGb.ToString([Globalization.CultureInfo]::InvariantCulture))
 }
 if ($Slots -gt 1) { $extra += @("--slots", $Slots) }
+if ($Gpus -gt 1) { $extra += @("--gpus", $Gpus) }
 if ($Npu -eq "on") { $extra += @("--npu", "on") }
 if ($Precise) { $extra += "--precise" }
 if ($Whisper -and $Whisper -ne "off") {
@@ -1094,7 +1104,7 @@ if ($NoStream) { $extra += "--no-stream" }  # (in the key: a running server with
 $extraKey = "$($extra -join ' ')|think $ThinkBudget"
 # (compared with the running server's only when given: zero-pi's plain start keeps a server started with other options)
 $extraGiven = @("MtpDrafts", "DFlash", "DriverReserveGb", "ThinkBudget", "ImageMinTokens", "ImageMaxTokens", "BudgetGb", "AttnF32", "PreserveThinking", "NoPrefixCache",
-  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
+  "PrefixCacheGb", "NoSwap", "ListenHost", "SessionDir", "Slots", "Gpus", "NoStream", "Npu", "Precise", "NoPrecise", "Whisper", "WhisperDevice", "Asr", "AsrSlots", "WhisperMaxMinutes" | Where-Object { $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 # the running server is kept unless an option given now differs from what it runs with (empty / 0 = not given)
 $same = $running -eq $m.alias -and (-not $Ctx -or ($st -and "$($st.ctx)" -eq $ctxArg)) -and
   ($Chunk -eq 0 -or ($st -and "$($st.chunk)" -eq "$Chunk")) -and (-not $PSBoundParameters.ContainsKey("SessionCacheGb") -or ($st -and "$($st.sess)" -eq "$SessionCacheGb")) -and
@@ -1122,14 +1132,15 @@ function Get-Estimate {
   if (-not $mm -or -not $mm.device) { return $null }
   $keep = if ($DriverReserveGb -ge 0) { $DriverReserveGb * 1GB } else { [double]$mm.keep_free }
   $freeGpu = [double]$mm.device - $keep
-  $fixed = [double]$mm.weights + $mm.mtp + $mm.buffers + $mm.snapshots + $mm.encoders
+  $gp = [math]::Max(1, $Gpus)  # (split: about 1 / N of the weights, snapshots and context per GPU; the list counts one)
+  $fixed = [double]$mm.weights / $gp + $mm.buffers + $mm.snapshots / $gp + $(if ($gp -gt 1) { 0 } else { [double]$mm.mtp + $mm.encoders })  # (a split runs without MTP and images)
   $speech = if ($Whisper -and $Whisper -ne "off") { 8GB } elseif ($Asr -and $Asr -ne "off") { 3.7GB } else { 0 }
   $o = [ordered]@{ device = [double]$mm.device; driver_reserve = $keep; fixed = $fixed; speech = $speech; ctx = $ctxArg; slots = [math]::Max(1, $Slots) }
   if ($ctxArg -eq "auto") {
-    $o.context = [double]$mm.context; $o.need = $fixed + $mm.context; $o.fits = $true
+    $o.context = [double]$mm.context / $gp; $o.need = $fixed + $o.context; $o.fits = $true
     $o.note = "auto: the server picks the largest context that fits$(if ($speech) { ' (smaller with speech to text on)' })"
   } else {
-    $o.context = [double]$ctxArg / 1000 * $mm.context_per_1k * $o.slots
+    $o.context = [double]$ctxArg / 1000 * $mm.context_per_1k * $o.slots / $gp
     $o.need = $fixed + $o.context + $speech
     $o.fits = $o.need -le $freeGpu
     $o.note = if ($o.fits) { "fits" } else { "may not fit: a smaller -Ctx, -Vision off or -Ctx auto" }
@@ -1141,7 +1152,7 @@ $est = if ($m -ne $none) { Get-Estimate } else { $null }
 function Est-Text($e) {
   if (-not $e) { return "no memory estimate for this model" }
   "GPU memory estimate: {0:N1} of {1:N1} GiB (weights and buffers {2:N1}, context {3:N1}{4}){5}: {6}" -f ($e.need / 1GB), ($e.free / 1GB),
-  ($e.fixed / 1GB), ($e.context / 1GB), $(if ($e.speech) { ", speech {0:N1}" -f ($e.speech / 1GB) } else { "" }), $(if ($e.slots -gt 1) { ", $($e.slots) slots" } else { "" }), $e.note
+  ($e.fixed / 1GB), ($e.context / 1GB), $(if ($e.speech) { ", speech {0:N1}" -f ($e.speech / 1GB) } else { "" }), ("" + $(if ($e.slots -gt 1) { ", $($e.slots) slots" } else { "" }) + $(if ($Gpus -gt 1) { ", on each of $Gpus GPUs" } else { "" })), $e.note
 }
 if ($DryRun) {
   $what = if ($Action -eq "start" -and $same) { "keep the running server" } elseif ($running) { "switch the running server ($running)" } else { "start the server" }

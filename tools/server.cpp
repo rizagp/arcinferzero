@@ -299,6 +299,7 @@ class Server {
   bool has_audio() const { return audio_ != nullptr && aud_tok_ >= 0; }  // (what a chat request with audio needs)
   uint64_t model_bytes_ = 0;  // the model file's size (/v1/models "models": "size"), set by load_model
   Json whisper_props_;        // /props "whisper" (the speech model next to this one), set by load_model
+  int gpus_ = 1;               // /props "gpus": the GPUs this model is split over (--gpus); Pi's list asks for the same
   size_t speech_reserve_ = 0; // /props "speech_reserve_bytes": GPU memory --ctx auto keeps for speech to text now (so.whisper_bytes;
                               // zero-server.ps1 passes it to --list-models for Pi's other models)
   // f with the engine lock, as a request's step holds it: another engine of the process (Whisper) shares the GPU
@@ -400,6 +401,7 @@ class Server {
       r.set("audio", has_audio());
       if (!whisper_props_.is_null()) r.set("whisper", whisper_props_);
       r.set("speech_reserve_bytes", (double)speech_reserve_);
+      r.set("gpus", gpus_);
       r.set("mtp", eng_.has_mtp);
       r.set("mtp_drafts", eng_.opt.mtp_drafts);
       {  // (the web UI's controls follow the model: its thinking switch, Qwen3.8's effort levels, the GGUF's sampling)
@@ -947,7 +949,10 @@ int main(int argc, char** argv) {
       size_t speech = 0;  // (--speech-reserve N: bytes a running server keeps for speech to text, its /props)
       for (int j = 1; j + 1 < argc; ++j)
         if (std::string(argv[j]) == "--speech-reserve") speech = (size_t)std::max(0.0, atof(argv[j + 1]));
-      return list_models(speech);
+      int gpus = 1;  // (--gpus N: each context as a split over N GPUs sizes it, a running split server's /props)
+      for (int j = 1; j + 1 < argc; ++j)
+        if (std::string(argv[j]) == "--gpus") gpus = std::clamp(atoi(argv[j + 1]), 1, 64);
+      return list_models(speech, gpus);
     }
   zlog::start();  // (the log's prefixes and whole lines: src/log.h; --log-* below)
   std::string model, host = "127.0.0.1", alias;
@@ -1221,7 +1226,8 @@ int main(int argc, char** argv) {
             "       inferzero-server --list-models             the models it can load, as JSON (Hugging Face cache,\n"
             "                                                 %%USERPROFILE%%\\.inferzero\\models, model-dirs.txt) with each one's auto context\n"
             "                        (--speech-reserve BYTES: that much GPU memory kept for speech to text, a running server's\n"
-            "                         /props speech_reserve_bytes, as its model switches keep it)\n"
+            "                         /props speech_reserve_bytes, as its model switches keep it; --gpus N: as a split\n"
+            "                         over N GPUs, shard 0's memory)\n"
             "  -m, --model FILE      model GGUF; an mmproj-* image projector and an mtp-* drafter next to it are found\n"
             "  --host H, --port P    listen address (default 127.0.0.1:8080). A browser page of another origin (another\n"
             "                        site, or another port of this computer) reaches only the model endpoints: not the\n"

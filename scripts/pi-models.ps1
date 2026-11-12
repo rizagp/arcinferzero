@@ -4,9 +4,10 @@
 # Dot-sourced by zero-pi.ps1 and install-pi.ps1. Other providers in models.json are kept.
 # SpeechReserve: the running server's GPU bytes for speech to text (/props speech_reserve_bytes), kept free in the
 # other models' contexts as the server's model switch keeps it.
-function Update-PiModels([string]$ServerExe, [string]$Base, [string]$RunningId = "", [int]$RunningCtx = 0, [double]$SpeechReserve = 0) {
+function Update-PiModels([string]$ServerExe, [string]$Base, [string]$RunningId = "", [int]$RunningCtx = 0, [double]$SpeechReserve = 0, [int]$Gpus = 1) {
   $lm = @("--list-models")
   if ($SpeechReserve -gt 0) { $lm += @("--speech-reserve", ([int64]$SpeechReserve).ToString()) }
+  if ($Gpus -gt 1) { $lm += @("--gpus", "$Gpus") }  # (a split server: each context per GPU, as its switches load it)
   $all = @(& $ServerExe @lm | ConvertFrom-Json | ForEach-Object { $_ }) | Where-Object { $_.supported }  # (unroll)
   $cfgPath = Join-Path $env:USERPROFILE ".pi\agent\models.json"
   $cfg = if (Test-Path $cfgPath) { Get-Content $cfgPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }

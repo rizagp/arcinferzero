@@ -467,7 +467,10 @@ inline void* device_alloc(size_t n) {
     snprintf(msg, sizeof msg, "device allocation of %.1f MB failed on GPU %d (0x%x; %.2f GiB allocated)", n / 1e6,
              D().index, r, D().device_bytes / 1073741824.0);
     if (oom_throws) throw std::runtime_error(msg);
-    zlog::eprintf("inferzero: %s\n", msg);
+    // (the end of the process: an error line, and the GPU and RAM numbers that say why, docs/logging.md)
+    LOG_ERR("inferzero: %s%s%s\n", msg, ze_result_text(r),
+            r == 0x70000002u || r == 0x70000003u ? ": close other programs that use the GPU, or take a smaller context or model" : "");
+    if (ze_fail_hook) ze_fail_hook();
     fflush(stderr);
     _Exit(1);
   }
@@ -502,13 +505,13 @@ inline bool video_budget(uint64_t& budget, uint64_t& usage) {
   return ok;
 }
 inline int note_layer = -1, note_T = -1;  // (diagnostics: the layer and rows the engine is working on)
-inline void print_memory() {
-  if (note_layer >= 0) zlog::eprintf("  (layer %d, %d rows)\n", note_layer, note_T);
+inline void print_memory(int lvl = zlog::INF) {
+  if (note_layer >= 0) zlog::log(lvl, "  (layer %d, %d rows)\n", note_layer, note_T);
   uint64_t b = 0, u = 0;
   MEMORYSTATUSEX ms{sizeof ms};
   GlobalMemoryStatusEx(&ms);
   if (video_budget(b, u))
-    zlog::eprintf("  GPU memory: Windows budget %.2f GiB, in use %.2f GiB (allocated by the engine %.2f GiB); RAM free %.2f GiB\n",
+    zlog::log(lvl, "  GPU memory: Windows budget %.2f GiB, in use %.2f GiB (allocated by the engine %.2f GiB); RAM free %.2f GiB\n",
             b / 1073741824.0, u / 1073741824.0, D().device_bytes / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
 }
 // memory the engine allocated itself (host USM, device pools) as a buffer kernels can take as an argument
@@ -728,8 +731,8 @@ inline std::string watch_args(const std::vector<ZKernel::Arg>& args) {
   }
   return s;
 }
-inline void watch_print(const WatchEntry& e, const char* what) {
-  zlog::eprintf("%s #%llu %s: %s ms, global %u x %u x %u, local %u x %u x %u, args %s\n", what, (unsigned long long)e.seq,
+inline void watch_print(const WatchEntry& e, const char* what, int lvl = zlog::INF) {
+  zlog::log(lvl, "%s #%llu %s: %s ms, global %u x %u x %u, local %u x %u x %u, args %s\n", what, (unsigned long long)e.seq,
           e.name.c_str(), e.ms < 0 ? "not finished" : std::to_string((long long)std::llround(e.ms)).c_str(), e.gs[0], e.gs[1],
           e.gs[2], e.ls[0], e.ls[1], e.ls[2], watch_args(e.args).c_str());
 }
@@ -762,10 +765,10 @@ inline void watch_wait(ZKernel* k, ze_event_handle_t ev, bool keep, const uint32
       break;
     }
     if (r != ZE_RESULT_NOT_READY) {
-      LOG_ERR("Level Zero error 0x%x waiting for kernel #%llu %s after %.0f ms; the last launches, oldest first:\n", r,
-              (unsigned long long)e.seq, k->name.c_str(), ms);
+      LOG_ERR("Level Zero error 0x%x%s waiting for kernel #%llu %s after %.0f ms; the last launches, oldest first:\n", r,
+              ze_result_text(r), (unsigned long long)e.seq, k->name.c_str(), ms);
       std::lock_guard<std::mutex> g(watch_mu);
-      for (uint64_t s = watch_seq > 63 ? watch_seq - 63 : 1; s <= watch_seq; ++s) watch_print(watch_ring[s % 64], "  launch");
+      for (uint64_t s = watch_seq > 63 ? watch_seq - 63 : 1; s <= watch_seq; ++s) watch_print(watch_ring[s % 64], "  launch", zlog::ERR);
       if (ze_fail_hook) ze_fail_hook();
       fflush(stderr);
       _Exit(1);
@@ -905,7 +908,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   for (int i = 0; r == (ze_result_t)0x70000003 && i < 8 && zrt::oom_hook && zrt::oom_hook(); ++i)  // (out of device memory)
     r = zeCommandListAppendLaunchKernel(zrt::imm(), k->k, &gc, sig, 0, nullptr);
   if (r != ZE_RESULT_SUCCESS) {
-    LOG_ERR("Level Zero error 0x%x launching %s (global %u x %u x %u, local %u x %u x %u)\n", r, k->name.c_str(),
+    LOG_ERR("Level Zero error 0x%x%s launching %s (global %u x %u x %u, local %u x %u x %u)\n", r, ze_result_text(r), k->name.c_str(),
             gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
     if (ze_fail_hook) ze_fail_hook();
     fflush(stderr);
@@ -919,7 +922,7 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   if (sync_each) {
     const ze_result_t s = zeCommandListHostSynchronize(zrt::D().cl, UINT64_MAX);
     if (s != ZE_RESULT_SUCCESS) {
-      LOG_ERR("Level Zero error 0x%x running %s (global %u x %u x %u, local %u x %u x %u)\n", s, k->name.c_str(),
+      LOG_ERR("Level Zero error 0x%x%s running %s (global %u x %u x %u, local %u x %u x %u)\n", s, ze_result_text(s), k->name.c_str(),
               gs[0], gs[1], gs[2], ls[0], ls[1], ls[2]);
       if (ze_fail_hook) ze_fail_hook();
       fflush(stderr);
@@ -1033,7 +1036,7 @@ struct ClRt {
     zrt::driver = drvh;
     ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 2 /* in order */, 2 /* asynchronous */, 0};
     ZE_CHECK(zeCommandListCreateImmediate(zrt::ctx, zrt::dev0.dev, &qd, &zrt::dev0.cl));
-    ze_fail_hook = zrt::print_memory;
+    ze_fail_hook = [] { zrt::print_memory(zlog::ERR); };  // (after a fatal error: E lines, kept at -lv 0)
     return true;
   }
   // GPUs 1..n-1 of the driver next to device 0 (after init), each with its own command list: zrt::devs. sim: n

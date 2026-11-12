@@ -326,6 +326,7 @@ $f32Chk = New-Check "f32 attention (tests)"
 $noMtpChk = New-Check "no speculative decoding (-NoMtp)"
 $visionBox = New-Combo @("on", "off") 60
 $slotsBox = New-Num 1 8 1 0 60
+$gpusBox = New-Num 1 8 1 0 60
 $npuBox = New-Combo @("off", "on") 60
 $noStreamChk = New-Check "every expert on the GPU (-NoStream: no SSD reads, smaller context)"
 $preciseChk = New-Check "precise mode (-Precise: Flash Next; KL 0.0186 -> 0.0127, prompts about half as fast)"
@@ -402,6 +403,7 @@ $opt.Controls.Add($advChk); $opt.SetColumnSpan($advChk, 2)
 [void](Add-Opt "Port" $portBox -Advanced)
 [void](Add-Opt "Prompt chunk" $chunkBox "smaller = more context, slower prompts" -Advanced)
 [void](Add-Opt "Conversations at once" $slotsBox "-Slots: each its own KV cache; the context is shared out (auto)" -Advanced)
+[void](Add-Opt "GPUs (one model split)" $gpusBox "-Gpus: Qwen3.5 / 3.6 / 3.8 over N cards, the context sized per GPU (auto)" -Advanced)
 [void](Add-Opt "Images / audio" $visionBox "off: no mmproj, a longer context" -Advanced)
 [void](Add-Opt "Image tokens min / max" $imgMinBox -Advanced)
 [void](Add-Opt "" $imgMaxBox -Advanced)
@@ -427,7 +429,7 @@ $fields = [ordered]@{
   port = $portBox; ctx = $ctxBox; chunk = $chunkBox; drafts = $draftBox; think = $thinkBox; img_min = $imgMinBox
   img_max = $imgMaxBox; budget = $budgetBox; prompt_cache = $sessBox; prompt_cache_dir = $sessDirBox
   prefix_cache = $prefixBox; no_prefix = $noPrefixChk; no_swap = $noSwapChk; network = $netChk; attn_f32 = $f32Chk
-  no_mtp = $noMtpChk; vision = $visionBox; slots = $slotsBox; npu = $npuBox; no_stream = $noStreamChk; precise = $preciseChk
+  no_mtp = $noMtpChk; vision = $visionBox; slots = $slotsBox; gpus = $gpusBox; npu = $npuBox; no_stream = $noStreamChk; precise = $preciseChk
   preserve_think = $keepThinkChk; whisper = $whisperBox; asr = $asrBox; whisper_device = $whDevBox; whisper_max = $whMaxBox
 }
 function Get-Field($k) {
@@ -491,7 +493,7 @@ function Fill-Defaults {
     chunk = $(if ($d) { $d.chunk } else { 4096 }); drafts = $(if ($d -and $d.mtp_drafts) { $d.mtp_drafts } else { 2 })
     think = 8192; img_min = $(if ($d) { $d.image_min } else { 0 }); img_max = $(if ($d) { $d.image_max } else { 0 })
     budget = 0; prompt_cache = 8; prompt_cache_dir = ""; prefix_cache = 8; no_prefix = $false; no_swap = $false
-    network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; npu = "off"; no_stream = $false; precise = $false
+    network = $false; attn_f32 = $false; no_mtp = $false; vision = "on"; slots = 1; gpus = 1; npu = "off"; no_stream = $false; precise = $false
     preserve_think = $false; whisper = "off"; asr = "auto"; whisper_device = "gpu"; whisper_max = 180
   }
   foreach ($k in $fields.Keys) {
@@ -513,19 +515,20 @@ function Update-Fit {
   $mm = if ($m) { $m.memory } else { $null }
   if (-not $mm -or -not $mm.device) { $fitLbl.Text = $(if ($m) { "no estimate yet (Refresh list)" } else { "" }); $fitLbl.ForeColor = $Pal.sub; return }
   $free = [double]$mm.device - $mm.keep_free
-  $fixed = [double]$mm.weights + $mm.mtp + $mm.buffers + $mm.snapshots + $mm.encoders
+  $gp = [math]::Max(1, [int](Get-Field "gpus"))  # (split: about 1 / N of the weights, snapshots and context per GPU)
+  $fixed = [double]$mm.weights / $gp + $mm.buffers + $mm.snapshots / $gp + $(if ($gp -gt 1) { 0 } else { [double]$mm.mtp + $mm.encoders })  # (a split runs without MTP and images)
   $wh = Get-Field "whisper"; $as = Get-Field "asr"
   $speech = if ($wh -notin "", "off") { 8GB } elseif ($script:over.ContainsKey("asr") -and $as -notin "", "off") { 3.7GB } else { 0 }
   $ctx = Get-Field "ctx"
   $slots = [math]::Max(1, [int](Get-Field "slots"))
   if ($ctx -eq "auto" -or -not $script:over.ContainsKey("ctx")) {
-    $need = $fixed + $mm.context
+    $need = $fixed + $mm.context / $gp
     $fitLbl.Text = "{0:N1} of {1:N1} GiB at the auto context{2}" -f ($need / 1GB), ($free / 1GB), $(if ($speech) { " (smaller with speech on)" } else { "" })
     $fitLbl.ForeColor = $Pal.sub
     return
   }
   if ($ctx -notmatch '^\d+$') { $fitLbl.Text = "context: a number of tokens, or auto"; $fitLbl.ForeColor = $Pal.bad; return }
-  $kv = [double]$ctx / 1000 * $mm.context_per_1k * $slots
+  $kv = [double]$ctx / 1000 * $mm.context_per_1k * $slots / $gp
   $need = $fixed + $kv + $speech
   if ($need -le $free) {
     $fitLbl.Text = "fits: about {0:N1} of {1:N1} GiB (context {2:N1}{3})" -f ($need / 1GB), ($free / 1GB), ($kv / 1GB), $(if ($speech) { ", speech {0:N1}" -f ($speech / 1GB) } else { "" })
@@ -550,8 +553,8 @@ $runPanel.Controls.Add($monitor); $runPanel.Controls.Add($memBar); $runPanel.Con
 $logBox = New-Info; $logBox.WordWrap = $false; $logBox.ScrollBars = "Both"
 $logTools = New-Object System.Windows.Forms.FlowLayoutPanel; $logTools.Dock = "Top"; $logTools.Height = S 40; $logTools.WrapContents = $false
 $logFollow = New-Check "Follow new lines"; $logFollow.Checked = $true
-$logCopy = New-Button "Copy" 70; $logOpen = New-Button "Open file" 90; $logFolder = New-Button "Open folder" 100
-$logTools.Controls.AddRange(@($logCopy, $logOpen, $logFolder, $logFollow))
+$logCopy = New-Button "Copy" 70; $logIssue = New-Button "Copy for an issue" 130; $logOpen = New-Button "Open file" 90; $logFolder = New-Button "Open folder" 100
+$logTools.Controls.AddRange(@($logCopy, $logIssue, $logOpen, $logFolder, $logFollow))
 $logPanel = New-Object System.Windows.Forms.Panel; $logPanel.Dock = "Fill"
 $logPanel.Controls.Add($logBox); $logPanel.Controls.Add($logTools)
 $script:logStamp = $null
@@ -774,6 +777,28 @@ function Update-Log([switch]$Force) {
   if ($logFollow.Checked) { $logBox.SelectionStart = $logBox.TextLength; $logBox.ScrollToCaret() }
 }
 $logCopy.Add_Click({ try { [System.Windows.Forms.Clipboard]::SetText($(if ($logBox.SelectionLength) { $logBox.SelectedText } else { $logBox.Text })) } catch {}; $msg.Text = "Log copied." })
+# "Copy for an issue" (docs/logging.md): the whole log since the start (its first lines name the build, system, GPU and
+# switches), as a GitHub code block, the user folder and name replaced: paste it into an issue as it is. The last
+# 2,000 lines when it is longer (the start is kept: the first 40).
+$logIssue.Add_Click({
+  if (-not (Test-Path $serverLog)) { $msg.Text = "No log yet: the server has not been started."; return }
+  try {
+    # (read as UTF-8, the server's encoding: a non-ASCII user name read as ANSI would not be found to replace; the
+    #  whole file at once, filtered as an array: line by line froze the window on a long log)
+    $all = @((Get-Content -LiteralPath $serverLog -Encoding UTF8 -ReadCount 0 -ErrorAction Stop) -notmatch '^progress: ')
+    if ($all.Count -gt 2040) { $all = @($all[0..39]) + @("... ($($all.Count - 2040) lines left out) ...") + @($all[($all.Count - 2000)..($all.Count - 1)]) }
+    $t = $all -join "`n"
+    $home1 = $env:USERPROFILE
+    if ($home1) {  # (any case, \ or /)
+      $pat = [regex]::Escape($home1).Replace("\\", "[\\/]")
+      $t = [regex]::Replace($t, "(?i)" + $pat, "%USERPROFILE%")
+    }
+    if ($env:USERNAME -and $env:USERNAME.Length -ge 3) { $t = [regex]::Replace($t, "(?i)[\\/]Users[\\/]" + [regex]::Escape($env:USERNAME) + "\b", "\Users\<user>") }
+    # (a fence of four backticks: a log line with three does not end it)
+    [System.Windows.Forms.Clipboard]::SetText("Server log (inferzero, from zero-launcher):`n````````text`n$t`n````````")
+    $msg.Text = "Log copied for an issue ($($all.Count) lines; your user folder replaced by %USERPROFILE%): paste it on GitHub."
+  } catch { $msg.Text = "Could not copy the log: $($_.Exception.Message)" }
+})
 $logOpen.Add_Click({ if (Test-Path $serverLog) { Start-Process notepad.exe -ArgumentList "`"$serverLog`"" } })
 $logFolder.Add_Click({ Start-Process explorer.exe -ArgumentList "`"$stateDir`"" })
 
@@ -996,6 +1021,7 @@ function Get-StartArgs([switch]$Speech) {
       "no_mtp" { if ($v -and $m.mtp) { $a += "-NoMtp" } }
       "vision" { if ($m.vision) { $a += @("-Vision", $v) } }
       "slots" { $a += @("-Slots", [int]$v) }
+      "gpus" { $a += @("-Gpus", [int]$v) }  # (1 too: a running split server goes back to one GPU)
       "npu" { $a += @("-Npu", $v) }  # (off too: a running server's on is kept otherwise)
       "precise" { if ($v) { $a += "-Precise" } else { $a += "-NoPrecise" } }  # (off too, as -Npu)
       "no_stream" { if ($v -and $m.moe) { $a += "-NoStream" } }
@@ -1044,7 +1070,7 @@ function Copy-StartCommand {
 $paramToField = [ordered]@{ Ctx = "ctx"; Chunk = "chunk"; MtpDrafts = "drafts"; ThinkBudget = "think"; ImageMinTokens = "img_min"
   ImageMaxTokens = "img_max"; BudgetGb = "budget"; SessionCacheGb = "prompt_cache"; SessionDir = "prompt_cache_dir"
   PrefixCacheGb = "prefix_cache"; NoPrefixCache = "no_prefix"; NoSwap = "no_swap"; AttnF32 = "attn_f32"; NoMtp = "no_mtp"
-  Vision = "vision"; Slots = "slots"; Npu = "npu"; NoStream = "no_stream"; PreserveThinking = "preserve_think"
+  Vision = "vision"; Slots = "slots"; Gpus = "gpus"; Npu = "npu"; NoStream = "no_stream"; PreserveThinking = "preserve_think"
   Whisper = "whisper"; Asr = "asr"; WhisperDevice = "whisper_device"; WhisperMaxMinutes = "whisper_max"; Port = "port" }
 $script:presetName = ""
 $script:presetFilling = $false

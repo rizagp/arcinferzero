@@ -415,7 +415,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     //  18 Oct (docs/speed-progress.md): 35B UD-IQ4_XS at 131K keeps 81 % of the experts and answers as fast as at
     //  64K; Flash Next loses 2-6 % from 32K to 131K.)
     if (stream_ && opt.dry) {
-      const double left = (double)device_mem() - driver_slack() - (double)gpu_bytes + (double)ctx_bytes(ctx) -
+      const double left = (double)device_mem() / (tp_on() && getenv("ARC_TP_SIM") ? opt.tp_size : 1) - driver_slack() -
+                          (double)gpu_bytes + (double)ctx_bytes(ctx) -
                           (double)snapshot_bytes() - (double)opt.stream_reserve;
       // (--slots N: 128K of context in all, each slot 128K / N; the floor of 3/4 only as far as it leaves every slot
       //  32K: with a plain floor Gemma 4 26B-A4B kept 8,192 tokens per slot, its sliding-window rings ~1.4 GB each.
@@ -426,8 +427,14 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       //  experts cached (49K), 10.5 with 70 % (131K), 8.8 with 39 % (262K); the user ran 131K by hand. 2026-10-23)
       const double fl = hp.gemma ? 0.6 : 0.75;
       const double room = std::max(left - ctx_all(per), std::min(fl * left, left - ctx_all(kSlotCtxFloor)));
-      gpu_bytes += (size_t)std::max(0.0, std::min(0.9 * (double)stream_bytes_, room));
+      // (a shard of a split MoE caches its own experts only, tpe_: stream_bytes_ counts every expert)
+      const double mine = tp_on() && hp.n_expert > 0 && tpe_.second > tpe_.first
+                              ? (double)(tpe_.second - tpe_.first) / hp.n_expert : 1.0;
+      gpu_bytes += (size_t)std::max(0.0, std::min(0.9 * mine * (double)stream_bytes_, room));
     }
+    // (a dry shard: the split's sum buffers that the first pass allocates, tp_part_ f32, the f16 rows and the add
+    //  buffer, about max_chunk x n_embd x 10 bytes; counted so --ctx auto leaves them room, review 2026-11-12)
+    if (opt.dry && tp_on()) gpu_bytes += (size_t)max_chunk * (size_t)hp.n_embd * 10;
     mem_load_ = gpu_bytes;
     // the GGUF pages read while loading leave the working set (standby: Windows reuses them when it needs RAM)
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);

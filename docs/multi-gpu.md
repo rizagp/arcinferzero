@@ -281,8 +281,19 @@ at once, and their logits are joined into shard 0's, so the server sees the whol
 is one pointer test (logits bit-identical to the build before). A request's cancel (the web UI's stop) is asked on
 shard 0 and its answer shared, so every shard stops at the same point.
 
-Not with `--gpus` yet: MTP / DFlash2, images, the prompt and session caches on disk, the warm-up. `--ctx auto`
-sizes the context as for one GPU (less than the split could hold).
+Not with `--gpus` yet: MTP / DFlash2, images, the prompt and session caches on disk, the warm-up.
+
+**`--ctx auto` on a split model (2026-11-12):** the dry probe is shard 0 of N (`tp_size` N, `tp_rank` 0: the
+largest shard, which takes the extra unit of a count that does not divide), so the context is what one GPU's share
+of the weights and the KV leaves on GPU 0. Before, it sized the whole model on one GPU, and a model bigger than one
+card got the 4,096-token floor. Laptop, the 27B: weights 10.94 -> 5.47 GiB and 32.9 -> 16.4 MiB of context per 1K
+tokens on 2 GPUs (auto context 208,896 -> 262,144, the trained maximum); the 4B split over 2 with `ARC_TP_SIM` loaded
+at 262,144 tokens, 5.41 GiB on each GPU (the dry run's estimate: 5.5). A model that cannot be split is sized as on one
+GPU (the load then falls back to one GPU, as before). Only GPU 0's memory is probed: a smaller second card is caught by
+the split's own load, which then loads on one GPU. `serverz --list-models --gpus N` lists the contexts the same way;
+`/props` says `gpus`, and zero-server's Pi sync passes it on, so Pi's model list matches a split server.
+`zero-server -Gpus N`, `zero-pi --gpus N` and the launcher's "GPUs (one model split)" start one (kept on a restart and
+a model switch like `-Slots`; `-Gpus 1` goes back to one GPU).
 
 Checked over HTTP on the laptop (35B, ARC_TP_SIM 2): the same greedy answers as the one-GPU server (short questions
 and a 1,710-token prompt), two chats at once the same as each alone, a request cancelled mid-prompt then another one

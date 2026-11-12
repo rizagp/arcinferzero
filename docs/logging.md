@@ -61,6 +61,17 @@ runz and the other tools print as before, byte for byte: the bench scripts parse
   `W POST /v1/chat/completions 400 353 B 19 ms 127.0.0.1 | the request exceeds the available context size (prompt 20010 tokens, context 8192 tokens), try increasing it`.
 - **At debug (`-lv 3`), llama.cpp's three lines:** `prompt eval time = … ms / N tokens (… ms per token, … tokens per second)`, `eval time`, `total time`.
 
+**When the GPU ends the process:** an `E` line says what happened in words where the code is sure: device lost (the
+GPU was reset: a driver timeout or a fault; the process must restart), out of memory, the driver not started. A
+failed device allocation names its size, the GPU and what the engine had allocated, then the GPU budget and use and
+the free RAM. A kernel that fails names itself, its launch size and, while it waited, the last 64 launches.
+
+## Copying the log for an issue
+
+The launcher's Log tab has **Copy for an issue**: the log since the start as a GitHub code block, the user folder as
+`%USERPROFILE%` and the user name taken out of paths (`\Users\<user>`), the `progress:` lines left out, at most 2,040
+lines (the first 40, which name the build, system, GPU and switches, and the last 2,000). Paste it into the issue.
+
 ## Old logs
 
 `zero-server` moves the last log to `logs\server_<date>_<time>.log` at each start, for example

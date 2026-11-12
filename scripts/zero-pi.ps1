@@ -21,7 +21,7 @@ $ErrorActionPreference = "Stop"
 $shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "g12", "e4b", "g26", "g31")
 # (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
 function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
-$precise = ""; $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
+$gpus = 0; $precise = ""; $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""
 $whisper = ""; $asr = ""; $whDev = ""; $whMax = 0
 $piArgs = New-Object System.Collections.Generic.List[string]
 # an option's value: there, and not the next option ("--think" at the end gave Pi an empty level); numbers checked
@@ -220,6 +220,7 @@ bin\serverz.exe --help)
   --host <addr>                  listen address (default 127.0.0.1)
   --attn-f32                     f32 attention (tests)   --budget <GB>       keep decoded weights resident up to GB
   --slots <N>                    hold N conversations at once, taking turns step by step
+  --gpus <N>                     one model split over N GPUs (Qwen3.5 / 3.6 / 3.8), the context sized per GPU
   --npu on|off|force             the NPU next to the GPU for prompt chunks (on: 27B, Gemma 4 12B; force: all)
   --whisper auto|on|<dir>|off    speech to text (Whisper large-v3; turbo when large-v3 is not cached; <dir>: the
                                  folder that holds model.bin)
@@ -330,6 +331,7 @@ shortens a long conversation (the details it drops are gone for the model).
   elseif ($a -in "--preserve-thinking", "-PreserveThinking") { $preserve = $true }
   elseif ($a -in "--no-stream", "-NoStream") { $noStream = $true }
   elseif ($a -in "--slots", "-Slots") { $slots = [int](Need-Number $a (Need-Value $args $i $a "1..8") "1..8"); $i++ }  # (conversations at once)
+  elseif ($a -in "--gpus", "-Gpus") { $gpus = [int](Need-Number $a (Need-Value $args $i $a "1..64") "1..64"); $i++ }  # (one model over N GPUs)
   elseif ($a -in "--precise", "-Precise") { $precise = "on" }  # (Flash Next's precise mode; kept by zero-server)
   elseif ($a -in "--no-precise", "-NoPrecise") { $precise = "off" }
   elseif ($a -in "--npu", "-Npu") { $npu = Need-Value $args $i $a "on or off"; $i++ }  # (the NPU next to the GPU; zero-server checks it)
@@ -364,6 +366,7 @@ if (-not $model -and -not $pick) {
 $sessArg = @{}; if ($null -ne $sessGb) { $sessArg.SessionCacheGb = $sessGb }  # (not given: the server's default, 8 GB)
 if ($preserve) { $sessArg.PreserveThinking = $true }  # (only when given: a plain start keeps the running server)
 if ($slots -gt 0) { $sessArg.Slots = $slots }  # (only when given, as above)
+if ($gpus -gt 0) { $sessArg.Gpus = $gpus }  # (only when given: a running split server keeps its GPUs)
 if ($npu) { $sessArg.Npu = $npu }  # (not given: a running server keeps its setting, also on another model)
 if ($precise -eq "on") { $sessArg.Precise = $true } elseif ($precise -eq "off") { $sessArg.NoPrecise = $true }
 if ($whisper) { $sessArg.Whisper = $whisper }  # (not given: a running server keeps its speech setting)

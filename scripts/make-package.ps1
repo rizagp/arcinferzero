@@ -6,7 +6,9 @@
 # mgpu_probe, event_probe, replay_probe, membw_probe, gpu_bench, xw_peak, ref_forward, gguf_dump.
 #   powershell -File scripts\make-package.ps1            build the exes, then the zip
 #   powershell -File scripts\make-package.ps1 -NoBuild   the exes as they are in bin\
-param([switch]$NoBuild)
+#   powershell -File scripts\make-package.ps1 -Release 2026.11.13.01   the release's number in the package's name
+#     (yyyy.MM.dd.NN, NN two digits: names and tags sort by release, 09 before 13; issue #4, 2026-11-12)
+param([switch]$NoBuild, [string]$Release = "")
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot
 Set-Location $root
@@ -19,7 +21,8 @@ if (-not $NoBuild) {
 }
 $commit = (git rev-parse --short HEAD).Trim()
 $dirty = (git status --porcelain --untracked-files=no) -ne $null
-$version = (Get-Date -Format "yyyy.MM.dd") + "-" + $commit + $(if ($dirty) { "-dirty" } else { "" })
+if ($Release -and $Release -notmatch '^\d{4}\.\d{2}\.\d{2}\.\d{2}$') { throw "-Release: yyyy.MM.dd.NN with two digits for NN, e.g. 2026.11.13.01 (got $Release)" }
+$version = $(if ($Release) { $Release } else { Get-Date -Format "yyyy.MM.dd" }) + "-" + $commit + $(if ($dirty) { "-dirty" } else { "" })
 if ($dirty) { Write-Warning "uncommitted changes go into the package (its version says -dirty): commit first for a release" }
 $name = "inferzero-$version-win64"
 $dist = Join-Path $root "dist"
@@ -57,7 +60,7 @@ Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
 # newest ARC_DIST_KEEP (default 3) folders and zips stay; the released zips are on GitHub. Only names of this
 # script's own form are touched.
 $keep = if ($env:ARC_DIST_KEEP -match '^\d+$') { [Math]::Max(1, [int]$env:ARC_DIST_KEEP) } else { 3 }
-$pkgRe = '^(arc)?inferzero-\d{4}\.\d{2}\.\d{2}-[0-9a-f]{7}(-dirty)?-win64$'
+$pkgRe = '^(arc)?inferzero-\d{4}\.\d{2}\.\d{2}(\.\d{2})?-[0-9a-f]{7}(-dirty)?-win64$'
 foreach ($kind in @("dir", "zip")) {
   $items = @(Get-ChildItem $dist | Where-Object {
       if ($kind -eq "dir") { $_.PSIsContainer -and $_.Name -match $pkgRe } else { -not $_.PSIsContainer -and $_.BaseName -match $pkgRe -and $_.Extension -eq ".zip" } } |

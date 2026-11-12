@@ -16,7 +16,7 @@
 typedef uint32_t ze_result_t;
 #define ZE_RESULT_SUCCESS 0u
 #define ZE_RESULT_NOT_READY 1u  // (a synchronize whose timeout passed first)
-#define ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY 0x70000002u
+#define ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY 0x70000003u  // (0x70000002 is out of host memory; was named wrong here)
 typedef struct _ze_driver_handle_t* ze_driver_handle_t;
 typedef struct _ze_device_handle_t* ze_device_handle_t;
 typedef struct _ze_context_handle_t* ze_context_handle_t;
@@ -167,11 +167,20 @@ inline bool ze_load() {
 }
 
 inline void (*ze_fail_hook)() = nullptr;  // (diagnostics printed before exiting on an error)
+// a Level Zero error in words, for the log (docs/logging.md): only the codes whose meaning is sure
+inline const char* ze_result_text(uint32_t r) {
+  switch (r) {
+    case 0x70000001u: return " (device lost: the GPU was reset, by a driver timeout or a fault; the process must restart)";
+    case 0x70000002u: case 0x70000003u: return " (out of memory: other programs, or this one, use the GPU memory)";
+    case 0x78000001u: return " (not initialized: the Level Zero driver did not start)";
+    default: return "";
+  }
+}
 #define ZE_CHECK(x)                                                                                 \
   do {                                                                                              \
     const ze_result_t r_ = (x);                                                                     \
     if (r_ != ZE_RESULT_SUCCESS) {                                                                  \
-      LOG_ERR("Level Zero error 0x%x at %s:%d: %s\n", r_, __FILE__, __LINE__, #x);          \
+      LOG_ERR("Level Zero error 0x%x%s at %s:%d: %s\n", r_, ze_result_text(r_), __FILE__, __LINE__, #x); \
       if (ze_fail_hook) ze_fail_hook();                                                             \
       fflush(stderr);                                                                               \
       _Exit(1); /* (not exit(): after a lost device the driver's cleanup can hang the process) */   \
