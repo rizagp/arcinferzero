@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-12 (night): Gemma's long-prompt attention, three shapes measured at 32K (none faster); the Linux plan
+
+- **Gemma 4 12B, 32K-token prompt, one run each on the laptop** (the head-512 global attention, `attn_fa_gh`; the
+  12B's 16 q heads per kv head spill 416 bytes per thread as it is): as it is 375 s (with `--prof`); two query rows
+  per work-group (`ARC_FA_GR=2`) 866 s (7.5 KB spilled); 4 sub-groups of 8 dims (`ARC_FA_FS=4`) 1,018 s; and a new
+  switch, **`ARC_FA_HL=n`** (n of the 16 q heads per work-group, the rest in other work-groups: no spill, each key row
+  read 16 / n times) 418 s with 8, 564 s with 4. All bit-identical (12B logits, 2,311-token prompt, against the
+  default and against release 2026.11.12.16). So the spill does not bound this kernel; the key reads do: the default
+  stays, `ARC_FA_HL` is opt-in (for discrete cards to measure).
+- **A Linux port: the plan** (issue #11), [docs/linux-port.md](docs/linux-port.md): what is Windows-only (measured by a
+  search of the sources), the order (a platform layer with the Windows build bit-identical, then runz, serverz headless,
+  packaging), and how to test it (WSL2 on the laptop; a 285H on Ubuntu for the speed). Nothing built yet.
+
 ## 2026-11-12 (evening): the fixes of DeepSeek's audit (docs/audit-2026-11-13.md)
 
 A static audit by DeepSeek-V4.1-Flash through Pi (read-only tools, no server), every finding checked in the code:

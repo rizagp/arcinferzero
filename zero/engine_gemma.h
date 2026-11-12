@@ -105,6 +105,13 @@
           (hd / fa_fs / 16 == 4 || hd / fa_fs / 16 == 8 || hd / fa_fs / 16 == 16)) {
         const int fa_gr = fa_gr_env ? fa_gr_env : std::clamp(64 / (hpg * (hd / fa_fs / 16)), 1, 4);
         const int fa_kb = fa_kb_env ? fa_kb_env : hd < 512 && hpg * fa_gr <= 8 ? 2 : 1;
+        // (ARC_FA_HL=n: n of the kv head's q heads per work-group, hpg / n work-groups per kv head: fewer output floats
+        //  per lane (the 12B's 16 heads spill 416 B per thread), each key row read hpg / n times; bit-identical.
+        //  Opt-in: the 12B's 32K prompt 375 s as it is (with --prof), 418 s with 8, 564 s with 4, 2026-11-12; with
+        //  ARC_FA_GR=2 866 s (7.5 KB spilled), ARC_FA_FS=4 1,018 s: the spill does not bound it, the key reads do. The
+        //  gate and the GR / KB defaults above still count all hpg heads: HL only splits a shape the gate took)
+        static const int fa_hl_env = getenv("ARC_FA_HL") ? atoi(getenv("ARC_FA_HL")) : 0;
+        const int fa_hl = fa_hl_env > 0 && fa_hl_env < hpg && hpg % fa_hl_env == 0 ? fa_hl_env : hpg;
         // (ARC_FA_QB=2 / 4, opt-in: chunks of 16 dims per query read in the scores, one key block per step only;
         //  bit-identical. bench\gattn_bench, the 12B's global layers: 32K deep, 512 / 4096 queries 574 -> 484 / 4,067 ->
         //  3,432 ms; but the engine's 32K prompt measured attn_global 133.3 -> 162.2 s with it, and in the reverse
@@ -114,12 +121,13 @@
         const int fa_qb = fa_kb == 1 && (fa_qb_env == 2 || fa_qb_env == 4) ? fa_qb_env : 1;
         cl_kernel k = kernel("ops", "-cl-intel-256-GRF-per-thread -DFA_GH -DHD=" + std::to_string(hd) + " -DHPG=" +
                                         std::to_string(hpg) + " -DFS=" + std::to_string(fa_fs) + " -DGR=" + std::to_string(fa_gr) +
+                                        (fa_hl < hpg ? " -DHL=" + std::to_string(fa_hl) : std::string()) +
                                         " -DKB=" + std::to_string(fa_kb) + (fa_qb > 1 ? " -DFA_QB=" + std::to_string(fa_qb) : std::string()) + kdef,
                              "attn_fa_gh");
         int cp = L.cap, nn = nh, nk = nkv, pp = p0, MM = n, w = win, nlo = L.swa ? nc_lo_ : -1, nhi = L.swa ? nc_hi_ : -1;
         set_args(k, 0, from(qf_, (size_t)r0 * nh * hd * 4), L.kc, L.vc, cp, nn, nk, pp, MM,
                  from(o_, (size_t)r0 * nh * hd * 4), w, nlo, nhi);
-        size_t gws[3] = {(size_t)16 * fa_fs, (size_t)nkv, (size_t)(n + fa_gr - 1) / fa_gr}, lws[3] = {(size_t)16 * fa_fs, 1, 1};
+        size_t gws[3] = {(size_t)16 * fa_fs, (size_t)nkv * (hpg / fa_hl), (size_t)(n + fa_gr - 1) / fa_gr}, lws[3] = {(size_t)16 * fa_fs, 1, 1};
         run(L.swa ? "attn_swa" : "attn_global", k, 3, gws, lws);
         return;
       }

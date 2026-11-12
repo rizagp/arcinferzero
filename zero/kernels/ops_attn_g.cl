@@ -402,13 +402,20 @@ __kernel void attn_fa_gc(__global const float* part, int nh, int pos0, int M_val
 // attn_fa_g), into local memory. Then every sub-group runs the blocks' softmax updates in order for all heads (the
 // same operations, so the same values in each) and P.V for its HD / FS dims (lane = HD / FS / 16 dims). attn_fa_g
 // holds HD / 16 output floats per lane per (row, head), which limited it to 2 heads per sub-group.
-// grid (16 * FS, nkv, M), local (16 * FS, 1, 1).
+// grid (16 * FS, nkv * HPG / HL, ceil(M / GR)), local (16 * FS, 1, 1); a work-group takes HL of the kv head's HPG q
+// heads (-DHL, default all of them).
 #ifdef FA_GH
 #define GD (HD / FS / 16)  // output dims per lane
 #ifndef GR
-#define GR 1  // query rows per work-group: each key / value row read once for GR rows x HPG heads
+#define GR 1  // query rows per work-group: each key / value row read once for GR rows x HL heads
 #endif
-#define GRH (GR * HPG)
+#ifndef HL
+#define HL HPG  // q heads per work-group (-DHL=n: HPG / n work-groups per kv head)
+#endif
+#if HPG % HL
+#error "HL must divide HPG"
+#endif
+#define GRH (GR * HL)
 #ifndef KB
 #define KB 1  // blocks of 16 keys per sub-group and step: each q load serves KB key rows
 #endif
@@ -424,7 +431,7 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
                          ) {
   __local float sc[FS * KB][GRH][16];
   const int lane = get_sub_group_local_id(), sgi = get_sub_group_id();
-  const int g = get_group_id(1), m0 = get_group_id(2) * GR;
+  const int g = get_group_id(1) / (HPG / HL), hb = get_group_id(1) % (HPG / HL) * HL, m0 = get_group_id(2) * GR;
   // each row's key range [lo, hi]; the work-group walks the blocks of their union
   int lor[GR], hir[GR];
 #pragma unroll
@@ -483,8 +490,8 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
         for (int u = 0; u < FA_QB; ++u) kq[u] = any[0] ? KLD16(krow[0] + 16 * (c0 + u)) : (float16)0.0f;
 #pragma unroll
         for (int h = 0; h < GRH; ++h) {
-          const int r = h / HPG, m = min(m0 + r, M_valid - 1);
-          __global const uint* qp = (__global const uint*)(qf + ((size_t)m * nh + g * HPG + h % HPG) * HD + 16 * c0);
+          const int r = h / HL, m = min(m0 + r, M_valid - 1);
+          __global const uint* qp = (__global const uint*)(qf + ((size_t)m * nh + g * HPG + hb + h % HL) * HD + 16 * c0);
 #if FA_QB == 2
           const uint2 qq = intel_sub_group_block_read2(qp);
           const float qcs[2] = {as_float(qq.s0), as_float(qq.s1)};
@@ -516,8 +523,8 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
         for (int kk = 0; kk < KB; ++kk) kv[kk] = any[kk] ? KLD16(krow[kk] + 16 * c) : (float16)0.0f;
 #pragma unroll
         for (int h = 0; h < GRH; ++h) {
-          const int r = h / HPG, m = min(m0 + r, M_valid - 1);
-          const float qc = as_float(intel_sub_group_block_read((__global const uint*)(qf + ((size_t)m * nh + g * HPG + h % HPG) * HD + 16 * c)));
+          const int r = h / HL, m = min(m0 + r, M_valid - 1);
+          const float qc = as_float(intel_sub_group_block_read((__global const uint*)(qf + ((size_t)m * nh + g * HPG + hb + h % HL) * HD + 16 * c)));
 #pragma unroll
           for (int kk = 0; kk < KB; ++kk) {
             float a = s[kk][h];
@@ -539,7 +546,7 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
         const int b = bs + KB * sgi + kk, p = b * 16 + lane;
 #pragma unroll
         for (int h = 0; h < GRH; ++h) {
-          const int r = h / HPG;
+          const int r = h / HL;
           sc[KB * sgi + kk][h][lane] = b <= b1 && p >= lor[r] && p <= hir[r] ? s[kk][h] : -INFINITY;
         }
       }
@@ -550,7 +557,7 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
       float pr[GRH];
 #pragma unroll
       for (int h = 0; h < GRH; ++h) {
-        const int r = h / HPG;
+        const int r = h / HL;
         const bool valid = p >= lor[r] && p <= hir[r];
         const float sv = sc[i][h][lane];
         const float mn = fmax(mx[h], sub_group_reduce_max(sv));
@@ -588,10 +595,10 @@ __kernel void attn_fa_gh(__global const float* qf, __global const KC_T* kc, __gl
   }
 #pragma unroll
   for (int h = 0; h < GRH; ++h) {
-    const int m = m0 + h / HPG;
+    const int m = m0 + h / HL;
     const float L = sub_group_reduce_add(lp[h]);
     if (m < M_valid) {
-      __global float* op = out + ((size_t)m * nh + g * HPG + h % HPG) * HD + sgi * (HD / FS) + GD * lane;
+      __global float* op = out + ((size_t)m * nh + g * HPG + hb + h % HL) * HD + sgi * (HD / FS) + GD * lane;
 #if GD == 4
       vstore4(o[h] / L, 0, op);
 #elif GD == 8
