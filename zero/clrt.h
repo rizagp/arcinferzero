@@ -104,6 +104,8 @@ struct Dev {
   ze_command_list_handle_t cl_copy = nullptr;  // (see copy_list)
   const char* cl_copy_kind = "";
   ze_event_handle_t copy_ev[4] = {};  // (see copy_event)
+  ze_command_list_handle_t cl_tp = nullptr;  // (see tp_copy_list)
+  ze_event_handle_t tp_ev[32] = {};          // (see tp_event)
   std::vector<ze_event_handle_t> ev_free;  // (see ev_get)
   double ev_ns_per_tick = 0;
   uint64_t ev_mask = ~0ull;
@@ -293,10 +295,73 @@ inline void sync() {
     }
   }
 }
+// The same wait for an event or another list of this thread's GPU (a split model's pipelined sums, engine_tp.h):
+// with sync()'s limit and abort on a split model's thread, without them elsewhere
+template <class W>
+inline void wait_guarded(W w) {
+  Dev& d = D();
+  if (!tp_guarded || (d.sync_timeout_ns.load() == UINT64_MAX && !d.abort.load())) {
+    ZE_CHECK(w(UINT64_MAX));
+    return;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  for (;;) {
+    const ze_result_t r = w(100000000ull);
+    if (r == ZE_RESULT_SUCCESS) return;
+    if (r != ZE_RESULT_NOT_READY) ZE_CHECK(r);
+    const std::atomic<bool>* ab = d.abort.load();
+    if (ab && ab->load(std::memory_order_relaxed))
+      throw GpuWaitError("GPU " + std::to_string(d.index) + ": wait left, another GPU failed");
+    const uint64_t lim = d.sync_timeout_ns.load();
+    if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > lim) {
+      if (std::atomic<bool>* f = d.fault.load()) f->store(true);
+      throw GpuWaitError("GPU " + std::to_string(d.index) + ": its copies did not finish within " +
+                         std::to_string(lim / 1000000000ull) + " s (the GPU hangs?)");
+    }
+  }
+}
+inline void event_wait(ze_event_handle_t e) {
+  wait_guarded([e](uint64_t t) { return zeEventHostSynchronize(e, t); });
+}
+inline void list_wait(ze_command_list_handle_t l) {
+  wait_guarded([l](uint64_t t) { return zeCommandListHostSynchronize(l, t); });
+}
 // A second immediate command list for copies that run while `cl` executes kernels (the expert cache's prompt
 // prefetch, xcache.h): on a copy engine when the device has one, else on another queue of the compute group.
+inline ze_command_list_handle_t new_copy_list(const char** kind, int* ord_out, int* idx_out);
 inline ze_command_list_handle_t copy_list() {
   if (D().cl_copy) return D().cl_copy;
+  int ord = 0, idx = 0;
+  D().cl_copy = new_copy_list(&D().cl_copy_kind, &ord, &idx);
+  fprintf(stderr, "inferzero: expert copies on a %s (queue group %d, queue %d)\n", D().cl_copy_kind, ord, idx);
+  return D().cl_copy;
+}
+// A split model's pipelined sums (zero/mgpu/engine_tp.h, ARC_TP_PIPE): a copy list of their own next to `cl`, on the
+// same kind of queue as copy_list (not that list: the expert prefetch appends to it from its own thread, and Level
+// Zero allows one thread per list)
+inline ze_command_list_handle_t tp_copy_list() {
+  if (D().cl_tp) return D().cl_tp;
+  const char* kind = "";
+  int ord = 0, idx = 0;
+  D().cl_tp = new_copy_list(&kind, &ord, &idx);
+  fprintf(stderr, "inferzero: GPU %d: the split model's sums copy on a %s (queue group %d, queue %d)\n", D().index, kind,
+          ord, idx);
+  return D().cl_tp;
+}
+// its events (host visible; signalled with host scope, waited with device scope, as copy_event's)
+inline ze_event_handle_t tp_event(int i) {
+  if (!D().tp_ev[0]) {
+    ze_event_pool_desc_t pd{ZE_STYPE_EVENT_POOL_DESC, nullptr, 0x1 /* host visible */, 32};
+    ze_event_pool_handle_t pool = nullptr;
+    ZE_CHECK(zeEventPoolCreate(ctx, &pd, 1, &D().dev, &pool));
+    for (uint32_t k = 0; k < 32; ++k) {
+      ze_event_desc_t ed{ZE_STYPE_EVENT_DESC, nullptr, k, 0x4 /* signal: host scope */, 0x2 /* wait: device scope */};
+      ZE_CHECK(zeEventCreate(pool, &ed, &D().tp_ev[k]));
+    }
+  }
+  return D().tp_ev[i & 31];
+}
+inline ze_command_list_handle_t new_copy_list(const char** kind, int* ord_out, int* idx_out) {
   uint32_t ng = 0;
   ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(D().dev, &ng, nullptr));
   std::vector<ze_command_queue_group_properties_t> gp(ng);
@@ -305,16 +370,18 @@ inline ze_command_list_handle_t copy_list() {
   int ord = -1, idx = 0;
   for (uint32_t i = 0; i < ng && ord < 0; ++i)  // a copy-only group
     if ((gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COPY) && !(gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE))
-      ord = (int)i, D().cl_copy_kind = "copy engine";
+      ord = (int)i, *kind = "copy engine";
   for (uint32_t i = 0; i < ng && ord < 0; ++i)  // else the compute group, its second queue when it has one
     if (gp[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE)
-      ord = (int)i, idx = gp[i].numQueues > 1 ? 1 : 0, D().cl_copy_kind = idx ? "second compute queue" : "compute queue";
+      ord = (int)i, idx = gp[i].numQueues > 1 ? 1 : 0, *kind = idx ? "second compute queue" : "compute queue";
   if (ord < 0) ord = 0;
   ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, (uint32_t)ord, (uint32_t)idx, 2 /* in order */,
                              2 /* asynchronous */, 0};
-  ZE_CHECK(zeCommandListCreateImmediate(ctx, D().dev, &qd, &D().cl_copy));
-  fprintf(stderr, "inferzero: expert copies on a %s (queue group %d, queue %d)\n", D().cl_copy_kind, ord, idx);
-  return D().cl_copy;
+  ze_command_list_handle_t l = nullptr;
+  ZE_CHECK(zeCommandListCreateImmediate(ctx, D().dev, &qd, &l));
+  *ord_out = ord;
+  *idx_out = idx;
+  return l;
 }
 // Events the copy list signals after a batch of copies: 0 and 1 (used alternately) the main list waits on before
 // kernels read the copied memory (the wait, device scope, has the compute side invalidate its caches, which a host

@@ -77,6 +77,32 @@ The limits:
 MTP / DFlash2 drafting and the NPU are off in a split model. Slots (batched decoding) work since 2026-11-02 (see
 below).
 
+### The sums in pieces (`ARC_TP_PIPE=1`, 2026-11-12, opt-in)
+
+The three steps above run one after another, and each uses one direction of a GPU's link at a time: step 1 sends
+(GPU -> host), steps 2 and 3 mostly receive (the kernels read host memory). `ARC_TP_PIPE=1` cuts every GPU's block
+of rows into P pieces (2-8, ~2 MB of f16 each; `ARC_TP_PIPE_PIECES=N`), the same on every GPU, and overlaps them,
+after manoreken2's HostCopy (PR #10, two B60s: a 40 MB block 1.85x faster with a piece in each direction at once):
+1. Each GPU converts its part to f16 (`tp_half`), then a copy list of its own (`zrt::tp_copy_list`, a copy engine)
+   puts the pieces of the other GPUs' blocks to host memory, piece by piece, each signalling an event.
+2. When every GPU has put its first piece, every f16 flag is final: all GPUs decide alike whether to fall back to
+   the one-step f32 sum (then every put finishes first, and the f32 sum runs as before).
+3. Piece by piece, once every GPU has put it (host counters `TpComm::put_n`): the GPU's own rows of that piece are
+   summed (`tp_rs_sum`) while its copy list still puts the later pieces; the piece's sums are put next.
+4. Piece by piece, once every GPU has put its sums of it (`TpComm::res_n`): the other blocks' sums are added
+   (`tp_rs_add_r`).
+
+The arithmetic is the same as without it, so the logits are the same bit for bit (checked with `ARC_TP_SIM` on the
+27B over 2, 3 and 4 GPUs, with 1, 3 and the default pieces, and with the f16 failsafe forced). A buffer half is
+written again two sums later only after every GPU has put its first piece of the sum in between, which its copy
+list does only after its kernels that read that half. Every wait (an event, the counters) keeps the barrier's time
+limit and leaves when another GPU failed; the hang watchdog counts the pieces as progress.
+
+Per GPU and sum about one part size goes out and 2 (N - 1) / N parts come in. One after another that is about 2
+part-times on 2 GPUs and 2.5 on 4; overlapped, 1 and 1.5: the sums up to ~2x faster on 2 GPUs and ~1.7x on 4, if
+the links and the host memory carry both directions at once (manoreken2's 1.85x says they can on B60s). Not
+measured yet: off by default.
+
 ## Mixture of experts (Qwen3.6 35B-A3B, 2026-11-01)
 
 The MoE layers are divided by expert instead of by FFN column: GPU r of N holds the routed experts [e0, e1) (256

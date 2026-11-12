@@ -45,6 +45,37 @@ struct TpComm {
   // Each GPU's own waits give up after it too (zrt::Dev::sync_timeout_ns), or once another shard failed.
   double timeout_s = 120;
   std::unique_ptr<std::atomic<int>[]> reached;  // (per shard: 1 + the barrier generation it last reached)
+  // The pipelined reduce-scatter (ARC_TP_PIPE, tp_reduce_rs_pipe): per shard, how many pieces of its parts (put_n)
+  // and of its sums (res_n) it has in host memory so far, over all sums. The shards make the same sums in the same
+  // pieces, so a shard waits until every other one has as many as it has itself.
+  std::unique_ptr<std::atomic<long>[]> put_n, res_n;
+  void wait_all(std::atomic<long>* cnt, long target, int r, const char* what) {
+    std::chrono::steady_clock::time_point t0{};
+    for (long long spins = 0;; ++spins) {
+      bool all = true;
+      for (int k = 0; k < n && all; ++k) all = cnt[k].load(std::memory_order_acquire) >= target;
+      if (all) return;
+      if (failed.load(std::memory_order_relaxed)) throw TpAbort();
+      if (spins < 4096) {
+        _mm_pause();
+        continue;
+      }
+      std::this_thread::yield();
+      if (spins % 1024) continue;
+      const auto now = std::chrono::steady_clock::now();
+      if (t0 == std::chrono::steady_clock::time_point{}) t0 = now;
+      if (std::chrono::duration<double>(now - t0).count() < timeout_s) continue;
+      std::string late;
+      for (int k = 0; k < n; ++k)
+        if (cnt[k].load(std::memory_order_relaxed) < target) late += " " + std::to_string(k);
+      int none = -1;
+      first_failed.compare_exchange_strong(none, r);
+      fault = true;
+      failed = true;
+      throw TpAbort("multi-GPU: GPU" + late + " did not bring " + what + " within " + std::to_string((int)timeout_s) +
+                    " s (a GPU hangs?); restart (or load the model again)");
+    }
+  }
   void barrier(int r) {
     const int g = gen.load(std::memory_order_acquire);
     reached[r].store(g + 1, std::memory_order_relaxed);
@@ -164,7 +195,24 @@ inline void Engine::tp_reduce(int rows) {
 // Per GPU and sum about 3 (N - 1) / N part sizes of f16 cross PCIe, against 1 + N in f32 for the one-step sum: 4 B60s
 // 2.25 f16 (1.1 f32) instead of 5 f32 part sizes, 4.4x fewer bytes; 2 GPUs 4x. (Why one buffer half is enough: a GPU writes this half
 // again two sums later, after a barrier the others reach only once their GPU finished reading it.)
+// ARC_TP_PIPE=1: the reduce-scatter in pieces, both directions of every GPU's link at once (tp_reduce_rs_pipe; after
+// manoreken2's HostCopy, PR #10: a block cut into pieces copied by two command lists, 1.85x on two B60s). Off by
+// default until measured on B60s / B580s. ARC_TP_PIPE_PIECES=N: pieces per GPU block (default: ~2 MB of f16 each, 2-8)
+constexpr int kTpPipeMax = 8;
+inline bool tp_pipe_on() {
+  static const bool on = getenv("ARC_TP_PIPE") && atoi(getenv("ARC_TP_PIPE")) != 0;
+  return on;
+}
+inline int tp_pipe_pieces(int rows, int n, int E) {
+  static const int forced = getenv("ARC_TP_PIPE_PIECES") ? atoi(getenv("ARC_TP_PIPE_PIECES")) : 0;
+  const int min_rows = rows / n;  // (the smallest block: rows * b / n .. rows * (b + 1) / n)
+  int p = forced > 0 ? forced : (int)((size_t)min_rows * E * 2 / ((size_t)2 << 20));
+  p = std::max(forced > 0 ? 1 : 2, std::min(p, kTpPipeMax));
+  return std::max(1, std::min(p, min_rows));
+}
+
 inline void Engine::tp_reduce_rs(int rows) {
+  if (tp_pipe_on()) return tp_reduce_rs_pipe(rows);
   TpComm& c = *tp_;
   const int r = opt.tp_rank, E = hp.n_embd, N = c.n;
   const size_t n = (size_t)rows * E, i0 = (size_t)rows * r / N * E, i1 = (size_t)rows * (r + 1) / N * E;
@@ -223,6 +271,144 @@ inline void Engine::tp_reduce_rs(int rows) {
   ++c.reduces[r];
   set_args(k_tp_rs_add_, 0, x_, tp_host_, res_off, nn, a, b);
   run("tp_sum", k_tp_rs_add_, 1, &g1, &l1);
+  c.half[r] = h ^ 1;
+}
+
+// The same reduce-scatter in pieces (ARC_TP_PIPE=1). Every GPU block (rows [T b / N, T (b + 1) / N)) is cut into P
+// pieces of rows, the same on every GPU. This GPU's copy list (zrt::tp_copy_list, a copy engine) puts the pieces of
+// its part to host memory, while its compute list already sums the pieces of its own block that every GPU has put:
+// the puts go GPU -> host while the sums read host -> GPU. Then its sums' pieces go out the same way while the others'
+// sums come in. Shards learn about each other's pieces from TpComm::put_n / res_n (host counters), the copy list about
+// this GPU's kernels from events. Each value is summed by the same kernels' arithmetic in the same order as in
+// tp_reduce_rs: the same results, bit for bit.
+//  - the f16 failsafe: every GPU's flag is final once every GPU has put its first piece (its tp_half ran before);
+//    then all decide alike, and an overflow finishes every put before the one-step f32 sum overwrites the buffer half
+//  - reuse of a buffer half (written again two sums later): a GPU's puts of the next sum wait for its kernels of this
+//    one (the copy list waits for tp_half, after them on the in-order compute list), so a GPU that has seen every
+//    other GPU's first piece of the next sum knows they all finished reading this half
+//  - every wait has the barrier's time limit and leaves when another GPU failed
+inline void Engine::tp_reduce_rs_pipe(int rows) {
+  TpComm& c = *tp_;
+  const int r = opt.tp_rank, E = hp.n_embd, N = c.n;
+  const size_t n = (size_t)rows * E, i0 = (size_t)rows * r / N * E, i1 = (size_t)rows * (r + 1) / N * E;
+  const int P = tp_pipe_pieces(rows, N, E);
+  auto piece = [&](int b, int p, size_t& p0, size_t& p1) {  // (values [p0, p1) of block b's piece p)
+    const size_t R0 = (size_t)rows * b / N, R1 = (size_t)rows * (b + 1) / N;
+    p0 = (R0 + (R1 - R0) * p / P) * E;
+    p1 = (R0 + (R1 - R0) * (p + 1) / P) * E;
+  };
+  if (!tp_h_) tp_h_ = buf((size_t)max_chunk * E * 2);
+  if (!tp_flag_) {
+    tp_flag_ = zrt::wrap(c.flags, (size_t)N * sizeof(int));
+    mems_.push_back(tp_flag_);
+  }
+  const int h = c.half[r];
+  const size_t stride = c.slot_floats;
+  char* region = (char*)(c.host + (size_t)h * N * c.slot_floats);
+  char* put = region + (size_t)r * stride * 2;
+  char* res = region + (size_t)N * stride * 2;
+  char* dev = (char*)tp_h_->ptr;
+  ze_command_list_handle_t cp = zrt::tp_copy_list();
+  // (events: 0 tp_half done; 1 + p piece p put; 1 + kTpPipeMax + p piece p summed; 1 + 2 kTpPipeMax + p its sums put.
+  //  The copy list is idle here (every event of the last sum was waited for), so they can be reset)
+  zrt::list_wait(cp);
+  ze_event_handle_t evH = zrt::tp_event(0);
+  auto ev_put = [](int p) { return zrt::tp_event(1 + p); };
+  auto ev_sum = [](int p) { return zrt::tp_event(1 + kTpPipeMax + p); };
+  auto ev_res = [](int p) { return zrt::tp_event(1 + 2 * kTpPipeMax + p); };
+  ZE_CHECK(zeEventHostReset(evH));
+  for (int p = 0; p < P; ++p) {
+    ZE_CHECK(zeEventHostReset(ev_put(p)));
+    ZE_CHECK(zeEventHostReset(ev_sum(p)));
+    ZE_CHECK(zeEventHostReset(ev_res(p)));
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  auto waited = [&] { c.wait_ms[r] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
+  // 1. the part to f16 (and range-checked), then its other blocks' pieces put by the copy list, piece by piece
+  static const float lim = getenv("ARC_TP_F16_LIMIT") ? (float)atof(getenv("ARC_TP_F16_LIMIT")) : 65504.0f;  // (tests)
+  c.flags[r] = 0;
+  const cl_ulong fo = (cl_ulong)r * sizeof(int);
+  float lim_n = lim * (1.0f - 1.0f / 1024) / N;
+  int nn = (int)n, a = (int)i0, b = (int)i1;
+  set_args(k_tp_half_, 0, tp_part_, tp_h_, nn, from(tp_flag_, fo), lim_n, a, b);
+  size_t g1 = (n + 255) / 256 * 256, l1 = 256;
+  run("tp_sum", k_tp_half_, 1, &g1, &l1);
+  ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), evH, 0, nullptr));
+  ZE_CHECK(zeCommandListAppendBarrier(cp, nullptr, 1, &evH));
+  for (int p = 0; p < P; ++p) {
+    for (int k = 0; k < N; ++k) {
+      if (k == r) continue;
+      size_t p0, p1;
+      piece(k, p, p0, p1);
+      if (p1 > p0) ZE_CHECK(zeCommandListAppendMemoryCopy(cp, put + p0 * 2, dev + p0 * 2, (p1 - p0) * 2, nullptr, 0, nullptr));
+    }
+    ZE_CHECK(zeCommandListAppendBarrier(cp, ev_put(p), 0, nullptr));
+  }
+  // 2. the first pieces of every GPU: the f16 flags are final
+  zrt::event_wait(ev_put(0));
+  const long base_put = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
+  c.wait_all(c.put_n.get(), base_put, r, "the first piece of its part");
+  bool over = false;
+  for (int k = 0; k < N; ++k) over = over || ((volatile int*)c.flags)[k] != 0;
+  if (over) {  // (every GPU: its puts finished, then the one-step f32 sum in the same buffer half)
+    static std::atomic<long> warned{0};
+    if (r == 0 && warned++ < 3) fprintf(stderr, "inferzero: a partial sum beyond f16's range: summed in f32 (failsafe)\n");
+    zrt::event_wait(ev_put(P - 1));
+    c.barrier(r);
+    const cl_ulong off = (cl_ulong)h * N * c.slot_floats;
+    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, tp_part_->ptr, n * 4, nullptr, 0, nullptr));
+    zrt::sync();
+    c.barrier(r);
+    waited();
+    ++c.reduces[r];
+    int np = N;
+    cl_ulong st = stride;
+    set_args(k_tp_add_, 0, x_, tp_host_, off, nn, np, st);
+    run("tp_add", k_tp_add_, 1, &g1, &l1);
+    c.half[r] = h ^ 1;
+    return;
+  }
+  // 3. piece by piece: once every GPU has put it, this GPU's own block summed (tp_rs_sum over the piece's values) and
+  //    the piece's sums put by the copy list
+  const cl_ulong put_off = (cl_ulong)h * N * c.slot_floats * 2, str = stride, res_off = put_off + (cl_ulong)N * stride;
+  for (int p = 0; p < P; ++p) {
+    if (p > 0) {
+      zrt::event_wait(ev_put(p));
+      const long t = c.put_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
+      c.wait_all(c.put_n.get(), t, r, "a piece of its part");
+    }
+    size_t p0, p1;
+    piece(r, p, p0, p1);
+    if (p1 > p0) {
+      int pa = (int)p0, pb = (int)p1;
+      set_args(k_tp_rs_sum_, 0, x_, tp_part_, tp_host_, put_off, str, N, r, pa, pb, tp_h_);
+      size_t g2 = (p1 - p0 + 255) / 256 * 256;
+      run("tp_sum", k_tp_rs_sum_, 1, &g2, &l1);
+    }
+    ze_event_handle_t es = ev_sum(p);
+    ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), es, 0, nullptr));
+    ZE_CHECK(zeCommandListAppendBarrier(cp, nullptr, 1, &es));
+    if (p1 > p0) ZE_CHECK(zeCommandListAppendMemoryCopy(cp, res + p0 * 2, dev + p0 * 2, (p1 - p0) * 2, nullptr, 0, nullptr));
+    ZE_CHECK(zeCommandListAppendBarrier(cp, ev_res(p), 0, nullptr));
+  }
+  // 4. piece by piece: once every GPU has put its sums of it, the other blocks' sums added (tp_rs_add_r per block)
+  for (int p = 0; p < P; ++p) {
+    zrt::event_wait(ev_res(p));
+    const long t = c.res_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
+    c.wait_all(c.res_n.get(), t, r, "a piece of its sums");
+    for (int k = 0; k < N; ++k) {
+      if (k == r) continue;
+      size_t p0, p1;
+      piece(k, p, p0, p1);
+      if (p1 <= p0) continue;
+      int ja = (int)p0, jb = (int)p1;
+      set_args(k_tp_rs_add_r_, 0, x_, tp_host_, res_off, ja, jb);
+      size_t g3 = (p1 - p0 + 255) / 256 * 256;
+      run("tp_sum", k_tp_rs_add_r_, 1, &g3, &l1);
+    }
+  }
+  waited();
+  ++c.reduces[r];
   c.half[r] = h ^ 1;
 }
 
@@ -363,6 +549,9 @@ class TpEngine {
       throw std::runtime_error("--gpus: a GPU fault earlier left a split model's threads running: restart the server for several GPUs");
     comm_.reached.reset(new std::atomic<int>[n]);
     for (int r = 0; r < n; ++r) comm_.reached[r] = 0;
+    comm_.put_n.reset(new std::atomic<long>[n]);
+    comm_.res_n.reset(new std::atomic<long>[n]);
+    for (int r = 0; r < n; ++r) comm_.put_n[r] = comm_.res_n[r] = 0;
     for (int r = 0; r < n; ++r) {  // (GPU 0's waits keep no abort: the server's other users, Whisper, share it)
       zrt::devs[r]->sync_timeout_ns = (uint64_t)(comm_.timeout_s * 1e9);
       zrt::devs[r]->fault = &comm_.fault;
@@ -495,11 +684,18 @@ class TpEngine {
   // nothing, and the request waited forever (self audit MG1). Not for loads and frees, which meet at no barrier.
   void wait_done(std::unique_lock<std::mutex>& lk, bool watch = true) {
     std::chrono::steady_clock::time_point since{}, moved = std::chrono::steady_clock::now();
-    int last_gen = comm_.gen.load(std::memory_order_acquire);
+    // (progress: barriers completed, and the pipelined sums' pieces, ARC_TP_PIPE, which meet at no barrier: a long
+    //  prompt of such sums is not a hang)
+    auto progress = [this] {
+      long v = comm_.gen.load(std::memory_order_acquire);
+      for (int r = 0; r < n_ && comm_.put_n; ++r) v += comm_.put_n[r].load(std::memory_order_relaxed) + comm_.res_n[r].load(std::memory_order_relaxed);
+      return v;
+    };
+    long last_gen = progress();
     bool warned = false;
     while (!done_cv_.wait_for(lk, std::chrono::seconds(1), [&] { return pending_ == 0; })) {
       const auto now = std::chrono::steady_clock::now();
-      const int g = comm_.gen.load(std::memory_order_acquire);
+      const long g = progress();
       if (g != last_gen) last_gen = g, moved = now, warned = false;
       // (a line first, 30 s before giving up: a slow path between two sums can be told from a hang in the log, R9)
       if (watch && !warned && now - moved > std::chrono::duration<double>(comm_.timeout_s)) {

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-12: a split model's prompt sums in pieces (opt-in, `ARC_TP_PIPE=1`)
+
+- **The f16 reduce-scatter of prompt chunks can run in pieces** (`zero/mgpu/engine_tp.h`, `tp_reduce_rs_pipe`),
+  after manoreken2's HostCopy (PR #10: a block cut into pieces and copied by two command lists, 1.85x on two B60s).
+  Each GPU's rows are cut into 2-8 pieces of ~2 MB. A copy list of its own (a copy engine) puts the pieces to host
+  memory while the compute list already sums the pieces every GPU has put, so both directions of each GPU's link
+  work at once, where the three steps of the sum ran one after another. Counters in host memory say which pieces
+  have arrived; every wait keeps the barrier's time limit.
+- The same results bit for bit (the 27B split over 2, 3 and 4 GPUs with `ARC_TP_SIM` on the laptop, chunks of 128
+  and 512, 1 / 3 / default pieces, the f16-overflow failsafe forced: every logit the same as without it). The
+  failsafes checked with it: a GPU that stops (`ARC_TP_HANG=1:20`) and a wait that fails (`1:20:wait`).
+- **Off by default** until it is measured on B60s and B580s: the laptop runs every shard on one GPU and says
+  nothing about the speed. Expected: the sums up to ~2x faster on 2 GPUs and ~1.7x on 4. `ARC_TP_PIPE_PIECES=N`
+  sets the pieces per GPU block. Generation's per-token sums are unchanged.
+
 ## 2026-11-12: gpu_bench's memory read on discrete cards
 
 - **`gpu_bench` and `membw_probe` read random data** instead of a buffer filled with one value. An Arc B580's run

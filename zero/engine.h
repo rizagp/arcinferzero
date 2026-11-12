@@ -199,15 +199,18 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
  private:
   void release_all() {
     if (zrt::D().cl) clFinish(cl_.queue);  // (init may have failed before the runtime existed: nothing to wait for)
+    // (a split model's pipelined sums, ARC_TP_PIPE: copies still queued after a failure read tp_h_ and host memory;
+    //  they drain once the compute list has: every wait of that list comes after its signal)
+    if (zrt::D().cl_tp) zrt::list_wait(zrt::D().cl_tp);
     if (npu_runs_) fprintf(stderr, "ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
     for (auto& kv : kcache_) clReleaseKernel(kv.second);
     for (cl_kernel k : {k_tp_add_, k_tp_pack_, k_tp_moe_mask_, k_tp_moe_scatter_, k_tp_moe_tiles1_, k_tp_moe_combine_,
-                        k_tp_half_, k_tp_rs_sum_, k_tp_rs_add_})
+                        k_tp_half_, k_tp_rs_sum_, k_tp_rs_add_, k_tp_rs_add_r_})
       if (k) clReleaseKernel(k);
     k_tp_add_ = k_tp_pack_ = k_tp_moe_mask_ = k_tp_moe_scatter_ = k_tp_moe_tiles1_ = k_tp_moe_combine_ = nullptr;
-    k_tp_half_ = k_tp_rs_sum_ = k_tp_rs_add_ = nullptr;
+    k_tp_half_ = k_tp_rs_sum_ = k_tp_rs_add_ = k_tp_rs_add_r_ = nullptr;
     for (cl_program p : progs_) clReleaseProgram(p);
     for (auto it = mems_.rbegin(); it != mems_.rend(); ++it)  // sub-buffers (created later) before their parents
       if (*it) clReleaseMemObject(*it);

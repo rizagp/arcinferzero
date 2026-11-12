@@ -45,6 +45,13 @@ __kernel void tp_rs_add(__global float* x, __global const half* res, ulong res_o
   x[i] += vload_half(res_off + i, res);
 }
 
+// the pipelined reduce-scatter (ARC_TP_PIPE): another GPU's sums of values [j0, j1) added to x, as tp_rs_add does
+__kernel void tp_rs_add_r(__global float* x, __global const half* res, ulong res_off, int j0, int j1) {
+  const int i = j0 + get_global_id(0);
+  if (i >= j1) return;
+  x[i] += vload_half(res_off + i, res);
+}
+
 // Mixture of experts split by expert (each shard holds experts [e0, e1), global ids everywhere): the routing as in
 // one piece, then only this shard's (token, expert) pairs get slots and tiles; the combine sums the shard's experts
 // into a partial output that tp_reduce adds over the shards.

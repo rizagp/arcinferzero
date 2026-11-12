@@ -63,6 +63,7 @@
   using TpRuns = std::vector<std::pair<int64_t, int64_t>>;  // [begin, end) ranges, in order
   cl_kernel k_tp_add_ = nullptr, k_tp_pack_ = nullptr;
   cl_kernel k_tp_half_ = nullptr, k_tp_rs_sum_ = nullptr, k_tp_rs_add_ = nullptr;  // (the f16 reduce-scatter)
+  cl_kernel k_tp_rs_add_r_ = nullptr;  // (its pipelined form, ARC_TP_PIPE)
   cl_mem tp_h_ = nullptr;  // (f16 [max_chunk][E]: this GPU's part to send, then its rows' sums)
   cl_mem tp_flag_ = nullptr;  // (the shared out-of-f16-range flags as this GPU's kernel argument)
   cl_mem tp_ab_ = nullptr;  // (a split model's padded alpha / beta rows, see gdn_ab)
@@ -270,6 +271,7 @@
   bool tp_cancelled();
   void tp_reduce(int rows);  // (zero/engine_tp.h)
   void tp_reduce_rs(int rows);
+  void tp_reduce_rs_pipe(int rows);
   void tp_wrap_host();
   // rows of a matrix the GEMM must see in whole tiles of 16: a split model's DeltaNet alpha / beta (2 x its v-heads:
   // 24 for the 27B's 12 over 4 GPUs) padded with rows of zeros; unchanged in one piece
@@ -303,6 +305,7 @@
     k_tp_half_ = cl_.kernel(p, "tp_half");
     k_tp_rs_sum_ = cl_.kernel(p, "tp_rs_sum");
     k_tp_rs_add_ = cl_.kernel(p, "tp_rs_add");
+    k_tp_rs_add_r_ = cl_.kernel(p, "tp_rs_add_r");
     k_tp_moe_mask_ = cl_.kernel(p, "tp_moe_mask");
     k_tp_moe_scatter_ = cl_.kernel(p, "tp_moe_scatter");
     k_tp_moe_tiles1_ = cl_.kernel(p, "tp_moe_tiles1");
