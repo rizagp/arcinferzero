@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-13 (night): the Linux port, the expert file's reads through the platform layer; B60 numbers
+
+- **`plat::AsyncFile`** (`src/platform.h`): a file read without the OS file cache, reads in flight on numbered slots;
+  the expert store (`zero/expert_store.h`) reads its experts through it. Windows: the same calls as before (unbuffered
+  overlapped reads, an event per slot). Linux, a first form: `O_DIRECT` with `pread` (buffered where a filesystem has
+  no `O_DIRECT`), `io_uring` later. Checked against release 2026.11.13.02: logits identical for the 35B-A3B (experts
+  cached) and Flash Next (34.9 GB of experts read from the SSD in the run, 4.5-6.0 GB/s against 5.4), and the 4B.
+- **A Pro B60's numbers** for the rotation reuse and the swiglu skip (issue #4): the 27B's 4K prompt 1,024.5 -> 1,080.9
+  tok/s (+5.5 %); website and README updated.
+
 ## 2026-11-13 (early morning): the Linux port, model files through the platform layer
 
 - **`plat::FileMap`** (`src/platform.h`, docs/linux-port.md step 1): a file mapped read-only, in three steps (open,

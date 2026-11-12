@@ -61,8 +61,7 @@ struct ExpertStore {
   }
 
   ~ExpertStore() {
-    for (auto& s : slots_) if (s.ev) CloseHandle(s.ev);
-    if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+    af_.close();
     if (ram_free) for (char* p : ram_pieces_) ram_free(p);
   }
 
@@ -224,11 +223,10 @@ struct ExpertStore {
                                  " (make the package again from the original GGUF: serverz --pack <gguf>)");
       build(f, prefixes, fp);
     }
-    h_ = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                     FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, nullptr);
-    if (h_ == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open " + path);
-    for (auto& s : slots_)
-      if (!(s.ev = CreateEventW(nullptr, TRUE, FALSE, nullptr))) throw std::runtime_error("cannot create the read events");
+    for (int i = 0; i < 2 * kQD; ++i) slots_[i].id = i;  // (before the open: no path reads with ids unset)
+    const int op = af_.open(path.c_str(), 2 * kQD);  // (unbuffered, reads in flight: src/platform.h AsyncFile)
+    if (op == 1) throw std::runtime_error("cannot open " + path);
+    if (op == 2) throw std::runtime_error("cannot create the read events");
   }
 
   // ---- RAM tier (a GPU with memory of its own and a large system RAM: Arc B60 + hundreds of GB): the unbuffered
@@ -236,7 +234,7 @@ struct ExpertStore {
   // (pinned host memory from ram_alloc), up to `bytes`, and stay there: a later read of one is no read at all, its
   // Req's src points at it and the caller's GPU copy takes it from there. No CPU copies: a memcpy ran at 3-4 GB/s on
   // the laptop, slower than its SSD. Never on an iGPU, whose GPU memory is that RAM.
-  struct Slot { OVERLAPPED ov{}; HANDLE ev = nullptr; bool busy = false; };  // (a read in flight)
+  struct Slot { int id = 0; bool busy = false; };  // (a read in flight on af_'s slot id)
   std::function<char*(size_t)> ram_alloc;  // (pinned host memory of n bytes, nullptr when none is left)
   std::function<void(char*)> ram_free;
   void set_ram(uint64_t bytes) {
@@ -341,13 +339,8 @@ struct ExpertStore {
       const LayerInfo& L = layers[r.layer];
       const uint64_t o = L.off + (uint64_t)r.expert * L.rec;
       Slot& sl = slots[s];
-      ZeroMemory(&sl.ov, sizeof sl.ov);
-      sl.ov.Offset = (DWORD)o;
-      sl.ov.OffsetHigh = (DWORD)(o >> 32);
-      sl.ov.hEvent = sl.ev;
-      ResetEvent(sl.ev);
-      if (!ReadFile(h_, r.dst, (DWORD)L.rec, nullptr, &sl.ov) && GetLastError() != ERROR_IO_PENDING)
-        throw std::runtime_error("expert read failed (" + std::to_string(GetLastError()) + ")");
+      if (!af_.start(sl.id, r.dst, (uint32_t)L.rec, o))
+        throw std::runtime_error("expert read failed (" + std::to_string(af_.error(sl.id)) + ")");
       sl.busy = true;
       ++busy;
       bytes_read += L.rec;
@@ -355,15 +348,12 @@ struct ExpertStore {
     try {
       for (int s = 0; s < kQD && next < reqs.size(); ++s) issue(s);
       while (done < reqs.size()) {
-        HANDLE evs[kQD];
-        int map[kQD], n = 0;
-        for (int s = 0; s < kQD; ++s) if (slots[s].busy) evs[n] = slots[s].ev, map[n++] = s;
-        const DWORD w = WaitForMultipleObjects((DWORD)n, evs, FALSE, INFINITE);
-        if (w >= WAIT_OBJECT_0 + (DWORD)n)
-          throw std::runtime_error("expert read: wait failed (" + std::to_string(GetLastError()) + ")");
-        const int s = map[w - WAIT_OBJECT_0];
-        DWORD got = 0;
-        if (!GetOverlappedResult(h_, &slots[s].ov, &got, FALSE)) throw std::runtime_error("expert read failed");
+        int ids[kQD], map[kQD], n = 0;
+        for (int s = 0; s < kQD; ++s) if (slots[s].busy) ids[n] = slots[s].id, map[n++] = s;
+        const int w = af_.wait_any(ids, n);
+        if (w < 0) throw std::runtime_error("expert read: wait failed (" + std::to_string(af_.error()) + ")");
+        const int s = map[w];
+        if (!af_.finish(slots[s].id)) throw std::runtime_error("expert read failed");
         slots[s].busy = false;
         --busy;
         ++done;
@@ -374,9 +364,7 @@ struct ExpertStore {
       // staging and the next read() finds its slots free)
       for (int s = 0; s < kQD; ++s) {
         if (!slots[s].busy) continue;
-        CancelIoEx(h_, &slots[s].ov);
-        DWORD got = 0;
-        GetOverlappedResult(h_, &slots[s].ov, &got, TRUE);
+        af_.cancel(slots[s].id);
         slots[s].busy = false;
       }
       throw;
@@ -389,8 +377,8 @@ struct ExpertStore {
 
  private:
   static constexpr int kQD = 16;
-  Slot slots_[2 * kQD];
-  HANDLE h_ = INVALID_HANDLE_VALUE;
+  Slot slots_[2 * kQD] = {};
+  plat::AsyncFile af_;  // (the expert file, unbuffered; slots_[i] reads on its slot i)
 
   struct Header {
     uint32_t magic, version;

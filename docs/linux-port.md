@@ -41,8 +41,11 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 - 2026-11-13: `plat::FileMap` (open, size, map; `mmap` on Linux) for GGUF files (split ones too) and the DFlash2
   drafter. Windows bit-identical (4B, a 2-part Flash Next, 27B with DFlash2, against 2026.11.13.01). On Linux a file
   rewritten while mapped faults instead of being locked against writers (no FILE_SHARE_READ), and a folder is refused
-  at open as on Windows. Next in step 1: the expert file's unbuffered reads (`zero/expert_store.h`), Whisper's wide
-  paths (`src/whisper.h`), then sockets.
+  at open as on Windows.
+- 2026-11-13: `plat::AsyncFile` for the expert file's unbuffered reads (`zero/expert_store.h`): on Linux `O_DIRECT`
+  + `pread` at the start of each read (no reads in flight yet: `io_uring` later, once it runs there). Windows
+  bit-identical (the 35B-A3B, Flash Next streaming its experts, the 4B, against 2026.11.13.02). Next in step 1: the
+  expert file's writing (`ExpertStore::build`), Whisper's wide paths (`src/whisper.h`), then sockets.
 
 ## The order
 

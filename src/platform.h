@@ -15,6 +15,7 @@
 #endif
 #include <windows.h>
 #else
+#include <cerrno>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -142,6 +143,129 @@ class FileMap {
 #else
   int fd_ = -1;
   size_t len_ = 0;
+#endif
+};
+
+// A file read without the OS file cache, several reads in flight on numbered slots (the expert file, zero/expert_store.h:
+// a whole expert per read, straight into memory the GPU copies from). Buffers, offsets and lengths 4 KB aligned.
+// Windows: FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, one manual-reset event per slot, ReadFile /
+// WaitForMultipleObjects / GetOverlappedResult / CancelIoEx, the calls expert_store.h made before. Linux (first form):
+// O_DIRECT and a pread at start(), so a read is done when it starts (io_uring later, for reads in flight).
+class AsyncFile {
+ public:
+  static constexpr int kMaxSlots = 64;
+  AsyncFile() = default;
+  AsyncFile(const AsyncFile&) = delete;
+  AsyncFile& operator=(const AsyncFile&) = delete;
+  ~AsyncFile() { close(); }
+  // 0: open with `slots` slots; 1: the file cannot be opened; 2: the slots' events cannot be made
+  int open(const char* path, int slots) {
+    close();
+    if (slots < 1 || slots > kMaxSlots) return 2;
+    n_ = slots;
+#ifdef _WIN32
+    h_ = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
+                     nullptr);
+    if (h_ == INVALID_HANDLE_VALUE) return 1;
+    for (int s = 0; s < n_; ++s)
+      if (!(ev_[s] = CreateEventW(nullptr, TRUE, FALSE, nullptr))) return 2;
+#else
+    fd_ = ::open(path, O_RDONLY | O_DIRECT | O_CLOEXEC);
+    if (fd_ < 0 && errno == EINVAL) fd_ = ::open(path, O_RDONLY | O_CLOEXEC);  // (a filesystem without O_DIRECT: cached)
+    if (fd_ < 0) return 1;
+#endif
+    return 0;
+  }
+  // a read of n bytes at `off` into dst on slot s; false: it failed to start (error() says why)
+  bool start(int s, void* dst, uint32_t n, uint64_t off) {
+#ifdef _WIN32
+    OVERLAPPED& ov = ov_[s];
+    ZeroMemory(&ov, sizeof ov);
+    ov.Offset = (DWORD)off;
+    ov.OffsetHigh = (DWORD)(off >> 32);
+    ov.hEvent = ev_[s];
+    ResetEvent(ev_[s]);
+    return ReadFile(h_, dst, (DWORD)n, nullptr, &ov) || GetLastError() == ERROR_IO_PENDING;
+#else
+    size_t got = 0;
+    ok_[s] = false;
+    while (got < n) {
+      const ssize_t r = pread(fd_, (char*)dst + got, n - got, (off_t)(off + got));
+      if (r < 0) {
+        if (errno == EINTR) continue;
+        err_[s] = (unsigned long)errno;
+        return false;
+      }
+      if (r == 0) return true;  // (the file ends first: started, and finish() says it failed, as a short read)
+      got += (size_t)r;
+    }
+    ok_[s] = true;
+    return true;
+#endif
+  }
+  // waits for one of the n slots in ss to finish: its index in ss, or -1 (the wait failed)
+  int wait_any(const int* ss, int n) {
+#ifdef _WIN32
+    HANDLE evs[kMaxSlots];
+    for (int i = 0; i < n; ++i) evs[i] = ev_[ss[i]];
+    const DWORD w = WaitForMultipleObjects((DWORD)n, evs, FALSE, INFINITE);
+    if (w >= WAIT_OBJECT_0 + (DWORD)n) return -1;
+    return (int)(w - WAIT_OBJECT_0);
+#else
+    return n > 0 ? 0 : -1;  // (every read finished in start)
+#endif
+  }
+  // the finished read on slot s: true when it read everything it asked for
+  bool finish(int s) {
+#ifdef _WIN32
+    DWORD got = 0;
+    return GetOverlappedResult(h_, &ov_[s], &got, FALSE) != 0;
+#else
+    return ok_[s];
+#endif
+  }
+  // a read in flight on slot s cancelled and waited for (no late write into its buffer)
+  void cancel(int s) {
+#ifdef _WIN32
+    CancelIoEx(h_, &ov_[s]);
+    DWORD got = 0;
+    GetOverlappedResult(h_, &ov_[s], &got, TRUE);
+#else
+    (void)s;
+#endif
+  }
+  // why the last start() on slot s, or the last wait (s = -1), failed: GetLastError() on Windows (per thread), errno
+  unsigned long error(int s = -1) const {
+#ifdef _WIN32
+    (void)s;
+    return GetLastError();
+#else
+    return s >= 0 ? err_[s] : 0;
+#endif
+  }
+  void close() {
+#ifdef _WIN32
+    for (int s = 0; s < kMaxSlots; ++s)
+      if (ev_[s]) CloseHandle(ev_[s]), ev_[s] = nullptr;
+    if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+    h_ = INVALID_HANDLE_VALUE;
+#else
+    if (fd_ >= 0) ::close(fd_);
+    fd_ = -1;
+#endif
+    n_ = 0;
+  }
+
+ private:
+  int n_ = 0;
+#ifdef _WIN32
+  HANDLE h_ = INVALID_HANDLE_VALUE;
+  HANDLE ev_[kMaxSlots] = {};
+  OVERLAPPED ov_[kMaxSlots] = {};
+#else
+  int fd_ = -1;
+  unsigned long err_[kMaxSlots] = {};  // (per slot: the two reading threads use slots of their own)
+  bool ok_[kMaxSlots] = {};
 #endif
 };
 
