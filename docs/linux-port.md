@@ -33,6 +33,13 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 | The build | `build.ps1` (MSVC `cl`, `/FI` force-includes, `/openmp`) | CMake with GCC or Clang (`-include`, `-fopenmp`, `-mavx2 -mfma`) |
 | The scripts and the launcher | the 14 scripts in `scripts/` (4,300 lines; 30 `.ps1` files in all with `bench/` and `tests/`), the WinForms launcher | a small shell script to start `serverz`, a systemd unit; PowerShell 7 runs on Linux for some of the rest (not `vcvars.ps1`, `make-package.ps1` or the launcher's); the launcher stays Windows-only |
 
+## Progress
+
+- 2026-11-13: step 1 started: `src/platform.h` with the libraries' loading (`plat::dl_open` / `dl_loaded` / `dl_sym`
+  / `dl_close`, `dlopen` on Linux) and the home folder (`plat::home_env`); the four GPU-runtime loaders and the data
+  folder use it. The Windows build bit-identical (runz's logits against release 2026.11.12.19). Next in step 1: model
+  files and their mapping (`src/gguf.h`, `zero/expert_store.h`), then sockets.
+
 ## The order
 
 1. **A platform layer** (`src/platform.h`): files, mapping, dynamic loading, paths, time, process start and kill,

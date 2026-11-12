@@ -184,15 +184,15 @@ struct BatchFns {
 inline BatchFns& batch_fns() {
   static BatchFns f = [] {
     BatchFns b;
-    HMODULE zl = GetModuleHandleA("ze_loader.dll");
+    void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
     if (!zl || !driver) return b;
-    b.create = (decltype(b.create))GetProcAddress(zl, "zeCommandListCreate");
-    b.close = (decltype(b.close))GetProcAddress(zl, "zeCommandListClose");
-    b.reset = (decltype(b.reset))GetProcAddress(zl, "zeCommandListReset");
-    b.append = (decltype(b.append))GetProcAddress(zl, "zeCommandListImmediateAppendCommandListsExp");
+    b.create = (decltype(b.create))plat::dl_sym(zl, "zeCommandListCreate");
+    b.close = (decltype(b.close))plat::dl_sym(zl, "zeCommandListClose");
+    b.reset = (decltype(b.reset))plat::dl_sym(zl, "zeCommandListReset");
+    b.append = (decltype(b.append))plat::dl_sym(zl, "zeCommandListImmediateAppendCommandListsExp");
     if (!b.append) {
       typedef ze_result_t(__stdcall * PFN_ext)(ze_driver_handle_t, const char*, void**);
-      auto ext = (PFN_ext)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
+      auto ext = (PFN_ext)plat::dl_sym(zl, "zeDriverGetExtensionFunctionAddress");
       void* p = nullptr;
       if (ext && ext(driver, "zeCommandListImmediateAppendCommandListsExp", &p) == 0) b.append = (decltype(b.append))p;
     }
@@ -549,9 +549,9 @@ inline ReleaseProgram releaseProgram;
 inline void *device = nullptr, *context = nullptr;
 inline bool load() {
   if (context) return true;  // (a second engine in the process: the same compiler context, no second DLL reference)
-  HMODULE h = LoadLibraryA("OpenCL.dll");
+  void* h = plat::dl_open("OpenCL.dll", "libOpenCL.so.1");
   if (!h) return false;
-#define RCL(var, name) var = (decltype(var))(void*)GetProcAddress(h, name); if (!var) { FreeLibrary(h); return false; }
+#define RCL(var, name) var = (decltype(var))plat::dl_sym(h, name); if (!var) { plat::dl_close(h); return false; }
   RCL(getPlatformIDs, "clGetPlatformIDs") RCL(getDeviceIDs, "clGetDeviceIDs") RCL(getDeviceInfo, "clGetDeviceInfo")
   RCL(createContext, "clCreateContext") RCL(createProgramWithSource, "clCreateProgramWithSource")
   RCL(buildProgram, "clBuildProgram") RCL(getProgramBuildInfo, "clGetProgramBuildInfo")
@@ -559,7 +559,7 @@ inline bool load() {
 #undef RCL
   auto fail = [&] {  // (no compiler context: the DLL let go, a later call starts over)
     device = context = nullptr;
-    FreeLibrary(h);
+    plat::dl_close(h);
     return false;
   };
   cl_uint np = 0;

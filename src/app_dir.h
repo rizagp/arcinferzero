@@ -8,6 +8,7 @@
 // follow it. If the move fails (a file held open by an older process) the old folder is used as it is.
 // scripts/app-dir.ps1 does the same for the scripts.
 #pragma once
+#include "platform.h"
 #include <cstdlib>
 #include <cctype>
 #include <filesystem>
@@ -20,7 +21,7 @@ inline std::string app_dir() {
   static const std::string dir = [] {
     namespace fs = std::filesystem;
     if (const char* d = getenv("ARC_DATA_DIR"); d && *d) return std::string(d);
-    const char* up = getenv("USERPROFILE");
+    const char* up = plat::home_env();  // (%USERPROFILE%; $HOME on Linux)
     const char* la = getenv("LOCALAPPDATA");
     const fs::path home = fs::path(up ? up : ".");
     const fs::path now = home / ".inferzero";

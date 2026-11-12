@@ -5,13 +5,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#include "../src/platform.h"  // (windows.h on Windows; the libraries' loading, plat::dl_*)
 
 typedef uint32_t ze_result_t;
 #define ZE_RESULT_SUCCESS 0u
@@ -156,11 +150,11 @@ ZE_FUNCS(ZE_DECL)
 #undef ZE_DECL
 
 inline bool ze_load() {
-  HMODULE m = LoadLibraryA("ze_loader.dll");
+  void* m = plat::dl_open("ze_loader.dll", "libze_loader.so.1");
   if (!m) return false;
 #define ZE_LOAD(ret, name, args) \
-  name = (PFN_##name)GetProcAddress(m, #name); \
-  if (!name) { zlog::eprintf("ze_loader.dll: %s missing\n", #name); return false; }
+  name = (PFN_##name)plat::dl_sym(m, #name); \
+  if (!name) { zlog::eprintf("the Level Zero loader: %s missing\n", #name); return false; }
   ZE_FUNCS(ZE_LOAD)
 #undef ZE_LOAD
   return true;

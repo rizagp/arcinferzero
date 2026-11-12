@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-13 (night): the Linux port's first piece, a platform layer
+
+- **`src/platform.h`** (docs/linux-port.md, step 1): the GPU runtimes' loading (`ze_loader.dll` / `OpenCL.dll`,
+  on Linux `libze_loader.so.1` / `libOpenCL.so.1`) and the user's home folder (`%USERPROFILE%`, on Linux `$HOME`)
+  behind one small interface; `zero/ze_min.h`, `src/cl_min.h`, `zero/clrt.h` and `src/app_dir.h` call it. On Windows
+  each call is the Win32 call made before: runz's output and logits identical to release 2026.11.12.19, all 13
+  packaged programs and the bench / test tools build. Nothing runs on Linux yet; files, mapping, sockets and processes
+  follow.
+
 ## 2026-11-12 (midnight): the H8 down GEMM reads the up GEMM's output; `runz --n 0` fixed
 
 - **No `swiglu_quant` before an H8 down GEMM** (QUEUE 33.3). In a prompt chunk, the up GEMM already writes

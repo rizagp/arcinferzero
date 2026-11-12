@@ -5,9 +5,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+#include "platform.h"  // (windows.h on Windows; the library's loading, plat::dl_*)
 
 typedef int32_t cl_int;
 typedef uint32_t cl_uint;
@@ -133,10 +131,10 @@ CL_FUNCS(CL_DECLARE)
 #undef CL_DECLARE
 
 inline bool cl_load() {
-  HMODULE h = LoadLibraryA("OpenCL.dll");
+  void* h = plat::dl_open("OpenCL.dll", "libOpenCL.so.1");
   if (!h) return false;
 #define CL_RESOLVE(ret, name, args)                       \
-  name = (PFN_##name)(void*)GetProcAddress(h, #name);     \
+  name = (PFN_##name)plat::dl_sym(h, #name);              \
   if (!name) { zlog::eprintf("missing %s\n", #name); return false; }
   CL_FUNCS(CL_RESOLVE)
 #undef CL_RESOLVE
