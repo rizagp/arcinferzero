@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-13 (early morning): the Linux port, model files through the platform layer
+
+- **`plat::FileMap`** (`src/platform.h`, docs/linux-port.md step 1): a file mapped read-only, in three steps (open,
+  size, map). GGUF model files (`src/gguf.h`, the parts of a split model too) and the DFlash2 drafter's safetensors
+  (`zero/engine_drafters.h`) use it; on Linux it is `open` / `fstat` / `mmap`. On Windows the same calls, checks and
+  messages as before: runz's logits identical to release 2026.11.13.01 for the 4B, a split GGUF (Flash Next, 2 parts)
+  and the 27B with its DFlash2 drafter (the same greedy text); a missing and an empty file give the same errors.
+
 ## 2026-11-13 (night): the Linux port's first piece, a platform layer
 
 - **`src/platform.h`** (docs/linux-port.md, step 1): the GPU runtimes' loading (`ze_loader.dll` / `OpenCL.dll`,

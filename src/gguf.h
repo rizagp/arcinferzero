@@ -13,9 +13,7 @@
 #include <unordered_map>
 #include <variant>
 #include <stdexcept>
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+#include "platform.h"  // (windows.h on Windows; plat::FileMap)
 
 enum GgmlType : uint32_t {
   GGML_F32 = 0, GGML_F16 = 1, GGML_Q4_0 = 2, GGML_Q4_1 = 3, GGML_Q5_0 = 6, GGML_Q5_1 = 7, GGML_Q8_0 = 8,
@@ -94,16 +92,13 @@ class GgufFile {
   std::unordered_map<std::string, size_t> tensor_index;
 
   explicit GgufFile(const std::string& path_) : path(path_) {
-    file_ = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file_ == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open " + path);
+    if (!fm_.open(path.c_str())) throw std::runtime_error("cannot open " + path);
     try {  // (a file that fails to parse: no handle or mapping left open; the destructor does not run here)
-      LARGE_INTEGER sz;
-      if (!GetFileSizeEx(file_, &sz)) throw std::runtime_error("cannot read the size of " + path);
-      size_ = (uint64_t)sz.QuadPart;
-      map_ = CreateFileMappingA(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
-      if (!map_) throw std::runtime_error("CreateFileMapping failed");
-      base_ = (const uint8_t*)MapViewOfFile(map_, FILE_MAP_READ, 0, 0, 0);
-      if (!base_) throw std::runtime_error("MapViewOfFile failed");
+      if (!fm_.size(size_)) throw std::runtime_error("cannot read the size of " + path);
+      const int mr = fm_.map();
+      if (mr == 1) throw std::runtime_error("CreateFileMapping failed");
+      if (mr == 2) throw std::runtime_error("MapViewOfFile failed");
+      base_ = fm_.data();
       parse();
       open_parts();
       add_virtual();
@@ -180,18 +175,14 @@ class GgufFile {
   }
 
  private:
-  HANDLE file_ = INVALID_HANDLE_VALUE, map_ = nullptr;
+  plat::FileMap fm_;  // (the file and its read-only mapping, src/platform.h)
   const uint8_t* base_ = nullptr;
   uint64_t size_ = 0, pos_ = 0;
 
   std::vector<std::unique_ptr<GgufFile>> parts_;  // the other parts of a split model
   void close() {
-    if (base_) UnmapViewOfFile(base_);
-    if (map_) CloseHandle(map_);
-    if (file_ != INVALID_HANDLE_VALUE) CloseHandle(file_);
+    fm_.close();
     base_ = nullptr;
-    map_ = nullptr;
-    file_ = INVALID_HANDLE_VALUE;
   }
 
   // name-00001-of-0000N.gguf: the parts 2..N, their tensors added to this one's index

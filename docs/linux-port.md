@@ -37,8 +37,12 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 
 - 2026-11-13: step 1 started: `src/platform.h` with the libraries' loading (`plat::dl_open` / `dl_loaded` / `dl_sym`
   / `dl_close`, `dlopen` on Linux) and the home folder (`plat::home_env`); the four GPU-runtime loaders and the data
-  folder use it. The Windows build bit-identical (runz's logits against release 2026.11.12.19). Next in step 1: model
-  files and their mapping (`src/gguf.h`, `zero/expert_store.h`), then sockets.
+  folder use it. The Windows build bit-identical (runz's logits against release 2026.11.12.19).
+- 2026-11-13: `plat::FileMap` (open, size, map; `mmap` on Linux) for GGUF files (split ones too) and the DFlash2
+  drafter. Windows bit-identical (4B, a 2-part Flash Next, 27B with DFlash2, against 2026.11.13.01). On Linux a file
+  rewritten while mapped faults instead of being locked against writers (no FILE_SHARE_READ), and a folder is refused
+  at open as on Windows. Next in step 1: the expert file's unbuffered reads (`zero/expert_store.h`), Whisper's wide
+  paths (`src/whisper.h`), then sockets.
 
 ## The order
 

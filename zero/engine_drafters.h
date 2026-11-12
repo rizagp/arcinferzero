@@ -118,7 +118,7 @@
   cl_mem dfl_x_ = nullptr, dfl_h_ = nullptr, dfl_t_ = nullptr, dfl_dyn_ = nullptr, dfl_q_ = nullptr, dfl_k_ = nullptr,
          dfl_v_ = nullptr, dfl_o_ = nullptr, dfl_gu_ = nullptr, dfl_hp_ = nullptr, dfl_ck_ = nullptr, dfl_cv_ = nullptr;
   // the selector codebooks (bf16, host) from the mapped safetensors file
-  HANDLE dfl_file_ = INVALID_HANDLE_VALUE, dfl_map_ = nullptr;
+  plat::FileMap dfl_fm_;  // (the safetensors file mapped, src/platform.h)
   const uint8_t* dfl_base_ = nullptr;
   const uint16_t *dfl_pred_ = nullptr, *dfl_succ_ = nullptr;
   std::vector<float> dfl_lg_, dfl_hph_;
@@ -128,23 +128,16 @@
   std::map<std::string, StTensor> dfl_st_;
   // (the mapping stays open while the engine lives: the selector's codebooks are read from it; release_all closes it)
   void dfl_close() {
-    if (dfl_base_) UnmapViewOfFile(dfl_base_);
-    if (dfl_map_) CloseHandle(dfl_map_);
-    if (dfl_file_ != INVALID_HANDLE_VALUE) CloseHandle(dfl_file_);
+    dfl_fm_.close();
     dfl_base_ = nullptr;
-    dfl_map_ = nullptr;
-    dfl_file_ = INVALID_HANDLE_VALUE;
     dfl_pred_ = dfl_succ_ = nullptr;
     dfl_st_.clear();
   }
   void dfl_open(const std::string& file) {
-    dfl_file_ = CreateFileA(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (dfl_file_ == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open " + file);
-    LARGE_INTEGER fs{};
-    if (!GetFileSizeEx(dfl_file_, &fs) || fs.QuadPart < 8) throw std::runtime_error("DFlash: " + file + " is not a safetensors file");
-    const uint64_t size = (uint64_t)fs.QuadPart;
-    dfl_map_ = CreateFileMappingA(dfl_file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
-    dfl_base_ = dfl_map_ ? (const uint8_t*)MapViewOfFile(dfl_map_, FILE_MAP_READ, 0, 0, 0) : nullptr;
+    if (!dfl_fm_.open(file.c_str())) throw std::runtime_error("cannot open " + file);
+    uint64_t size = 0;
+    if (!dfl_fm_.size(size) || size < 8) throw std::runtime_error("DFlash: " + file + " is not a safetensors file");
+    dfl_base_ = dfl_fm_.map() == 0 ? dfl_fm_.data() : nullptr;
     if (!dfl_base_) throw std::runtime_error("cannot map " + file);
     // (a damaged file: its header length and every tensor's byte range within the file, never read past it)
     uint64_t hn = 0;
