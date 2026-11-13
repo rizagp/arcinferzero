@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-13: gpu_bench's FP16 vector test fixed; a 32-wide FP16 row on Xe2 (issue #12)
+
+- **Why:** a Pro B70 measured FP16 (vector) at 21.4 of 45.9 TFLOPS on paper (47 %), a B580 the same share
+  (friskens, issue #12).
+- **What ocloc shows** (bmg-g21): a 16-lane sub-group's f16 multiply-add compiles to `mad (16|M0) :hf`, half of
+  Xe2's 64-byte register, so it runs at the FP32 rate; a 32-lane one compiles to `mad (32|M0) :hf`, the whole
+  register, the packed form. Also, the test started every lane from the same values, and ocloc then made the chains
+  scalar (`(W) mad (1|M0) :hf`): the values now differ per lane.
+- **`bin\gpu_bench.exe`:** the FP16 row with per-lane values, and a new row "FP16 (vector, 32-wide)" on Xe2 / Xe3
+  (on Xe-LPG, 32-byte registers, 16 lanes already fill one: the laptop's 125H 7.66 of 7.88 TFLOPS, 97 %). The B70's
+  number for the new row is to come.
+
 ## 2026-11-13: wider H8 tiles to sweep (B60, Arc 140T); the multi-GPU sum overlap merged
 
 - **Tiles beyond 32 x 64, opt-in, for a sweep** (`bench\xw_sweep.ps1 -Wide`, docs/xe2-tuning.md section 11): on

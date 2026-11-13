@@ -598,6 +598,16 @@ The B60's 27B 4K prompt spent 290 ms in `gdn_recur` and 198 ms in `attention` (2
   ocloc for Meteor Lake, Battlemage and Arrow Lake H: no spills. At start each XMX kernel is compared with its vector
   twin on random data (`gdn_chunk`: 1e-4; `attn_q8`: bit for bit) and not used if they differ.
 
+## f16 vector math needs 32-lane sub-groups for the full rate (2026-11-13, issue #12)
+
+A Pro B70's `gpu_bench` measured f16 vector multiply-adds at 21.4 of 45.9 TFLOPS. ocloc for Battlemage shows why: in a
+16-lane sub-group, an f16 operation covers 16 halves, `mad (16|M0) :hf`, half of a 64-byte Xe2 register, so it runs at
+the FP32 rate. Only a 32-lane sub-group gives `mad (32|M0) :hf`, which fills the register (the packed form, 2x). On
+Xe-LPG, with 32-byte registers, 16 lanes already fill one (the 125H: 97 % of paper at 16 lanes). The engine's
+kernels use 16-lane sub-groups on discrete cards, so any f16 vector math in them runs at the FP32 rate there.
+Most of it waits on memory, so it may not matter; a compute-bound f16 kernel would want 32 lanes or float math.
+`bin\gpu_bench.exe`'s row "FP16 (vector, 32-wide)" measures the packed rate.
+
 ## Not done yet (needs an Xe2 card to develop on)
 
 - XMX for the 2-8 token verification passes of MTP / DFlash2 (now the GEMV-style kernels).

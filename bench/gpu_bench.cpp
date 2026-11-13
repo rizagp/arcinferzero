@@ -117,11 +117,19 @@ __kernel void probe(__global const int* x, int iters, __global int* out) {
   if (s == -1234.5f) out[get_global_id(0)] = (int)s;
 }
 #elif defined(K_FP16)
-__attribute__((intel_reqd_sub_group_size(16)))
+// the vector engines in f16: 8 independent half8 multiply-add chains per work-item. FP16_SG 16 (the "FP16 (vector)"
+// row) or 32 ("FP16 (vector, 32-wide)", 2026-11-13, issue #12): on Xe2 a register is 64 bytes, and ocloc bmg compiles
+// a 16-lane sub-group's f16 multiply-add as mad (16|M0) :hf, half a register, at the FP32 rate (a B70 measured 21.4 of
+// 45.9 TFLOPS); 32 lanes give mad (32|M0) :hf, the whole register, the packed form. The start values differ per lane:
+// with one value for every lane (before 2026-11-13) ocloc made the chains scalar, (W) mad (1|M0) :hf
+#ifndef FP16_SG
+#define FP16_SG 16
+#endif
+__attribute__((intel_reqd_sub_group_size(FP16_SG)))
 __kernel void probe(__global const int* x, int iters, __global int* out) {
   const half m = (half)(0.999f + 1e-7f * (float)x[0]), d = (half)(1e-4f * (float)x[1]);
   half8 c[8];
-  for (int i = 0; i < 8; ++i) c[i] = (half8)((half)(i & 7));
+  for (int i = 0; i < 8; ++i) c[i] = (half8)((half)((i + get_global_id(0)) & 7));
   for (int it = 0; it < iters; ++it) {
 #pragma unroll
     for (int i = 0; i < 8; ++i) c[i] = fma(c[i], (half8)(m), (half8)(d));
@@ -241,7 +249,7 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 function val(t){if(!t||!(t.measured>0))return t&&t.note?'<small>'+esc(t.note)+'</small>':'&ndash;';
  const p=t.paper>0?Math.round(100*t.measured/t.paper):null;
  return esc(fmt(t.measured,t.unit))+(p!==null?' <small class="pc '+pcls(p)+'">'+p+'%</small>':'');}
-const rows=[['Matrix (XMX)',null],['int8','i8'],['f16','f16'],['bf16','bf16'],['Vector',null],['FP32','fp32'],['FP16','fp16'],['int8 DP4a','dp4a'],['Memory',null],['Read bandwidth','read']];
+const rows=[['Matrix (XMX)',null],['int8','i8'],['f16','f16'],['bf16','bf16'],['Vector',null],['FP32','fp32'],['FP16','fp16'],['FP16, 32-wide','fp16w'],['int8 DP4a','dp4a'],['Memory',null],['Read bandwidth','read']];
 let h='<thead><tr><th></th>'+R.map(r=>'<th>'+esc(label(r))+'</th>').join('')+'</tr></thead><tbody>';
 for(const [lab,id] of rows){ if(!id){h+='<tr class="sec"><td colspan="'+(R.length+1)+'">'+lab+'</td></tr>';continue;}
  h+='<tr><td>'+lab+'</td>'+R.map(r=>'<td>'+val(r.tests[id])+'</td>').join('')+'</tr>';}
@@ -257,7 +265,7 @@ for(const r of R){
  c+=card('Graphics Processor',[['GPU name',esc(r.name)],['Device ID',esc(r.device)],['Architecture',esc(r.arch+(r.family?' ('+r.family+')':''))],['Driver',esc(r.driver)],['Memory',esc(r.memory)]]);
  c+=card('Render Config',[['Execution units',r.eus],['Xe-cores',r.cores],['XMX engines',r.xmx_engines||'none'],['DPAS sub-group',r.dpas_lanes?r.dpas_lanes+' lanes':'none'],['Maximum clock',r.mhz+' MHz']]);
  c+=card('Matrix Performance',[['INT8',val(r.tests.i8)+paper(r.tests.i8)],['FP16',val(r.tests.f16)+paper(r.tests.f16)],['BF16',val(r.tests.bf16)+paper(r.tests.bf16)]]);
- c+=card('Vector Performance',[['FP32',val(r.tests.fp32)+paper(r.tests.fp32)],['FP16',val(r.tests.fp16)+paper(r.tests.fp16)],['INT8 (DP4a)',val(r.tests.dp4a)+paper(r.tests.dp4a)]]);
+ c+=card('Vector Performance',[['FP32',val(r.tests.fp32)+paper(r.tests.fp32)],['FP16',val(r.tests.fp16)+paper(r.tests.fp16)],['FP16 (32-wide)',val(r.tests.fp16w)+paper(r.tests.fp16w)],['INT8 (DP4a)',val(r.tests.dp4a)+paper(r.tests.dp4a)]]);
  c+=card('Memory',[['Read bandwidth',val(r.tests.read)],['Shared with CPU',r.integrated?'yes':'no']]);
  c+='</div>';
  const notes=['Architecture: '+(r.arch||'?')+(r.family?' ('+r.family+')':''),'IP version: '+(r.ip||'unknown'),
@@ -343,6 +351,7 @@ int main(int argc, char** argv) {
       {"bf16", "BF16 (XMX)", L == 8 ? "K_BF16_8" : "K_BF16_16", L, 2.0 * 8 * L * 16, "TFLOPS", true, xe2 ? 256 : 128},
       {"fp32", "FP32 (vector)", "K_FP32", 16, 2.0 * 4 * 16, "TFLOPS", false, vec},
       {"fp16", "FP16 (vector)", "K_FP16", 16, 2.0 * 8 * 16, "TFLOPS", false, 2 * vec},
+      {"fp16w", "FP16 (vector, 32-wide)", "K_FP16 -DFP16_SG=32", 32, 2.0 * 8 * 32, "TFLOPS", false, 2 * vec},
       {"dp4a", "INT8 DP4a (vector)", "K_DP4A", 16, 2.0 * 4 * 16, "TOPS", false, 4 * vec},
   };
   std::vector<int> host(256);
@@ -367,6 +376,9 @@ int main(int argc, char** argv) {
   for (Test& t : tests) {
     t.paper = t.per_eu ? (double)t.per_eu * eus * mhz * 1e6 / 1e12 : 0;
     if (t.dpas && !cl.xmx) { t.note = "no XMX"; t.paper = 0; printf("%-22s %14s\n", t.label, "no XMX"); continue; }
+    // (the 32-wide f16 row on Xe2 / Xe3 only, 64-byte registers: with 32-byte ones (Xe-LPG) 16 lanes of f16 already
+    //  fill a register (a 125H: 97 % of paper), and 32 lanes of its 8 chains spill (0.08 TFLOPS))
+    if (std::string(t.id) == "fp16w" && !xe2) { t.note = "Xe2 / Xe3 only"; t.paper = 0; printf("%-22s %14s\n", t.label, "Xe2 / Xe3 only"); continue; }
     try {
       cl_program p = cl.build(kSrc, std::string("-cl-std=CL3.0 -D") + t.def);
       cl_kernel k = cl.kernel(p, "probe");
