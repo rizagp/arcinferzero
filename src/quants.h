@@ -514,6 +514,18 @@ inline void dequant_row(uint32_t type, const uint8_t* row, int K, float* out) {
     }
     return;
   }
+  if (type == GGML_Q5_1) {  // Rows may end after any 32-element block (Flash Next down: K = 640).
+    for (int b = 0; b < K / 32; ++b) {
+      const uint8_t* p = row + (size_t)b * 24;
+      const float d = fp16_to_f32(rd16(p)), m = fp16_to_f32(rd16(p + 2));
+      const uint32_t high = rd32(p + 4);
+      for (int j = 0; j < 32; ++j) {
+        const int low = (p[8 + j % 16] >> (j < 16 ? 0 : 4)) & 15;
+        out[b * 32 + j] = d * (float)(low | (((high >> j) & 1) << 4)) + m;
+      }
+    }
+    return;
+  }
   if (type == GGML_Q8_0 && K % 256) {  // blocks of 32 (f16 scale + 32 int8), for rows that are not whole superblocks
     for (int b = 0; b < K / 32; ++b) {
       const uint8_t* p = row + (size_t)b * 34;

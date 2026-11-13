@@ -373,3 +373,9 @@ Measure before and after on the same build options with a pause in between, best
 noisy, and state the check: bit-identical logits (`runz --dump-logits A.bin` vs `B.bin`, `cmp`), identical greedy
 text, or KL against the f32 reference / the int8 cache (`runz --ppl-kl-save` / `--ppl-kl`) for changes that are
 meant to change the numbers.
+
+## 2026-11-13: Q5_1 CPU reference decoding
+
+| Measurement | Before | After | Scope |
+|---|---|---|---|
+| Independent Q5_1 rows, K=32/64/128/256/512/640/768/1024 | Fails first width, leaves sentinel at K=32 | All eight widths and output guards pass | CPU reference only; no GPU speed/KL claim. |

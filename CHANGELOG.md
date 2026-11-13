@@ -4272,3 +4272,10 @@ one kv head) ran at only ~20 GB/s, 0.7 ms per layer.
 - Segmented layer-major prefill (16K tokens) and the largest contexts that fit 16.5 GiB for every model
   (`scripts/arc-server.ps1`, `scripts/install-pi.ps1`).
 - Review page `docs/review.html` (EN/ID) with `bench/review_data.py`; prompt benchmark `bench/prompt_bench.py`.
+
+## 2026-11-13: Q5_1 CPU reference rows
+
+- Decode every 32-value Q5_1 block in dequant_row, including K=640 rows.
+  Add independent full-code fixtures, short rows and output guards. GPU kernels
+  and GPU layouts are unchanged; this repairs the reference rather than proving
+  existing GPU arithmetic accurate.
