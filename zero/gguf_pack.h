@@ -223,10 +223,15 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
     const fs::path full = fs::absolute(fs::path(source), e2);
     const fs::path rec = fs::path(dir) / "package-source.txt";
     bool ok = false;
-    if (FILE* f = _wfopen(rec.wstring().c_str(), L"wb")) {
+    if (FILE* f = plat::fopen_path(rec, "wb")) {
+#ifdef _WIN32
       // (UTF-16 with its BOM: any path's characters, and PowerShell 5.1's Get-Content reads it as such)
       const std::wstring s = L"\xFEFF" + (e2 ? fs::path(source) : full).wstring() + L"\r\n";
       ok = fwrite(s.data(), sizeof(wchar_t), s.size(), f) == s.size();
+#else
+      const std::string s = (e2 ? fs::path(source) : full).string() + "\n";  // (UTF-8, as Linux paths are)
+      ok = fwrite(s.data(), 1, s.size(), f) == s.size();
+#endif
       ok = fclose(f) == 0 && ok;
     }
     if (!ok) {  // (the package works without it; only remove-original refuses then)

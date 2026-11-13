@@ -60,7 +60,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
     char b[40] = "";
     const std::time_t ct = (std::time_t)t;
     std::tm tm{};
-    if (localtime_s(&tm, &ct) == 0) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+    if (plat::local_time(ct, tm)) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
     return std::string(b);
   };
   try {

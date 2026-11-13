@@ -178,8 +178,7 @@ inline std::vector<Entry> walk(const Project& p, size_t limit, bool& more) {
   for (; it != end && !ec; it.increment(ec)) {
     const std::string name = it->path().filename().string();
     // (a junction or link: not followed, its files may be outside the folder; resolve() refuses them too)
-    const DWORD at = GetFileAttributesW(it->path().c_str());
-    const bool reparse = at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT);
+    const bool reparse = plat::is_link(it->path());
     if (it->is_directory(ec)) {
       bool drop = reparse || (!name.empty() && name[0] == '.');
       for (const char* s : skip) drop = drop || files::lower(name) == s;
@@ -263,13 +262,17 @@ inline void api(const HttpRequest& rq, HttpResponse& rs) {
       Json d = Json::array();
       std::error_code ec;
       if (path.empty()) {  // (the drives, and the user's own folders)
+#ifdef _WIN32
         const DWORD drives = GetLogicalDrives();
         for (int k = 0; k < 26; ++k)
           if (drives & (1u << k)) {
             const std::string root = std::string(1, (char)('A' + k)) + ":\\";
             if (fs::is_directory(fs::path(root), ec)) d.push(Json(root));
           }
-        if (const char* up = getenv("USERPROFILE"))
+#else
+        d.push(Json(std::string("/")));  // (the root, then the home folder's usual folders)
+#endif
+        if (const char* up = plat::home_env())
           for (const char* sub : {"Documents", "Desktop", "Downloads", "OneDrive"})
             if (fs::is_directory(fs::path(up) / sub, ec)) d.push(Json((fs::path(up) / sub).string()));
         Json r = Json::object();
@@ -281,8 +284,7 @@ inline void api(const HttpRequest& rq, HttpResponse& rs) {
       for (fs::directory_iterator it(f, fs::directory_options::skip_permission_denied, ec), end; it != end && !ec; it.increment(ec)) {
         if (!it->is_directory(ec)) continue;
         const std::string n = it->path().filename().string();
-        const DWORD at = GetFileAttributesW(it->path().c_str());
-        if (n.empty() || n[0] == '.' || n[0] == '$' || (at != INVALID_FILE_ATTRIBUTES && (at & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)))) continue;
+        if (n.empty() || n[0] == '.' || n[0] == '$' || plat::is_hidden_or_system(it->path())) continue;
         d.push(Json(n));
         if (d.size() >= 2000) break;
       }

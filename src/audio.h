@@ -1,9 +1,11 @@
 // Audio input: decoding to 16 kHz mono float samples. WAV (PCM 8/16/24/32-bit or float32, any rate and channel
 // count) is parsed here; other containers (mp3, m4a/aac, flac, wma, and the audio track of mp4 / mov / mkv / webm /
-// wmv / avi) go through Windows Media Foundation; Ogg Opus (voice notes) is repacked as Matroska for it.
+// wmv / avi) go through Windows Media Foundation; Ogg Opus (voice notes) is repacked as Matroska for it. On Linux they
+// go through ffmpeg (src/platform_proc.h), when it is installed, and so do MP3 / AAC encoding and the files' lengths.
 // Resampling: windowed-sinc low-pass interpolation (Blackman window), streamed: a file of hours never sits in memory
 // at its own rate. Times stay on the file's timeline: an audio track that starts late, or has gaps, gets silence.
 #pragma once
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -14,6 +16,10 @@
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <shlwapi.h>
+#else
+#include "platform_proc.h"  // (plat::run_program: ffmpeg, ffprobe)
+#include <exception>
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -26,11 +32,13 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef _WIN32
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfreadwrite.lib")
 #pragma comment(lib, "mfuuid.lib")
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "ole32.lib")
+#endif
 
 namespace audio {
 
@@ -479,6 +487,7 @@ inline std::vector<uint8_t> ogg_opus_to_webm(const std::vector<uint8_t>& b, doub
 }
 
 // ---------------------------------------------------------------- Media Foundation
+#ifdef _WIN32
 struct MfSession {  // (COM and Media Foundation for this thread, while decoding)
   bool ok, mf;
   MfSession() {
@@ -582,6 +591,74 @@ inline void mf_decode_bytes(const std::vector<uint8_t>& bytes, To16k& sink, doub
   mf_check(MFCreateSourceReaderFromByteStream(bs.p, nullptr, &rd), "unrecognized audio format");
   mf_decode(rd.p, sink, delay);
 }
+#else
+// ---------------------------------------------------------------- ffmpeg (Linux)
+// (what the user is told when ffmpeg is missing)
+inline std::string ff_missing(const plat::ProcResult& r) {
+  return "audio: " + r.error + " (Linux reads M4A, MP3, FLAC, Opus and video files with ffmpeg: apt install ffmpeg)";
+}
+inline std::string ff_error(const plat::ProcResult& r) {
+  std::string e = r.err.substr(0, r.err.find('\n'));
+  if (e.empty()) e = r.timed_out ? "timed out" : "exit " + std::to_string(r.exit_code);
+  return "audio decoding failed (ffmpeg: " + e + ")";
+}
+// the first audio stream of a file through ffmpeg, mixed to mono (pick >= 0: that channel alone), at `rate`, as
+// raw samples of `fmt` ("f32le" / "s16le") to `on`; on the file's timeline: aresample's async padding turns a late
+// start or a gap into silence, as the Windows path places each sample at its time. Throws when it cannot be read.
+inline void ff_audio(const std::string& file, int pick, int rate, const char* fmt,
+                     const std::function<bool(const char*, size_t)>& on) {
+  std::vector<std::string> a = {"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", file, "-vn", "-map", "0:a:0"};
+  const std::string sync = "aresample=async=1:first_pts=0";
+  if (pick >= 0) a.insert(a.end(), {"-af", "pan=mono|c0=c" + std::to_string(pick) + "," + sync});
+  else a.insert(a.end(), {"-ac", "1", "-af", sync});
+  a.insert(a.end(), {"-ar", std::to_string(rate), "-f", fmt, "pipe:1"});
+  std::exception_ptr ex;
+  const plat::ProcResult r = plat::run_program(a, "", 24 * 3600 * 1000, 0, [&](const char* d, size_t n) {
+    try {
+      return on(d, n);
+    } catch (...) {  // (an exception from the caller's sink: rethrown below, after the program is ended)
+      ex = std::current_exception();
+      return false;
+    }
+  });
+  if (ex) std::rethrow_exception(ex);
+  if (!r.started) throw std::runtime_error(ff_missing(r));
+  if (!r.cut && r.exit_code != 0) throw std::runtime_error(ff_error(r));
+}
+// into a 16-kHz sink, whole floats only (a pipe read can end inside one)
+inline void ff_decode(const std::string& file, To16k& sink, int pick = -1) {
+  std::string carry;
+  std::vector<float> f;
+  ff_audio(file, pick, 16000, "f32le", [&](const char* d, size_t n) {
+    carry.append(d, n);
+    const size_t k = carry.size() / 4;
+    if (!k) return true;
+    f.resize(k);
+    memcpy(f.data(), carry.data(), k * 4);
+    carry.erase(0, k * 4);
+    return sink.add(f.data(), k, 16000);
+  });
+}
+// bytes in memory through a temporary file (an MP4 keeps its index at its end, which a pipe cannot seek to)
+inline void ff_decode_bytes(const std::vector<uint8_t>& bytes, To16k& sink) {
+  char path[] = "/tmp/inferzero-audio-XXXXXX";
+  const int fd = mkstemp(path);
+  if (fd < 0) throw std::runtime_error("audio: no temporary file");
+  size_t off = 0;
+  while (off < bytes.size()) {
+    const ssize_t w = ::write(fd, bytes.data() + off, bytes.size() - off);
+    if (w <= 0) break;
+    off += (size_t)w;
+  }
+  ::close(fd);
+  struct Gone {
+    const char* p;
+    ~Gone() { unlink(p); }
+  } gone{path};
+  if (off < bytes.size()) throw std::runtime_error("audio: the temporary file could not be written");
+  ff_decode(path, sink);
+}
+#endif
 
 // ---------------------------------------------------------------- 16 kHz mono
 // Any supported audio file -> 16 kHz mono samples.
@@ -607,9 +684,13 @@ inline std::vector<float> decode_16k(const std::vector<uint8_t>& bytes, double m
   if (wav_format(at, bytes.size(), w)) {
     wav_decode(at, w, sink);
   } else {
+#ifdef _WIN32
     const std::vector<uint8_t> webm = ogg_opus_to_webm(bytes, max_seconds);
     if (!webm.empty()) mf_decode_bytes(webm, sink, 0);
     else mf_decode_bytes(bytes, sink, mp4_audio_delay(at, bytes.size()));
+#else
+    ff_decode_bytes(bytes, sink);  // (ffmpeg reads Ogg Opus as it is)
+#endif
   }
   return finish_16k(sink, max_seconds);
 }
@@ -631,6 +712,11 @@ inline std::vector<float> decode_16k_file(const std::filesystem::path& path, dou
   at(0, magic, 4);
   if (wav_format(at, size, w)) {
     wav_decode(at, w, sink);
+#ifndef _WIN32
+  } else {
+    (void)magic;
+    ff_decode(path.string(), sink);
+#else
   } else if (!memcmp(magic, "OggS", 4)) {
     if (size > (1u << 30)) throw std::runtime_error("ogg: larger than 1 GB");
     std::vector<uint8_t> b((size_t)size);
@@ -643,12 +729,19 @@ inline std::vector<float> decode_16k_file(const std::filesystem::path& path, dou
     mf_check(MFCreateSourceReaderFromURL(std::filesystem::absolute(path).wstring().c_str(), nullptr, &rd),
              "unrecognized audio format");
     mf_decode(rd.p, sink, delay);
+#endif
   }
   return finish_16k(sink, max_seconds);
 }
 
 // an audio or video file's length in seconds from its container (no decoding; 0: not known)
 inline double duration_seconds(const std::filesystem::path& path) {
+#ifndef _WIN32
+  const plat::ProcResult r = plat::run_program({"ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
+                                                "default=noprint_wrappers=1:nokey=1", path.string()},
+                                               "", 60000, 4096);
+  return r.started && r.exit_code == 0 ? std::max(0.0, atof(r.out.c_str())) : 0;
+#else
   try {
     MfSession ses;
     ComPtr<IMFSourceReader> rd;
@@ -663,6 +756,7 @@ inline double duration_seconds(const std::filesystem::path& path) {
   } catch (const std::exception&) {
     return 0;
   }
+#endif
 }
 
 // a WAV file's channels apart, each at 16 kHz (a recording's tracks: the microphone, the other side); max_seconds > 0:
@@ -724,12 +818,17 @@ inline std::vector<std::vector<float>> decode_16k_channels(const std::filesystem
       return (size_t)f.gcount();
     };
     To16k sink(max_seconds);
+#ifdef _WIN32
     const double delay = mp4_audio_delay(at, size);
     MfSession ses;
     ComPtr<IMFSourceReader> rd;
     mf_check(MFCreateSourceReaderFromURL(std::filesystem::absolute(path).wstring().c_str(), nullptr, &rd),
              "unrecognized audio format");
     mf_decode(rd.p, sink, delay, c);
+#else
+    (void)at, (void)size;
+    ff_decode(path.string(), sink, c);
+#endif
     out.push_back(finish_16k(sink, max_seconds));
   }
   return out;
@@ -754,6 +853,18 @@ inline bool encode_compressed(const std::filesystem::path& wav, const std::files
     WavFormat w;
     if (!wav_format(at, size, w) || w.fmt != 1 || w.bits != 16 || w.ch < 1 || w.ch > 2)
       throw std::runtime_error("only 16-bit PCM WAV, mono or stereo");
+#ifndef _WIN32
+    // (ffmpeg's encoders: LAME for MP3, its own AAC; the same bitrate cap as the Windows encoders)
+    const int top = std::clamp(kbps, 96, aac ? 192 : 320);
+    const plat::ProcResult r = plat::run_program(
+        {"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", wav.string(), "-c:a", aac ? "aac" : "libmp3lame",
+         "-b:a", std::to_string(top) + "k", mp3.string()},
+        "", 6 * 3600 * 1000, 65536);
+    if (!r.started) throw std::runtime_error(r.error + " (Linux encodes MP3 / AAC with ffmpeg: apt install ffmpeg)");
+    if (r.exit_code != 0) throw std::runtime_error(std::string(aac ? "AAC" : "MP3") + " encoding failed (ffmpeg: " +
+                                                   r.err.substr(0, r.err.find('\n')) + ")");
+    return true;
+#else
     MfSession ses;
     // (the encoder takes only some bitrates for a channel count: mono at 192 kbps is refused; the next lower one tried)
     ComPtr<IMFSinkWriter> sw;
@@ -815,6 +926,7 @@ inline bool encode_compressed(const std::filesystem::path& wav, const std::files
     }
     mf_check(sw->Finalize(), "finalize");
     return true;
+#endif
   } catch (const std::exception& e) {
     err = e.what();
     std::error_code ec;
@@ -835,6 +947,24 @@ inline bool encode_m4a(const std::filesystem::path& wav, const std::filesystem::
 // part of the way (an exception from `out` ends it too).
 inline uint64_t decode_mono_pcm16(const std::filesystem::path& path, int rate,
                                   const std::function<void(const int16_t*, size_t)>& out) {
+#ifndef _WIN32
+  // (ffmpeg mixes and resamples; on the same timeline as decode_16k_file, the async padding)
+  uint64_t written = 0;
+  std::string carry;
+  std::vector<int16_t> pcm;
+  ff_audio(path.string(), -1, rate, "s16le", [&](const char* d, size_t n) {
+    carry.append(d, n);
+    const size_t k = carry.size() / 2;
+    if (!k) return true;
+    pcm.resize(k);
+    memcpy(pcm.data(), carry.data(), k * 2);
+    carry.erase(0, k * 2);
+    out(pcm.data(), k);
+    written += k;
+    return true;
+  });
+  return written;
+#else
   MfSession ses;
   ComPtr<IMFSourceReader> rd;
   mf_check(MFCreateSourceReaderFromURL(std::filesystem::absolute(path).wstring().c_str(), nullptr, &rd),
@@ -939,6 +1069,7 @@ inline uint64_t decode_mono_pcm16(const std::filesystem::path& path, int rate,
     if (flags & MF_SOURCE_READERF_ENDOFSTREAM) break;
   }
   return written;
+#endif
 }
 
 }  // namespace audio

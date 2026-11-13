@@ -4,8 +4,77 @@
 //   Pdf p; p.open(bytes, err)     the file's bytes read, or false and why
 //   p.pages()                     pages in it
 //   p.render(page, dpi, err)      page (1-based) as PNG bytes at about `dpi`, or "" and why
+// Linux: poppler's pdfinfo (pages, page size) and pdftoppm (the page as PNG), when installed (poppler-utils), on a
+// temporary copy of the bytes; the same interface and the same 4000-pixel cap.
 #pragma once
 #include <string>
+#ifndef _WIN32
+#include "../src/platform_proc.h"
+#include <algorithm>
+#include <cstdlib>
+#include <memory>
+#include <unistd.h>
+namespace pdfr {
+struct Pdf {
+  struct Tmp {
+    std::string path;
+    ~Tmp() {
+      if (!path.empty()) unlink(path.c_str());
+    }
+  };
+  std::shared_ptr<Tmp> tmp;
+  int n = 0;
+  bool open(const std::string& bytes, std::string& err) {
+    char path[] = "/tmp/inferzero-pdf-XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd < 0) { err = "no temporary file"; return false; }
+    auto t = std::make_shared<Tmp>();
+    t->path = path;
+    size_t off = 0;
+    while (off < bytes.size()) {
+      const ssize_t w = ::write(fd, bytes.data() + off, bytes.size() - off);
+      if (w <= 0) break;
+      off += (size_t)w;
+    }
+    ::close(fd);
+    if (off < bytes.size()) { err = "the temporary file could not be written"; return false; }
+    const plat::ProcResult r = plat::run_program({"pdfinfo", t->path}, "", 60000, 1 << 20);
+    if (!r.started) { err = r.error + " (Linux renders PDF pages with poppler: apt install poppler-utils)"; return false; }
+    const size_t k = r.out.find("Pages:");
+    if (r.exit_code != 0 || k == std::string::npos) {
+      err = "not a PDF poppler can read" + (r.err.empty() ? std::string() : ": " + r.err.substr(0, r.err.find('\n')));
+      return false;
+    }
+    n = atoi(r.out.c_str() + k + 6);
+    tmp = t;
+    return true;
+  }
+  int pages() const { return tmp ? n : 0; }
+  std::string render(int page, int dpi, std::string& err) const {
+    if (!tmp || page < 1 || page > n) { err = "no page " + std::to_string(page); return ""; }
+    const std::string pg = std::to_string(page);
+    // (the page's size in points, 72 per inch: its long side at most 4000 px, as on Windows)
+    const plat::ProcResult info = plat::run_program({"pdfinfo", "-f", pg, "-l", pg, tmp->path}, "", 60000, 1 << 20);
+    double wpt = 612, hpt = 792;
+    // ("Page    3 size: 595.28 x 841.89 pts (A4)": with -f / -l only that page's line has a size)
+    const size_t k = info.out.find(" size:");
+    if (k != std::string::npos) sscanf(info.out.c_str() + k + 6, "%lf x %lf", &wpt, &hpt);
+    const double long_px = std::max(wpt, hpt) * dpi / 72.0;
+    std::vector<std::string> a = {"pdftoppm", "-f", pg, "-l", pg, "-png", "-singlefile"};
+    if (long_px > 4000) a.insert(a.end(), {"-scale-to", "4000"});
+    else a.insert(a.end(), {"-r", std::to_string(dpi)});
+    a.push_back(tmp->path);
+    const plat::ProcResult r = plat::run_program(a, "", 120000, (size_t)256 << 20);
+    if (!r.started) { err = r.error + " (apt install poppler-utils)"; return ""; }
+    if (r.exit_code != 0 || r.out.compare(1, 3, "PNG") != 0) {
+      err = "the page could not be rendered" + (r.err.empty() ? std::string() : ": " + r.err.substr(0, r.err.find('\n')));
+      return "";
+    }
+    return r.out;
+  }
+};
+}  // namespace pdfr
+#else
 #include <winrt/Windows.Data.Pdf.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Storage.Streams.h>
@@ -96,3 +165,4 @@ inline std::string Pdf::render(int page, int dpi, std::string& err) const {
 }
 
 }  // namespace pdfr
+#endif

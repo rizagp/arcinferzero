@@ -1034,11 +1034,7 @@ int main(int argc, char** argv) {
       if (!lf) throw std::runtime_error("--log-file: cannot open " + f);
       // (the file stderr already goes to, e.g. zero-server's server.log: two writers on one file would overwrite each
       //  other's lines; refused, audit 2026-11-12b #6)
-      BY_HANDLE_FILE_INFORMATION a1{}, a2{};
-      const HANDLE he = (HANDLE)_get_osfhandle(_fileno(stderr)), hf = (HANDLE)_get_osfhandle(_fileno(lf));
-      if (he != INVALID_HANDLE_VALUE && GetFileInformationByHandle(he, &a1) && GetFileInformationByHandle(hf, &a2) &&
-          a1.dwVolumeSerialNumber == a2.dwVolumeSerialNumber && a1.nFileIndexHigh == a2.nFileIndexHigh &&
-          a1.nFileIndexLow == a2.nFileIndexLow) {
+      if (plat::same_file(stderr, lf)) {
         fclose(lf);
         throw std::runtime_error("--log-file: " + f + " is the file stderr already goes to (every line is there "
                                  "already); name another file, or leave the option out");
@@ -1059,7 +1055,7 @@ int main(int argc, char** argv) {
     else if (a == "--driver-reserve-gb") {  // (Engine::driver_slack reads it, once, before any engine exists)
       const double g = to_double(a, next());
       if (!(g >= 0.0 && g <= 8.0)) { LOG_ERR("inferzero-server: --driver-reserve-gb: 0 to 8 GiB\n"); return 1; }
-      _putenv_s("ARC_DRIVER_RESERVE_GB", std::to_string(g).c_str());
+      plat::set_env("ARC_DRIVER_RESERVE_GB", std::to_string(g).c_str());
     }
     else if (a == "--no-stream") so.eo.stream_experts = false;
     else if (a == "--pack") {  // make an inferzero package of a MoE GGUF, then exit
@@ -1164,7 +1160,7 @@ int main(int argc, char** argv) {
     // (--precise: Flash Next's precise mode, as ARC_FN_PRECISE=1, read by the engine when it first loads such a model;
     //  for the whole process, so a model switch keeps it)
     if (precise) {
-      _putenv_s("ARC_FN_PRECISE", "1");
+      plat::set_env("ARC_FN_PRECISE", "1");
       zlog::eprintf("precise mode: on (Qwen3.8 Flash Next: BF16 hyper-connection rows and router, two int8 passes)\n");
     }
     if (port < 1 || port > 65535) throw std::runtime_error("--port: expected 1..65535 (got " + std::to_string(port) + ")");

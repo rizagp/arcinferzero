@@ -1,7 +1,13 @@
 // The log's first lines (docs/logging.md): which build, on what system and GPU, with which switches; what a report of
 // a problem needs before anything else. The model's own lines follow at its load (server_load.h: model, memory).
 #pragma once
+#ifdef _WIN32
 #include <intrin.h>
+#else
+#include <cpuid.h>
+#include <sys/utsname.h>
+extern char** environ;
+#endif
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -21,7 +27,21 @@ inline std::string version(const std::filesystem::path& exe_dir) {
   }
   return std::string("inferzero built from source (") + __DATE__ + ")";
 }
+// the system: "Windows 11 build 26200"; Linux: /etc/os-release's PRETTY_NAME and the kernel ("Ubuntu 24.04.3 LTS,
+// kernel 6.6.87.2-microsoft-standard-WSL2")
 inline std::string windows() {
+#ifndef _WIN32
+  std::string name = "Linux";
+  std::ifstream f("/etc/os-release");
+  for (std::string l; std::getline(f, l);)
+    if (l.rfind("PRETTY_NAME=", 0) == 0) {
+      name = l.substr(12);
+      if (name.size() >= 2 && name.front() == '"' && name.back() == '"') name = name.substr(1, name.size() - 2);
+    }
+  utsname u{};
+  if (uname(&u) == 0) name += std::string(", kernel ") + u.release;
+  return name;
+#else
   typedef LONG(WINAPI * Rtl)(OSVERSIONINFOW*);
   OSVERSIONINFOW v{};
   v.dwOSVersionInfoSize = sizeof v;
@@ -29,14 +49,24 @@ inline std::string windows() {
     if (auto f = (Rtl)(void*)GetProcAddress(nt, "RtlGetVersion"); f && f(&v) == 0)
       return std::string(v.dwBuildNumber >= 22000 ? "Windows 11" : "Windows 10") + " build " + std::to_string(v.dwBuildNumber);
   return "Windows";
+#endif
+}
+inline void cpuid4(int r[4], unsigned leaf) {
+#ifdef _WIN32
+  __cpuid(r, (int)leaf);
+#else
+  unsigned a = 0, b = 0, c = 0, d = 0;
+  __cpuid(leaf, a, b, c, d);
+  r[0] = (int)a, r[1] = (int)b, r[2] = (int)c, r[3] = (int)d;
+#endif
 }
 inline std::string cpu() {
   int r[4] = {};
-  __cpuid(r, 0x80000000);
+  cpuid4(r, 0x80000000);
   if ((unsigned)r[0] < 0x80000004u) return "CPU";
   char b[49] = {};
   for (int i = 0; i < 3; ++i) {
-    __cpuid(r, 0x80000002 + i);
+    cpuid4(r, 0x80000002 + i);
     memcpy(b + 16 * i, r, 16);
   }
   std::string s = b;
@@ -48,13 +78,18 @@ inline std::string cpu() {
 // the user's folder in a value as %USERPROFILE% (the log is pasted into issues)
 inline std::string switches() {
   std::string o;
-  const char* up_env = getenv("USERPROFILE");
+  const char* up_env = plat::home_env();
   const std::string home = up_env ? up_env : "";
   auto lower = [](std::string s) {
     for (char& c : s) c = (char)tolower((unsigned char)c);
     return s;
   };
-  for (char** e = _environ; e && *e; ++e) {
+#ifdef _WIN32
+  char** const env = _environ;
+#else
+  char** const env = environ;
+#endif
+  for (char** e = env; e && *e; ++e) {
     const std::string kv = *e;
     if (kv.size() < 4 || lower(kv.substr(0, 4)) != "arc_") continue;
     const size_t eq = kv.find('=');
@@ -74,11 +109,8 @@ inline std::string switches() {
 }
 inline void print_head(const std::filesystem::path& exe_dir) {
   LOG_INF("%s\n", version(exe_dir).c_str());
-  MEMORYSTATUSEX ms{};
-  ms.dwLength = sizeof ms;
-  GlobalMemoryStatusEx(&ms);
   LOG_INF("system: %s, %s, %u logical processors, RAM %.1f GiB (%.1f free)\n", windows().c_str(), cpu().c_str(),
-          std::thread::hardware_concurrency(), ms.ullTotalPhys / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
+          std::thread::hardware_concurrency(), plat::ram_total() / 1073741824.0, plat::ram_available() / 1073741824.0);
   LOG_INF("ARC_* switches set: %s\n", switches().c_str());
 }
 // (the GPU runtime started here: after the NPU's zeInit(0), see server.cpp)
