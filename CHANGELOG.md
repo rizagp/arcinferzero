@@ -11,6 +11,9 @@
   chat (the same text), a stream the client closes after five events (the next request answered at once), two
   clients at once, a chunked request body, a 3 MB file in full and by four ranges (416 included); `test_http` passes.
   No speed or logits change (the engine is untouched). Not compiled on Linux yet. docs/linux-port.md, Progress.
+- **Also on the platform layer:** the web_view proxy's sockets (`tools/web_view.h`) and `tests/test_http.cpp`'s
+  client. web_view checked against release 2026.11.13.09's serverz: the same replies for an https and an http page
+  and a refused port.
 
 ## 2026-11-13: a fuller GEMV sweep for generation on discrete cards (`bench\decode_try.ps1`)
 

@@ -1,5 +1,6 @@
-// The platform layer's sockets (docs/linux-port.md, step 1): what the HTTP server (src/http.h) needs from the
-// operating system's network calls. On Windows every call is the Winsock call src/http.h made before, with the same
+// The platform layer's sockets (docs/linux-port.md, step 1): what the HTTP server (src/http.h), the web_view proxy
+// (tools/web_view.h) and tests/test_http.cpp need from the operating system's network calls. On Windows every call is
+// the Winsock call those files made before, with the same
 // arguments (the Windows build behaves the same); on Linux the BSD socket calls, with the few differences they need
 // (MSG_NOSIGNAL so a client gone does not kill the server with SIGPIPE, EINTR retried, sockets not inherited by
 // child processes). Included before platform.h on Windows: winsock2.h must come before windows.h.
@@ -71,6 +72,14 @@ inline void sock_shutdown(socket_t s) {
 #endif
 }
 
+// the sending direction shut (the peer sees the end of what was sent; replies can still be read)
+inline void sock_shutdown_send(socket_t s) {
+#ifdef _WIN32
+  shutdown(s, SD_SEND);
+#else
+  shutdown(s, SHUT_WR);
+#endif
+}
 // a boolean socket option on (SO_REUSEADDR, IPV6_V6ONLY, TCP_NODELAY): a BOOL on Windows, an int on Linux
 inline void sock_flag(socket_t s, int level, int opt) {
 #ifdef _WIN32
@@ -110,6 +119,45 @@ inline socket_t sock_accept(socket_t ls) {
   return accept(ls, nullptr, nullptr);
 #else
   return accept4(ls, nullptr, nullptr, SOCK_CLOEXEC);
+#endif
+}
+// a connection to addr (blocking; the send time limit, set before, bounds it on Linux, as SO_SNDTIMEO does there)
+inline bool sock_connect(socket_t s, const sockaddr* addr, size_t len) {
+#ifdef _WIN32
+  return connect(s, addr, (int)len) == 0;
+#else
+  return connect(s, addr, (socklen_t)len) == 0;
+#endif
+}
+// the socket's own address (getsockname: the port a bind to port 0 got): false when it is not known
+inline bool sock_name(socket_t s, sockaddr_storage& sa) {
+#ifdef _WIN32
+  int sl = sizeof sa;
+#else
+  socklen_t sl = sizeof sa;
+#endif
+  return getsockname(s, (sockaddr*)&sa, &sl) == 0;
+}
+// Waits up to ms for a or b to be readable (the web_view proxy's two ends): > 0 with ra / rb set, 0 when the time
+// passed, < 0 on an error. Windows: select, as the proxy called it; Linux: poll (select's FD_SETSIZE limit).
+inline int sock_wait_read2(socket_t a, socket_t b, int ms, bool& ra, bool& rb) {
+  ra = rb = false;
+#ifdef _WIN32
+  fd_set r;
+  FD_ZERO(&r);
+  FD_SET(a, &r);
+  FD_SET(b, &r);
+  timeval tv{ms / 1000, (ms % 1000) * 1000};
+  const int n = select(0, &r, nullptr, nullptr, &tv);
+  if (n > 0) ra = FD_ISSET(a, &r) != 0, rb = FD_ISSET(b, &r) != 0;
+  return n;
+#else
+  pollfd p[2] = {{a, POLLIN, 0}, {b, POLLIN, 0}};
+  int n;
+  do n = poll(p, 2, ms); while (n < 0 && errno == EINTR);
+  // (a hang-up or an error counts as readable: the recv that follows sees it, as select reports it on Windows)
+  if (n > 0) ra = (p[0].revents & (POLLIN | POLLHUP | POLLERR)) != 0, rb = (p[1].revents & (POLLIN | POLLHUP | POLLERR)) != 0;
+  return n;
 #endif
 }
 // the peer's address: false when it is not known

@@ -62,8 +62,16 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   tool's children), time limits as a `timeval`, `poll` + a non-blocking peek for a client gone. Checked on Windows
   with a real server (the 4B) against release 2026.11.13.09's serverz: the same replies, streaming, a stream cancelled
   by the client, two clients at once, a chunked body, file ranges; `test_http` passes. Not compiled on Linux yet (no
-  WSL distribution or cross compiler on this laptop). Left for sockets: the 7 other files that use Winsock
-  (`src/audio.h`, `src/image.h`, the web tools, the recorder), and `tests/test_http.cpp`'s own client.
+  WSL distribution or cross compiler on this laptop).
+- 2026-11-13: the web_view proxy (`tools/web_view.h`) and `tests/test_http.cpp`'s client on `src/platform_net.h` too
+  (new: `sock_connect`, `sock_name`, `sock_shutdown_send`, `sock_wait_read2`: `select` on Windows as before, `poll` on
+  Linux). web_view gives the same replies as release 2026.11.13.09 (https and http pages through the proxy's CONNECT
+  and plain paths, a refused port). web_view as a whole stays Windows-only for now: Edge, the job objects and the TCP
+  table that tell the proxy which process connects (on Linux: headless Chromium, a process group, `/proc/net/tcp`).
+  What is left of the network code is not sockets: `src/audio.h` / `src/image.h` include `winsock2.h` only for the
+  header order (their work is Media Foundation / WIC); `tools/zero_recorder.cpp` is a WASAPI tool and stays
+  Windows-only; `tools/web_tools.h` (web_search, web_fetch) is a WinHTTP client, which needs an HTTPS client on
+  Linux (libcurl through `dlopen` is the likely choice).
 
 ## The order
 

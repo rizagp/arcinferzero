@@ -5,21 +5,20 @@
 #include <string>
 
 static std::string exchange(int port, const std::string& req) {
-  SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  plat::socket_t s = plat::sock_open(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   sockaddr_in a{};
   a.sin_family = AF_INET;
-  a.sin_port = htons((u_short)port);
+  a.sin_port = htons((uint16_t)port);
   inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
-  if (connect(s, (sockaddr*)&a, sizeof a) != 0) { closesocket(s); return "<no connection>"; }
-  DWORD tmo = 5000;
-  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tmo, sizeof tmo);
-  ::send(s, req.data(), (int)req.size(), 0);
-  shutdown(s, SD_SEND);
+  if (!plat::sock_connect(s, (sockaddr*)&a, sizeof a)) { plat::sock_close(s); return "<no connection>"; }
+  plat::sock_recv_timeout(s, 5000);
+  plat::sock_send(s, req.data(), (int)req.size());
+  plat::sock_shutdown_send(s);
   std::string out;
   char buf[4096];
   int n;
-  while ((n = recv(s, buf, sizeof buf, 0)) > 0) out.append(buf, n);
-  closesocket(s);
+  while ((n = plat::sock_recv(s, buf, sizeof buf)) > 0) out.append(buf, n);
+  plat::sock_close(s);
   return out;
 }
 
