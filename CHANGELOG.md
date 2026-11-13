@@ -15,6 +15,39 @@
 - **Found while testing, left for later (both systems, older than the port):** the HTTP server keeps a connection open
   when the request says `Connection: close`.
 
+## 2026-11-14: the Arc 140T's prompt GEMM reads its operands in the DPAS order (issue #5)
+
+- **Why:** PascalSoftwares' `xw_peak` on a Core Ultra 9 285H (2026-11-13): `gemm_xw8` 32 x 16 with both operands in
+  the DPAS operand order ("packAW") ran the 27B's FFN shapes at 25.0 TOPS against the default's 23.4 (4,096 tokens,
+  +7 %) and 24.5 against 21.6 (512, +13 %), bit-identical. Only `xw_peak` made those layouts (on the CPU); the engine
+  wrote the plain order. His model sweep found the default 32 x 16 already the best tile (329.7 tok/s at 4K).
+- **What:** `ARC_GEMM_XW_PACK=3` (the 140T preset's default; `1` activations, `2` weights, `0` off): the kernels that
+  make the GEMM's inputs write them in that order themselves, with no repacking pass: `h8r_act` the activations,
+  `h8r_decode` (or `h8r_weights` on a weight's first decode) the staged weights, and `gemm_xw8` reads them with
+  `-DXW_PACKA -DXW_PACKW`. Only where `gemm_xw8` takes the GEMM (one column group a sub-group, its shapes); resident
+  weights stay plain; a staged weight records its order and is decoded again for a GEMM that needs the other one; the
+  fused norm (`ARC_H8_NORM`) steps aside. The start-up check also tests each packed form against gemm.cl.
+- **Checked** (laptop, the 140T preset with DPAS emulated, `ARC_140T=1 ARC_XMX_TRY=2`): the 27B's logits with packing
+  3 / 1 / 2 identical to 0, and the packed kernels built (`ARC_KLIST`); the 4B with weights decoded just in time the
+  same; the default path identical to release 2026.11.14.02. Expected on a 140T: the 27B's prompt +4-5 % at 4K,
+  ~+7 % at 512 (its GEMMs are ~72 % of the prompt); the owner to measure. Review: no defect; packing limited to one
+  column group a sub-group (with wider tiles a packed input could reach a GEMM gemm_xw8 declines).
+
+## 2026-11-14: the kernels are compiled for the GPU they run on (issue #11)
+
+- **Why:** the engine runs its kernels through Level Zero, which only Intel's driver has, but compiles them with
+  OpenCL and loads the result as a native binary. OpenCL used the first GPU of the first platform that had one. A
+  machine can list others' OpenCL first: Mesa's rusticl on Linux (a `clinfo` of 2 Pro B60s on issue #11 shows it next to
+  Intel's platform), Microsoft's OpenCLOn12 on Windows (a B70 on issue #12 has it), or an Intel iGPU before an Arc card.
+  Then the kernels would be compiled for the wrong device: the load fails, or the card's features (8-lane sub-groups,
+  XMX, 2D loads) are read from the other one.
+- **What** (`zero/clrt.h`): Level Zero starts first; OpenCL then takes Intel's platforms before others' (rusticl,
+  OpenCLOn12, Clover, PoCL last), and on them the GPU with Level Zero GPU 0's PCI device id, else its name, else the
+  first Intel GPU, else the first GPU as before.
+- **Checked** (laptop, one Arc iGPU, Intel's GPU and CPU platforms): the same device as before, logits bit-identical to
+  release 2026.11.14.02; `serverz`, `mgpu_probe`, `gpu_bench` start as before. The cases it fixes need such machines;
+  the review traced them in the code.
+
 ## 2026-11-14: the norm and the H8 rotation of its rows in one kernel, opt-in (B60 prefill plan 13.5)
 
 - **Why:** with H8 (the default on Arc B-series cards) each layer input was normalized by `rmsnorm_quant`, which also

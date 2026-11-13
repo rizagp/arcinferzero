@@ -1195,6 +1195,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         decode_w8(w, wq, wh);
         stage_owner_[w.role] = &w;
         stage_h8_[w.role] = false;
+      stage_packed_[w.role] = false;
       }
     }
     if (x16_ && x16_matmul(name, w, wq, wh, Mp, C, ldc, c_off, a, act32)) return;  // (zero/xe2/engine_xe2.h)

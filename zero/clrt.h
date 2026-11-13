@@ -555,6 +555,8 @@ typedef cl_int(__stdcall* BuildProgram)(void*, cl_uint, void* const*, const char
 typedef cl_int(__stdcall* GetProgramBuildInfo)(void*, void*, cl_uint, size_t, void*, size_t*);
 typedef cl_int(__stdcall* GetProgramInfo)(void*, cl_uint, size_t, void*, size_t*);
 typedef cl_int(__stdcall* ReleaseProgram)(void*);
+typedef cl_int(__stdcall* GetPlatformInfo)(void*, cl_uint, size_t, void*, size_t*);
+inline GetPlatformInfo getPlatformInfo;
 inline GetPlatformIDs getPlatformIDs;
 inline GetDeviceIDs getDeviceIDs;
 inline GetDeviceInfo getDeviceInfo;
@@ -565,7 +567,27 @@ inline GetProgramBuildInfo getProgramBuildInfo;
 inline GetProgramInfo getProgramInfo;
 inline ReleaseProgram releaseProgram;
 inline void *device = nullptr, *context = nullptr;
-inline bool load() {
+// The compiler's device: the GPU the kernels run on. Its native binaries load only into a Level Zero device of the
+// same kind, and the engine reads its features (8-lane sub-groups, DPAS, 2D loads) from it. Before 2026-11-14 it was
+// the first GPU of the first platform with one, so a Linux machine with Mesa's rusticl listed first, a Windows one with
+// Microsoft's OpenCLOn12 listed first (a B70 on issue #12 has it), or an Intel iGPU listed before an Arc card could
+// compile for the wrong one (issue #11, a clinfo of 2 B60s with rusticl next to Intel's platform). Now: Intel's
+// platforms before others (those of Mesa, Microsoft and PoCL last), and on them the GPU with Level Zero GPU 0's PCI
+// device id (want_id, cl_intel_device_attribute_query) or else its name (want_name); with no match, the first GPU as
+// before. On a machine with one Intel GPU and only Intel's platform, the same device as before.
+inline std::string platform_name(void* p) {
+  char s[256] = {};
+  if (!getPlatformInfo || getPlatformInfo(p, 0x0902 /* CL_PLATFORM_NAME */, sizeof(s) - 1, s, nullptr) != 0) return "";
+  return s;
+}
+inline bool foreign_platform(const std::string& name) {  // (OpenCL on other stacks: not Intel's compiler)
+  std::string n = name;
+  for (char& c : n) c = (char)tolower((unsigned char)c);
+  for (const char* f : {"rusticl", "openclon12", "clover", "portable computing language", "pocl"})
+    if (n.find(f) != std::string::npos) return true;
+  return false;
+}
+inline bool load(const char* want_name = nullptr, uint32_t want_id = 0) {
   if (context) return true;  // (a second engine in the process: the same compiler context, no second DLL reference)
   void* h = plat::dl_open("OpenCL.dll", "libOpenCL.so.1");
   if (!h) return false;
@@ -575,6 +597,7 @@ inline bool load() {
   RCL(buildProgram, "clBuildProgram") RCL(getProgramBuildInfo, "clGetProgramBuildInfo")
   RCL(getProgramInfo, "clGetProgramInfo") RCL(releaseProgram, "clReleaseProgram")
 #undef RCL
+  getPlatformInfo = (GetPlatformInfo)plat::dl_sym(h, "clGetPlatformInfo");  // (only to rank the platforms)
   auto fail = [&] {  // (no compiler context: the DLL let go, a later call starts over)
     device = context = nullptr;
     plat::dl_close(h);
@@ -584,10 +607,46 @@ inline bool load() {
   if (getPlatformIDs(0, nullptr, &np) != 0 || !np) return fail();
   std::vector<void*> plats(np);
   getPlatformIDs(np, plats.data(), nullptr);
-  for (void* p : plats) {
+  // (the platforms in their order, others' stacks after Intel's and the rest)
+  std::vector<void*> order;
+  for (int pass = 0; pass < 2; ++pass)
+    for (void* p : plats)
+      if (foreign_platform(platform_name(p)) == (pass == 1)) order.push_back(p);
+  // (the first GPU in that order, an Intel one (vendor 0x8086) before others: the choice when none matches Level Zero's;
+  //  a hybrid laptop's NVIDIA or AMD GPU only when there is no Intel one at all, as before; review of 2026-11-14)
+  void* first = nullptr;
+  void* first_any = nullptr;
+  void* match = nullptr;
+  for (void* p : order) {
     cl_uint nd = 0;
-    if (getDeviceIDs(p, 1u << 2, 1, &device, &nd) == 0 && nd) break;
+    if (getDeviceIDs(p, 1u << 2, 0, nullptr, &nd) != 0 || !nd) continue;
+    std::vector<void*> ds(nd);
+    if (getDeviceIDs(p, 1u << 2, nd, ds.data(), nullptr) != 0) continue;
+    if (!first_any) first_any = ds[0];
+    if (!first)
+      for (void* d : ds) {
+        cl_uint vendor = 0;
+        if (getDeviceInfo(d, 0x1001 /* CL_DEVICE_VENDOR_ID */, sizeof vendor, &vendor, nullptr) == 0 && vendor == 0x8086) {
+          first = d;
+          break;
+        }
+      }
+    if (!want_id && !(want_name && *want_name)) {
+      if (first) break;  // (no hints: the first Intel GPU, else keep looking for one)
+      continue;
+    }
+    for (void* d : ds) {
+      cl_uint id = 0;
+      char name[256] = {};
+      const bool id_ok = want_id && getDeviceInfo(d, 0x4251 /* CL_DEVICE_ID_INTEL */, sizeof id, &id, nullptr) == 0 && id == want_id;
+      const bool name_ok = want_name && *want_name && getDeviceInfo(d, 0x102B /* CL_DEVICE_NAME */, sizeof(name) - 1, name, nullptr) == 0 &&
+                           std::string(name) == want_name;
+      if (id_ok || (name_ok && !match)) match = d;
+      if (id_ok) break;
+    }
+    if (match) break;
   }
+  device = match ? match : first ? first : first_any;
   if (!device) return fail();
   cl_int err = 0;
   context = createContext(nullptr, 1, &device, nullptr, nullptr, &err);
@@ -991,7 +1050,12 @@ struct ClRt {
   cl_command_queue queue = (cl_command_queue)1;
 
   bool init(bool = true) {
-    if (!zrt::rcl::load()) { LOG_ERR("cannot load OpenCL.dll (needed to compile kernels): is the Intel graphics driver installed?\n"); return false; }
+    // (Level Zero first, since 2026-11-14: its GPU 0 decides which OpenCL device compiles the kernels, rcl::load)
+    if (!zrt::ctx && !ze_start()) return false;
+    ze_device_properties_t p0{};
+    p0.stype = ZE_STYPE_DEVICE_PROPERTIES;
+    const bool have0 = zeDeviceGetProperties(zrt::dev0.dev, &p0) == ZE_RESULT_SUCCESS;
+    if (!zrt::rcl::load(have0 ? p0.name : nullptr, have0 ? p0.deviceId : 0)) { LOG_ERR("cannot load OpenCL.dll (needed to compile kernels): is the Intel graphics driver installed?\n"); return false; }
     char name[256] = {}, drv[256] = {};
     zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102B, sizeof(name) - 1, name, nullptr);  // CL_DEVICE_NAME
     zrt::rcl::getDeviceInfo(zrt::rcl::device, 0x102D, sizeof(drv) - 1, drv, nullptr);   // CL_DRIVER_VERSION
@@ -1023,8 +1087,12 @@ struct ClRt {
       cache_dir = kcache_dir(app_dir() + PLAT_SEP "kernels", drv);
       kcache_sweep(app_dir() + PLAT_SEP "kernels", cache_dir);
     }
-    // a second engine in the process (the server switching models, after the first one freed its memory) keeps the
-    // runtime: the context, its command lists and events, the staging buffer (all of zrt:: belongs to that context)
+    return true;
+  }
+  // The Level Zero runtime, once per process (init, before the OpenCL compiler is chosen): a second engine (the
+  // server switching models, after the first one freed its memory) keeps it: the context, its command lists and
+  // events, the staging buffer (all of zrt:: belongs to that context)
+  static bool ze_start() {
     if (zrt::ctx) return true;
     if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll (Level Zero)\n"); return false; }
     ZE_CHECK(zeInit(1));
