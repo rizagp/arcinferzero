@@ -1,17 +1,5 @@
 # Before and after
 
-## 2026-11-13: Flash Next host restore before verification
-
-| Change | Before | After | Check / scope |
-|---|---|---|---|
-| Refresh CPU PLE predecessor IDs after host snapshot restore | Same 8,304-token prompt and 1,024-token replay diverged at character 344 of reasoning | Cold versus restored continuations match | Downstream B70: 256 generated IDs and 63,569,920 predictive floats per restored replay; two restore implementations, 127,139,840 comparisons, bit-identical. Full 262,144 allocation, native MTP2. |
-
-Measurements above were made on the downstream Linux port based on 080e588 with other loading and server
-changes. The minimal fix is now rebased onto 3e81fc6; these are not current-main performance measurements.
-No kernel, weight format or sampling change. Windows/iGPU checks and the added current-main regression's
-GPU run remain pending. The existing forward-only snapshot test cannot expose this bug because forward()
-refreshes PLE history itself.
-
 Every change that moves speed, memory or accuracy gets a row here with the numbers before and after, measured the
 same way, and the check that the answers did not change. Newest first. The long story is in
 [review.md](review.md) and [speed-progress.md](speed-progress.md); what each finding taught is in
@@ -208,6 +196,7 @@ That property is what every speed change is held to:
 
 | Date | Change | Before | After | Answers |
 |---|---|---|---|---|
+| 11-13 | **Flash Next's PLE history refreshed after a snapshot restore** (PR #15, chumbleyjl: `restore_host()` and `restore(slot)` read the token ids back, as `forward()` does; `verify()` does not) | native Linux B70, an 8,304-token prompt and a 1,024-token replay after a restore: drifted at character 344 of the reasoning | restored and cold continuations bit-identical (two restore paths, 256 tokens each, 127,139,840 logits compared) | the owner's runs; laptop: the 4B's `--snap-test` and logits unchanged (no PLE); Flash Next not on the laptop to run the new check |
 | 11-13 | **runz on Linux** (Ubuntu 24.04 in WSL2 on the laptop, Ubuntu's compute runtime 23.43; the engine's Windows calls behind `src/platform.h`) | Windows only: the 4B 32 tokens at 16.6-19.1 tok/s, KL 0.00100 against its f32 reference (480 positions, max 0.032, top token 472 / 480) | Linux (WSL): the same 32 greedy tokens at 14.7 tok/s (model read through `/mnt/c`); **KL 0.00090** (max 0.0071, top token 472 / 480); against the Windows run's logits KL 3.5e-4 mean (not bit-identical: another kernel compiler) | Windows build bit-identical to release 2026.11.13.09 (`--dump-logits`, the 4B 32 tokens and the 35B-A3B 16 tokens) |
 | 11-13 | **Qwen3.8 Flash Next over several GPUs** (`--gpus N`; experts by expert, DeltaNet by k-head, attention by kv-head over 2 and whole over 3-4, the mixers / PLE / QSA indexer / shared expert whole on every GPU, each block output summed into `hco_`; docs/multi-gpu.md "Flash Next") | refused | runs over 2, 3, 4 (ARC_TP_SIM on the laptop: speed not measured); per GPU 3.66-3.93 GiB of weights and buffers plus 1/N of the 52.1 GiB of experts (over 4 B60s: 13.0 GiB each, all in GPU memory) | KL against the f32 reference, 450 tokens, prompt / decode: one GPU 0.0168 / 0.0151, over 2 / 3 / 4 0.0157 / 0.0140, 0.0159 / 0.0176, 0.0165 / 0.0162; `ARC_FN_PRECISE=1` one GPU 0.0093 / 0.0096, split 0.0083-0.0110; failsafes (`ARC_TP_HANG`) end cleanly; Flash Next on one GPU, 27B over 2, 35B over 2 and 4 **bit-identical** to the build before (`--dump-logits`) |
 | 11-13 | **Wider H8 tiles for a sweep, opt-in** (`ARC_GEMM_XW_TM=64`, `ARC_GEMM_XW_NC=6 / 8` on 16 lanes, `4` and `TM=64` on 8 lanes; `xw_sweep.ps1 -Wide`, `xw_peak`'s new variants) | B60: 32 x 64 the widest; 140T: 32 x 32 | 32 x 96 (the rest of a width 64 wide), 16 x 128, 64 x 32, 32 x 128, 64 x 64; 140T 16 x 64, 64 x 16, 32 x 64; speed: the owners to measure | laptop, DPAS emulated: every shape's start-up check passes, 4B logits (2,710-token prompt, chunk 512) identical to gemm.cl's at all 10 shapes; xw_peak's 13 variants identical; the default path identical to release 2026.11.13.06 |
