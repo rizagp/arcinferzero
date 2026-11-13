@@ -11,7 +11,9 @@
 #include <cwctype>
 #include <fstream>
 #include <sstream>
+#ifdef _WIN32
 #include <tlhelp32.h>
+#endif
 
 static std::vector<int> parse_ids(const std::string& s) {
   std::vector<int> v;
@@ -36,6 +38,19 @@ static void top_k(const std::vector<float>& logits, int k, std::vector<std::pair
 // them runs are not representative: Gemma 4 E4B generated 8 tok/s with --mtp (23 alone) while a 27B server
 // processed a prompt, and its load took 10-40 s instead of 2 s with an idle 27B server loaded.
 static void warn_gpu_neighbours() {
+#ifndef _WIN32
+  // (Linux: the processes' names in /proc/<pid>/comm, "serverz", "runz", "llama-...")
+  std::string found;
+  std::error_code ec;
+  for (const auto& d : std::filesystem::directory_iterator("/proc", ec)) {
+    const std::string pid = d.path().filename().string();
+    if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos || std::stoul(pid) == plat::process_id()) continue;
+    std::ifstream f(d.path() / "comm");
+    std::string n;
+    if (!std::getline(f, n)) continue;
+    if (n == "serverz" || n == "runz" || n.rfind("llama-", 0) == 0) found += (found.empty() ? "" : ", ") + n + " (pid " + pid + ")";
+  }
+#else
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snap == INVALID_HANDLE_VALUE) return;
   PROCESSENTRY32W pe{};
@@ -49,6 +64,7 @@ static void warn_gpu_neighbours() {
       found += (found.empty() ? "" : ", ") + n + " (pid " + std::to_string(pe.th32ProcessID) + ")";
   }
   CloseHandle(snap);
+#endif
   if (!found.empty())
     zlog::eprintf("note: other GPU processes are running: %s. They share the iGPU and its memory, so the speeds "
                     "measured now are not representative.\n", found.c_str());
@@ -155,9 +171,9 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
   if (!kl_ref.empty()) {  // (--kl-ref with every position's reference log-probs: the prompt fed token by token, as --kl-decode)
     FILE* fi = fopen(kl_ref.c_str(), "rb");
     if (!fi) { zlog::eprintf("cannot open %s\n", kl_ref.c_str()); return 1; }
-    _fseeki64(fi, 0, SEEK_END);
-    std::vector<float> ref((size_t)_ftelli64(fi) / 4);
-    _fseeki64(fi, 0, SEEK_SET);
+    plat::fseek64(fi, 0, SEEK_END);
+    std::vector<float> ref((size_t)plat::ftell64(fi) / 4);
+    plat::fseek64(fi, 0, SEEK_SET);
     const size_t got = fread(ref.data(), 4, ref.size(), fi);
     fclose(fi);
     const size_t V = (size_t)tp.vocab();
@@ -379,7 +395,7 @@ static int run_main(int argc, char** argv) {
     else if (a == "--show") show = true;
     else if (a == "--dump-logits") dump_logits = next();
     else if (a == "--prof-gen") prof_gen = true;
-    else if (a == "--driver-reserve-gb" && i + 1 < argc) _putenv_s("ARC_DRIVER_RESERVE_GB", argv[++i]);  // (Engine::driver_slack)
+    else if (a == "--driver-reserve-gb" && i + 1 < argc) plat::set_env("ARC_DRIVER_RESERVE_GB", argv[++i]);  // (Engine::driver_slack)
     else if (a == "--act256") eo.act32_all = false;
     else if (a == "--attn-f32") eo.attn_int8 = false;
     else if (a == "--npu") {  // the NPU next to the GPU for prompt chunks (zero/npu): on, off, force
@@ -1039,9 +1055,9 @@ static int run_main(int argc, char** argv) {
       // the single-token (decode) path at every prompt position against the reference log-probs of that position
       FILE* fi = fopen(kl_ref.c_str(), "rb");
       if (!fi) { zlog::eprintf("cannot open %s\n", kl_ref.c_str()); return 1; }
-      _fseeki64(fi, 0, SEEK_END);  // (64-bit: references of more than 2 GB)
-      std::vector<float> ref((size_t)_ftelli64(fi) / 4);
-      _fseeki64(fi, 0, SEEK_SET);
+      plat::fseek64(fi, 0, SEEK_END);  // (64-bit: references of more than 2 GB)
+      std::vector<float> ref((size_t)plat::ftell64(fi) / 4);
+      plat::fseek64(fi, 0, SEEK_SET);
       const size_t got = fread(ref.data(), 4, ref.size(), fi);
       fclose(fi);
       const size_t V = eng.hp.n_vocab;
@@ -1119,9 +1135,9 @@ static int run_main(int argc, char** argv) {
       FILE* fi = fopen(kl_ref.c_str(), "rb");
       std::vector<float> ref;
       if (fi) {
-        _fseeki64(fi, 0, SEEK_END);
-        ref.resize((size_t)_ftelli64(fi) / 4);
-        _fseeki64(fi, 0, SEEK_SET);
+        plat::fseek64(fi, 0, SEEK_END);
+        ref.resize((size_t)plat::ftell64(fi) / 4);
+        plat::fseek64(fi, 0, SEEK_SET);
         if (fread(ref.data(), 4, ref.size(), fi) != ref.size()) ref.clear();
         fclose(fi);
       }

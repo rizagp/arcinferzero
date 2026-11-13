@@ -2,8 +2,11 @@
 // work on the efficiency cores at low clocks for its whole life; the engine's host thread then answers every GPU
 // round trip late. Speculative decoding (a read-back per draft and per verification) suffered most: server sessions
 // of Qwen3.6 35B with MTP at 12-17 tok/s instead of 26 at random, while the same requests in other sessions were fast.
-// ARC_ECOQOS=1 leaves the default (A/B tests).
+// ARC_ECOQOS=1 leaves the default (A/B tests). Linux: nothing (no such throttling of a process by the system).
 #pragma once
+#ifndef _WIN32
+inline void full_speed_process() {}
+#else
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -21,3 +24,4 @@ inline void full_speed_process() {
   s.StateMask = 0;  // (the controlled policies off: full speed, timer resolution honored)
   SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s);
 }
+#endif

@@ -24,7 +24,7 @@ inline bool is_expert_tensor(const std::string& name) {
   return name.find("_exps.weight") != std::string::npos;
 }
 inline std::string packages_dir() {
-  return app_dir() + "\\zero\\models";
+  return app_dir() + PLAT_SEP "zero" PLAT_SEP "models";
 }
 
 // ---- a GGUF v3 writer for the metadata (with the stored types) and tensors
@@ -118,11 +118,11 @@ inline Result make_package(const std::string& source, int n_layer_hint = 0) {
   std::string name = fs::path(source).stem().string();
   const size_t sp = name.find("-00001-of-");
   if (sp != std::string::npos) name.resize(sp);
-  const std::string dir = packages_dir() + "\\" + name;
+  const std::string dir = packages_dir() + PLAT_SEP + name;
   fs::create_directories(dir);
   Result r;
-  r.gguf = dir + "\\" + name + ".gguf";
-  r.experts = dir + "\\" + name + ".experts";
+  r.gguf = dir + PLAT_SEP + name + ".gguf";
+  r.experts = dir + PLAT_SEP + name + ".experts";
 
   // Order: the package GGUF goes to a .tmp, then the expert file is moved or written, then the .tmp takes the
   // package's name. A step that fails leaves no half package: the .tmp is removed, and a package GGUF only appears

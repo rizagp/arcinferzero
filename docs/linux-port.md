@@ -62,8 +62,65 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   tool's children), time limits as a `timeval`, `poll` + a non-blocking peek for a client gone. Checked on Windows
   with a real server (the 4B) against release 2026.11.13.09's serverz: the same replies, streaming, a stream cancelled
   by the client, two clients at once, a chunked body, file ranges; `test_http` passes. Not compiled on Linux yet (no
-  WSL distribution or cross compiler on this laptop). Left for sockets: the 7 other files that use Winsock
-  (`src/audio.h`, `src/image.h`, the web tools, the recorder), and `tests/test_http.cpp`'s own client.
+  WSL distribution or cross compiler on this laptop).
+- 2026-11-13: the web_view proxy (`tools/web_view.h`) and `tests/test_http.cpp`'s client on `src/platform_net.h` too
+  (new: `sock_connect`, `sock_name`, `sock_shutdown_send`, `sock_wait_read2`: `select` on Windows as before, `poll` on
+  Linux). web_view gives the same replies as release 2026.11.13.09 (https and http pages through the proxy's CONNECT
+  and plain paths, a refused port). web_view as a whole stays Windows-only for now: Edge, the job objects and the TCP
+  table that tell the proxy which process connects (on Linux: headless Chromium, a process group, `/proc/net/tcp`).
+  What is left of the network code is not sockets: `src/audio.h` / `src/image.h` include `winsock2.h` only for the
+  header order (their work is Media Foundation / WIC); `tools/zero_recorder.cpp` is a WASAPI tool and stays
+  Windows-only; `tools/web_tools.h` (web_search, web_fetch) is a WinHTTP client, which needs an HTTPS client on
+  Linux (libcurl through `dlopen` is the likely choice).
+- 2026-11-13: the first Linux compiles, in WSL (Ubuntu 24.04, g++ 13.3). `tests/test_http.cpp` builds there with
+  `-Wall -Wextra` and no warnings and passes all its cases: the HTTP server (`src/http.h`) runs on Linux. The step-1
+  files (`src/platform.h`, `src/platform_net.h`, `src/app_dir.h`, `src/cl_min.h`, `zero/ze_min.h`, `src/gguf.h`,
+  `zero/expert_store.h`) pass a syntax check. Fixed for it: the log (`src/log.h`, force-included everywhere) had
+  `<io.h>`, `localtime_s` and `_isatty` (now `localtime_r` / `isatty` on Linux; colors on a terminal whose `TERM` is
+  not `dumb`), and an unused parameter in `plat::AsyncFile`'s Linux half. The check, from the repository's folder:
+  `g++ -std=c++20 -Wall -Wextra -include src/log.h tests/test_http.cpp -o test_http -pthread`.
+- 2026-11-13: the web tools (`tools/web_tools.h`: web_fetch, web_search, the files and audio they download) on Linux
+  through libcurl, loaded at run time (`src/curl_min.h`: its few declarations, so the build needs no curl headers;
+  `libcurl.so.4`, part of a standard Ubuntu install, and `libidn2.so.0` for internationalized names). The same steps
+  as the WinHTTP path: redirects by hand with each hop's port and host checked, no proxy (the environment's
+  `http_proxy` ignored), http and https only, the deadline over all hops, the body's limit, cut / too_big / timed_out.
+  Where WinHTTP checks the address it connected to, libcurl's socket callback checks each address before it connects.
+  URLs through libcurl's parser. Without libcurl the web tools answer with an error saying so; the rest runs. Checked
+  with one test program built on both systems (18 cases: pages, redirects, a 404, limits, loopback / private / a name
+  resolving to 127.0.0.1 / localhost refused, refused ports and schemes, a timeout, an internationalized host, URL
+  parsing, a search): the same results on Linux and Windows; the Windows serverz's web_fetch / web_search identical to
+  release 2026.11.13.09. Differences left: libidn2 follows IDNA2008 where Windows' IdnToAscii follows IDNA2003 (a few
+  names with ß or ς map differently); a URL with a bare IPv6 address fails on both, with another message.
+- 2026-11-13: **`runz` builds and runs on Linux** (step 2's first part), in WSL2 on the laptop with Ubuntu's own
+  compute runtime (`intel-opencl-icd`, `libze-intel-gpu1`, `libze1`: 23.43; OpenCL and Level Zero both see the Arc
+  iGPU through `/dev/dxg`). What it took: the CPU check (`src/cpu_check.h`: `__builtin_cpu_supports` on GCC), the
+  power-throttling call (`src/full_speed.h`: nothing on Linux), DXGI's GPU budget (`zrt::video_budget`: false on Linux,
+  Sysman later; the memory line shows the engine's allocations and the free RAM), the free RAM (`plat::ram_available`:
+  `/proc/meminfo`'s MemAvailable), the working-set trim, 64-bit file seeks, an environment variable, the process and
+  thread ids, the NPU runtime's library lookups and page memory (it uses Level Zero's graph extension, which Intel's
+  Linux NPU driver has too: compiled, not run), path joins (`PLAT_SEP`), the "other GPU processes" note (`/proc/*/comm`).
+  The build, from the repository's folder: `g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -fopenmp -include src/cpu_check.h
+  -include src/log.h -I third_party -pthread zero/runz.cpp -o runz` (no warnings with the flags above; CMake to come).
+  The 4B: the same 32 greedy tokens as on Windows, 14.7 tok/s (the model read through `/mnt/c`; Windows 16.6-19.1),
+  KL 0.00090 against its f32 reference (Windows 0.00100). The logits are not bit-identical to Windows' (another
+  driver's kernel compiler: KL 3.5e-4 between the two), as step 2 expected. The Windows build bit-identical to release
+  2026.11.13.09 (the 4B and the 35B-A3B). Not tried yet on Linux: MoE models streaming experts (`O_DIRECT` through
+  WSL's disk), split models, the NPU, a newer compute runtime; Level Zero reports a 1.1 GB allocation limit there, which
+  the 4B's buffers did not hit.
+- 2026-11-13: **the compute runtime updated in WSL** to Intel's packages for Ubuntu 24.04 (the `kobuk-team/intel-graphics`
+  PPA their GPU docs point to): compute runtime 26.40.40196.15, IGC 2.42, Level Zero loader 1.34 (Ubuntu's 23.43 has no
+  Battlemage, B580 / B60 / B70, and likely no Arrow Lake H). The 4B: the same 32 tokens, KL 0.00090 (max 0.0071), 14.3-
+  14.8 tok/s, and its logits **bit-identical to those of runtime 23.43** (and from run to run). So the kernel compiler
+  is not what makes Linux's logits differ from Windows' (KL 3.5e-4 between them): more likely the CPU side, MSVC's
+  `/fp:fast` and its math library against GCC's (an open question; within the limits either way).
+- 2026-11-13: **`mgpu_probe` on Linux** (the peer-access probe of docs/multi-gpu.md: `zeDeviceCanAccessPeer` and, for
+  every pair of GPUs, a 20 KB / 40 MB copy directly and through host memory, on the compute queue and the copy engine):
+  built with the same line as runz (`zero/mgpu_probe.cpp`). Whether peer copies work between Arc cards on Linux can only be
+  seen on a native Linux machine with two or more cards (issue #4's owners): WSL has the laptop's one iGPU, and WSL's
+  GPU paravirtualization adds ~72 us to every round trip. The same probe on the same laptop: a 4-byte copy and its
+  wait 77.0 us in WSL against 4.7 us on Windows; 20 KB GPU -> GPU 74.6 / 5.2 us; 40 MB 35.9 / 40.7 GB/s. A split model
+  syncs ~128 times a token, so WSL says nothing about multi-GPU speed. That latency is also why the 4B generates at
+  14.7 tok/s in WSL against 16.6-19.1 on Windows (bandwidth is close: pinned host -> GPU 34.9 / 38.0 GB/s).
 
 ## The order
 
@@ -91,6 +148,7 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 ## Open questions
 
 - Native Linux may allow GPU-to-GPU peer copies for split models (Intel's multi-B60 stack on Linux mentions PCIe peer
-  to peer), which Windows does not: a later step for `zero/mgpu/`, after `serverz` runs.
+  to peer), which Windows does not: a later step for `zero/mgpu/`, after `serverz` runs. `mgpu_probe` builds on Linux
+  now, so a B60 owner on native Linux can answer it (not WSL: one GPU here, and ~77 us per round trip).
 - The iGPU's memory share works differently (no WDDM "shared GPU memory" cap): `--ctx auto` and the expert cache need
   their budget from the driver and the free RAM; to measure on a 285H.

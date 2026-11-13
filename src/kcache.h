@@ -10,7 +10,7 @@
 //    3/4 of it. A cache hit refreshes its file's time (kcache_touch).
 //  - kcache_tmp: a temporary name of this process's own, renamed over the final name when complete.
 #pragma once
-#include <process.h>
+#include "platform.h"  // (plat::process_id, PLAT_SEP)
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -24,12 +24,12 @@ inline std::string kcache_dir(const std::string& base, const std::string& driver
   for (char c : driver) tag.push_back((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '.' || c == '-' ? c : '_');
   if (tag.empty()) tag = "unknown";
   if (tag.size() > 64) tag.resize(64);
-  return base + "\\drv-" + tag;
+  return base + PLAT_SEP "drv-" + tag;
 }
 
 inline std::string kcache_tmp(const std::string& path) {
   static std::atomic<unsigned> seq{0};
-  return path + ".tmp." + std::to_string(_getpid()) + "." + std::to_string(seq++);
+  return path + ".tmp." + std::to_string(plat::process_id()) + "." + std::to_string(seq++);
 }
 
 inline void kcache_touch(const std::string& path) {

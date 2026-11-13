@@ -76,9 +76,9 @@ struct ExpertStore {
   static std::string place(const std::string& gguf_path, const std::string& name, const std::string& file, bool settle) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const std::string old_path = app_dir() + "\\zero\\" + file;
+    const std::string old_path = app_dir() + PLAT_SEP "zero" PLAT_SEP + file;
     auto lower = [](std::string s) { for (char& c : s) c = (char)std::tolower((unsigned char)c); return s; };
-    const std::string home = lower(fs::weakly_canonical(app_dir(), ec).string()) + "\\";
+    const std::string home = lower(fs::weakly_canonical(app_dir(), ec).string()) + PLAT_SEP;
     std::error_code eg;
     const fs::path gdir = fs::weakly_canonical(fs::path(gguf_path), eg).parent_path();
     const bool inside = !eg && lower(gdir.string()).rfind(home, 0) == 0;
@@ -167,7 +167,7 @@ struct ExpertStore {
     char hex[17];
     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)fp);
     const std::string file = name + "-" + std::string(hex).substr(0, 8) + ".experts";
-    const std::string old_path = app_dir() + "\\zero\\" + file;
+    const std::string old_path = app_dir() + PLAT_SEP "zero" PLAT_SEP + file;
     path = place(gguf_path, name, file, !package && fixed_path.empty());
     // (where the engine keeps this GGUF's expert file; for a package being made, one still loose in zero\ counts too)
     const std::string def_path = !fixed_path.empty() && !fs::exists(path, ec) && fs::exists(old_path, ec) ? old_path : path;

@@ -80,7 +80,7 @@ void npu_teardown() {
       *k = nullptr;
     }
   npu_.reset();
-  if (npu_shm_) VirtualFree(npu_shm_, 0, MEM_RELEASE);
+  if (npu_shm_) plat::page_free(npu_shm_, npu_shm_bytes_);
   npu_shm_ = nullptr;
 }
 
@@ -142,12 +142,12 @@ void npu_setup() {
     end = npu_ws_[t] + (size_t)std::max(wn[t], 64) * (wk[t] / 32) * 2;
   }
   const size_t total = (end + 65535) / 65536 * 65536;
-  npu_shm_ = (uint8_t*)VirtualAlloc(nullptr, total, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+  npu_shm_ = (uint8_t*)plat::page_alloc(total);
   npu_shm_bytes_ = total;
   const bool gm = npu_shm_ && npu::import_memory(zrt::ctx, npu_shm_, total) == npu_shm_;
   if (!gm || npu::import_memory(npu_->ctx, npu_shm_, total) != npu_shm_) {
     if (gm) zrt::mem_free(zrt::ctx, npu_shm_);
-    if (npu_shm_) VirtualFree(npu_shm_, 0, MEM_RELEASE);
+    if (npu_shm_) plat::page_free(npu_shm_, npu_shm_bytes_);
     npu_shm_ = nullptr;
     throw std::runtime_error("ARC_NPU: cannot map the shared memory into the GPU's and the NPU's contexts");
   }

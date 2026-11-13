@@ -10,6 +10,7 @@
 // the computer, nor a page in the user's own browser, gets a way to the web through it (self audit G7).
 #pragma once
 #include "web_tools.h"  // (first: it brings winsock2.h before windows.h; iphlpapi.h after both, self audit R11)
+#include "../src/platform_net.h"  // (the proxy's sockets)
 #include <wincodec.h>
 #include <iphlpapi.h>
 #include <atomic>
@@ -19,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -92,43 +94,42 @@ class Proxy {
   std::atomic<int> active_{0};
 
   void start() {
-    static const bool wsa = [] { WSADATA wd; return WSAStartup(MAKEWORD(2, 2), &wd) == 0; }();  // (once: self audit L2)
+    static const bool wsa = plat::net_init();  // (once: self audit L2)
     if (!wsa) return;
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) return;
+    plat::socket_t s = plat::sock_open(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == plat::kNoSocket) return;
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // (this computer only)
     a.sin_port = 0;
-    int len = sizeof a;
-    if (bind(s, (sockaddr*)&a, sizeof a) != 0 || listen(s, 64) != 0 || getsockname(s, (sockaddr*)&a, &len) != 0) {
-      closesocket(s);
+    sockaddr_storage got{};
+    if (!plat::sock_bind_listen(s, (sockaddr*)&a, sizeof a, 64) || !plat::sock_name(s, got)) {
+      plat::sock_close(s);
       return;
     }
-    port_ = ntohs(a.sin_port);
+    port_ = ntohs(((sockaddr_in*)&got)->sin_port);
     std::thread([this, s] {
       for (;;) {
-        SOCKET c = accept(s, nullptr, nullptr);
-        if (c == INVALID_SOCKET) {  // (a failing listener: no busy loop on one core)
+        plat::socket_t c = plat::sock_accept(s);
+        if (c == plat::kNoSocket) {  // (a failing listener: no busy loop on one core)
           Sleep(100);
           continue;
         }
         if (active_.fetch_add(1) >= kMaxConns) {  // (taken, then given back when over: no burst past 64)
           --active_;
-          closesocket(c);
+          plat::sock_close(c);
           continue;
         }
         const int me = port_;
         std::thread([this, c, me] {
-          sockaddr_in pa{};
-          int pl = sizeof pa;
+          sockaddr_storage pa{};
           // (Edge's processes of a running render only, self audit G7. The TCP table can lag a new connection by a
           //  moment: looked up again for up to ~100 ms before a refusal, and a refusal is logged, R5)
           bool ok = false;
           DWORD pid = 0;
-          if (getpeername(c, (sockaddr*)&pa, &pl) == 0)
+          if (plat::sock_peer(c, pa))
             for (int k = 0; k < 5 && !ok; ++k) {
-              pid = peer_pid(ntohs(pa.sin_port), (USHORT)me);
+              pid = peer_pid(ntohs(((sockaddr_in*)&pa)->sin_port), (USHORT)me);
               ok = pid && Jobs::has(pid);
               if (!ok) Sleep(20);
             }
@@ -141,85 +142,81 @@ class Proxy {
                       (unsigned long)pid, n);
             refuse(c, "this proxy serves the web_view browser only");
           }
-          closesocket(c);
+          plat::sock_close(c);
           --active_;
         }).detach();
       }
     }).detach();
   }
-  static void timeouts(SOCKET s, DWORD ms) {
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&ms, sizeof ms);
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&ms, sizeof ms);
+  static void timeouts(plat::socket_t s, unsigned ms) {
+    plat::sock_recv_timeout(s, ms);
+    plat::sock_send_timeout(s, ms);
   }
-  static bool send_all(SOCKET s, const char* p, size_t n) {
+  static bool send_all(plat::socket_t s, const char* p, size_t n) {
     while (n > 0) {
-      const int k = send(s, p, (int)std::min<size_t>(n, 1 << 20), 0);
+      const int k = plat::sock_send(s, p, (int)std::min<size_t>(n, 1 << 20));
       if (k <= 0) return false;
       p += k, n -= (size_t)k;
     }
     return true;
   }
-  static void refuse(SOCKET c, const std::string& why) {
+  static void refuse(plat::socket_t c, const std::string& why) {
     const std::string b = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: " +
                           std::to_string(why.size()) + "\r\n\r\n" + why;
     send_all(c, b.data(), b.size());
   }
-  // a connection to host:port when every address it resolves to is public, else INVALID_SOCKET and why
-  static SOCKET open(const std::string& host, int port, std::string& why) {
+  // a connection to host:port when every address it resolves to is public, else plat::kNoSocket and why
+  static plat::socket_t open(const std::string& host, int port, std::string& why) {
     // (any web port: the proxy serves only Edge's processes of a render, G7, so other ports than 80 / 443 are as safe
     //  as in web_fetch; the services' ports refused as browsers do)
-    if (!webt::web_port_ok(port)) { why = "port " + std::to_string(port) + " refused (a port of another service, not the web)"; return INVALID_SOCKET; }
+    if (!webt::web_port_ok(port)) { why = "port " + std::to_string(port) + " refused (a port of another service, not the web)"; return plat::kNoSocket; }
     const std::string h = webt::lower(host);
-    if (h.empty() || h == "localhost" || (h.size() > 10 && h.compare(h.size() - 10, 10, ".localhost") == 0)) { why = "local address refused"; return INVALID_SOCKET; }
+    if (h.empty() || h == "localhost" || (h.size() > 10 && h.compare(h.size() - 10, 10, ".localhost") == 0)) { why = "local address refused"; return plat::kNoSocket; }
     addrinfo hints{}, *res = nullptr;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res) { why = "cannot resolve " + host; return INVALID_SOCKET; }
+    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res) { why = "cannot resolve " + host; return plat::kNoSocket; }
     for (addrinfo* a = res; a; a = a->ai_next)
       if (!webt::public_addr(a->ai_addr)) {
         freeaddrinfo(res);
         why = "local or private address refused (" + host + ")";
-        return INVALID_SOCKET;
+        return plat::kNoSocket;
       }
-    SOCKET s = INVALID_SOCKET;
-    for (addrinfo* a = res; a && s == INVALID_SOCKET; a = a->ai_next) {  // (to the addresses just checked: no second lookup)
-      s = socket(a->ai_family, SOCK_STREAM, IPPROTO_TCP);
-      if (s == INVALID_SOCKET) continue;
+    plat::socket_t s = plat::kNoSocket;
+    for (addrinfo* a = res; a && s == plat::kNoSocket; a = a->ai_next) {  // (to the addresses just checked: no second lookup)
+      s = plat::sock_open(a->ai_family, SOCK_STREAM, IPPROTO_TCP);
+      if (s == plat::kNoSocket) continue;
       timeouts(s, 15000);
-      if (connect(s, a->ai_addr, (int)a->ai_addrlen) != 0) { closesocket(s); s = INVALID_SOCKET; }
+      if (!plat::sock_connect(s, a->ai_addr, (size_t)a->ai_addrlen)) { plat::sock_close(s); s = plat::kNoSocket; }
     }
     freeaddrinfo(res);
-    if (s == INVALID_SOCKET) why = "cannot connect to " + host;
+    if (s == plat::kNoSocket) why = "cannot connect to " + host;
     return s;
   }
   // bytes both ways until either side closes, 60 s without any, 10 minutes, or kMaxTunnelBytes (self audit G8)
-  static void pump(SOCKET a, SOCKET b) {
+  static void pump(plat::socket_t a, plat::socket_t b) {
     std::vector<char> buf(64 << 10);
     const auto t0 = std::chrono::steady_clock::now();
     uint64_t moved = 0;
     for (;;) {
       if (std::chrono::steady_clock::now() - t0 > std::chrono::minutes(10) || moved > kMaxTunnelBytes) return;
-      fd_set r;
-      FD_ZERO(&r);
-      FD_SET(a, &r);
-      FD_SET(b, &r);
-      timeval tv{60, 0};
-      const int n = select(0, &r, nullptr, nullptr, &tv);
+      bool ra = false, rb = false;
+      const int n = plat::sock_wait_read2(a, b, 60000, ra, rb);
       if (n <= 0) return;
-      for (auto [from, to] : {std::pair{a, b}, std::pair{b, a}})
-        if (FD_ISSET(from, &r)) {
-          const int k = recv(from, buf.data(), (int)buf.size(), 0);
+      for (auto [from, to, ready] : {std::tuple{a, b, ra}, std::tuple{b, a, rb}})
+        if (ready) {
+          const int k = plat::sock_recv(from, buf.data(), (int)buf.size());
           if (k <= 0 || !send_all(to, buf.data(), (size_t)k)) return;
           moved += (uint64_t)k;
         }
     }
   }
-  static void serve(SOCKET c) {
+  static void serve(plat::socket_t c) {
     timeouts(c, 30000);
     std::string head;
     char tmp[4096];
     while (head.find("\r\n\r\n") == std::string::npos) {
       if (head.size() > (32 << 10)) return;
-      const int k = recv(c, tmp, sizeof tmp, 0);
+      const int k = plat::sock_recv(c, tmp, (int)sizeof tmp);
       if (k <= 0) return;
       head.append(tmp, (size_t)k);
     }
@@ -254,19 +251,19 @@ class Proxy {
     int port = 0;
     if (method == "CONNECT") {
       split(target, 443, host, port);
-      SOCKET up = open(host, port, why);
-      if (up == INVALID_SOCKET) return refuse(c, why);
+      plat::socket_t up = open(host, port, why);
+      if (up == plat::kNoSocket) return refuse(c, why);
       const char ok[] = "HTTP/1.1 200 Connection established\r\n\r\n";
       if (send_all(c, ok, sizeof ok - 1) && (rest.empty() || send_all(up, rest.data(), rest.size()))) pump(c, up);
-      closesocket(up);
+      plat::sock_close(up);
       return;
     }
     if (webt::lower(target.substr(0, 7)) != "http://") return refuse(c, "only http:// targets and CONNECT");
     const size_t ps = target.find('/', 7);
     split(target.substr(7, ps == std::string::npos ? std::string::npos : ps - 7), 80, host, port);
     const std::string path = ps == std::string::npos ? "/" : target.substr(ps);
-    SOCKET up = open(host, port, why);
-    if (up == INVALID_SOCKET) return refuse(c, why);
+    plat::socket_t up = open(host, port, why);
+    if (up == plat::kNoSocket) return refuse(c, why);
     // the request again in origin form, one request per connection (a second one on it could name another host)
     std::string out = method + " " + path + " " + line.substr(s2 + 1) + "\r\n";
     size_t p = le + 2;
@@ -279,7 +276,7 @@ class Proxy {
     }
     out += "Connection: close\r\n\r\n" + rest;
     if (send_all(up, out.data(), out.size())) pump(c, up);
-    closesocket(up);
+    plat::sock_close(up);
   }
 };
 

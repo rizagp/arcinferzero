@@ -527,9 +527,7 @@
       // (what leaves 45 % of the share for the rest, but no more than the RAM free now beyond the share, less 4 GiB:
       //  host memory is RAM all the same. Gemma 4 31B, 24.8 GB free: 5.3 GiB in host memory and a share filled with
       //  context left 2.1 GB free, and generation fell from 3.1 to 1.2 tok/s (paging))
-      MEMORYSTATUSEX ms{sizeof ms};
-      GlobalMemoryStatusEx(&ms);
-      want = std::max(0.0, std::min(total - 0.55 * budget, (double)ms.ullAvailPhys - budget - 4.0 * GiB));
+      want = std::max(0.0, std::min(total - 0.55 * budget, (double)plat::ram_available() - budget - 4.0 * GiB));
     }
     if (const char* e = getenv("ARC_HOST_WEIGHTS_GB")) want = std::max(0.0, atof(e)) * GiB;  // (tests: 0 turns it off)
     host_left_ = (size_t)want;

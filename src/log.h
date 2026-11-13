@@ -20,7 +20,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#ifdef _WIN32
 #include <io.h>
+#else
+#include <unistd.h>  // (isatty, fileno)
+#endif
 #include <mutex>
 #include <string>
 
@@ -50,7 +54,11 @@ inline void stamp(char* b, size_t n) {
   const std::time_t t = std::chrono::system_clock::to_time_t(now);
   const int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
   std::tm tm{};
+#ifdef _WIN32
   localtime_s(&tm, &t);
+#else
+  localtime_r(&t, &tm);
+#endif
   snprintf(b, n, "%04d-%02d-%02d %02d:%02d:%02d.%03d ", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
            tm.tm_min, tm.tm_sec, ms);
 }
@@ -224,8 +232,14 @@ inline void start() {
     int l = INF;
     if (level_name(e, l)) c.level = l;
   }
-  // (colors only on a terminal that shows them: Windows Terminal sets WT_SESSION; a redirected log never)
+  // (colors only on a terminal that shows them: Windows Terminal sets WT_SESSION; on Linux a terminal that is not
+  //  "dumb"; a redirected log never)
+#ifdef _WIN32
   c.colors = getenv("WT_SESSION") && _isatty(_fileno(stderr));
+#else
+  const char* term = getenv("TERM");
+  c.colors = term && strcmp(term, "dumb") != 0 && isatty(fileno(stderr));
+#endif
 }
 
 }  // namespace zlog

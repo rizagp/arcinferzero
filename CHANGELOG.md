@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
+
+- **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),
+  so whether Arc cards copy to each other directly on Linux (they cannot on Windows) can be measured by an owner of two
+  or more cards on native Linux. WSL cannot answer it: one GPU on the laptop, and ~77 us per GPU round trip there
+  against 4.7 us on Windows (the same probe, the same machine), which is also why WSL generates ~15 % slower.
+- **WSL's compute runtime 26.40** (Intel's packages for Ubuntu 24.04, in place of Ubuntu's 23.43): the 4B's logits on
+  Linux bit-identical between the two runtimes, KL 0.00090 against the f32 reference. Windows' build unchanged
+  (mgpu_probe rebuilt, the same output shape). docs/linux-port.md, Progress.
+
+## 2026-11-13: runz runs on Linux (WSL2, the laptop's Arc iGPU)
+
+- **What:** `zero/runz.cpp` and the engine build with g++ 13.3 on Ubuntu 24.04 and run on the iGPU through Ubuntu's
+  compute runtime in WSL2. The engine's last Windows calls went behind `src/platform.h` (free RAM, 64-bit seeks, ids,
+  environment, path separators) or `#ifdef _WIN32` (the CPU check, power throttling, DXGI's budget, the process list).
+- **Measured:** the 4B gives the same 32 greedy tokens as on Windows, 14.7 tok/s (Windows 16.6-19.1), and KL 0.00090
+  against its f32 reference (Windows 0.00100; the limit 0.015). Not bit-identical to Windows (another kernel compiler).
+- **Windows unchanged:** bit-identical to release 2026.11.13.09 (the 4B, 32 tokens; the 35B-A3B, 16 tokens).
+  docs/linux-port.md (Progress) has the build line and what is not tried yet; docs/before-after.md a row.
+
+## 2026-11-13: the web tools on Linux through libcurl (Linux port, issue #11)
+
+- **What:** `tools/web_tools.h` (web_fetch, web_search, the downloads behind them) has a Linux half on libcurl,
+  loaded at run time (`src/curl_min.h`, no curl headers needed to build; `libcurl.so.4` from a standard Ubuntu
+  install). The same rules as on Windows: public addresses only (each address checked before libcurl connects to
+  it), web ports, http(s), redirects by hand, no proxy, the same limits and flags.
+- **Checked:** one test program built on Windows (WinHTTP) and Linux (libcurl in WSL) gives the same results for 18
+  cases, the refusals included; the Windows serverz's web_fetch / web_search identical to release 2026.11.13.09
+  (the Windows code is the same; its Latin-1 conversion moved into a function both halves use).
+
+## 2026-11-13: the HTTP server runs on Linux (WSL), its first Linux build
+
+- `tests/test_http.cpp` (the HTTP server with its test client) builds with g++ 13.3 on Ubuntu 24.04 in WSL, with
+  `-Wall -Wextra` and no warnings, and passes all its cases there. The files step 1 of the port moved behind the
+  platform layer pass a Linux syntax check. Fixed on the way: the log (`src/log.h`) used `<io.h>`, `localtime_s` and
+  `_isatty`, now behind `#ifdef _WIN32` with `localtime_r` / `isatty` on Linux. Windows unchanged (the same lines
+  under `_WIN32`; runz, serverz and test_http rebuilt, test_http passes). docs/linux-port.md, Progress.
+
 ## 2026-11-13: `zero-server -Host` / `--host`, as serverz's own option
 
 - **`zero-server start -Host 0.0.0.0`** (also `--host 0.0.0.0`, `--host=0.0.0.0`, `-host:0.0.0.0`): the listen
@@ -45,6 +83,9 @@
   chat (the same text), a stream the client closes after five events (the next request answered at once), two
   clients at once, a chunked request body, a 3 MB file in full and by four ranges (416 included); `test_http` passes.
   No speed or logits change (the engine is untouched). Not compiled on Linux yet. docs/linux-port.md, Progress.
+- **Also on the platform layer:** the web_view proxy's sockets (`tools/web_view.h`) and `tests/test_http.cpp`'s
+  client. web_view checked against release 2026.11.13.09's serverz: the same replies for an https and an http page
+  and a refused port.
 
 ## 2026-11-13: a fuller GEMV sweep for generation on discrete cards (`bench\decode_try.ps1`)
 

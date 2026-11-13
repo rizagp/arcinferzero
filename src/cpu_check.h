@@ -7,11 +7,17 @@
 #pragma once
 #include <cstdio>
 #include <cstdlib>
+#ifdef _WIN32
 #include <intrin.h>
+#endif
 #include <immintrin.h>
 
 namespace inferzero_cpu {
 inline bool has_avx2() {
+#ifndef _WIN32
+  // (GCC / Clang: libgcc's CPU model, which counts AVX only when the OS saves the registers, as the xgetbv test below)
+  return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+#else
   int r[4] = {};
   __cpuid(r, 0);
   if (r[0] < 7) return false;
@@ -21,6 +27,7 @@ inline bool has_avx2() {
   if ((_xgetbv(0) & 6) != 6) return false;  // (the OS saves the vector registers)
   __cpuidex(r, 7, 0);
   return (r[1] >> 5) & 1;
+#endif
 }
 struct Check {
   Check() {

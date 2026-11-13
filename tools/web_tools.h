@@ -1,26 +1,35 @@
 // Web search and page fetch for the web UI's tools (server endpoints /v1/tools/web_search and /v1/tools/web_fetch):
-// WinHTTP requests, result parsing for Brave Search (Bing when Brave gives nothing) and HTML to plain text. Only
-// public http(s) addresses are fetched: every host, redirects included, is resolved first and loopback, private,
-// link-local, multicast and reserved addresses are refused, and the address the connection went to is checked again
-// before anything is read, so a model cannot reach the machine or the local network.
+// HTTP requests (WinHTTP on Windows, libcurl loaded at run time on Linux: src/curl_min.h), result parsing for Brave
+// Search (Bing when Brave gives nothing) and HTML to plain text. Only public http(s) addresses are fetched: every
+// host, redirects included, is resolved first and loopback, private, link-local, multicast and reserved addresses are
+// refused, and the address the connection goes to is checked again (WinHTTP: the one it connected to, before anything
+// is read; libcurl: each address before it connects), so a model cannot reach the machine or the local network.
 #pragma once
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <winhttp.h>
+#endif
+#include "../src/platform_net.h"  // (plat::net_init; the sockets' headers on Linux)
+#include "../src/curl_min.h"      // (Linux: the HTTP client)
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
+#ifdef _WIN32
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "normaliz.lib")  // (IdnToAscii)
+#endif
 
 namespace webt {
 
@@ -37,6 +46,7 @@ struct Result {
   std::string title, url, snippet;
 };
 
+#ifdef _WIN32
 inline std::wstring widen(const std::string& s) {
   if (s.empty()) return {};
   const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
@@ -52,6 +62,7 @@ inline std::string narrow(const wchar_t* p, size_t len, UINT cp = CP_UTF8) {
   WideCharToMultiByte(cp, 0, p, (int)len, s.data(), n, nullptr, nullptr);
   return s;
 }
+#endif
 
 inline std::string lower(std::string s) {
   for (char& c : s) c = (char)tolower((unsigned char)c);
@@ -108,10 +119,20 @@ inline bool public_addr(const sockaddr* sa) {
 // name checked, the name connected to and the name Edge opens are one (self audit R4); "" when it has no such form
 inline std::string ascii_host(const std::string& h) {
   if (std::all_of(h.begin(), h.end(), [](char c) { return (unsigned char)c < 0x80; })) return h;
+#ifdef _WIN32
   const std::wstring w = widen(h);
   wchar_t out[256];
   const int n = w.empty() ? 0 : IdnToAscii(0, w.c_str(), (int)w.size(), out, 256);
   return n > 0 ? narrow(out, (size_t)n) : std::string();
+#else
+  // (libidn2, with the flags libcurl itself uses: IDN2_NFC_INPUT | IDN2_NONTRANSITIONAL)
+  const curlm::Api& c = curlm::api();
+  char* out = nullptr;
+  if (!c.idn2_to_ascii_8z || c.idn2_to_ascii_8z(h.c_str(), &out, 1 | 8) != 0 || !out) return std::string();
+  std::string s = out;
+  c.idn2_free(out);
+  return s.size() < 256 ? s : std::string();  // (as Windows' 256-character buffer)
+#endif
 }
 
 // Every address the host resolves to is public (empty error), else why not
@@ -120,7 +141,7 @@ inline std::string check_host(const std::string& host_in) {
   if (host.empty()) return "no host";
   const std::string h = lower(host);
   if (h == "localhost" || (h.size() > 10 && h.compare(h.size() - 10, 10, ".localhost") == 0)) return "local address refused";
-  static const bool wsa = [] { WSADATA wd; return WSAStartup(MAKEWORD(2, 2), &wd) == 0; }();  // (once: self audit L2)
+  static const bool wsa = plat::net_init();  // (once: self audit L2)
   if (!wsa) return "no network (WSAStartup failed)";
   addrinfo hints{}, *res = nullptr;
   hints.ai_socktype = SOCK_STREAM;
@@ -160,9 +181,49 @@ inline bool web_port_ok(int port) {
   return true;
 }
 
-// An http(s) URL's host and port, as get() parses it (WinHttpCrackUrl): the one parser of a URL's host for the web
-// tools (self audit C3); false: not an http(s) URL
+#ifndef _WIN32
+// (Linux) an http(s) URL's parts through libcurl's URL parser, the one get() connects with: scheme in lower case,
+// host (an IPv6 literal with its brackets, as WinHttpCrackUrl gives it), port (the scheme's default when none),
+// path and query ("/" at least). false: not an http(s) URL, or libcurl missing
+struct UrlParts {
+  std::string scheme, host, target;
+  int port = 0;
+};
+inline bool url_parts(const std::string& url, UrlParts& out) {
+  const curlm::Api& c = curlm::api();
+  if (!c.ok) return false;
+  curlm::CURLU* u = c.url();
+  if (!u) return false;
+  bool ok = false;
+  if (c.url_set(u, curlm::UPART_URL, url.c_str(), 0) == 0) {
+    char *sch = nullptr, *h = nullptr, *pt = nullptr, *path = nullptr, *q = nullptr;
+    if (c.url_get(u, curlm::UPART_SCHEME, &sch, 0) == 0 && c.url_get(u, curlm::UPART_HOST, &h, 0) == 0 &&
+        c.url_get(u, curlm::UPART_PORT, &pt, curlm::U_DEFAULT_PORT) == 0) {
+      out.scheme = lower(sch);
+      out.host = h;
+      out.port = atoi(pt);
+      out.target = c.url_get(u, curlm::UPART_PATH, &path, 0) == 0 && path && *path ? path : "/";
+      if (c.url_get(u, curlm::UPART_QUERY, &q, 0) == 0 && q) out.target += std::string("?") + q;
+      ok = (out.scheme == "http" || out.scheme == "https") && !out.host.empty();
+    }
+    for (char* s : {sch, h, pt, path, q})
+      if (s) c.free(s);
+  }
+  c.url_cleanup(u);
+  return ok;
+}
+#endif
+
+// An http(s) URL's host and port, as get() parses it (WinHttpCrackUrl; libcurl's parser on Linux): the one parser of a
+// URL's host for the web tools (self audit C3); false: not an http(s) URL
 inline bool url_host_port(const std::string& url, std::string& host, int& port) {
+#ifndef _WIN32
+  UrlParts up;
+  if (!url_parts(url, up)) return false;
+  host = up.host;
+  port = up.port;
+  return true;
+#else
   const std::wstring wu = widen(url);
   if (wu.empty()) return false;
   URL_COMPONENTS uc{};
@@ -175,7 +236,223 @@ inline bool url_host_port(const std::string& url, std::string& host, int& port) 
   host = narrow(h, wcslen(h));
   port = uc.nPort;
   return !host.empty();
+#endif
 }
+
+// A body in Latin-1 / Windows-1252 (the content type or a meta tag says so) becomes UTF-8; a text only (a page, a
+// text file): a PDF or an image fetched to be saved keeps its bytes, whatever its first 2 KB hold
+inline void cp1252_to_utf8(Page& p) {
+  const std::string ct = lower(p.content_type), head = lower(p.body.substr(0, 2048));
+  const bool textual = (ct.empty() || ct.rfind("text/", 0) == 0 || ct.find("html") != std::string::npos ||
+                        ct.find("xml") != std::string::npos || ct.find("json") != std::string::npos) &&
+                       p.body.compare(0, 5, "%PDF-") != 0 && p.body.compare(0, 2, "PK") != 0 &&
+                       p.body.find('\0') == std::string::npos;  // (no type given: a binary file is no text)
+  if (textual && (ct.find("iso-8859-1") != std::string::npos || ct.find("windows-1252") != std::string::npos ||
+      (ct.find("charset") == std::string::npos && (head.find("charset=iso-8859-1") != std::string::npos || head.find("charset=windows-1252") != std::string::npos)))) {
+#ifdef _WIN32
+    const int n = MultiByteToWideChar(1252, 0, p.body.data(), (int)p.body.size(), nullptr, 0);
+    std::wstring w(n, L'\0');
+    MultiByteToWideChar(1252, 0, p.body.data(), (int)p.body.size(), w.data(), n);
+    p.body = narrow(w.data(), w.size());
+#else
+    // (code page 1252: Latin-1 but for 0x80-0x9F; its five unassigned bytes kept as the C1 controls, as Windows does)
+    static const uint16_t c1[32] = {0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
+                                    0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
+                                    0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178};
+    std::string o;
+    o.reserve(p.body.size() + p.body.size() / 8);
+    for (const unsigned char ch : p.body) {
+      const uint32_t u = ch >= 0x80 && ch < 0xA0 ? c1[ch - 0x80] : ch;
+      if (u < 0x80) o += (char)u;
+      else if (u < 0x800) o += (char)(0xc0 | u >> 6), o += (char)(0x80 | (u & 63));
+      else o += (char)(0xe0 | u >> 12), o += (char)(0x80 | (u >> 6 & 63)), o += (char)(0x80 | (u & 63));
+    }
+    p.body.swap(o);
+#endif
+  }
+}
+
+#ifndef _WIN32
+// (Linux) get() through libcurl, the same steps as the WinHTTP one below: redirects by hand, each hop's port and host
+// checked, no proxy, the whole request within timeout_ms, the body read up to its limit. Where WinHTTP checks the
+// address it connected to, libcurl's socket callback checks each address before connecting to it.
+struct CurlHop {
+  Page* p = nullptr;
+  size_t max_bytes = 0;
+  const std::function<size_t(const Page&, bool& whole)>* limit = nullptr;
+  bool head_done = false, decided = false, stopped = false, refused = false, has_len = false;
+  uint64_t content_length = 0;
+  std::string location;
+  void decide() {  // (from the headers, before the body: once, as the WinHTTP path does after its response)
+    if (decided) return;
+    decided = true;
+    bool whole = false;
+    if (*limit) max_bytes = std::min(max_bytes, (*limit)(*p, whole));
+    if (whole && has_len && content_length > max_bytes) p->too_big = true;  // (whole or nothing: nothing read)
+  }
+};
+inline size_t curl_header(char* d, size_t sz, size_t n, void* user) {
+  CurlHop& h = *(CurlHop*)user;
+  std::string line(d, sz * n);
+  while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
+  if (line.rfind("HTTP/", 0) == 0) {  // (a new response: a 100 Continue before the real one starts over)
+    const size_t sp = line.find(' ');
+    h.p->status = sp == std::string::npos ? 0 : atoi(line.c_str() + sp + 1);
+    h.p->content_type.clear(), h.p->disposition.clear(), h.location.clear();
+    h.has_len = false, h.head_done = false;
+    return sz * n;
+  }
+  if (line.empty()) {
+    h.head_done = h.p->status >= 200;
+    return sz * n;
+  }
+  const size_t colon = line.find(':');
+  if (colon == std::string::npos) return sz * n;
+  const std::string k = lower(line.substr(0, colon));
+  std::string v = line.substr(colon + 1);
+  v.erase(0, v.find_first_not_of(" \t"));
+  if (k == "content-type") h.p->content_type = v;
+  else if (k == "content-disposition") h.p->disposition = v;
+  else if (k == "location") h.location = v;
+  else if (k == "content-length") h.has_len = true, h.content_length = strtoull(v.c_str(), nullptr, 10);
+  return sz * n;
+}
+inline size_t curl_body(char* d, size_t sz, size_t n, void* user) {
+  CurlHop& h = *(CurlHop*)user;
+  const size_t k = sz * n;
+  const int st = h.p->status;
+  if (st >= 300 && st < 400) return k;  // (a redirect's body: not kept)
+  h.decide();
+  if (h.p->too_big || h.max_bytes == 0) { h.stopped = true; return 0; }  // (0: libcurl stops, CURLE_WRITE_ERROR)
+  std::string& b = h.p->body;
+  const size_t room = h.max_bytes - b.size();
+  if (k > room) {  // (more than the limit: cut, the transfer stopped; exactly max_bytes long is not cut)
+    b.append(d, room);
+    h.p->cut = true;
+    h.stopped = true;
+    return 0;
+  }
+  b.append(d, k);
+  return k;
+}
+inline int curl_open_socket(void* user, int /*purpose*/, curlm::curl_sockaddr* a) {
+  CurlHop& h = *(CurlHop*)user;
+  // (each address libcurl connects to, its own lookup's: a name that answered with a public address for check_host
+  //  and a local one now, DNS rebinding, gets no connection)
+  if (!public_addr(&a->addr)) {
+    h.refused = true;
+    return curlm::SOCKET_BAD;
+  }
+  return (int)plat::sock_open(a->family, a->socktype, a->protocol);
+}
+inline Page get_curl(std::string url, size_t max_bytes, int timeout_ms, const std::string& accept_lang, const std::string& accept,
+                     const std::function<size_t(const Page&, bool& whole)>& limit) {
+  Page p;
+  const curlm::Api& c = curlm::api();
+  if (!c.ok) {
+    p.url = url;
+    p.error = "the web tools need libcurl (libcurl.so.4: the libcurl4 package)";
+    return p;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  auto left = [&] {
+    return (int)std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+  };
+  for (int hop = 0; hop < 6; ++hop) {
+    const int ms = left();
+    p = Page{};
+    p.url = url;
+    if (ms <= 0) {
+      p.error = "timed out";
+      break;
+    }
+    UrlParts up;
+    if (!url_parts(url, up)) {
+      p.error = "not an http(s) URL";
+      break;
+    }
+    const std::string& h8 = up.host;
+    if (!web_port_ok(up.port)) {  // (each hop: a redirect to such a port too)
+      p.error = "port " + std::to_string(up.port) + " refused (a port of another service, not the web)";
+      break;
+    }
+    if (!(p.error = check_host(h8)).empty()) break;
+    // (the name connected to is the one checked: an internationalized host in its punycode form, R15)
+    const std::string ah = ascii_host(h8);  // (an IPv6 literal keeps its brackets, as on Windows)
+    const std::string target_url = up.scheme + "://" + ah + ":" + std::to_string(up.port) + up.target;
+    CurlHop hs;
+    hs.p = &p;
+    hs.max_bytes = max_bytes;
+    hs.limit = &limit;
+    curlm::CURL* e = ah.empty() ? nullptr : c.easy_init();
+    if (!e) {
+      p.error = "cannot connect to " + h8;
+      break;
+    }
+    curlm::curl_slist* hdr = c.slist_append(nullptr, ("Accept: " + accept).c_str());
+    hdr = c.slist_append(hdr, ("Accept-Language: " + accept_lang).c_str());
+    c.easy_setopt(e, curlm::OPT_URL, target_url.c_str());
+    c.easy_setopt(e, curlm::OPT_USERAGENT,
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36");
+    c.easy_setopt(e, curlm::OPT_HTTPHEADER, hdr);
+    // (direct connections only: through a proxy the address checked would be the proxy's, and the proxy could fetch a
+    //  local address; http_proxy and the like in the environment are ignored)
+    c.easy_setopt(e, curlm::OPT_PROXY, "");
+    c.easy_setopt(e, curlm::OPT_NOPROXY, "*");
+    c.easy_setopt(e, curlm::OPT_FOLLOWLOCATION, 0L);
+    if (c.easy_setopt(e, curlm::OPT_PROTOCOLS_STR, "http,https") != curlm::E_OK)  // (curl < 7.85: the bit mask)
+      c.easy_setopt(e, curlm::OPT_PROTOCOLS, (long)(curlm::PROTO_HTTP | curlm::PROTO_HTTPS));
+    c.easy_setopt(e, curlm::OPT_ACCEPT_ENCODING, "");  // (every coding this libcurl decodes)
+    c.easy_setopt(e, curlm::OPT_HTTP_VERSION, (long)curlm::HTTP_VERSION_2TLS);
+    c.easy_setopt(e, curlm::OPT_NOSIGNAL, 1L);  // (no SIGALRM for the timeouts: the server has many threads)
+    c.easy_setopt(e, curlm::OPT_TIMEOUT_MS, (long)std::max(1, ms));
+    c.easy_setopt(e, curlm::OPT_CONNECTTIMEOUT_MS, (long)std::max(1, 2 * ms / 3));  // (resolve and connect, as WinHTTP's thirds)
+    c.easy_setopt(e, curlm::OPT_HEADERFUNCTION, (curlm::data_fn)curl_header);
+    c.easy_setopt(e, curlm::OPT_HEADERDATA, &hs);
+    c.easy_setopt(e, curlm::OPT_WRITEFUNCTION, (curlm::data_fn)curl_body);
+    c.easy_setopt(e, curlm::OPT_WRITEDATA, &hs);
+    c.easy_setopt(e, curlm::OPT_OPENSOCKETFUNCTION, (curlm::opensocket_fn)curl_open_socket);
+    c.easy_setopt(e, curlm::OPT_OPENSOCKETDATA, &hs);
+    const curlm::CURLcode rc = c.easy_perform(e);
+    long st = 0;
+    c.easy_getinfo(e, curlm::INFO_RESPONSE_CODE, &st);
+    const std::string why = c.easy_strerror(rc);
+    c.easy_cleanup(e);
+    c.slist_free_all(hdr);
+    if (hs.refused && rc == curlm::E_COULDNT_CONNECT) {
+      p = Page{};
+      p.url = url;
+      p.error = "local or private address refused (" + h8 + ", at connection)";
+      break;
+    }
+    const bool stopped_by_us = rc == curlm::E_WRITE_ERROR && hs.stopped;
+    if (rc != curlm::E_OK && !stopped_by_us && !hs.head_done) {  // (no response: the request failed)
+      p.status = 0;
+      p.error = rc == curlm::E_OPERATION_TIMEDOUT || left() <= 0 ? "request to " + h8 + " timed out"
+                                                                 : "request to " + h8 + " failed (" + why + ")";
+      break;
+    }
+    if (st > 0) p.status = (int)st;
+    if (p.status >= 300 && p.status < 400) {
+      if (!hs.location.empty()) {
+        url = resolve_url(url, hs.location);
+        continue;
+      }
+      if (p.status != 304) p.error = "a redirect (HTTP " + std::to_string(p.status) + ") without a Location";  // (G9; R6)
+    }
+    hs.decide();  // (an empty body still asks its limit, as the WinHTTP path does)
+    if (p.too_big) p.body.clear();
+    // (a failed read in the middle of the body, a stall that reached the deadline or a dropped connection, leaves it not
+    //  whole: timed_out, so a cut file is never saved as a whole one, R14)
+    if (rc != curlm::E_OK && !stopped_by_us) p.timed_out = true;
+    break;
+  }
+  // (a 3xx with a Location still at the 6th hop; a 304 is left to the caller, which takes only 200)
+  if (p.error.empty() && p.status >= 300 && p.status < 400 && p.status != 304) p.error = "too many redirects";
+  cp1252_to_utf8(p);
+  return p;
+}
+#endif
 
 // GET a public http(s) URL: redirects followed by hand (each host checked), at most max_bytes of body, the whole
 // request within timeout_ms. limit, when given: the bytes this body may have, decided from its headers (status,
@@ -187,6 +464,9 @@ inline bool url_host_port(const std::string& url, std::string& host, int& port) 
 inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 15000, const std::string& accept_lang = "en-US,en;q=0.9",
                 const std::string& accept = "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
                 const std::function<size_t(const Page&, bool& whole)>& limit = {}) {
+#ifndef _WIN32
+  return get_curl(std::move(url), max_bytes, timeout_ms, accept_lang, accept, limit);
+#else
   Page p;
   const auto t0 = std::chrono::steady_clock::now();
   HINTERNET ses = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
@@ -332,21 +612,9 @@ inline Page get(std::string url, size_t max_bytes = 4u << 20, int timeout_ms = 1
   // (a 3xx with a Location still at the 6th hop; a 304 is left to the caller, which takes only 200)
   if (p.error.empty() && p.status >= 300 && p.status < 400 && p.status != 304) p.error = "too many redirects";
   WinHttpCloseHandle(ses);
-  // a body in Latin-1 / Windows-1252 (the content type or a meta tag says so) becomes UTF-8; a text only (a page, a
-  // text file): a PDF or an image fetched to be saved keeps its bytes, whatever its first 2 KB hold
-  const std::string ct = lower(p.content_type), head = lower(p.body.substr(0, 2048));
-  const bool textual = (ct.empty() || ct.rfind("text/", 0) == 0 || ct.find("html") != std::string::npos ||
-                        ct.find("xml") != std::string::npos || ct.find("json") != std::string::npos) &&
-                       p.body.compare(0, 5, "%PDF-") != 0 && p.body.compare(0, 2, "PK") != 0 &&
-                       p.body.find('\0') == std::string::npos;  // (no type given: a binary file is no text)
-  if (textual && (ct.find("iso-8859-1") != std::string::npos || ct.find("windows-1252") != std::string::npos ||
-      (ct.find("charset") == std::string::npos && (head.find("charset=iso-8859-1") != std::string::npos || head.find("charset=windows-1252") != std::string::npos)))) {
-    const int n = MultiByteToWideChar(1252, 0, p.body.data(), (int)p.body.size(), nullptr, 0);
-    std::wstring w(n, L'\0');
-    MultiByteToWideChar(1252, 0, p.body.data(), (int)p.body.size(), w.data(), n);
-    p.body = narrow(w.data(), w.size());
-  }
+  cp1252_to_utf8(p);
   return p;
+#endif
 }
 
 inline void put_utf8(std::string& o, uint32_t c) {
@@ -709,7 +977,7 @@ inline std::vector<Result> search(const std::string& query, size_t n, const std:
   if (engine != "bing") {
     const std::string u = "https://search.brave.com/search?q=" + url_encode(query) + "&source=web";
     Page pg = get(u, 4u << 20, 12000);
-    if (pg.status == 429) Sleep(1500), pg = get(u, 4u << 20, 12000);  // (a short burst limit)
+    if (pg.status == 429) std::this_thread::sleep_for(std::chrono::milliseconds(1500)), pg = get(u, 4u << 20, 12000);  // (a short burst limit)
     if (pg.error.empty() && pg.status == 200) rs = parse_brave(pg.body, n);
     else err = "brave: " + (pg.error.empty() ? "HTTP " + std::to_string(pg.status) : pg.error);
     if (!rs.empty()) { *used = "brave"; return rs; }

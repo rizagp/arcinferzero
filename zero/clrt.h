@@ -7,10 +7,13 @@
 #include "../src/app_dir.h"
 #include "../src/kcache.h"
 #include "ze_min.h"
+#ifdef _WIN32
 #include <dxgi1_4.h>
 #pragma comment(lib, "dxgi.lib")
+#endif
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <stdexcept>
@@ -486,6 +489,10 @@ inline void* device_alloc(size_t n) {
 // What Windows lets this process keep resident on the GPU now (WDDM budget, DXGI) and what it uses: the GPU share is
 // an upper bound, the budget shrinks when the system is short of memory. Returns false without the numbers.
 inline bool video_budget(uint64_t& budget, uint64_t& usage) {
+#ifndef _WIN32
+  (void)budget, (void)usage;
+  return false;  // (no WDDM budget on Linux: Level Zero Sysman later, docs/linux-port.md)
+#else
   IDXGIFactory4* f = nullptr;
   if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)&f))) return false;
   bool ok = false;
@@ -509,16 +516,21 @@ inline bool video_budget(uint64_t& budget, uint64_t& usage) {
   }
   f->Release();
   return ok;
+#endif
 }
 inline int note_layer = -1, note_T = -1;  // (diagnostics: the layer and rows the engine is working on)
 inline void print_memory(int lvl = zlog::INF) {
   if (note_layer >= 0) zlog::log(lvl, "  (layer %d, %d rows)\n", note_layer, note_T);
   uint64_t b = 0, u = 0;
-  MEMORYSTATUSEX ms{sizeof ms};
-  GlobalMemoryStatusEx(&ms);
+  const uint64_t avail = plat::ram_available();
   if (video_budget(b, u))
     zlog::log(lvl, "  GPU memory: Windows budget %.2f GiB, in use %.2f GiB (allocated by the engine %.2f GiB); RAM free %.2f GiB\n",
-            b / 1073741824.0, u / 1073741824.0, D().device_bytes / 1073741824.0, ms.ullAvailPhys / 1073741824.0);
+            b / 1073741824.0, u / 1073741824.0, D().device_bytes / 1073741824.0, avail / 1073741824.0);
+#ifndef _WIN32
+  else
+    zlog::log(lvl, "  GPU memory: allocated by the engine %.2f GiB; RAM free %.2f GiB\n", D().device_bytes / 1073741824.0,
+              avail / 1073741824.0);
+#endif
 }
 // memory the engine allocated itself (host USM, device pools) as a buffer kernels can take as an argument
 inline ZMem* wrap(void* p, size_t n) {
@@ -1008,8 +1020,8 @@ struct ClRt {
       if (getenv("ARC_NO_XMX") && atoi(getenv("ARC_NO_XMX")) != 0) xmx = false;
     }
     if (!getenv("ARC_NO_KCACHE")) {  // (a folder per driver, swept once per process: src/kcache.h)
-      cache_dir = kcache_dir(app_dir() + "\\kernels", drv);
-      kcache_sweep(app_dir() + "\\kernels", cache_dir);
+      cache_dir = kcache_dir(app_dir() + PLAT_SEP "kernels", drv);
+      kcache_sweep(app_dir() + PLAT_SEP "kernels", cache_dir);
     }
     // a second engine in the process (the server switching models, after the first one freed its memory) keeps the
     // runtime: the context, its command lists and events, the staging buffer (all of zrt:: belongs to that context)
@@ -1100,7 +1112,7 @@ struct ClRt {
     if (!cache_dir.empty()) {
       char hex[17];
       snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)fnv1a(src + "\x01" + opts + "\x01" + device_id));
-      path = cache_dir + "\\" + hex + ".bin";
+      path = cache_dir + PLAT_SEP + hex + ".bin";
       // (ARC_KLIST=1: which cached binary holds which options, for reading its assembly: ocloc disasm)
       static const bool klist = getenv("ARC_KLIST") && atoi(getenv("ARC_KLIST")) != 0;
       if (klist) zlog::eprintf("kernel binary %s.bin: %s\n", hex, opts.c_str());

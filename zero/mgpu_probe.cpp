@@ -6,7 +6,7 @@
 // copy-engine queue where the GPU has one. With one GPU it runs GPU 0 to itself (a check of the tool, not of a link).
 // Also host memory <-> each GPU one way (pinned / pageable, both queues) and every GPU at once: the link that MoE
 // experts streamed from RAM come over.
-//   bin\mgpu_probe.exe            all GPUs
+//   bin\mgpu_probe.exe            all GPUs (Linux: ./mgpu_probe, the same options; peer access may exist there)
 //   bin\mgpu_probe.exe --reps 500 more repetitions for the latencies (default 200)
 #include "ze_min.h"
 #include <algorithm>
@@ -71,8 +71,8 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i)
     if (!strcmp(argv[i], "--reps") && i + 1 < argc) reps = std::max(10, atoi(argv[++i]));
   if (!ze_load()) { zlog::eprintf("cannot load ze_loader.dll (Level Zero, part of the Intel graphics driver)\n"); return 1; }
-  HMODULE zl = GetModuleHandleA("ze_loader.dll");
-  zeDeviceCanAccessPeer_ = (PFN_canAccessPeer)GetProcAddress(zl, "zeDeviceCanAccessPeer");
+  void* zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");
+  zeDeviceCanAccessPeer_ = zl ? (PFN_canAccessPeer)plat::dl_sym(zl, "zeDeviceCanAccessPeer") : nullptr;
   ZE_CHECK(zeInit(1));
   uint32_t nd = 0;
   ZE_CHECK(zeDriverGet(&nd, nullptr));
@@ -155,14 +155,14 @@ int main(int argc, char** argv) {
 
   // ---- host memory <-> each GPU, one way: what streaming MoE experts from RAM can get (Flash Next's 52 GB of experts
   // on a 24 GB card come over this link). Pinned host memory (zeMemAllocHost, what the engine stages through) and
-  // ordinary pageable memory (VirtualAlloc), the compute queue and the copy engine, 40 MB and 256 MB; then every GPU
+  // ordinary pageable memory (VirtualAlloc; mmap on Linux), the compute queue and the copy engine, 40 MB and 256 MB; then every GPU
   // at once, host -> GPU (the RAM's and the PCIe root's shared limit). Medians of 20 / 5 copies.
   {
     const size_t huge = (size_t)256 << 20;
     void* pin = nullptr;
     ze_host_mem_alloc_desc_t hd2{ZE_STYPE_HOST_MEM_ALLOC_DESC, nullptr, 0};
     if (zeMemAllocHost(ctx, &hd2, huge, 64, &pin) != 0) pin = nullptr;
-    void* page = VirtualAlloc(nullptr, huge, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    void* page = plat::page_alloc(huge);
     if (pin) memset(pin, 1, huge);
     if (page) memset(page, 1, huge);  // (touched: every page present before the copies)
     std::vector<void*> dh(gpus.size(), nullptr);
@@ -213,7 +213,7 @@ int main(int argc, char** argv) {
     }
     for (void* p : dh) if (p) zeMemFree(ctx, p);
     if (pin) zeMemFree(ctx, pin);
-    if (page) VirtualFree(page, 0, MEM_RELEASE);
+    plat::page_free(page, huge);
   }
 
   const bool one = gpus.size() == 1;
@@ -225,7 +225,7 @@ int main(int argc, char** argv) {
       if (a == b && !one) continue;
       uint8_t peer = 0;
       if (zeDeviceCanAccessPeer_) zeDeviceCanAccessPeer_(gpus[a].dev, gpus[b].dev, &peer);
-      char pair[16];
+      char pair[48];  // (two size_t of up to 20 digits: never cut)
       snprintf(pair, sizeof(pair), "%zu -> %zu", a, b);
       void* src = dbuf[a];
       void* dst = (char*)dbuf[b] + big;
