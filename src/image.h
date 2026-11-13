@@ -1,6 +1,8 @@
 // Image input for vision models: decoding (PNG, JPEG, GIF, BMP, TIFF, WebP when the codec is installed) through
-// the Windows Imaging Component, base64 data URLs, and a Pillow-compatible bicubic resize.
+// the Windows Imaging Component (Linux: ffmpeg, when installed), base64 data URLs, and a Pillow-compatible bicubic
+// resize.
 #pragma once
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -10,14 +12,20 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <wincodec.h>
+#else
+#include "platform_proc.h"  // (plat::run_program: ffmpeg)
+#endif
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef _WIN32
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "ole32.lib")
+#endif
 
 struct ImageRGB {
   int w = 0, h = 0;
@@ -62,6 +70,39 @@ inline std::vector<uint8_t> from_data_url(const std::string& url) {
   return base64_decode(url.substr(comma + 1));
 }
 
+#ifndef _WIN32
+// (Linux) ffmpeg decodes the bytes from stdin and writes the first frame as binary PPM (P6: "P6 w h 255", then the RGB
+// rows), the same 24-bit RGB rows WIC's converter gives; the same size limits before the pixels are kept.
+inline ImageRGB decode(const std::vector<uint8_t>& bytes) {
+  if (bytes.empty()) throw std::runtime_error("cannot decode image");
+  const plat::ProcResult r = plat::run_program(
+      {"ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "ppm",
+       "-pix_fmt", "rgb24", "pipe:1"},
+      std::string((const char*)bytes.data(), bytes.size()), 60000, (size_t)200 << 20);
+  if (!r.started) throw std::runtime_error("cannot decode image: " + r.error + " (Linux decodes images with ffmpeg: apt install ffmpeg)");
+  if (r.timed_out || r.cut || r.exit_code != 0 || r.out.size() < 11 || r.out.compare(0, 2, "P6") != 0)
+    throw std::runtime_error("cannot decode image");
+  // header: "P6", whitespace, width, height, maxval (255), one whitespace byte, then the pixels
+  size_t i = 2;
+  long v[3] = {0, 0, 0};
+  for (int k = 0; k < 3; ++k) {
+    while (i < r.out.size() && isspace((unsigned char)r.out[i])) ++i;
+    const size_t s0 = i;
+    while (i < r.out.size() && isdigit((unsigned char)r.out[i]) && i - s0 < 9) v[k] = v[k] * 10 + (r.out[i++] - '0');
+    if (i == s0) throw std::runtime_error("cannot decode image");
+  }
+  ++i;  // (the one whitespace byte after maxval)
+  const long w = v[0], h = v[1];
+  if (v[2] != 255 || w <= 0 || h <= 0 || w > 16384 || h > 16384 || (uint64_t)w * h > (64ull << 20) ||
+      r.out.size() - std::min(r.out.size(), i) < (size_t)w * h * 3)
+    throw std::runtime_error("cannot decode image");
+  ImageRGB im;
+  im.w = (int)w;
+  im.h = (int)h;
+  im.px.assign((const uint8_t*)r.out.data() + i, (const uint8_t*)r.out.data() + i + (size_t)w * h * 3);
+  return im;
+}
+#else
 inline ImageRGB decode(const std::vector<uint8_t>& bytes) {
   // (COM for this thread, released when the thread ends: the server's connections each run on a thread of their own)
   struct Com {
@@ -111,6 +152,7 @@ inline ImageRGB decode(const std::vector<uint8_t>& bytes) {
   if (FAILED(hr) || im.w <= 0 || im.h <= 0) throw std::runtime_error("cannot decode image");
   return im;
 }
+#endif
 
 // Pillow-compatible separable resampling with the bicubic filter (a = -0.5), 8-bit fixed-point accumulation.
 inline ImageRGB resize_bicubic(const ImageRGB& src, int W, int H) {

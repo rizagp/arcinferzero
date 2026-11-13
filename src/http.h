@@ -128,7 +128,7 @@ class HttpResponse {
     h += cors();
     h += nosniff();
     h += extra;
-    h += "Connection: keep-alive\r\n\r\n";
+    h += close_after ? "Connection: close\r\n\r\n" : "Connection: keep-alive\r\n\r\n";
     raw(h);
     fh.seek(a);
     std::string buf(1 << 20, '\0');
@@ -489,6 +489,7 @@ class HttpServer {
       const size_t s1 = line.find(' '), s2 = s1 == std::string::npos ? s1 : line.find(' ', s1 + 1);
       if (s2 == std::string::npos) return reply_close(c, 400, "malformed request line");
       rq.method = line.substr(0, s1);
+      const std::string version = line.substr(s2 + 1);
       std::string target = line.substr(s1 + 1, s2 - s1 - 1);
       const size_t q = target.find('?');
       rq.path = target.substr(0, q);
@@ -598,6 +599,26 @@ class HttpServer {
       }
       HttpResponse rs(c);
       rs.no_body = rq.method == "HEAD";
+      // (the client asks for the connection to end after this reply: "Connection: close", or HTTP/1.0 without
+      //  "Connection: keep-alive" (RFC 9112 9.3). The reply says "Connection: close" and the connection is closed
+      //  after it, instead of waiting up to 600 s for a request that never comes)
+      {
+        std::string conn = rq.header("connection");
+        for (char& ch : conn) ch = (char)tolower((unsigned char)ch);
+        bool tok_close = false, tok_keep = false;
+        for (size_t i = 0; i <= conn.size();) {
+          size_t j = conn.find(',', i);
+          if (j == std::string::npos) j = conn.size();
+          size_t a = i, b = j;
+          while (a < b && (conn[a] == ' ' || conn[a] == '\t')) ++a;
+          while (b > a && (conn[b - 1] == ' ' || conn[b - 1] == '\t')) --b;
+          const std::string t = conn.substr(a, b - a);
+          tok_close = tok_close || t == "close";
+          tok_keep = tok_keep || t == "keep-alive";
+          i = j + 1;
+        }
+        rs.close_after = tok_close || (version == "HTTP/1.0" && !tok_keep);
+      }
       // A browser page from another site must not drive this no-authentication server (CORS alone would still let a
       // simple POST through). Local pages and the server's own web UI keep working; command-line clients send no Origin.
       const std::string origin = rq.header("origin");
@@ -611,14 +632,14 @@ class HttpServer {
       }
       if (g == 1) {  // (answered by the gate: a login page, a sign-in, a refusal; logged too: a wrong password shows)
         done_hook(rq, rs, 0);
-        if (rs.streaming() || !rs.alive()) break;
+        if (rs.streaming() || !rs.alive() || rs.close_after) break;
         continue;
       }
       if (g == 2) {  // (a remote session: its origin was checked by the gate)
         rs.cors_origin = "";
         if (rq.method == "OPTIONS") rs.send(204, "text/plain", ""), done_hook(rq, rs, 0);
         else run_handler(rq, rs);
-        if (rs.streaming() || !rs.alive()) break;
+        if (rs.streaming() || !rs.alive() || rs.close_after) break;
         continue;
       }
       // (DNS rebinding: a page of another site whose name resolves to 127.0.0.1 sends its own name as Host and as
@@ -638,7 +659,7 @@ class HttpServer {
       rs.cors_origin = origin;
       if (rq.method == "OPTIONS") rs.send(204, "text/plain", ""), done_hook(rq, rs, 0);
       else run_handler(rq, rs);
-      if (rs.streaming() || !rs.alive()) break;
+      if (rs.streaming() || !rs.alive() || rs.close_after) break;
     }
     plat::sock_shutdown(c);
     plat::sock_close(c);

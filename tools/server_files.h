@@ -45,6 +45,17 @@ namespace fs = std::filesystem;
 // a whole file, opened shared for writing and deleting: a file being read can still be replaced (write_shared) or
 // deleted meanwhile (std::ifstream's handle refused both, and a transcript's save or delete failed while it was read)
 inline bool read_shared(const fs::path& p, std::string& out) {
+#ifndef _WIN32
+  // (Linux has no share locks: a file being read can be replaced or deleted anyway)
+  plat::SeqFile f;
+  uint64_t n = 0;
+  if (!f.open(p) || !f.size(n) || n >= (1ull << 31)) return false;
+  out.resize((size_t)n);
+  size_t at = 0;
+  for (size_t got; at < out.size() && (got = f.read(out.data() + at, std::min<size_t>(out.size() - at, 1u << 30))) > 0;) at += got;
+  if (at != out.size()) out.clear();  // (a read that failed partway: no half a file)
+  return at == out.size();
+#else
   HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) return false;
@@ -61,9 +72,19 @@ inline bool read_shared(const fs::path& p, std::string& out) {
   }
   CloseHandle(h);
   return ok;
+#endif
 }
 // a file's first max bytes at most (any size: an image's header, not the whole file), opened as read_shared does
 inline bool read_head(const fs::path& p, size_t max, std::string& out) {
+#ifndef _WIN32
+  plat::SeqFile f;
+  if (!f.open(p)) return false;
+  out.resize(std::min<size_t>(max, 1u << 30));
+  size_t at = 0;
+  for (size_t got; at < out.size() && (got = f.read(out.data() + at, out.size() - at)) > 0;) at += got;
+  out.resize(at);
+  return true;
+#else
   HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE) return false;
@@ -74,12 +95,17 @@ inline bool read_head(const fs::path& p, size_t max, std::string& out) {
   out.resize(at);
   CloseHandle(h);
   return true;
+#endif
 }
 // written whole or not at all: a temporary file of its own (two writers never share one), closed and checked, then
 // moved over the old one (retried for a few seconds while another program holds the old one without sharing it)
 inline bool write_shared(const fs::path& p, const std::string& s) {
   static std::atomic<uint64_t> seq{0};
+#ifdef _WIN32
   const fs::path tmp = p.wstring() + L"." + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(++seq) + L".tmp";
+#else
+  const fs::path tmp = p.string() + "." + std::to_string(plat::process_id()) + "-" + std::to_string(++seq) + ".tmp";
+#endif
   {
     std::ofstream f(tmp, std::ios::binary);
     f.write(s.data(), (std::streamsize)s.size());
@@ -90,12 +116,16 @@ inline bool write_shared(const fs::path& p, const std::string& s) {
       return false;
     }
   }
+#ifdef _WIN32
   for (int i = 0; i < 40; ++i) {
     if (MoveFileExW(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
     const DWORD e = GetLastError();
     if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION) break;
     Sleep(50);
   }
+#else
+  if (::rename(tmp.c_str(), p.c_str()) == 0) return true;  // (atomic; never refused for a reader holding the old one)
+#endif
   std::error_code ec;
   fs::remove(tmp, ec);
   return false;
@@ -208,7 +238,7 @@ class Store {
         if (i.chat.empty()) return i;
       char month[16];
       std::tm tm{};
-      localtime_s(&tm, &now);
+      plat::local_time(now, tm);
       strftime(month, sizeof month, "%Y-%m", &tm);
       fs::create_directories(up_ / month, ec);
       const std::string name = safe_name(name_in);
@@ -550,8 +580,13 @@ class Store {
   // dot name, so a crash or a full disk leaves no part of a file under the id of the whole), closed, checked, renamed
   static void write(const fs::path& p, const std::string& data) {
     static std::atomic<uint64_t> seq{0};
+#ifdef _WIN32
     const fs::path tmp = p.parent_path() / (L"." + p.filename().wstring() + L"." + std::to_wstring(GetCurrentProcessId()) +
                                             L"-" + std::to_wstring(++seq) + L".tmp");
+#else
+    const fs::path tmp = p.parent_path() / ("." + p.filename().string() + "." + std::to_string(plat::process_id()) + "-" +
+                                            std::to_string(++seq) + ".tmp");
+#endif
     std::error_code ec;
     {
       std::ofstream o(tmp, std::ios::binary);
@@ -562,8 +597,13 @@ class Store {
         throw std::runtime_error("cannot write " + p.string());
       }
     }
+#ifdef _WIN32
     if (!MoveFileExW(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING)) {
       const DWORD e = GetLastError();
+#else
+    if (::rename(tmp.c_str(), p.c_str()) != 0) {
+      const int e = errno;
+#endif
       fs::remove(tmp, ec);
       throw std::runtime_error("cannot write " + p.string() + " (error " + std::to_string(e) + ")");
     }
@@ -594,7 +634,7 @@ class Store {
     char day[16];
     const std::time_t now = std::time(nullptr);
     std::tm tm{};
-    localtime_s(&tm, &now);
+    plat::local_time(now, tm);
     strftime(day, sizeof day, "%Y-%m-%d", &tm);
     std::string t;
     for (unsigned char c : title) t += c < 128 && (isalnum(c) || strchr(" -_,", c)) ? (char)c : ' ';
@@ -918,7 +958,7 @@ inline std::string when_text(int64_t t) {
   char b[40] = "";
   const std::time_t ct = (std::time_t)t;
   std::tm tm{};
-  if (localtime_s(&tm, &ct) == 0) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+  if (plat::local_time(ct, tm)) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
   return b;
 }
 // a message's or a summary's lines as body text of a section: a line that starts with # gets a space before it (a
@@ -1208,7 +1248,7 @@ inline Json expand_files(const Json& messages, bool tools = false, int ctx = 0) 
         char when[40] = "";
         const std::time_t ct = (std::time_t)i.created;
         std::tm tm{};
-        if (localtime_s(&tm, &ct) == 0) strftime(when, sizeof when, "%a %d %b %Y %H:%M", &tm);
+        if (plat::local_time(ct, tm)) strftime(when, sizeof when, "%a %d %b %Y %H:%M", &tm);
         const double kb = i.bytes / 1024.0;
         char sz[32];
         if (i.bytes < 1024) snprintf(sz, sizeof sz, "%llu bytes", (unsigned long long)i.bytes);

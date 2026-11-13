@@ -396,6 +396,11 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
     const std::filesystem::path root = std::filesystem::weakly_canonical(std::filesystem::path(p.folder), ec),
                                 d = std::filesystem::weakly_canonical(dir, ec);
     if (root.empty() || d.empty()) return false;
+#ifndef _WIN32
+    if (!plat::path_inside(d, root, true)) return false;
+    rel = d.lexically_normal() == root.lexically_normal() ? "" : d.lexically_relative(root).generic_string();
+    return true;
+#else
     std::wstring r = root.wstring(), x = d.wstring();
     for (wchar_t& c : r) c = (wchar_t)towlower(c);
     for (wchar_t& c : x) c = (wchar_t)towlower(c);
@@ -404,6 +409,7 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
     if (x.compare(0, r.size(), r) != 0 || (x.size() > r.size() && x[r.size()] != L'\\')) return false;
     rel = x.size() > r.size() ? d.lexically_relative(root).generic_string() : "";
     return true;
+#endif
   }
   // The .md `name` in d (and its copy): a new file starting with `head`, never in an existing one's place nor its
   // copy's ("name (2).md" then); append: the named file goes on as it is. False after an error was sent (ocr_md_try:
@@ -502,7 +508,7 @@ static constexpr int kOcrMaxPages = 50;  // (a PDF's pages read per request; mor
     req.set("stream", false);
     HttpRequest rq2 = rq;
     rq2.body = req.dump();
-    HttpResponse r2(INVALID_SOCKET);
+    HttpResponse r2(plat::kNoSocket);
     int st = 0;
     std::string out;
     r2.on_send = [&](int s, const std::string& b) { st = s; out = b; };

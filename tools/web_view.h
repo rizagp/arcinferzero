@@ -11,6 +11,24 @@
 #pragma once
 #include "web_tools.h"  // (first: it brings winsock2.h before windows.h; iphlpapi.h after both, self audit R11)
 #include "../src/platform_net.h"  // (the proxy's sockets)
+#ifndef _WIN32
+// (Linux, for now: no web_view. Headless Chromium with the same proxy is the plan, docs/linux-port.md; until then the
+//  tool answers with this, and web_fetch reads pages without their scripts)
+#include <string>
+namespace webv {
+struct View {
+  std::string png, html;
+  bool html_cut = false;
+  std::string error, note;
+};
+inline View render(const std::string&, int, int = 1280, int = 900) {
+  View v;
+  v.error = "web_view is not available on Linux yet (it runs Microsoft Edge headless); web_fetch reads the page without "
+            "its scripts";
+  return v;
+}
+}  // namespace webv
+#else
 #include <wincodec.h>
 #include <iphlpapi.h>
 #include <atomic>
@@ -548,3 +566,4 @@ inline View render(const std::string& url, int screen, int width = 1280, int hei
 }
 
 }  // namespace webv
+#endif

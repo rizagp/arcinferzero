@@ -74,6 +74,7 @@
   cl_mem tp_flag_ = nullptr;  // (the shared out-of-f16-range flags as this GPU's kernel argument)
   cl_mem tp_ab_ = nullptr;  // (a split model's padded alpha / beta rows, see gdn_ab)
   cl_mem tp_host_ = nullptr;  // (the shared host memory as this GPU's kernel argument)
+  cl_mem tp_in_ = nullptr;    // (this GPU's inbox for direct GPU-to-GPU sums, TpComm::p2p)
   cl_mem tp_part_ = nullptr;                                // (the partial output of a projection, [max_chunk][E])
   bool tp_on() const { return opt.tp_size > 1; }
 
@@ -263,6 +264,37 @@
       if (s == "ffn_down.weight") return tp_slice(t, {}, {{f0, f1}});
     }
     return t;
+  }
+  // The share of layer matrix `name` this shard holds, by T()'s rules (1: the model is not split, or the matrix is
+  // whole on every shard). For plan_weights (engine_setup.h): it summed the whole model's matrices, so a split 27B
+  // (~11 GB raw + ~26 GB W8) never kept its decoded weights, though a shard of 2 needs ~5.7 + ~13 GB (2026-11-13,
+  // docs/xe2-tuning.md section 13.1).
+  // Rank 0's share, the largest of every kind (tp_range gives the first ranks the extra unit), on every shard: the
+  // shards must all decide alike, or the split's layout check (engine_tp.h) fails it over to one GPU (27B over 3:
+  // k-heads 6 / 6 / 4, kv-heads 2 / 1 / 1; review of 2026-11-13).
+  double tp_weight_share(const std::string& name) const {
+    if (!tp_on() || name.rfind("blk.", 0) != 0) return 1.0;
+    const size_t dot = name.find('.', 4);
+    const int il = atoi(name.c_str() + 4);
+    if (dot == std::string::npos || il < 0 || il >= hp.n_layer) return 1.0;
+    const std::string s = name.substr(dot + 1);
+    const int N = opt.tp_size;
+    auto part = [&](int64_t total, int64_t unit) {
+      if (total <= 0) return 1.0;
+      const TpRange r0 = tp_range(total, unit, N, 0);
+      return (double)(r0.second - r0.first) / (double)total;
+    };
+    if (hp.recurrent(il)) {  // (rows or columns by k-head, and the v-heads that read them: all in the k-heads' share)
+      if (s == "attn_qkv.weight" || s == "ssm_conv1d.weight" || s == "attn_gate.weight" || s == "ssm_alpha.weight" ||
+          s == "ssm_beta.weight" || s == "ssm_out.weight")
+        return part(tpg_.nk, 2);
+    } else if (!tp_att_whole_ && tpg_.nkv > 0) {
+      // (tp_att_qsplit_ is MoE only, which plan_weights does not reach: q / output follow the kv-heads)
+      if (s == "attn_q.weight" || s == "attn_output.weight" || s == "attn_k.weight" || s == "attn_v.weight")
+        return part(tpg_.nkv, 1);
+    }
+    if (!hp.moe && (s == "ffn_gate.weight" || s == "ffn_up.weight" || s == "ffn_down.weight")) return part(tpg_.ff, 256);
+    return 1.0;
   }
   // the output head's vocabulary rows of this shard
   const GgufTensor& tp_head(const GgufTensor& t) {

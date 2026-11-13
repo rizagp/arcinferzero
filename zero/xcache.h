@@ -519,7 +519,9 @@ struct XCache {
         }
         st.read(reqs);
         for (size_t j = b0; j < std::min(order.size(), b0 + S); ++j)
-          ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), P.addr[order[j]], reqs[j - b0].src, P.rec, nullptr, 0, nullptr));
+          // A pinned source holds the layer's record, not its pool's padded slot.
+          ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), P.addr[order[j]], reqs[j - b0].src,
+                                                st.layers[reqs[j - b0].layer].rec, nullptr, 0, nullptr));
         warm_bytes += reqs.size() * P.rec;
         loadp::step(what, (double)warm_bytes, fill);
       }
@@ -624,7 +626,8 @@ struct XCache {
     ze_event_handle_t pev[2] = {zrt::copy_event(2), zrt::copy_event(3)};
     ZE_CHECK(zeEventHostReset(ev));
     pf_wait_[h] = X;
-    const uint64_t rec = P.rec;
+    // (the layer's record, not the pool's padded slot: a source in the RAM tier holds only the record)
+    const uint64_t rec = st.layers[X].rec;
     try {
     pf_ = std::thread([this, todo = std::move(todo), h, cc, rec, X, ev, pev] {
       const auto t0 = std::chrono::steady_clock::now();
@@ -867,7 +870,7 @@ struct XCache {
       for (auto& c : copies) {
         const void* src = c.req >= 0 ? reqs[c.req].src
                           : (size_t)c.rec < stage_src[h].size() ? stage_src[h][c.rec] : stage[h] + (size_t)c.rec * stage_rec;
-        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), P.addr[c.slot], src, P.rec, nullptr, 0, nullptr));
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), P.addr[c.slot], src, st.layers[l].rec, nullptr, 0, nullptr));
       }
       // next round: the misses not done yet (skipping prefetched ones copied above)
       i0 = i;

@@ -266,7 +266,16 @@ __kernel void h8r_weights(__global uint* wq, __global const uint* restrict wh, _
 #pragma unroll
   for (int i = 0; i < WPL; ++i) {
     const int t = lid + 256 * i, row = t / SG, cl = t % SG, e = blk * HB + 4 * row;
+#ifdef XW_PACKW_OUT
+    // (gemm_xw8 -DXW_PACKW's order, engine_xw.h ARC_GEMM_XW_PACK: per group and 64-value chunk gc, word j of column cl
+    //  at gc * 256 + ((j / 8) * 2 + cl / 8) * 64 + (j % 8) * 8 + cl % 8 instead of gc * 256 + j * 16 + cl. The work-group
+    //  read its whole region into tin before the barrier, and the new places are in the same region)
+    const int ws = (e % 256) / 4, j = ws % 16;
+    const size_t gc = ((size_t)g * nsb + e / 256) * 4 + ws / 16;
+    wq[gc * 256 + ((j / 8) * 2 + cl / 8) * 64 + (j % 8) * 8 + cl % 8] = tout[cl * TP + row];
+#else
     wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * SG + cl] = tout[cl * TP + row];
+#endif
   }
 }
 #else
@@ -318,7 +327,14 @@ __kernel void h8r_act(__global const uint* restrict aq, __global const float* re
 #pragma unroll
   for (int r = 0; r < NV / 4; ++r) {
     const float q[4] = {v[4 * r], v[4 * r + 1], v[4 * r + 2], v[4 * r + 3]};
+#ifdef XW_PACKA_OUT
+    // (gemm_xw8 -DXW_PACKA's order, engine_xw.h ARC_GEMM_XW_PACK: [M / 8][K / 64][2 halves][8 rows][8 words]; lane l's
+    //  word is word l % 8 of half l / 8 of chunk bk * HB / 64 + r)
+    const int ch = bk * (HB / 64) + r;
+    aqh[((size_t)(m / 8) * (K / 64) + ch) * 128 + (l / 8) * 64 + (m % 8) * 8 + (l % 8)] = pack_q(q, iv);
+#else
     intel_sub_group_block_write(aqh + (size_t)m * (K / 4) + (size_t)bk * (HB / 4) + r * SG, pack_q(q, iv));
+#endif
   }
 }
 #endif

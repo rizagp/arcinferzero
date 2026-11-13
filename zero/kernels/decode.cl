@@ -670,7 +670,14 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
 #pragma unroll
   for (int i = 0; i < H8WPL; ++i) {
     const int t = lid + 256 * i, row = t / 16, cl = t % 16, e = blk * HB + 4 * row;
+#ifdef XW_PACKW_OUT
+    // (gemm_xw8 -DXW_PACKW's order, engine_xw.h ARC_GEMM_XW_PACK; as h8.cl h8r_weights writes it)
+    const int ws = (e % 256) / 4, j = ws % 16;
+    const size_t gc = ((size_t)g * nsb + e / 256) * 4 + ws / 16;
+    wq[gc * 256 + ((j / 8) * 2 + cl / 8) * 64 + (j % 8) * 8 + cl % 8] = tout[cl * H8TP + row];
+#else
     wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * 16 + cl] = tout[cl * H8TP + row];
+#endif
   }
 }
 #endif  // H8RDEC
