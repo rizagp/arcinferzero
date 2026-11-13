@@ -626,7 +626,8 @@ struct XCache {
     ze_event_handle_t pev[2] = {zrt::copy_event(2), zrt::copy_event(3)};
     ZE_CHECK(zeEventHostReset(ev));
     pf_wait_[h] = X;
-    const uint64_t rec = P.rec;
+    // (the layer's record, not the pool's padded slot: a source in the RAM tier holds only the record)
+    const uint64_t rec = st.layers[X].rec;
     try {
     pf_ = std::thread([this, todo = std::move(todo), h, cc, rec, X, ev, pev] {
       const auto t0 = std::chrono::steady_clock::now();
