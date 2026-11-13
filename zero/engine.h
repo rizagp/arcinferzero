@@ -900,6 +900,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
       pend_toks_.clear();
     }
     pos = s.pos;
+    // (Flash Next: the token ids before pos from the restored PLE state, as restore_host does; verify() embeds without
+    //  forward()'s ple_sync. The read follows the copy above on the same in-order queue)
+    if (hp.ple_layer >= 0) ple_sync();
     return true;
   }
 

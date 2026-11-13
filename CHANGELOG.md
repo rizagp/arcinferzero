@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-11-13: Flash Next's PLE history after a snapshot restore (chumbleyjl, PR #15)
+
+- **The bug:** Flash Next's n-gram embedding (PLE) needs the two token ids before each position; the GPU keeps them in
+  the PLE layer's state, the host a copy that `forward()` refreshes (`ple_sync`). `verify()` (speculative decoding)
+  embeds without that refresh, so a verification right after restoring a snapshot used the ids of the continuation
+  that was dropped. On a native Linux B70 a replayed reasoning answer drifted at character 344.
+- **The fix:** both restores refresh the host's ids from the restored state: `restore_host()` (the PR) and
+  `restore(slot)`, the device snapshot, which had the same gap (added to the PR; the server uses both). `runz
+  --snap-test` checks a verification straight after each restore against a cold one, bit for bit, for a Flash Next
+  model with MTP.
+- **Checked:** the owner's B70 runs: restored and cold continuations bit-identical (two restore paths, 256 tokens
+  each). Laptop: other models unchanged (the 4B's `--snap-test` and logits as before; the change runs only with PLE).
+
 ## 2026-11-13: expert records copied without their pool's padding (chumbleyjl, PR #14)
 
 - **The bug:** a pool's slots are padded to its largest record. With the RAM tier (discrete cards with free RAM,
