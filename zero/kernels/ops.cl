@@ -148,6 +148,15 @@ __kernel void rmsnorm_quant(__global const float* x, int row_off, __global const
 // the same floats, the same transform, the same scale, so h8_aq_ / h8_asc_ are the same bit for bit. Saves the f32
 // copy's write and read and one launch per GEMM input. K / HB rotation blocks, one sub-group each (at most 16).
 #define HN_NV (HB / 16)
+// (its limits, which engine_h8.h rmsnorm_h8 also checks before launching: K / HB rotation blocks, one sub-group each,
+//  in a work-group of 256 = 16 sub-groups, and red[16]; the row in local memory. A wider K fails here, at the build,
+//  instead of leaving blocks unrotated: audit 2026-11-14 I2)
+#if H8N_K / HB > 16 || H8N_K % HB
+#error "rmsnorm_h8r: K / HB must be a whole number of at most 16 blocks"
+#endif
+#if H8N_K * 4 + 64 > 60 * 1024
+#error "rmsnorm_h8r: the row does not fit in local memory"
+#endif
 inline float h8n_signed(float v, uint i) {  // (h8.cl h8_signed)
 #ifdef H8_D
   uint x = i * 0x9E3779B1u;

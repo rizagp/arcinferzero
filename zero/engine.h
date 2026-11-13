@@ -1235,6 +1235,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
   int act32_for(bool sensitive) const { return (cur_T_ <= 8 || sensitive || opt.act32_all) ? 1 : 0; }
 
   void rmsnorm_quant(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32) {
+    h8_pre_live_ = false;  // (aq_ gets new rows: rmsnorm_h8's rotation is no longer theirs; audit 2026-11-14 I3)
     float eps = hp.eps;
     int wh = 0;
     set_args(k_rmsnorm_, 0, x, row_off, w, K, Mp, T, eps, aq_, asc_, absum_, big_, wh, act32);

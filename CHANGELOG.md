@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-14: DeepSeek's audit of the day's changes (docs/audit-2026-11-14.md): no high or medium findings; 5 small fixes
+
+- `clEnqueueMapBuffer` bounds- and null-checked; unmap writes back only maps for writing; `logit_bias` ids past
+  INT_MAX ignored (they wrapped to another token); `rmsnorm_h8r`'s limits as build errors; a plain norm ends the fused
+  norm's rotation mark; `tests/test_pbkdf2.cpp` in CI. Logits identical to release 2026.11.14.03 (default, the fused
+  norm, the 140T packing emulated).
+
 ## 2026-11-14: the Arc 140T's prompt GEMM reads its operands in the DPAS order (issue #5)
 
 - **Why:** PascalSoftwares' `xw_peak` on a Core Ultra 9 285H (2026-11-13): `gemm_xw8` 32 x 16 with both operands in

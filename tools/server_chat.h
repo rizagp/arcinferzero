@@ -119,8 +119,10 @@
     for (const auto& [k, v] : body["logit_bias"].entries())  // {"token id": bias}
       if (v.is_number()) {
         char* end = nullptr;
-        const long t = strtol(k.c_str(), &end, 10);
-        if (end && *end == 0) sp.logit_bias.push_back({(int)t, (float)v.as_number()});
+        const long long t = strtoll(k.c_str(), &end, 10);
+        // (an id outside int's range is ignored, not wrapped to another token: "4294967297" was token 1; audit
+        //  2026-11-14 L3. The sampler checks it against the vocabulary as before)
+        if (end && *end == 0 && !k.empty() && t >= 0 && t <= INT_MAX) sp.logit_bias.push_back({(int)t, (float)v.as_number()});
       }
     if (body["seed"].is_number()) sp.seed = (uint64_t)body["seed"].as_int(), sp.has_seed = true;
     // (clamped before the cast to int: 1e308 or 2^32 + 5 wrapped to a small or negative count; at most 2^30, so that

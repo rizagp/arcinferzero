@@ -538,7 +538,7 @@ inline ZMem* wrap(void* p, size_t n) {
   D().mems.insert(m);
   return m;
 }
-struct Mapping { ZMem* m; size_t off, n; void* host; };
+struct Mapping { ZMem* m; size_t off, n; void* host; cl_map_flags flags; };  // (flags: a read-only map is not written back)
 inline std::vector<Mapping>& maps() {
   if (!D().maps) D().maps = new std::vector<Mapping>;
   return *D().maps;
@@ -709,12 +709,17 @@ inline cl_int clEnqueueFillBuffer(cl_command_queue, cl_mem b, const void* patter
 inline void* clEnqueueMapBuffer(cl_command_queue, cl_mem b, cl_bool, cl_map_flags flags, size_t off, size_t n, cl_uint,
                                 const cl_event*, cl_event* ev, cl_int* err) {
   if (ev) *ev = nullptr;
+  // (bounds and a null buffer refused as the read / write / fill calls refuse them: audit 2026-11-14 L1)
+  if (out_of_bounds("map", b, off, n)) {
+    if (err) *err = -30;
+    return nullptr;
+  }
   void* h = zrt::host_alloc(n);
   if (flags & CL_MAP_READ) {
     ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), h, b->ptr + off, n, nullptr, 0, nullptr));
     zrt::sync();
   }
-  zrt::maps().push_back({b, off, n, h});
+  zrt::maps().push_back({b, off, n, h, flags});
   if (err) *err = CL_SUCCESS;
   return h;
 }
@@ -722,13 +727,17 @@ inline cl_int clEnqueueUnmapMemObject(cl_command_queue, cl_mem b, void* p, cl_ui
   if (ev) *ev = nullptr;
   for (size_t i = 0; i < zrt::maps().size(); ++i)
     if (zrt::maps()[i].host == p && zrt::maps()[i].m == b) {
-      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), b->ptr + zrt::maps()[i].off, p, zrt::maps()[i].n, nullptr, 0, nullptr));
-      zrt::sync();
+      // (written back only for a map that may have been written, as OpenCL does: audit 2026-11-14 L2; the one caller,
+      //  engine_load.h, maps for writing)
+      if (zrt::maps()[i].flags & (CL_MAP_WRITE | (1 << 2) /* CL_MAP_WRITE_INVALIDATE_REGION */)) {
+        ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), b->ptr + zrt::maps()[i].off, p, zrt::maps()[i].n, nullptr, 0, nullptr));
+        zrt::sync();
+      }
       zrt::mem_free(zrt::ctx, p);
       zrt::maps().erase(zrt::maps().begin() + i);
       return CL_SUCCESS;
     }
-  return -30;
+  return -30;  // (not a live map of b: nothing of ours to free)
 }
 inline cl_mem clCreateBuffer(cl_context, cl_mem_flags flags, size_t n, void* host, cl_int* err) {
   ZMem* m = new ZMem{(char*)zrt::device_alloc(n), n, true, &zrt::D()};
