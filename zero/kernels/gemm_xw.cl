@@ -36,6 +36,22 @@
 #error "XW_NC must be 1, 2, 4, 6 or 8"
 #endif
 #define XW_TG (XW_TM / 8)  // DPAS row groups of 8 tokens
+// -DXW_PF=1 / 2 / 3 (2026-11-13, B60 prefill plan 13.2): prefetch into L1 the weights (1), the activations (2, with
+// X2D) or both (3) of the 64-value chunk XW_PFD chunks ahead (1, 2 or 4). The prefetches go to L1 only: the values
+// read, and so the results, are the same bit for bit
+#ifndef XW_PF
+#define XW_PF 0
+#endif
+#ifndef XW_PFD
+#define XW_PFD 2
+#endif
+// (a column group's 1 KB chunk of weights (16 words x 16 lanes, 1 KB-aligned) as a 64-byte-wide surface of 16 rows:
+//  one 2D prefetch message, where two buffer prefetches of 16 x 8 words made four (ocloc bmg))
+#ifdef XW_EMU
+#define XW_PREF_W(p) prefetch((p), 16)  // (the GPUs without XMX that emulate it here: the portable built-in)
+#else
+#define XW_PREF_W(p) intel_sub_group_2d_block_prefetch_32b_16r16x1c((__global const void*)(p), 64, 16, 64, (int2)(0, 0))
+#endif
 #define BCAST(x, i) intel_sub_group_shuffle((x), (i))
 
 // c + A (8 rows x 32 int8: lane l holds values 2l, 2l + 1 of each row) x B (32 x 16: lane n = column n, its 32 values
@@ -86,6 +102,24 @@ __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* res
   for (int s = s_begin; s < s_end; ++s) {
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
+#if XW_PF
+      // ---- the chunk XW_PFD ahead into L1 while this one's DPAS run (B60 prefill plan 13.2): bit 1 its weights, bit 2
+      //      its activations (2D loads only); a prefetch changes no value. Not past this piece's end (s_end)
+      {
+        const int qn = s * 4 + j + XW_PFD;
+        if (qn < s_end * 4) {
+#if XW_PF & 1
+#pragma unroll
+          for (int c = 0; c < XW_NC; ++c) XW_PREF_W(wq + ((size_t)(g0 + c) * nsb * 4 + qn) * (16 * SG));
+#endif
+#if (XW_PF & 2) && defined(X2D)
+#pragma unroll
+          for (int t = 0; t < XW_TG; ++t)
+            intel_sub_group_2d_block_prefetch_8b_8r32x2c(aq, K, M, K, (int2)(qn * 64, m0 + 8 * t));
+#endif
+        }
+      }
+#endif
       // ---- this 64-value chunk of the XW_TM tokens' rows: al values 0..31, ah 32..63 of 8 rows each
       short8 al[XW_TG], ah[XW_TG];
 #pragma unroll

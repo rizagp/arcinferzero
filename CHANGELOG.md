@@ -1,5 +1,34 @@
 # Changelog
 
+## 2026-11-13: the wide-tile GEMM prefetches its next chunks, opt-in (B60 prefill plan 13.2)
+
+- **Why:** on a Pro B60 the 27B's prompt GEMMs run at ~52 % of the XMX peak (~103 of ~197 TOPS), and the tile
+  sweep found no better shape than 32 x 64 (docs/xe2-tuning.md section 13): what is left is feeding the engines.
+- **What:** `ARC_GEMM_XW_PF=1` prefetches into L1 the weights of the 64-value chunk `ARC_GEMM_XW_PFD` (1 / 2 / 4,
+  default 2) chunks ahead, one 2D prefetch per column group (its 1 KB chunk as a 64-byte-wide surface of 16 rows:
+  a quarter of the messages two buffer prefetches made); `=2` the activations (2D loads only), `=3` both. ocloc
+  `bmg`: no spills, 128 DPAS a superblock as before, +16 messages a superblock for each part. Off by default;
+  `bench\xw_sweep.ps1 -Prefetch` tries the nine settings.
+- **Checked:** the start-up check passes for each setting; with DPAS emulated (16 lanes, H8) the 4B's logits are
+  identical to gemm.cl's at PF 1 (PFD 1 / 2 / 4) and 3; the default path identical to release 2026.11.13.11.
+  Without 2D loads (or emulated) only the weights' part is built, and the log says so (found by the review).
+
+## 2026-11-13: a split model keeps its decoded weights when its own share fits `--budget` (B60 prefill plan 13.1)
+
+- **Why:** `plan_weights()` compared the whole model's raw + decoded W8 weights with `--budget`, also on a split, so
+  the 27B (~11 GB raw + ~26 GB W8) decoded its weights for every prompt chunk on 2-4 B60s, though a shard of 2 needs
+  ~5.7 + ~13 GB. At a 512-token prompt that decode is ~40 % of one B60's prompt time (docs/xe2-tuning.md section 13).
+- **What:** each layer matrix counts by the share a shard holds (`tp_weight_share`, `zero/mgpu/engine_tp_shard.h`,
+  the same rules as the split itself), rank 0's share on every shard: on an uneven split (the 27B over 3: k-heads
+  6 / 6 / 4) the shards must decide alike, or the split's layout check fails it over to one GPU (found by the
+  review). Under `ARC_TP_SIM` the budget is divided by the shards, which all sit on the one GPU. The default budget
+  (9 GB) is unchanged: the 27B over 2 B60s keeps its weights with `--budget 20`, over 4 with `--budget 10`. One GPU:
+  the same sum as before.
+- **Checked** (laptop, `ARC_TP_SIM`): the 27B's decision from serverz's `--ctx auto` dry probe; a split's resident
+  weights against just-in-time (`--budget 0`), the 4B over 2 / 3 shards, with and without `ARC_H8=1`: logits
+  bit-identical; the uneven 27B split over 3 at a budget between its shards' shares loads and runs; one GPU
+  bit-identical to release 2026.11.13.11. Speed: the B60s to measure.
+
 ## 2026-11-13: Flash Next's PLE history after a snapshot restore (chumbleyjl, PR #15)
 
 - **The bug:** Flash Next's n-gram embedding (PLE) needs the two token ids before each position; the GPU keeps them in

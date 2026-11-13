@@ -447,6 +447,10 @@ too). The next step is to overlap the sums with the next chunk's work (the `ARC_
 2026-11-13, with the wide-tile H8 GEMM on by default on each shard (release 2026.11.13.05, issue #4): the 27B's 4K
 prompt over 2 Pro B60s 1,596.6 tok/s, over 4 1,887.6 (from 1,368.8 / 1,734.0).
 
+Over 3 Pro B60s (release 2026.11.13.11): 1,723.9 tok/s. Flash Next on the same cards: a 4K prompt 665 / 1,202 /
+1,491 tok/s and generation 5.72 / 34.4 / 32.7 tok/s over 1 / 2 / 4 (over 4, 13 GB of experts per GPU: all of them
+cached; over 1, 33 %).
+
 **`--ctx auto` on a split model (2026-11-12):** the dry probe is shard 0 of N (`tp_size` N, `tp_rank` 0: the
 largest shard, which takes the extra unit of a count that does not divide), so the context is what one GPU's share
 of the weights and the KV leaves on GPU 0. Before, it sized the whole model on one GPU, and a model bigger than one
@@ -493,6 +497,9 @@ Other failsafes:
   logits then equal `ARC_TP_SUM=f32` bit for bit.
 - **The same layout on every GPU:** shards whose GPUs chose another weight layout, chunk or context than GPU 0 would
   run different passes and miss each other's barriers; the load fails with the values to give instead.
+- **Decoded weights per shard** (2026-11-13): a shard keeps its W8 weights when its own share of raw + W8 fits
+  `--budget` (before, the whole model was counted). The 27B: ~18.5 GB per GPU over 2 (`--budget 20`), ~9.3 over 4
+  (`--budget 10`); then no decode per prompt chunk. The default budget stays 9 GB, as the context then shrinks.
 - **Host memory of the sums:** `2 x N x chunk x n_embd x 4` bytes of pinned host memory, outside `--budget` (the 27B
   over 4 GPUs: 671 MB at chunk 4096, 1.3 GB at 8192): a larger `--chunk` doubles it.
 - **`serverz`:** a model that cannot be split (Gemma 4, e.g. for transcripts) or a split that fails to
