@@ -17,7 +17,7 @@
 //
 // -DXW_EMU: DPAS emulated with DP4a and shuffles (tests on GPUs without XMX: ARC_GEMM_XW_TRY=1).
 // -DX2D: the activations by 2D block loads, as gemm.cl -DX2D (8 rows x 64 bytes a load).
-// Grid: (16 * (N / (16 * XW_NC)) * rows, WGY), local (16, WGY), rows = M / (XW_TM * WGY); the work-groups sweep
+// Grid (N: the launch's columns, from group g_base): (16 * (N / (16 * XW_NC)) * rows, WGY), local (16, WGY), rows = M / (XW_TM * WGY); the work-groups sweep
 // `rgroup` token rows together column block by column block, as gemm.cl, so a weight slice is reused while in L3.
 
 #define SG 16
@@ -27,11 +27,13 @@
 #ifndef XW_NC
 #define XW_NC 4
 #endif
-#if XW_TM != 16 && XW_TM != 32
-#error "XW_TM must be 16 or 32"
+// (2026-11-13, for a sweep beyond 32 x 64: XW_TM 64 and XW_NC 6 / 8. ocloc for a B60 at 256 registers: 32 x 96 spills
+//  ~2 bytes, 16 x 128 and 64 x 32 none, 32 x 128 and 64 x 64 heavily; 32 x 64 none)
+#if XW_TM != 16 && XW_TM != 32 && XW_TM != 64
+#error "XW_TM must be 16, 32 or 64"
 #endif
-#if XW_NC != 1 && XW_NC != 2 && XW_NC != 4
-#error "XW_NC must be 1, 2 or 4"
+#if XW_NC != 1 && XW_NC != 2 && XW_NC != 4 && XW_NC != 6 && XW_NC != 8
+#error "XW_NC must be 1, 2, 4, 6 or 8"
 #endif
 #define XW_TG (XW_TM / 8)  // DPAS row groups of 8 tokens
 #define BCAST(x, i) intel_sub_group_shuffle((x), (i))
@@ -62,13 +64,15 @@ __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void gemm_xw(__global const uint* restrict wq, __global const uint* restrict wh,
                       __global const char* restrict aq, __global const float* restrict asc,
                       __global float* restrict C, int M, int N, int K, int ldc, int c_off, int accumulate,
-                      int rgroup, int s_begin, int s_end) {
+                      int rgroup, int s_begin, int s_end, int g_base) {
+  // (g_base: the first 16-column group of this launch; N its columns: XW_NC 6 runs a matrix's first 96 * a columns,
+  //  and the 32 x 64 kernel the rest from g_base 6 * a, engine_xw.h xw_matmul; 0 and the whole N otherwise)
   const int NB = N / (SG * XW_NC), rows = M / (XW_TM * (int)get_local_size(1));
   const int w = get_group_id(0), grp = w / (rgroup * NB), rem = w % (rgroup * NB);
   const int rin = min(rgroup, rows - grp * rgroup);
   const int cb = rem / rin, row = grp * rgroup + rem % rin;
   const int m0 = (row * (int)get_local_size(1) + (int)get_local_id(1)) * XW_TM;
-  const int nsb = K / 256, g0 = cb * XW_NC;
+  const int nsb = K / 256, g0 = g_base + cb * XW_NC;
 #ifndef X2D
   __global const char* ap = aq + (size_t)m0 * K;
 #endif

@@ -35,11 +35,14 @@
 #ifndef XW_NC
 #define XW_NC 1
 #endif
-#if XW_TM != 16 && XW_TM != 32
-#error "XW_TM must be 16 or 32"
+// (2026-11-13, for a sweep beyond 32 x 32: XW_TM 64 and XW_NC 4. ocloc for arl-h at 256 registers: 16 x 64 no spill;
+//  64 x 16 spills plain, none with XW_PACKA + XW_PACKW; 32 x 64 and 64 x 32 spill. With these checks relaxed in a copy,
+//  48 x 16 built without a spill and 32 x 48 spilled; neither is allowed here)
+#if XW_TM != 16 && XW_TM != 32 && XW_TM != 64
+#error "XW_TM must be 16, 32 or 64"
 #endif
-#if XW_NC != 1 && XW_NC != 2
-#error "XW_NC must be 1 or 2"
+#if XW_NC != 1 && XW_NC != 2 && XW_NC != 4
+#error "XW_NC must be 1, 2 or 4"
 #endif
 #define XW_TG (XW_TM / 8)   // DPAS row groups of 8 tokens
 #define XW_NH (2 * XW_NC)   // DPAS column blocks of 8

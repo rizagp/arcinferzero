@@ -676,6 +676,30 @@ bit for bit (checked at start).
 | 16 x 64 | no spills | no spills | 128 |
 | 16 x 32, 32 x 16 | no spills | no spills | 96 (10 threads per vector engine) |
 
+**Beyond 32 x 64 (2026-11-13, for a sweep; `bench\xw_sweep.ps1 -Model <gguf> -Wide`).** The 32 x 64 tile's
+accumulators already take 128 of the 256 registers, so the next tile with more area (32 x 128 or 64 x 64) needs all
+256 for its accumulators alone. ocloc `bmg-g21`, 256 registers, with `-DX2D`:
+
+| Tile | `ARC_GEMM_XW_TM` / `_NC` | Spills | Loads per DPAS against 32 x 64 |
+|---|---|---|---|
+| 32 x 64 (default) | 32 / 4 | none | 1 |
+| 32 x 96 | 32 / 6 | ~2 bytes | 0.83 |
+| 16 x 128 | 16 / 8 | none | 1.25 |
+| 64 x 32 | 64 / 2 | none | 1.25 |
+| 32 x 128 | 32 / 8 | heavy (~660 scratch lines in the assembly) | 0.75 |
+| 64 x 64 | 64 / 4 | heavy (~590) | 0.75 |
+
+32 x 96 is the only wider tile that both fits and loads less per DPAS. The 27B's widths (1024, 5120, 17408) are not
+multiples of 96, so with `_NC=6` a GEMM runs its first 96-column blocks with the 96-wide kernel and the rest (a
+multiple of 64) with the 64-wide one, from a column offset (`g_base`, `xw_piece`). The others in the table are there so
+the sweep reaches the widest tiles that build. Every shape passes the start-up check bit for bit, and with DPAS
+emulated on the laptop the 4B's logits are identical to gemm.cl's at every shape; the speed needs a B60.
+
+The 140T's `gemm_xw8` (8 lanes, ocloc `arl-h`, 256 registers) takes 64 tokens and 64 columns too: 16 x 64 does not
+spill; 64 x 16 spills plainly but not with `XW_PACKA` + `XW_PACKW` (`bin\xw_peak.exe`'s packed variants); 32 x 64 and
+64 x 32 spill. `xw_sweep.ps1 -Wide` adds 16 x 64, 64 x 16 and 32 x 64 to its 140T rows. `xw_peak` lists them all with
+the packed forms (one minute: `bin\xw_peak.exe`).
+
 **To measure (a B60):** `.\bench\xw_sweep.ps1 -Model <27B gguf>`: the prompt at 512 / 4K / 16K tokens for the
 default and four tile shapes, each shape's logits against the default's (identical expected), and a `--prof` of the
 default and the fastest shape at 4K. Left after that: the weights double-buffered in registers, the W8 and MoE

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-13: wider H8 tiles to sweep (B60, Arc 140T); the multi-GPU sum overlap merged
+
+- **Tiles beyond 32 x 64, opt-in, for a sweep** (`bench\xw_sweep.ps1 -Wide`, docs/xe2-tuning.md section 11): on
+  16-lane cards `ARC_GEMM_XW_NC=6` (32 x 96: a width's first 96-column blocks, the rest 64 wide from a column offset)
+  and `8`, `ARC_GEMM_XW_TM=64`; on the 140T `ARC_GEMM_XW_NC=4` and `ARC_GEMM_XW_TM=64`, and six more `xw_peak`
+  variants. ocloc at 256 registers: on a B60 32 x 96 spills ~2 bytes and is the one wider tile that loads less per
+  DPAS; 32 x 128 and 64 x 64 spill heavily. Defaults unchanged; every shape checked bit for bit (start-up check, and
+  the 4B's logits with DPAS emulated).
+- **Merged: the multi-GPU FFN sums beside the next chunk's work** (`ARC_TP_OVERLAP=1`, opt-in; the entry of
+  2026-11-12 below). After the merge: one GPU identical to release 2026.11.13.06, and the 27B split over 2 / 3
+  simulated shards identical to that release's with the switch off and on.
+
 ## 2026-11-13 (morning): split models with the wide tiles measured; Flash Next over several GPUs queued
 
 - **A split 27B on Pro B60s with the wide-tile H8 GEMM** (release 2026.11.13.05, issue #4): the 4K prompt over 2 GPUs

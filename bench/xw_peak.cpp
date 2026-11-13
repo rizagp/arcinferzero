@@ -9,7 +9,8 @@
 //   (split-K in 4 pieces, as the engine runs it). --emu: DPAS emulated (any GPU; correctness only, no speed meaning).
 //   Without XMX (the 125H) the DPAS is emulated by itself.
 // Variants (gemm_xw8.cl's switches): the default 32 x 16 tiles; XW_PACKA (activations in the DPAS order: 2 reads per 8
-// tokens instead of 8); XW_PACKW (weights in the DPAS order: no register shuffles); both; both at 32 x 32 and 16 x 32.
+// tokens instead of 8); XW_PACKW (weights in the DPAS order: no register shuffles); both; both at 32 x 32 and 16 x 32;
+// since 2026-11-13 the wider ones too, 16 x 64, 64 x 16, 32 x 64 and 64 x 32 (the spill column says which fit).
 // The packed copies are made here on the CPU from the same data, so every variant must give the default's bits.
 #include "../zero/clrt.h"
 #include <algorithm>
@@ -183,6 +184,11 @@ int main(int argc, char** argv) {
       {"packW 32x16", "-DXW_PACKW", 32, 1, false, true}, {"packAW 32x16", "-DXW_PACKA -DXW_PACKW", 32, 1, true, true},
       {"packAW 32x32", "-DXW_PACKA -DXW_PACKW", 32, 2, true, true},
       {"packAW 16x32", "-DXW_PACKA -DXW_PACKW", 16, 2, true, true}, {"plain 32x32", "", 32, 2, false, false},
+      // (2026-11-13, beyond 32 x 32; ocloc arl-h at 256 registers: 16 x 64 plain and 64 x 16 packed no spill, the
+      //  others spill)
+      {"plain 16x64", "", 16, 4, false, false},  {"packAW 16x64", "-DXW_PACKA -DXW_PACKW", 16, 4, true, true},
+      {"plain 64x16", "", 64, 1, false, false},  {"packAW 64x16", "-DXW_PACKA -DXW_PACKW", 64, 1, true, true},
+      {"plain 32x64", "", 32, 4, false, false},  {"packAW 64x32", "-DXW_PACKA -DXW_PACKW", 64, 2, true, true},
   };
   std::vector<Variant> vs;
   for (const Variant& v : all)
@@ -239,7 +245,7 @@ int main(int argc, char** argv) {
     std::vector<float> ref, out(c0.size());
     const int splits = sh.a != 2 && K > 8192 ? (nsb + 16) / 17 : 1;  // (h8_splits: pieces of 17 superblocks)
     for (size_t v = 0; v < vs.size(); ++v) {
-      if (!ks[v]) continue;
+      if (!ks[v] || M % vs[v].tm || N % (16 * vs[v].nc)) continue;  // (a shape the tile does not divide: skipped)
       const Variant& va = vs[v];
       Row& row = res[v][si];
       const int tm = va.tm, nb = N / (16 * va.nc);

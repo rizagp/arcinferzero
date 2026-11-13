@@ -8,9 +8,13 @@
 # bit for bit: "the H8 GEMMs on XMX with ... tiles" in the log, or "gemm_xw differs" and the default kept).
 # Then one --prof run of the default and of the fastest shape at 4096 tokens: the GPU time by kernel.
 # H8 is on by default on discrete cards for the Qwen dense models; on another GPU set $env:ARC_H8 = 1 first.
+# -Wide (2026-11-13): also the shapes beyond the default, up to the widest the kernels build: on 16 lanes (B60) 32 x 96
+# (a width's rest after its 96s at 32 x 64), 16 x 128, 64 x 32, 32 x 128, 64 x 64; on 8 lanes (140T) 16 x 64, 64 x 16,
+# 32 x 64. ocloc's register counts say which spill (the kernels' headers); the sweep measures what that costs.
 param(
   [Parameter(Mandatory = $true)][string]$Model,
-  [int[]]$Tokens = @(512, 4096, 16384)
+  [int[]]$Tokens = @(512, 4096, 16384),
+  [switch]$Wide
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -59,6 +63,17 @@ if ($probe -match "gemm_xw8, 8 lanes") {
     "xw8 16x32 256reg"         = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 16; ARC_GEMM_XW_NC = 2 }
     "xw8 32x32 256reg"         = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 2 }
   }
+  if ($Wide) {
+    $sets["xw8 16x64 256reg"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 16; ARC_GEMM_XW_NC = 4 }  # (no spill)
+    $sets["xw8 64x16 256reg"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 64 }                      # (spills)
+    $sets["xw8 32x64 256reg"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 4 }                       # (spills)
+  }
+} elseif ($Wide) {
+  $sets["xw 32x96"]  = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 6 }                       # (~2 bytes spilled)
+  $sets["xw 16x128"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 16; ARC_GEMM_XW_NC = 8 }  # (no spill)
+  $sets["xw 64x32"]  = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 64; ARC_GEMM_XW_NC = 2 }  # (no spill)
+  $sets["xw 32x128"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 8 }                       # (spills)
+  $sets["xw 64x64"]  = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 64 }                      # (spills)
 }
 "inferzero xw_sweep: $(Split-Path $Model -Leaf), $(Get-Date -Format s)"
 $res = @{}

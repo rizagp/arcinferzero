@@ -16,8 +16,11 @@
 //   8-lane XMX (the 140T, Alchemist-kind): gemm_xw8.cl, coalesced loads (a group's weights in 4 block reads, an
 //   activation row in one), XW_TM x XW_NC (32 x 1 = 32 x 16, both halves, 256 registers; before 2026-11-11 16 x 16 at
 //   128, which the 140T measured 26 % slower than 32 x 16 at 256).
-//   ARC_GEMM_XW_TM=16 / 32 (32 by default): tokens per sub-group; ARC_GEMM_XW_NC=1 / 2 / 4 (4 on 16 lanes, 1 on 8; 4 is
-//   16-lane only); ARC_GEMM_XW_GRF=128 / 256: the register file (256 by default; on 8 lanes 32 tokens spill at 128).
+//   ARC_GEMM_XW_TM=16 / 32 / 64 (32 by default): tokens per sub-group; ARC_GEMM_XW_NC=1 / 2 / 4, on 16 lanes also 6 / 8
+//   (4 on 16 lanes, 1 on 8); ARC_GEMM_XW_GRF=128 / 256: the register file (256 by default; on 8 lanes 32 tokens spill
+//   at 128). 64 tokens and 6 / 8 groups (2026-11-13) are for sweeps beyond 32 x 64 (bench\xw_sweep.ps1 -Wide): at
+//   256 registers ocloc shows 32 x 96 ~2 bytes spilled, 16 x 128 and 64 x 32 none, 32 x 128 and 64 x 64 heavy spills
+//   (B60); NC 6 runs a width's 96-wide part and its rest 64 columns wide (xw_piece).
 //   ARC_GEMM_XW_TRY=1: on any GPU with H8R, DPAS emulated where the GPU has none of its kind (tests; no speed
 //   meaning; on an iGPU H8 needs ARC_H8=1, or the 140T preset with ARC_140T=1 ARC_XMX_TRY=2).
 //   ARC_GEMM_XW_LANES=16: the 16-lane kernel on an 8-lane GPU, DPAS emulated (tests).
@@ -36,8 +39,8 @@
   int xw_tm() const {
     static const int e = getenv("ARC_GEMM_XW_TM") ? atoi(getenv("ARC_GEMM_XW_TM")) : 0;
     const int def = 32;
-    if (e == 16 || e == 32) return e;
-    if (e) { static std::once_flag said; std::call_once(said, [&] { zlog::eprintf("inferzero: ARC_GEMM_XW_TM=%d not supported (16 or 32): %d\n", e, def); }); }
+    if (e == 16 || e == 32 || e == 64) return e;
+    if (e) { static std::once_flag said; std::call_once(said, [&] { zlog::eprintf("inferzero: ARC_GEMM_XW_TM=%d not supported (16, 32 or 64): %d\n", e, def); }); }
     return def;
   }
   bool xw_grf256() const {
@@ -50,7 +53,7 @@
     static const int e = getenv("ARC_GEMM_XW_NC") ? atoi(getenv("ARC_GEMM_XW_NC")) : 0;
     const int def = xw_lanes() == 8 ? 1 : 4;
     if (e == 0) return def;
-    if (e == 1 || e == 2 || (e == 4 && xw_lanes() == 16)) return e;
+    if (e == 1 || e == 2 || e == 4 || (xw_lanes() == 16 && (e == 6 || e == 8))) return e;
     static std::once_flag said;
     std::call_once(said, [&] { zlog::eprintf("inferzero: ARC_GEMM_XW_NC=%d not supported here: %d\n", e, def); });
     return def;
@@ -66,35 +69,56 @@
     const bool on = e ? atoi(e) != 0 : (p140_ || h8_auto_);
     return h8_ && h8_row() && (xw_try() || (on && xmx_));
   }
-  cl_kernel xw_kernel() {
+  // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel)
+  cl_kernel xw_kernel(int nc = 0) {
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
-                             std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(xw_nc()) + (xw_emu_ ? " -DXW_EMU" : "");
+                             std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
+                             (xw_emu_ ? " -DXW_EMU" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : ""), "gemm_xw");
   }
-  // one piece [s0, s1) of K: the grid of gemm_xw.cl's / gemm_xw8.cl's header (a sub-group of 16 or 8 work-items)
+  // one piece [s0, s1) of K over N columns from 16-column group g_base (16 lanes; 0 on 8): the grid of gemm_xw.cl's /
+  // gemm_xw8.cl's header (a sub-group of 16 or 8 work-items)
   void xw_run(const char* name, cl_kernel k, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K, cl_mem C,
-              int ldc, int c_off, int a, int rgroup, int s0, int s1, int wgy) {
-    const int tm = xw_tm(), nb = N / (16 * xw_nc()), ln = xw_lanes();
+              int ldc, int c_off, int a, int rgroup, int s0, int s1, int wgy, int nc, int g_base) {
+    const int tm = xw_tm(), nb = N / (16 * nc), ln = xw_lanes();
     size_t gws[2] = {(size_t)ln * nb * (M / tm / wgy), (size_t)wgy}, lws[2] = {(size_t)ln, (size_t)wgy};
-    set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1);
+    if (ln == 8) set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1);
+    else set_args(k, 0, wq, wh, aq, asc, C, M, N, K, ldc, c_off, a, rgroup, s0, s1, g_base);
     run(name, k, 2, gws, lws);
+  }
+  // ARC_GEMM_XW_NC=6 (96 columns, 16 lanes): N's first columns in 96-wide tiles, as many as leave a multiple of 64 for
+  // the NC 4 kernel (the 27B's widths 1024, 5120, 17408 are not multiples of 96); -1: N has no such split
+  static int xw_cols96(int N) {
+    for (int a = N / 96; a >= 0; --a)
+      if ((N - 96 * a) % 64 == 0) return 96 * a;
+    return -1;
+  }
+  bool xw_takes_n(int N) const { return xw_nc() == 6 ? xw_cols96(N) >= 0 : N % (16 * xw_nc()) == 0; }
+  // one piece of K over all N columns: one launch, or with NC 6 the 96-wide part and the rest in 64-wide tiles
+  void xw_piece(const char* name, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K, cl_mem C, int ldc,
+                int c_off, int a, int rgroup, int s0, int s1, int wgy) {
+    const int nc = xw_nc();
+    if (nc != 6) return xw_run(name, xw_kernel(), wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, nc, 0);
+    const int n96 = xw_cols96(N);
+    if (n96 > 0) xw_run(name, xw_kernel(6), wq, wh, aq, asc, M, n96, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 6, 0);
+    if (n96 < N)
+      xw_run(name, xw_kernel(4), wq, wh, aq, asc, M, N - n96, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 4, n96 / 16);
   }
   // h8_matmul's GEMM through gemm_xw / gemm_xw8, with gemm.cl's split-K pieces and row groups; false: a shape it does
   // not take (the old kernel runs it)
   bool xw_matmul(const char* name, cl_mem wq, cl_mem hh, int Mp, int N, int K, cl_mem C, int ldc, int c_off, int a) {
     const int tm = xw_tm();
-    if (Mp % tm || N % (16 * xw_nc()) || K % 256) return false;
+    if (Mp % tm || !xw_takes_n(N) || K % 256) return false;
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
     static const int wgy_max = getenv("ARC_GEMM_WGY") ? atoi(getenv("ARC_GEMM_WGY")) : 8;
     // (the pieces gemm.cl's H8 GEMM takes, h8_matmul's own helper: the same sums per piece, so the same results)
     const int nsb = K / 256, splits = h8_splits(K, a);
     int wgy = 1;
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
-    cl_kernel k = xw_kernel();
     for (int sp = 0; sp < splits; ++sp)
-      xw_run(name, k, wq, hh, h8_aq_, h8_asc_, Mp, N, K, C, ldc, c_off, sp == 0 ? a : 1, rg_env, nsb * sp / splits,
-             nsb * (sp + 1) / splits, wgy);
+      xw_piece(name, wq, hh, h8_aq_, h8_asc_, Mp, N, K, C, ldc, c_off, sp == 0 ? a : 1, rg_env, nsb * sp / splits,
+               nsb * (sp + 1) / splits, wgy);
     return true;
   }
   void xw_init() {
@@ -112,8 +136,9 @@
       const bool ok = xw_check();
       it = known.emplace(key, ok).first;
       if (ok)
-        zlog::eprintf("inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s\n",
-                xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "");
+        zlog::eprintf("inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s%s\n",
+                xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "",
+                xw_nc() == 6 ? "; a width's rest after its 96s 64 columns wide" : "");
       else
         zlog::eprintf("inferzero: %s differs from gemm.cl or does not build: not used (please report)\n",
                 xw_lanes() == 8 ? "gemm_xw8" : "gemm_xw");
@@ -135,7 +160,10 @@
     bool built = true;
     try {
       const int tm = xw_tm(), cols = 16 * xw_nc();
-      for (auto [M, N] : {std::pair{3 * tm, 2 * cols}, std::pair{2 * tm, 3 * cols}}) {
+      std::vector<std::pair<int, int>> shapes = {{3 * tm, 2 * cols}, {2 * tm, 3 * cols}};
+      // (NC 6: 96 + 64 parts, 96 + 128 (the 27B's widths have a 128-wide rest), 96 only, 64 only)
+      if (xw_nc() == 6) shapes = {{3 * tm, 256}, {2 * tm, 224}, {2 * tm, 288}, {2 * tm, 128}};
+      for (auto [M, N] : shapes) {
         const int ng = N / 16, ldc = N + 32, coff = 16;
         std::vector<uint32_t> wq((size_t)ng * nsb * 4 * 16 * 16), wh((size_t)ng * 16);
         for (auto& v : wq) v = rnd();
@@ -167,7 +195,7 @@
                   set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ld, co, ac, rg, s0, s1);
                   run("xw_check", k, 2, gws, lws);
                 } else {
-                  xw_run("xw_check", xw_kernel(), bq, bh, ba, bs, M, N, K, bc, ld, co, ac, rg, s0, s1, wgy);
+                  xw_piece("xw_check", bq, bh, ba, bs, M, N, K, bc, ld, co, ac, rg, s0, s1, wgy);
                 }
               }
               out[x].resize(c0.size());
