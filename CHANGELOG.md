@@ -38,6 +38,40 @@
   `_isatty`, now behind `#ifdef _WIN32` with `localtime_r` / `isatty` on Linux. Windows unchanged (the same lines
   under `_WIN32`; runz, serverz and test_http rebuilt, test_http passes). docs/linux-port.md, Progress.
 
+## 2026-11-13: `zero-server -Host` / `--host`, as serverz's own option
+
+- **`zero-server start -Host 0.0.0.0`** (also `--host 0.0.0.0`, `--host=0.0.0.0`, `-host:0.0.0.0`): the listen
+  address, before only `-ListenHost` (PowerShell keeps `$Host` for itself, so it is an alias of `-ListenHost`, which
+  still works). `--port=8091` too. Before, `--host 0.0.0.0` stopped with "unknown option --host: did you mean -Port?".
+- The "did you mean" hint knows the aliases and prefers a name with the same first letter on a tie (`--hots`:
+  `-Host`, not `-Slots`). Checked with `-DryRun` through `zero-server.cmd`: each form gives serverz `--host 0.0.0.0`,
+  the port forms `--port 8091`, and the `=` forms count as given options (restarts keep them). USAGE.md shows both.
+
+## 2026-11-13: the NPU on the website; `bench\npu_try.ps1` for newer NPUs
+
+- **Website:** a card for the NPU next to the GPU (`--npu on`): Qwen3.8 27B 4K prompt 133 -> 153-162 tok/s, Gemma 4
+  12B +10 % on a Core Ultra 5 125H; mixture-of-experts and small models leave it off; newer NPUs untested.
+- **`bench\npu_try.ps1 -Model <dense gguf>`:** the prompt with the NPU off, on, and with its three shares scaled
+  together (x0.3 / 0.5 / 0.7 / 1.3), the time the GPU waited for it, and the KL against NPU-off over two 4,096-token
+  perplexity chunks. The shares were set on the 125H, whose GPU does ~8.6 int8 TOPS; a Lunar Lake or Panther Lake
+  GPU with XMX is several times faster and likely wants a smaller share. The 125H's 27B at 4K: off 128.4 tok/s, on
+  151.4 (+18 %), x0.3 / 0.5 / 0.7 / 1.3 129.3 / 137.9 / 133.5 / 125.8; KL 0.0012-0.0034 (limit 0.015).
+
+## 2026-11-13: Qwen3.8 Flash Next over several GPUs (`--gpus N`)
+
+- **Why:** over 4 Pro B60s (96 GB) Flash Next's 52 GB of experts fit in the GPUs' memory instead of streaming from
+  the SSD (manoreken2, issue #4). `--gpus` refused it until now.
+- **How it is split** (docs/multi-gpu.md, "Flash Next"): the 512 experts by expert as the 35B-A3B's (128 per GPU over
+  4, each GPU streaming and caching only its own); DeltaNet by k-head; attention by kv-head over 2 GPUs, whole on
+  every GPU over 3-4; the hyper-connection mixers, PLE, the QSA indexer and the shared expert whole on every GPU.
+  Each block's output is summed over the GPUs into the block-output buffer, then added to the 4 residual streams as
+  on one GPU.
+- **Accuracy** (laptop, `ARC_TP_SIM`, KL against the f32 reference on 450 tokens, prompt / decode): one GPU 0.0168 /
+  0.0151, over 2-4 GPUs 0.0140-0.0176; with `ARC_FN_PRECISE=1` one GPU 0.0093 / 0.0096, split 0.0083-0.0110. One GPU
+  and the existing splits (27B, 35B-A3B) give the same logits bit for bit as before.
+- **runz:** `--kl-ref` with `--gpus` measures the prompt path too (before: the tokens one by one only).
+- Speed on several cards is to be measured by their owners.
+
 ## 2026-11-13: the HTTP server's sockets behind the platform layer (Linux port, issue #11)
 
 - **What:** `src/http.h` (the server's HTTP layer) no longer calls Winsock or Win32 directly: its sockets go through

@@ -92,7 +92,7 @@
       if (wide_rows(T)) run_rows_wide("gated_norm_quant", k_gnorm_, Di, T);
       else run("gated_norm_quant", k_gnorm_, 2, gws, lws);
     }
-    if (hp.hc) matmul("gemm_ssm_out", L.ssm_out, Mp, hco_, E, 0, 0, a_out);
+    if (hp.hc) tp_out_hc("gemm_ssm_out", L.ssm_out, Mp, a_out);  // (Flash Next: the block output, into hco_)
     else tp_out("gemm_ssm_out", L.ssm_out, Mp, a_out);
   }
 
@@ -377,7 +377,7 @@
       if (wide_rows(T)) run_rows_wide("attn_gate_quant", k_attn_gate_, K, T);
       else run("attn_gate_quant", k_attn_gate_, 2, gws, lws);
     }
-    if (hp.hc) matmul("gemm_o", L.wo, Mp, hco_, E, 0, 0, a_out);
+    if (hp.hc) tp_out_hc("gemm_o", L.wo, Mp, a_out);
     else tp_out("gemm_o", L.wo, Mp, a_out);
   }
 

@@ -167,8 +167,8 @@ td .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spa
 /* ---------- features (bento) ---------- */
 .bento{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px}
 .card{background:var(--surface);border:1px solid var(--hair);border-radius:12px;padding:26px 26px 24px;min-width:0;display:flex;flex-direction:column;gap:12px}
-.card.w3{grid-column:span 3}.card.w2{grid-column:span 2}.card.w4{grid-column:span 4}
-@media (max-width:980px){.bento{grid-template-columns:1fr 1fr}.card.w3,.card.w2,.card.w4{grid-column:span 1}}
+.card.w3{grid-column:span 3}.card.w2{grid-column:span 2}.card.w4{grid-column:span 4}.card.w6{grid-column:span 6}
+@media (max-width:980px){.bento{grid-template-columns:1fr 1fr}.card.w3,.card.w2,.card.w4,.card.w6{grid-column:span 1}}
 @media (max-width:620px){.bento{grid-template-columns:1fr}}
 .card h3{font-size:18px;letter-spacing:-.01em;line-height:1.3}
 .card p{font-size:14.5px}
@@ -486,6 +486,12 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <h3>Long files, read properly</h3>
         <p>Whole when the context takes it, else by outline, pages or search. OCR turns scanned PDFs into Markdown, tables as tables. Answers name their page.</p>
       </article>
+      <article class="card w6">
+        <div class="eb">NPU</div>
+        <h3>The laptop's NPU reads part of the prompt</h3>
+        <p>With <code>--npu on</code>, the Core Ultra's NPU (Intel AI Boost) computes part of each long prompt chunk's matrix products while the GPU computes the rest, through Level Zero, without OpenVINO. Dense models gain; mixture-of-experts and small models gain nothing, so they leave it off by themselves. Generation does not change. Measured on a Core Ultra 5 125H; newer NPUs (Lunar Lake, Panther Lake) are untested: <code>bench\npu_try.ps1</code> measures yours.</p>
+        <div class="stat"><div><span>Qwen3.8 27B, 4K prompt</span><b class="hi">133 → 153-162 tok/s</b></div><div><span>Gemma 4 12B, 4K prompt</span><b class="hi">+10 %</b></div><div><span>27B, KL against f32</span><b>0.0028-0.0031</b></div></div>
+      </article>
     </div>
   </div>
 </section>
@@ -631,7 +637,7 @@ zero-server start -Model 27b -Slots 2</pre>
     <div class="endcta">
       <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>8 MB</kbd></a>
       <a class="btn s" href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">Build from source</a>
-      <span class="mono">release 2026.11.13.09</span>
+      <span class="mono">release 2026.11.13.11</span>
     </div>
   </div>
 </section>

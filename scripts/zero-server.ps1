@@ -66,7 +66,9 @@ param(
   [switch]$NoPrefixCache,
   [double]$PrefixCacheGb = -1,
   [switch]$NoSwap,
-  [string]$ListenHost = "",
+  # (also -Host / --host, serverz's own name: $Host is PowerShell's own variable, so the parameter cannot be called
+  #  that; the alias binds -Host, --host and -host:ADDR in Windows PowerShell and pwsh; --host=ADDR below)
+  [Alias("Host")][string]$ListenHost = "",
   [string]$SessionDir = "",
   # record: the meeting app (its sound is "Others"; none: everything the speakers play), no microphone, a title
   [string]$App = "",
@@ -85,9 +87,19 @@ param(
 $ErrorActionPreference = "Stop"
 # (an option this script does not have went to $args and was ignored: "-Whispr on" started the server without
 #  speech. Now it stops, with the option meant: one dash or two, any case, the closest name)
-if ($args.Count) {
-  $names = @((Get-Command $PSCommandPath).Parameters.Keys | Where-Object { $_ -notin [Management.Automation.PSCmdlet]::CommonParameters })
-  $bad = [string]$args[0]
+# (--host=0.0.0.0 / --port=8091, the form other servers take; PowerShell binds "--host 0.0.0.0" by the alias, not
+#  this. Marked as given in $PSBoundParameters like a bound option, so a restart and the running-server check see it)
+$rest = @()
+foreach ($a in $args) {
+  if ("$a" -match '^--?(host|listenhost)=(.+)$') { $ListenHost = $Matches[2]; $PSBoundParameters["ListenHost"] = $ListenHost; continue }
+  if ("$a" -match '^--?port=(\d+)$') { $Port = [int]$Matches[1]; $PSBoundParameters["Port"] = $Port; continue }
+  $rest += $a
+}
+if ($rest.Count) {
+  # (the parameters and their aliases: a typo of --host suggests -Host)
+  $names = @((Get-Command $PSCommandPath).Parameters.Values | Where-Object { $_.Name -notin [Management.Automation.PSCmdlet]::CommonParameters } |
+             ForEach-Object { $_.Name; $_.Aliases })
+  $bad = [string]$rest[0]
   $key = ($bad -replace '^-+', '').ToLower()
   function Edit-Distance([string]$x, [string]$y) {
     $d = 0..$y.Length
@@ -99,7 +111,8 @@ if ($args.Count) {
     }
     return $d[$y.Length]
   }
-  $best = $names | Sort-Object { Edit-Distance $key ($_.ToLower() -replace '-', '') } | Select-Object -First 1
+  # (ties: a name with the same first letter first, so --hots suggests -Host, not -Slots)
+  $best = $names | Sort-Object { Edit-Distance $key ($_.ToLower() -replace '-', '') }, { $_.ToLower()[0] -ne $key[0] } | Select-Object -First 1
   $hint = if ($best -and (Edit-Distance $key ($best.ToLower() -replace '-', '')) -le 3) { ": did you mean -$($best)?" } else { "" }
   $what = if ($bad -like "-*") { "unknown option $bad" } else { "'$bad' is a value without an option before it (a path with spaces goes in quotes)" }
   throw "zero-server: $what$hint (zero-server help lists the options)"
@@ -339,7 +352,7 @@ Common options for start / restart:
   -Vision on|off     images / audio input (off: more context)
   -Npu on|off        part of each prompt on the NPU (27B, Gemma 4 12B)
   -Whisper auto|off  speech to text (Transcripts / Meetings tabs)
-  -Slots <N>         conversations at once          -ListenHost 0.0.0.0   reachable from other computers
+  -Slots <N>         conversations at once          -Host 0.0.0.0   reachable from other computers
   -Gpus <N>          one model split over N GPUs (Qwen3.5 / 3.6 / 3.8; the context sized per GPU)
   -DryRun            check the options, print the server's command line and a GPU memory estimate; start nothing
 
@@ -460,7 +473,8 @@ Options for start / restart:
   -PreserveThinking              earlier turns keep their reasoning (Qwen3.6 35B; Qwen3.8 27B always does)
   -NoPrefixCache                 do not keep system prompts on disk;  -PrefixCacheGb <N>  their disk space (8)
   -NoSwap                        the server keeps its model (requests for another model do not switch)
-  -ListenHost <addr>             listen address (default 127.0.0.1; 0.0.0.0 = other computers too)
+  -Host <addr>                   listen address (default 127.0.0.1; 0.0.0.0 = other computers too); also --host,
+                                 --host=<addr>, and the older name -ListenHost
   -SessionDir <folder>           where saved conversations go (default %USERPROFILE%\.inferzero\zero\sessions)
   -Quiet                         no messages
 A running server is kept when the model and every option given match; otherwise it is restarted with them.

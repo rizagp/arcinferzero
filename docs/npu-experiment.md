@@ -67,6 +67,15 @@ before and after the NPU round; results in `bench/results/npu-2026-10-25.jsonl`)
 - The first prompt with a new chunk height (multiples of 1024 rows, 2048-4096) compiles its graphs (10-30 s each
   kind), later ones load them in milliseconds from `%USERPROFILE%\.inferzero\npu`.
 
+## Other machines (2026-11-13)
+
+`bench\npu_try.ps1 -Model <a dense model>` measures the NPU on another machine: the prompt with it off, on, and with
+the three shares scaled together, plus the KL against NPU-off. The shares above suit the 125H, whose GPU does ~8.6
+int8 TOPS; a GPU with XMX (Lunar Lake's Arc 140V, Panther Lake's B390) is several times faster, so with the same shares
+it waits for the NPU; a smaller scale should win there, if the newer NPU runs these graphs at all (untested: the
+graph extension and compiler versions differ). The 125H's 27B at 4K, 2026-11-13: off 128.4 tok/s, scale 0.3 / 0.5 /
+0.7 / 1 / 1.3: 129.3 / 137.9 / 133.5 / **151.4** / 125.8 tok/s, KL against off 0.0012-0.0034.
+
 ## What runs where
 
 Per prompt chunk of >= 2048 rows (`ARC_NPU_MIN`) of the 27B, per layer:

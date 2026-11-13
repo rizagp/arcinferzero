@@ -755,6 +755,15 @@ class TpEngine {
   // Feeds tokens on every shard; the full vocabulary's logits of the last one (each shard's rows in rank order).
   const std::vector<float>& forward(const int* tokens, int n) {
     run_all([&](int r) { shards_[r]->forward(tokens, n); });
+    return joined();
+  }
+  // the full vocabulary's logits after row `row` of the last pass (every shard's keep_rows set before it: runz
+  // --kl-ref's prompt path); each shard's head reads its own copy of the row, no sum
+  const std::vector<float>& logits_at(int row) {
+    run_all([&](int r) { shards_[r]->logits_at(row); });
+    return joined();
+  }
+  const std::vector<float>& joined() {  // (each shard's vocabulary rows in rank order)
     size_t at = 0;
     for (int r = 0; r < n_; ++r) {
       const size_t per = (size_t)shards_[r]->n_logits();
