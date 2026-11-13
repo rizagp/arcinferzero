@@ -25,7 +25,7 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 | Sockets | `src/http.h` and 7 more (Winsock: the server, web tools, image / audio fetches, the recorder) | BSD sockets: small differences (`close`, `poll`, errors) |
 | The terminal tool and MCP servers | `tools/server_terminal.h`, `tools/server_mcp.h` (`CreateProcess`, pipes, job objects, `CancelSynchronousIo`) | `posix_spawn` / `fork` + `exec`, pipes, a process group per child (`kill(-pgid)` for the whole tree), `poll` with time limits |
 | The crash report | `src/crash_log.h` (structured exceptions, DbgHelp) | a signal handler with `backtrace` |
-| Audio decoding (M4A, MP3, AAC) | `src/audio.h` (Media Foundation) | WAV / FLAC in C++ as now; the others through `ffmpeg` if installed, else refused with a message |
+| Audio decoding (M4A, MP3, AAC, FLAC, Opus) | `src/audio.h` (Media Foundation) | WAV in C++ as now; the others through `ffmpeg` if installed, else refused with a message (done 2026-11-13) |
 | PDF pages as images (OCR models) | `tools/pdf_render.h` (Windows.Data.Pdf) | `pdftoppm` (poppler) if installed, else OCR of scanned PDFs off; text PDFs read as now |
 | `web_view` (a page as a browser shows it) | `tools/web_view.h` (headless Edge, a job-checked proxy) | headless Chromium if installed, with the same proxy; off by default at first |
 | The NPU | `zero/npu/` | off (the NPU's Linux driver is another API) |
@@ -121,6 +121,41 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   wait 77.0 us in WSL against 4.7 us on Windows; 20 KB GPU -> GPU 74.6 / 5.2 us; 40 MB 35.9 / 40.7 GB/s. A split model
   syncs ~128 times a token, so WSL says nothing about multi-GPU speed. That latency is also why the 4B generates at
   14.7 tok/s in WSL against 16.6-19.1 on Windows (bandwidth is close: pinned host -> GPU 34.9 / 38.0 GB/s).
+- 2026-11-13 (evening): **`serverz` builds and runs on Linux** (step 3), in WSL with the 4B. The same build line as runz
+  with `zero/serverz.cpp`; no warnings. The parts:
+  - **Media through tools a distribution has**, started by `plat::run_program` (`src/platform_proc.h`: stdin, stdout
+    and stderr on pipes, a time and a size limit, the program in a process group of its own, `SIGPIPE` ignored by the
+    server from its first line): images through `ffmpeg` (a PPM on a pipe; `src/image.h`); audio through `ffmpeg` /
+    `ffprobe` (`src/audio.h`: 16 kHz floats, one channel or the channels' plain average as Media Foundation takes it,
+    the file's timeline kept with `aresample`'s async padding, durations, MP3 / AAC encoding; WAV still parsed in
+    C++); PDF pages through poppler's `pdfinfo` / `pdftoppm` (`tools/pdf_render.h`, the same 4,000-pixel cap). Without
+    the tool: an error saying which package (`apt install ffmpeg`, `poppler-utils`). `web_view` answers that it is not
+    on Linux yet (it runs Edge).
+  - **The terminal tool runs bash** (`tools/server_terminal.h`): a script file, a process group (as the job object), the
+    chat's session in the same JSON state file (its folder and the variables that differ from a fresh shell, applied
+    to the child here, read back from the shell's `pwd` and `env -0` at its exit), UTF-8 when the server's environment
+    names no locale. The web UI takes `"platform"` from `/props` once and words the tool, its system text and its
+    probe for bash. **MCP servers** through `posix_spawn` with three pipes and a process group; their readers poll with
+    a stop flag, so cleanup always ends (Windows needs `CancelSynchronousIo` and leaves a stuck reader behind).
+  - **Remote access's password hash** (PBKDF2-HMAC-SHA256, 200,000 rounds) in C++ (`src/pbkdf2.h`) with `getrandom`:
+    the RFC 7914 vectors, and the same hashes as Windows' CNG for the server's own parameters (checked on both).
+  - **The crash report** on Linux: the crash signals print the signal, the address and a backtrace with `write(2)`
+    only, on a stack of their own, then the program's notes. Whisper's compression ratio through zlib (`dlopen`), which
+    is openai's own measure (Windows: MSZIP, within a few bytes).
+  - **Paths:** the project-folder checks compare with `/` and case-sensitively (`plat::path_inside`), and refuse the
+    home folder, its key and settings folders (`.ssh`, `.gnupg`, `.aws`, `.config`...) and the system's (`/etc`, `/usr`...).
+  - **Checked:** in WSL, the same server test as on Windows (health, the web UI, keep-alive, HEAD, plain and streaming
+    chat, a cancelled stream, two clients at once, a chunked body, file ranges): the same replies as the Windows server's,
+    the generated text included; the terminal (a session's folder and variables, an exit code, a timeout, a long output
+    cut); project folders (the refusals, a file read, `..` refused, names case-sensitive); the media functions on one set
+    of files on both systems (images the same; audio the same lengths within the codecs' padding and the same levels;
+    PDF pages 1240 x 1755 against 1239 x 1754). Windows: every CI target builds without new warnings, its 11 unit tests
+    pass, the server test the same as release 2026.11.13.09's (the web UI's page apart, changed on purpose).
+  - **Audited** by Pi / DeepSeek (docs/audit-2026-11-13b.md): no Windows change found; its 16 findings checked and the
+    real ones fixed (a PDF page that could throw, `run_program`'s deadline over the final wait, `SIGPIPE` from the start,
+    the project paths, the crash handler's safety, kill before reap, FIFOs refused, `$TMPDIR`, atomic terminal state).
+  - **Not yet:** a CMake build and a release archive (step 4); `web_view` (headless Chromium); the recorder (WASAPI);
+    the GPU memory budget through Sysman; a native Linux machine's numbers.
 
 ## The order
 

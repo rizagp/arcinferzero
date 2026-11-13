@@ -17,12 +17,18 @@
 //     minutes, 40 from all visitors lock every sign-in; attempts being checked count until they are done.
 //   - A request through a tunnel or proxy (its forwarding headers) for any other host is refused: a tunnel that
 //     rewrote the Host header to 127.0.0.1 would otherwise pass as local, without a password.
-// The password is kept as PBKDF2-HMAC-SHA256 (200,000 rounds, 16-byte random salt; Windows CNG, bcrypt.lib).
+// The password is kept as PBKDF2-HMAC-SHA256 (200,000 rounds, 16-byte random salt; Windows CNG, bcrypt.lib; Linux:
+// src/pbkdf2.h and getrandom, the same hashes).
 #pragma once
 #include "../src/app_dir.h"
 #include "../src/http.h"
 #include "../src/json.h"
+#ifdef _WIN32
 #include <bcrypt.h>
+#else
+#include "../src/pbkdf2.h"
+#include <sys/random.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -33,7 +39,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#ifdef _WIN32
 #pragma comment(lib, "bcrypt.lib")
+#endif
 
 namespace remote {
 namespace fs = std::filesystem;
@@ -57,11 +65,24 @@ inline std::vector<unsigned char> unhex(const std::string& s) {
 }
 inline std::string random_hex(size_t bytes) {
   std::vector<unsigned char> b(bytes);
+#ifdef _WIN32
   if (BCryptGenRandom(nullptr, b.data(), (ULONG)b.size(), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
     throw std::runtime_error("no random numbers from Windows (BCryptGenRandom)");
+#else
+  for (size_t got = 0; got < b.size();) {  // (the kernel's CSPRNG; EINTR: again)
+    const ssize_t k = getrandom(b.data() + got, b.size() - got, 0);
+    if (k < 0 && errno == EINTR) continue;
+    if (k <= 0) throw std::runtime_error("no random numbers from the system (getrandom)");
+    got += (size_t)k;
+  }
+#endif
   return hex(b.data(), b.size());
 }
 inline std::string pbkdf2(const std::string& password, const std::vector<unsigned char>& salt, unsigned iters) {
+#ifndef _WIN32
+  const std::vector<uint8_t> dk = pbkdf2::derive(password, salt, iters, 32);
+  return hex(dk.data(), dk.size());
+#else
   BCRYPT_ALG_HANDLE alg = nullptr;
   if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0)
     throw std::runtime_error("no SHA-256 from Windows (BCryptOpenAlgorithmProvider)");
@@ -71,6 +92,7 @@ inline std::string pbkdf2(const std::string& password, const std::vector<unsigne
   BCryptCloseAlgorithmProvider(alg, 0);
   if (r != 0) throw std::runtime_error("PBKDF2 failed (BCryptDeriveKeyPBKDF2)");
   return hex(out, sizeof out);
+#endif
 }
 inline bool equal_ct(const std::string& a, const std::string& b) {  // (constant time for equal lengths)
   if (a.size() != b.size()) return false;

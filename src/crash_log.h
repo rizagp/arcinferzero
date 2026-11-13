@@ -76,7 +76,70 @@ inline LONG WINAPI filter(EXCEPTION_POINTERS* ep) {
 inline void install() { SetUnhandledExceptionFilter(filter); }
 }  // namespace crashlog
 #else
+// Linux: the crash signals (SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT) print the signal, the address for a memory
+// fault and the stack (backtrace, function names where the binary exports them: link with -rdynamic), then the
+// program's own notes, then the signal ends the process as it would have (a core dump where the system keeps them).
+// The signal line and the stack are written with write(2) only (no stdio lock, no allocation: the fault may have come
+// while another thread held them), on a stack of its own (a stack overflow is reported too). The notes (extra) are not
+// async-signal-safe: they come last, so a handler that hangs or faults there has printed the stack already.
+#include <csignal>
+#include <cstdint>
+#include <cstring>
+#include <execinfo.h>
+#include <unistd.h>
 namespace crashlog {
-inline void install() {}
+inline void (*extra)() = nullptr;  // (the program's own notes, printed after the stack)
+inline void put(const char* s) {
+  for (size_t n = strlen(s); n;) {
+    const ssize_t w = write(STDERR_FILENO, s, n);
+    if (w <= 0) return;
+    s += w, n -= (size_t)w;
+  }
+}
+inline void put_num(unsigned long long v, int base) {
+  char b[32];
+  int i = 31;
+  b[i] = 0;
+  do b[--i] = "0123456789abcdef"[v % base], v /= base; while (v && i > 0);
+  put(b + i);
+}
+inline void on_signal(int sig, siginfo_t* si, void*) {
+  static volatile sig_atomic_t once = 0;
+  if (!once) {
+    once = 1;
+    const char* name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" : sig == SIGILL ? "SIGILL" : sig == SIGFPE ? "SIGFPE"
+                       : sig == SIGABRT ? "SIGABRT" : "a signal";
+    put("\ncrashed: signal ");
+    put_num((unsigned)sig, 10);
+    put(" (");
+    put(name);
+    put(")");
+    if ((sig == SIGSEGV || sig == SIGBUS) && si) {
+      put(", address 0x");
+      put_num((unsigned long long)(uintptr_t)si->si_addr, 16);
+    }
+    put("\nstack:\n");
+    void* frames[64];
+    const int n = backtrace(frames, 64);  // (libgcc's unwinder loaded at install: no allocation here)
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    if (extra) extra();  // (best effort, see above)
+  }
+  signal(sig, SIG_DFL);  // (then raised again: the default action, which ends the process)
+  raise(sig);
+}
+inline void install() {
+  void* warm[1];
+  backtrace(warm, 1);  // (loads libgcc's unwinder now, not inside the handler)
+  static char alt[64 * 1024];  // (the handler's own stack: a stack overflow's SIGSEGV still reaches it)
+  stack_t ss{};
+  ss.ss_sp = alt;
+  ss.ss_size = sizeof alt;
+  sigaltstack(&ss, nullptr);  // (the main thread's; other threads overflowing still die, without the report)
+  struct sigaction sa{};
+  sa.sa_sigaction = on_signal;
+  sa.sa_flags = SA_SIGINFO | SA_RESETHAND | SA_ONSTACK;
+  sigemptyset(&sa.sa_mask);
+  for (int s : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(s, &sa, nullptr);
+}
 }  // namespace crashlog
 #endif

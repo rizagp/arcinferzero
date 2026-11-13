@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
@@ -29,6 +30,51 @@ namespace plat {
 inline void ignore_sigpipe() {
   static std::once_flag once;
   std::call_once(once, [] { signal(SIGPIPE, SIG_IGN); });
+}
+
+// The folder for temporary files: $TMPDIR when set (a system whose /tmp is a small tmpfs points it elsewhere), else /tmp.
+inline std::string temp_dir() {
+  const char* t = getenv("TMPDIR");
+  return t && *t ? std::string(t) : std::string("/tmp");
+}
+// A new temporary file "<temp_dir>/inferzero-<what>-XXXXXX" holding data (all of it: EINTR retried): its path, or ""
+// and err set
+inline std::string write_temp(const char* what, const void* data, size_t n, std::string& err) {
+  std::string p = temp_dir() + "/inferzero-" + what + "-XXXXXX";
+  const int fd = mkstemp(p.data());
+  if (fd < 0) {
+    err = "no temporary file in " + temp_dir() + " (" + strerror(errno) + ")";
+    return "";
+  }
+  size_t off = 0;
+  while (off < n) {
+    const ssize_t w = ::write(fd, (const char*)data + off, n - off);
+    if (w < 0 && errno == EINTR) continue;
+    if (w <= 0) break;
+    off += (size_t)w;
+  }
+  ::close(fd);
+  if (off < n) {
+    err = "the temporary file could not be written (" + temp_dir() + " full?)";
+    unlink(p.c_str());
+    return "";
+  }
+  return p;
+}
+// A file path as a program's argument: one that starts with '-' would be read as an option ("./-i", not "-i")
+inline std::string path_arg(const std::string& p) { return !p.empty() && p[0] == '-' ? "./" + p : p; }
+// a tool's error output as one line: its last non-empty line (poppler and ffmpeg print warnings before the error),
+// without ffmpeg's "[mp3 @ 0x55d0...] " prefix
+inline std::string last_line(const std::string& err) {
+  size_t e = err.size();
+  while (e > 0 && (err[e - 1] == '\n' || err[e - 1] == '\r' || err[e - 1] == ' ')) --e;
+  const size_t b = err.rfind('\n', e ? e - 1 : 0);
+  std::string l = err.substr(b == std::string::npos ? 0 : b + 1, e - (b == std::string::npos ? 0 : b + 1));
+  if (l.size() > 2 && l[0] == '[') {
+    const size_t c = l.find("] ");
+    if (c != std::string::npos && l.find(" @ 0x") < c) l.erase(0, c + 2);
+  }
+  return l.substr(0, 300);
 }
 
 struct ProcResult {
@@ -112,7 +158,10 @@ inline ProcResult run_program(const std::vector<std::string>& argv, const std::s
     if (pout[0] >= 0) i_out = n, p[n++] = {pout[0], POLLIN, 0};
     if (perr[0] >= 0) i_err = n, p[n++] = {perr[0], POLLIN, 0};
     const int k = poll(p, (nfds_t)n, std::min(left, 1000));
-    if (k < 0 && errno != EINTR) break;
+    if (k < 0 && errno != EINTR) {  // (poll itself failed: the program is ended, not left running)
+      kill_it = true;
+      break;
+    }
     if (k <= 0) continue;
     if (i_in >= 0 && p[i_in].revents) {
       const ssize_t w = ::write(pin[1], in.data() + sent, std::min<size_t>(in.size() - sent, 1 << 20));
@@ -141,12 +190,25 @@ inline ProcResult run_program(const std::vector<std::string>& argv, const std::s
     }
     if (kill_it) break;
   }
-  if (kill_it) kill(-pid, SIGKILL);
   close_all();
+  // its end, within the same deadline: a program that closed its output and went on running is killed at it. Waited
+  // for without reaping (WNOWAIT): its group is killed while it is a zombie, whose id cannot be taken by another
+  // process meanwhile; then reaped
+  if (!kill_it) {
+    for (;;) {
+      siginfo_t si{};
+      if (waitid(P_PID, pid, &si, WEXITED | WNOHANG | WNOWAIT) == 0 && si.si_pid == pid) break;
+      if (std::chrono::steady_clock::now() >= deadline) {
+        r.timed_out = kill_it = true;
+        break;
+      }
+      usleep(20000);
+    }
+  }
+  kill(-pid, SIGKILL);  // (the group: all of it at a limit, else what it left running)
   int st = 0;
   while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
   r.exit_code = WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 128 + WTERMSIG(st) : -1;
-  if (!kill_it) kill(-pid, SIGKILL);  // (anything it left running in its group)
   return r;
 }
 

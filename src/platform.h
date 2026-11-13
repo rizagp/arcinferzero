@@ -374,13 +374,15 @@ class SeqFile {
                      OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     return h_ != INVALID_HANDLE_VALUE;
 #else
-    fd_ = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+    // (O_NONBLOCK: a FIFO would block the open until a writer came; only a regular file is read, then blocking reads)
+    fd_ = ::open(p.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd_ < 0) return false;
     struct stat st{};
-    if (fstat(fd_, &st) != 0 || S_ISDIR(st.st_mode)) {  // (a folder: refused, as CreateFileW refuses it)
+    if (fstat(fd_, &st) != 0 || !S_ISREG(st.st_mode)) {  // (a folder, a FIFO, a device: refused)
       close();
       return false;
     }
+    fcntl(fd_, F_SETFL, fcntl(fd_, F_GETFL) & ~O_NONBLOCK);
     return true;
 #endif
   }
@@ -597,6 +599,18 @@ inline bool is_hidden_or_system(const std::filesystem::path& p) {
   return false;
 #endif
 }
+#ifndef _WIN32
+// (Linux) a inside b, at a '/' boundary, case-sensitive as the filesystem is (b itself counts when or_same); the
+// callers pass canonical paths. Windows' callers keep their own case-blind '\' comparisons.
+inline bool path_inside(const std::filesystem::path& a, const std::filesystem::path& b, bool or_same) {
+  std::string x = a.lexically_normal().string(), y = b.lexically_normal().string();
+  while (x.size() > 1 && x.back() == '/') x.pop_back();
+  while (y.size() > 1 && y.back() == '/') y.pop_back();
+  if (y.empty() || x.compare(0, y.size(), y) != 0) return false;
+  if (x.size() == y.size()) return or_same;
+  return y == "/" || x[y.size()] == '/';
+}
+#endif
 // Two open files are one file on disk (Windows: volume and file index; Linux: device and inode).
 inline bool same_file(FILE* a, FILE* b) {
 #ifdef _WIN32

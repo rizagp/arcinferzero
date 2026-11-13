@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-13 (evening): serverz runs on Linux (step 3 of the port, issue #11)
+
+- **What:** `serverz` builds and runs on Linux (checked in WSL with the 4B on the Arc iGPU). Images, audio and PDF
+  pages go through `ffmpeg`, `ffprobe` and poppler when installed (`src/platform_proc.h` runs them with time and size
+  limits, in a process group), with a message naming the package when not. The terminal tool runs bash with the same
+  chat sessions; MCP servers through `posix_spawn`; the remote access password hash in C++ (`src/pbkdf2.h`, the same
+  hashes as Windows' CNG); a crash report from the crash signals. The web UI words the terminal for bash when
+  `/props` says `"platform": "linux"`. `web_view` and the recorder stay Windows-only for now.
+- **Checked:** the server test gives the same replies in WSL as on Windows, generated text included; the terminal,
+  project folders and the media functions tested on both systems (docs/linux-port.md, Progress). Windows: every CI
+  target builds, its unit tests pass, the server's replies as release 2026.11.13.09's.
+- **Audited:** by Pi with DeepSeek (docs/audit-2026-11-13b.md): no Windows change found; its findings fixed before the
+  commit, among them a PDF page error that could end an OCR batch, a wait that could outlive its deadline, the project
+  folder checks on Linux, and the crash handler's safety. A stereo file's mix is the channels' average, as on Windows.
+
 ## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
 
 - **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),

@@ -74,6 +74,7 @@ inline std::vector<uint8_t> from_data_url(const std::string& url) {
 // (Linux) ffmpeg decodes the bytes from stdin and writes the first frame as binary PPM (P6: "P6 w h 255", then the RGB
 // rows), the same 24-bit RGB rows WIC's converter gives; the same size limits before the pixels are kept.
 inline ImageRGB decode(const std::vector<uint8_t>& bytes) {
+  if (bytes.empty()) throw std::runtime_error("cannot decode image");
   const plat::ProcResult r = plat::run_program(
       {"ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "ppm",
        "-pix_fmt", "rgb24", "pipe:1"},

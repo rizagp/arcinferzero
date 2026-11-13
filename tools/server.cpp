@@ -390,6 +390,11 @@ class Server {
       r.set("model", model_id_);
       r.set("n_ctx", eng_.ctx);
       r.set("engine", "inferzero");
+#ifdef _WIN32
+      r.set("platform", "windows");  // (the web UI's terminal: PowerShell)
+#else
+      r.set("platform", "linux");  // (bash)
+#endif
       r.set("chunk", eng_.max_chunk);
       r.set("weights", eng_.w8_resident ? "w8-resident" : "w8-just-in-time");
       r.set("vision", has_vision());
@@ -941,6 +946,9 @@ class Server {
 #include "server_mcp.h"         // (MCP servers' tools for the model, /v1/mcp)
 
 int main(int argc, char** argv) {
+#ifndef _WIN32
+  plat::ignore_sigpipe();  // (first: a log pipe whose reader is gone must give a write error, not end the server)
+#endif
   crashlog::install();
   crashlog::extra = [] { zrt::print_last_launch(); };  // (a crash inside a launch: which kernel, with what)
   full_speed_process();

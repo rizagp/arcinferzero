@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <memory>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 namespace pdfr {
 struct Pdf {
   struct Tmp {
@@ -24,53 +26,62 @@ struct Pdf {
   };
   std::shared_ptr<Tmp> tmp;
   int n = 0;
+  std::vector<std::pair<double, double>> sizes;  // (each page's width and height in points, read once at open)
   bool open(const std::string& bytes, std::string& err) {
-    char path[] = "/tmp/inferzero-pdf-XXXXXX";
-    const int fd = mkstemp(path);
-    if (fd < 0) { err = "no temporary file"; return false; }
-    auto t = std::make_shared<Tmp>();
-    t->path = path;
-    size_t off = 0;
-    while (off < bytes.size()) {
-      const ssize_t w = ::write(fd, bytes.data() + off, bytes.size() - off);
-      if (w <= 0) break;
-      off += (size_t)w;
-    }
-    ::close(fd);
-    if (off < bytes.size()) { err = "the temporary file could not be written"; return false; }
-    const plat::ProcResult r = plat::run_program({"pdfinfo", t->path}, "", 60000, 1 << 20);
-    if (!r.started) { err = r.error + " (Linux renders PDF pages with poppler: apt install poppler-utils)"; return false; }
-    const size_t k = r.out.find("Pages:");
-    if (r.exit_code != 0 || k == std::string::npos) {
-      err = "not a PDF poppler can read" + (r.err.empty() ? std::string() : ": " + r.err.substr(0, r.err.find('\n')));
+    try {
+      auto t = std::make_shared<Tmp>();
+      t->path = plat::write_temp("pdf", bytes.data(), bytes.size(), err);
+      if (t->path.empty()) return false;
+      const plat::ProcResult r = plat::run_program({"pdfinfo", plat::path_arg(t->path)}, "", 60000, 1 << 20);
+      if (!r.started) { err = r.error + " (Linux renders PDF pages with poppler: apt install poppler-utils)"; return false; }
+      const size_t k = r.out.find("Pages:");
+      if (r.exit_code != 0 || k == std::string::npos) {
+        err = "not a PDF poppler can read" + (r.err.empty() ? std::string() : ": " + plat::last_line(r.err));
+        return false;
+      }
+      n = std::max(0, atoi(r.out.c_str() + k + 6));
+      // (every page's size in one run: "Page    3 size: 595.28 x 841.89 pts (A4)"; a page not listed keeps Letter)
+      sizes.assign((size_t)n, {612.0, 792.0});
+      if (n > 0) {
+        const plat::ProcResult s = plat::run_program({"pdfinfo", "-f", "1", "-l", std::to_string(n), plat::path_arg(t->path)}, "",
+                                                     120000, 16 << 20);
+        for (size_t at = 0; (at = s.out.find("\nPage ", at)) != std::string::npos; ++at) {
+          int pg = 0;
+          double w = 0, h = 0;
+          if (sscanf(s.out.c_str() + at + 6, "%d size: %lf x %lf", &pg, &w, &h) == 3 && pg >= 1 && pg <= n && w > 0 && h > 0)
+            sizes[(size_t)pg - 1] = {w, h};
+        }
+      }
+      tmp = t;
+      return true;
+    } catch (const std::exception& e) {
+      err = e.what();
       return false;
     }
-    n = atoi(r.out.c_str() + k + 6);
-    tmp = t;
-    return true;
   }
   int pages() const { return tmp ? n : 0; }
   std::string render(int page, int dpi, std::string& err) const {
-    if (!tmp || page < 1 || page > n) { err = "no page " + std::to_string(page); return ""; }
-    const std::string pg = std::to_string(page);
-    // (the page's size in points, 72 per inch: its long side at most 4000 px, as on Windows)
-    const plat::ProcResult info = plat::run_program({"pdfinfo", "-f", pg, "-l", pg, tmp->path}, "", 60000, 1 << 20);
-    double wpt = 612, hpt = 792;
-    // ("Page    3 size: 595.28 x 841.89 pts (A4)": with -f / -l only that page's line has a size)
-    const size_t k = info.out.find(" size:");
-    if (k != std::string::npos) sscanf(info.out.c_str() + k + 6, "%lf x %lf", &wpt, &hpt);
-    const double long_px = std::max(wpt, hpt) * dpi / 72.0;
-    std::vector<std::string> a = {"pdftoppm", "-f", pg, "-l", pg, "-png", "-singlefile"};
-    if (long_px > 4000) a.insert(a.end(), {"-scale-to", "4000"});
-    else a.insert(a.end(), {"-r", std::to_string(dpi)});
-    a.push_back(tmp->path);
-    const plat::ProcResult r = plat::run_program(a, "", 120000, (size_t)256 << 20);
-    if (!r.started) { err = r.error + " (apt install poppler-utils)"; return ""; }
-    if (r.exit_code != 0 || r.out.compare(1, 3, "PNG") != 0) {
-      err = "the page could not be rendered" + (r.err.empty() ? std::string() : ": " + r.err.substr(0, r.err.find('\n')));
+    try {  // (never throws, as the Windows half: a page that fails is a note, the rest of a batch goes on)
+      if (!tmp || page < 1 || page > n) { err = "no page " + std::to_string(page); return ""; }
+      const std::string pg = std::to_string(page);
+      const auto [wpt, hpt] = sizes[(size_t)page - 1];
+      const double long_px = std::max(wpt, hpt) * dpi / 72.0;  // (points: 72 per inch; the long side at most 4000 px)
+      std::vector<std::string> a = {"pdftoppm", "-f", pg, "-l", pg, "-png", "-singlefile"};
+      if (long_px > 4000) a.insert(a.end(), {"-scale-to", "4000"});
+      else a.insert(a.end(), {"-r", std::to_string(dpi)});
+      a.push_back(plat::path_arg(tmp->path));
+      const plat::ProcResult r = plat::run_program(a, "", 120000, (size_t)256 << 20);
+      if (!r.started) { err = r.error + " (apt install poppler-utils)"; return ""; }
+      if (r.exit_code != 0 || r.timed_out || r.cut || r.out.size() < 8 || r.out.compare(1, 3, "PNG") != 0) {
+        err = r.timed_out ? std::string("the page took too long to render")
+                          : "the page could not be rendered" + (r.err.empty() ? std::string() : ": " + plat::last_line(r.err));
+        return "";
+      }
+      return r.out;
+    } catch (const std::exception& e) {
+      err = e.what();
       return "";
     }
-    return r.out;
   }
 };
 }  // namespace pdfr

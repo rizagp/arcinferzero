@@ -7,8 +7,23 @@
 // changes or the server ends. Only for connections from this machine (server.cpp): these are programs on this computer.
 // Endpoints: GET /v1/mcp[?project=] (servers, switches, tools of the running ones), GET / PUT /v1/mcp/config (the
 // file's text), PUT /v1/mcp/enabled, POST /v1/mcp/start | stop | tools | call.
+// Linux: the program found on PATH, started with posix_spawn in a process group of its own (in place of the job
+// object), its pipes read with poll and a stop flag (so a grandchild holding a pipe never keeps a reader waiting).
 #pragma once
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "../src/platform_proc.h"  // (plat::ignore_sigpipe)
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -37,6 +52,7 @@ inline constexpr size_t kStderrTail = 4096;         // (kept for the error shown
 inline fs::path config_path() { return fs::path(app_dir()) / "mcp.json"; }
 inline fs::path enabled_path() { return fs::path(app_dir()) / "mcp-enabled.json"; }
 
+#ifdef _WIN32
 inline std::wstring w8(const std::string& s) {
   if (s.empty()) return L"";
   const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
@@ -51,6 +67,7 @@ inline std::string u8(const std::wstring& w) {
   WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
   return s;
 }
+#endif
 inline bool unbase64(const std::string& in, std::string& out) {
   auto v = [](char c) -> int {
     if (c >= 'A' && c <= 'Z') return c - 'A';
@@ -137,6 +154,25 @@ inline std::vector<Config> configs(std::string& err) {
   return out;
 }
 
+#ifndef _WIN32
+// (Linux) the program's full path: as given when it has a '/', else the first executable file of that name in PATH
+inline std::string find_program(const std::string& command) {
+  auto exe = [](const std::string& f) {
+    struct stat st{};
+    return stat(f.c_str(), &st) == 0 && S_ISREG(st.st_mode) && access(f.c_str(), X_OK) == 0;
+  };
+  if (command.find('/') != std::string::npos) return exe(command) ? command : std::string();
+  const char* path = getenv("PATH");
+  std::string p = path ? path : "/usr/local/bin:/usr/bin:/bin";
+  for (size_t i = 0; i <= p.size();) {
+    const size_t e = std::min(p.find(':', i), p.size());
+    const std::string d = e > i ? p.substr(i, e - i) : std::string(".");
+    if (exe(d + "/" + command)) return d + "/" + command;
+    i = e + 1;
+  }
+  return "";
+}
+#else
 // CommandLineToArgvW's quoting
 inline void append_arg(std::wstring& cl, const std::wstring& a) {
   if (!cl.empty()) cl += L' ';
@@ -179,6 +215,7 @@ inline std::wstring find_program(const std::string& command) {
       if (look(ext)) break;
   return found;
 }
+#endif
 
 struct Tool {
   std::string name, title, description;
@@ -263,7 +300,28 @@ class Client : public std::enable_shared_from_this<Client> {
   bool started_ = false;
   std::string start_error_, server_name_, instructions_, err_tail_;
   std::vector<Tool> tools_;
+#ifdef _WIN32
   HANDLE proc_ = nullptr, job_ = nullptr, in_ = nullptr, out_ = nullptr, err_ = nullptr;
+#else
+  pid_t proc_ = -1;  // (and the process group of that id)
+  int in_ = -1, out_ = -1, err_ = -1;
+  std::atomic<bool> stop_{false};  // (the readers end at the next poll)
+  // up to cap bytes from fd as they come; false: the end, an error, or stop_
+  bool read_some(int fd, char* b, size_t cap, size_t& n) {
+    for (;;) {
+      if (stop_) return false;
+      pollfd p{fd, POLLIN, 0};
+      const int k = poll(&p, 1, 200);
+      if (k < 0 && errno != EINTR) return false;
+      if (k <= 0) continue;
+      const ssize_t r = ::read(fd, b, cap);
+      if (r < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+      if (r <= 0) return false;
+      n = (size_t)r;
+      return true;
+    }
+  }
+#endif
   std::thread reader_, err_reader_;
 
   std::string stderr_tail() {
@@ -276,6 +334,84 @@ class Client : public std::enable_shared_from_this<Client> {
 
   void spawn() {
     if (cfg_.command.empty()) throw std::runtime_error("no \"command\" in mcp.json");
+#ifndef _WIN32
+    plat::ignore_sigpipe();
+    const std::string prog = find_program(cfg_.command);
+    if (prog.empty()) throw std::runtime_error("cannot find the program \"" + cfg_.command + "\" (not in PATH)");
+    // the environment: this server's, with the config's variables set over it (as on Windows)
+    std::vector<std::pair<std::string, std::string>> envv;
+    for (char** e = environ; e && *e; ++e) {
+      const char* eq = strchr(*e, '=');
+      if (eq) envv.push_back({std::string(*e, eq - *e), eq + 1});
+    }
+    std::vector<std::pair<std::string, std::string>> envs = {{"PYTHONIOENCODING", "utf-8"}, {"PYTHONUTF8", "1"}};
+    for (auto& kv : cfg_.env) envs.push_back(kv);
+    for (auto& [k, v] : envs) {
+      bool set = false;
+      for (auto& [ek, ev] : envv)
+        if (ek == k) ev = v, set = true;
+      if (!set) envv.push_back({k, v});
+    }
+    std::vector<std::string> estr;
+    for (auto& [k, v] : envv) estr.push_back(k + "=" + v);
+    std::vector<char*> envp, argv;
+    for (std::string& e : estr) envp.push_back(e.data());
+    envp.push_back(nullptr);
+    std::vector<std::string> args = {prog};
+    for (auto& a : cfg_.args) args.push_back(a);
+    for (std::string& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    int pi[2] = {-1, -1}, po[2] = {-1, -1}, pe[2] = {-1, -1};
+    auto close_fd = [](int& fd) { if (fd >= 0) ::close(fd), fd = -1; };
+    if (pipe2(pi, O_CLOEXEC) != 0 || pipe2(po, O_CLOEXEC) != 0 || pipe2(pe, O_CLOEXEC) != 0) {
+      for (int* q : {pi, po, pe}) close_fd(q[0]), close_fd(q[1]);
+      throw std::runtime_error("cannot make a pipe");
+    }
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pi[0], 0);
+    posix_spawn_file_actions_adddup2(&fa, po[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, pe[1], 2);
+    if (!cfg_.cwd.empty()) posix_spawn_file_actions_addchdir_np(&fa, cfg_.cwd.c_str());
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+    posix_spawnattr_setpgroup(&at, 0);  // (with its children: ended as one, as the job object)
+    sigset_t def, none;
+    sigemptyset(&def);
+    sigaddset(&def, SIGPIPE);
+    sigemptyset(&none);
+    posix_spawnattr_setsigdefault(&at, &def);
+    posix_spawnattr_setsigmask(&at, &none);
+    pid_t pid = -1;
+    const int sp = posix_spawn(&pid, prog.c_str(), &fa, &at, argv.data(), envp.data());
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&at);
+    close_fd(pi[0]), close_fd(po[1]), close_fd(pe[1]);
+    if (sp != 0) {
+      close_fd(pi[1]), close_fd(po[0]), close_fd(pe[0]);
+      throw std::runtime_error("cannot start " + prog + " (" + strerror(sp) + ")");
+    }
+    proc_ = pid;
+    in_ = pi[1], out_ = po[0], err_ = pe[0];
+    stop_ = false;
+    dead_ = false;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      replies_.clear();
+      err_tail_.clear();
+    }
+    reader_ = std::thread([this] { read_loop(); });
+    err_reader_ = std::thread([this] {
+      char b[4096];
+      size_t n = 0;
+      while (read_some(err_, b, sizeof b, n)) {
+        std::lock_guard<std::mutex> lk(mu_);
+        err_tail_.append(b, n);
+        if (err_tail_.size() > kStderrTail * 2) err_tail_.erase(0, err_tail_.size() - kStderrTail);
+      }
+    });
+#else
     const std::wstring prog = find_program(cfg_.command);
     if (prog.empty()) throw std::runtime_error("cannot find the program \"" + cfg_.command + "\" (not in PATH)");
     std::wstring cl;
@@ -382,9 +518,38 @@ class Client : public std::enable_shared_from_this<Client> {
         if (err_tail_.size() > kStderrTail * 2) err_tail_.erase(0, err_tail_.size() - kStderrTail);
       }
     });
+#endif
   }
 
   void cleanup() {
+#ifndef _WIN32
+    {
+      std::lock_guard<std::mutex> lk(write_mu_);  // (the reader thread may be answering a ping)
+      if (in_ >= 0) ::close(in_), in_ = -1;  // (stdin closed: a well-behaved server ends by itself)
+    }
+    if (proc_ > 0) {
+      // (1.5 s to end by itself, seen without reaping it, WNOWAIT: its group is killed while it is a zombie, whose id
+      //  no other process can take meanwhile; then reaped)
+      for (int k = 0; k < 30; ++k) {
+        siginfo_t si{};
+        if (waitid(P_PID, proc_, &si, WEXITED | WNOHANG | WNOWAIT) == 0 && si.si_pid == proc_) break;
+        usleep(50000);
+      }
+      kill(-proc_, SIGKILL);  // (the group: what it started ends with it)
+      int st = 0;
+      while (waitpid(proc_, &st, 0) < 0 && errno == EINTR) {}
+      proc_ = -1;
+    }
+    stop_ = true;  // (a grandchild outside the group may hold a pipe: the readers stop at their next poll)
+    for (std::thread* t : {&reader_, &err_reader_})
+      if (t->joinable()) t->join();
+    if (out_ >= 0) ::close(out_), out_ = -1;
+    if (err_ >= 0) ::close(err_), err_ = -1;
+    dead_ = true;
+    cv_.notify_all();
+    std::lock_guard<std::mutex> lk(mu_);
+    tools_.clear();
+#else
     if (abandoned_) return;  // (its left-behind reader still reads its handles: nothing here is closed again)
     {
       std::lock_guard<std::mutex> lk(write_mu_);  // (the reader thread may be answering a ping)
@@ -440,14 +605,20 @@ class Client : public std::enable_shared_from_this<Client> {
     cv_.notify_all();
     std::lock_guard<std::mutex> lk(mu_);
     tools_.clear();
+#endif
   }
 
   void read_loop() {
     std::string buf;
     char b[65536];
-    DWORD n;
     bool overlong = false;
+#ifdef _WIN32
+    DWORD n;
     while (ReadFile(out_, b, sizeof b, &n, nullptr) && n) {
+#else
+    size_t n = 0;
+    while (read_some(out_, b, sizeof b, n)) {
+#endif
       size_t from = 0;
       for (size_t i = 0; i < n; ++i) {
         if (b[i] != '\n') continue;
@@ -508,12 +679,25 @@ class Client : public std::enable_shared_from_this<Client> {
 
   void send(const Json& m) {
     std::lock_guard<std::mutex> lk(write_mu_);
+#ifdef _WIN32
     if (!in_) throw std::runtime_error("the server is not running");
+#else
+    if (in_ < 0) throw std::runtime_error("the server is not running");
+#endif
     const std::string s = m.dump() + "\n";
+#ifdef _WIN32
     DWORD w = 0;
     for (size_t off = 0; off < s.size(); off += w)
       if (!WriteFile(in_, s.data() + off, (DWORD)std::min<size_t>(s.size() - off, 1u << 20), &w, nullptr) || !w)
         throw std::runtime_error("the server closed its input");
+#else
+    for (size_t off = 0; off < s.size();) {
+      const ssize_t w = ::write(in_, s.data() + off, std::min<size_t>(s.size() - off, 1u << 20));
+      if (w < 0 && errno == EINTR) continue;
+      if (w <= 0) throw std::runtime_error("the server closed its input");
+      off += (size_t)w;
+    }
+#endif
   }
   void notify(const std::string& method, const Json& params) {
     Json m = Json::object();
