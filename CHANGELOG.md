@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-11-14: the norm and the H8 rotation of its rows in one kernel, opt-in (B60 prefill plan 13.5)
+
+- **Why:** with H8 (the default on Arc B-series cards) each layer input was normalized by `rmsnorm_quant`, which also
+  wrote an f32 copy of the rows, and then `h8r_act` read that copy back to rotate it: on a Pro B60's 27B 4K prompt
+  232 ms of 3,051 (docs/xe2-tuning.md section 13).
+- **What:** `ARC_H8_NORM=1` runs the norm of the DeltaNet, attention and FFN inputs inside the H8Share scope of the
+  GEMMs that read them, as one kernel (`ops.cl rmsnorm_h8r`): `rmsnorm_quant`'s body unchanged (the same work-group
+  and reduction, the same int8 rows), the f32 values in local memory instead of the copy, and `h8r_act`'s rotation
+  made from them. The copy's write and read and 128 of a prompt's 256 rotation launches are gone. Off by default
+  until a B60 measures it.
+- **Checked** (laptop, `ARC_H8=1`): logits bit-identical with and without it (the 4B over chunks of 512 with a padded
+  last chunk, the 27B, the 4B split over 2 with `ARC_TP_SIM`); without it the default and H8 paths identical to
+  release 2026.11.14.01. The 27B's 2,048-token prompt: norm + rotation 687-694 ms -> 498-545 ms of GPU time (the
+  fused norm 267-270 ms against `rmsnorm_quant`'s 327); the whole prompt within noise on the laptop, whose GEMMs
+  dominate. Review: no defect; a size check added (a row past ~15,000 values would not fit in local memory).
+
 ## 2026-11-13 (evening): serverz runs on Linux (step 3 of the port, issue #11)
 
 - **What:** `serverz` builds and runs on Linux (checked in WSL with the 4B on the Arc iGPU). Images, audio and PDF
