@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-13: the HTTP server's sockets behind the platform layer (Linux port, issue #11)
+
+- **What:** `src/http.h` (the server's HTTP layer) no longer calls Winsock or Win32 directly: its sockets go through
+  a new `src/platform_net.h` (socket setup, accept, send / receive with time limits, the poll that sees a client
+  leave, shutdown, the library's start), its media files (`/files/<id>`, Whisper's recordings, with Range) through
+  `plat::SeqFile` in `src/platform.h`. Each has a POSIX half, so the file can build on Linux.
+- **Windows unchanged:** every call is the one made before, with the same arguments. Checked with the 4B against
+  release 2026.11.13.09's serverz: `/health`, the web UI, `/v1/models`, keep-alive, HEAD, a plain and a streaming
+  chat (the same text), a stream the client closes after five events (the next request answered at once), two
+  clients at once, a chunked request body, a 3 MB file in full and by four ranges (416 included); `test_http` passes.
+  No speed or logits change (the engine is untouched). Not compiled on Linux yet. docs/linux-port.md, Progress.
+
 ## 2026-11-13: a fuller GEMV sweep for generation on discrete cards (`bench\decode_try.ps1`)
 
 - **Why:** a Pro B70 generates the 27B at 32.2 tok/s, 30.8 ms a token, where reading its 11.3 GB of weights at the

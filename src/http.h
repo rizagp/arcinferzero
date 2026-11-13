@@ -1,9 +1,8 @@
-// Minimal HTTP/1.1 server on Winsock2: one thread per connection, keep-alive, CORS, and server-sent events.
+// Minimal HTTP/1.1 server: one thread per connection, keep-alive, CORS, and server-sent events. The sockets go through
+// src/platform_net.h (Winsock2 on Windows, as before; BSD sockets on Linux), the media files through plat::SeqFile.
 #pragma once
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "platform_net.h"  // (first: winsock2.h before windows.h)
+#include "platform.h"
 #include <algorithm>
 #include <chrono>
 #include <atomic>
@@ -16,7 +15,6 @@
 #include <map>
 #include <string>
 #include <thread>
-#pragma comment(lib, "ws2_32.lib")
 
 struct HttpRequest {
   std::string method, path, query, body;
@@ -32,7 +30,7 @@ struct HttpRequest {
 
 class HttpResponse {
  public:
-  explicit HttpResponse(SOCKET s) : s_(s) {}
+  explicit HttpResponse(plat::socket_t s) : s_(s) {}
   // Only a page served from this machine may read a response cross-origin (see HttpServer::serve_requests).
   std::string cors_origin;
   // Taps: another API format served by the same handler (the server's Ollama / Anthropic / Responses endpoints run
@@ -90,16 +88,10 @@ class HttpResponse {
   // The file is opened shared for writing and deleting: one being played can still be replaced or deleted (a <video>
   // that pauses keeps its request, and so the file, open for a minute).
   void send_file(const std::filesystem::path& p, const std::string& content_type, const std::string& range) {
-    HANDLE fh = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if (fh == INVALID_HANDLE_VALUE) return send(404, "text/plain", "not found");
-    struct Close {
-      HANDLE h;
-      ~Close() { CloseHandle(h); }
-    } close_file{fh};
-    LARGE_INTEGER fsz{};
-    if (!GetFileSizeEx(fh, &fsz)) return send(404, "text/plain", "not found");
-    const uint64_t size = (uint64_t)fsz.QuadPart;
+    plat::SeqFile fh;
+    if (!fh.open(p)) return send(404, "text/plain", "not found");
+    uint64_t size = 0;
+    if (!fh.size(size)) return send(404, "text/plain", "not found");
     uint64_t a = 0, b = size;  // [a, b)
     bool part = false;
     if (range.rfind("bytes=", 0) == 0 && range.find(',') == std::string::npos) {
@@ -138,14 +130,11 @@ class HttpResponse {
     h += extra;
     h += "Connection: keep-alive\r\n\r\n";
     raw(h);
-    LARGE_INTEGER pos{};
-    pos.QuadPart = (LONGLONG)a;
-    SetFilePointerEx(fh, pos, nullptr, FILE_BEGIN);
+    fh.seek(a);
     std::string buf(1 << 20, '\0');
     for (uint64_t left = b - a; left > 0 && ok_;) {
       const size_t n = (size_t)std::min<uint64_t>(left, buf.size());
-      DWORD rd = 0;
-      const size_t got = ReadFile(fh, buf.data(), (DWORD)n, &rd, nullptr) ? (size_t)rd : 0;
+      const size_t got = fh.read(buf.data(), n);
       if (got == 0) { ok_ = false; break; }  // (the file shrank: the length promised cannot be kept)
       raw(got == buf.size() ? buf : buf.substr(0, got));
       left -= got;
@@ -197,17 +186,13 @@ class HttpResponse {
   bool client_gone() {
     if (!ok_) return true;
     if (gone_hook && gone_hook()) return !(ok_ = false);
-    if (s_ == INVALID_SOCKET) return false;
-    WSAPOLLFD p{s_, POLLRDNORM, 0};
-    if (WSAPoll(&p, 1, 0) <= 0) return false;
-    char c;
-    if ((p.revents & (POLLERR | POLLHUP | POLLNVAL)) || ((p.revents & POLLRDNORM) && recv(s_, &c, 1, MSG_PEEK) <= 0))
-      ok_ = false;
+    if (s_ == plat::kNoSocket) return false;
+    if (plat::sock_peer_gone(s_)) ok_ = false;
     return !ok_;
   }
 
  private:
-  SOCKET s_;
+  plat::socket_t s_;
   bool done_ = false, streaming_ = false, ok_ = true;
   int status_ = 0;
   size_t bytes_ = 0;
@@ -231,7 +216,7 @@ class HttpResponse {
   bool raw(const std::string& d) {
     size_t off = 0;
     while (ok_ && off < d.size()) {
-      const int n = ::send(s_, d.data() + off, (int)std::min<size_t>(d.size() - off, 1 << 20), 0);
+      const int n = plat::sock_send(s_, d.data() + off, (int)std::min<size_t>(d.size() - off, 1 << 20));
       if (n <= 0) { ok_ = false; break; }
       off += n;
     }
@@ -257,8 +242,7 @@ class HttpServer {
   // become INADDR_ANY (that exposed the server on every interface when --host was mistyped).
   bool listen(const std::string& host, int port) {
     loopback_ = local_host(host);
-    WSADATA w;
-    if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return false;
+    if (!plat::net_init()) return false;
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -267,31 +251,30 @@ class HttpServer {
     const std::string service = std::to_string(port);
     if (getaddrinfo(host.c_str(), service.c_str(), &hints, &ai) != 0 || !ai) return false;
     for (addrinfo* a = ai; a; a = a->ai_next) {
-      ls_ = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-      if (ls_ == INVALID_SOCKET) continue;
-      BOOL yes = TRUE;
-      setsockopt(ls_, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof yes);
+      ls_ = plat::sock_open(a->ai_family, a->ai_socktype, a->ai_protocol);
+      if (ls_ == plat::kNoSocket) continue;
+      plat::sock_flag(ls_, SOL_SOCKET, SO_REUSEADDR);
       if (a->ai_family == AF_INET6) {  // (::1: no need to accept IPv4 on the same socket)
-        setsockopt(ls_, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&yes, sizeof yes);
+        plat::sock_flag(ls_, IPPROTO_IPV6, IPV6_V6ONLY);
       }
-      if (bind(ls_, a->ai_addr, (int)a->ai_addrlen) == 0 && ::listen(ls_, 64) == 0) break;
-      closesocket(ls_);
-      ls_ = INVALID_SOCKET;
+      if (plat::sock_bind_listen(ls_, a->ai_addr, (size_t)a->ai_addrlen, 64)) break;
+      plat::sock_close(ls_);
+      ls_ = plat::kNoSocket;
     }
     freeaddrinfo(ai);
-    return ls_ != INVALID_SOCKET;
+    return ls_ != plat::kNoSocket;
   }
 
   void run() {
     while (true) {
-      SOCKET c = accept(ls_, nullptr, nullptr);
-      if (c == INVALID_SOCKET) {  // (out of sockets or memory, a network change: tried again shortly, not in a busy loop)
+      plat::socket_t c = plat::sock_accept(ls_);
+      if (c == plat::kNoSocket) {  // (out of sockets or memory, a network change: tried again shortly, not in a busy loop)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         continue;
       }
       if (conns_.fetch_add(1) >= kMaxConns) {  // (each connection may hold a body of up to 256 MiB)
         conns_.fetch_sub(1);
-        closesocket(c);
+        plat::sock_close(c);
         continue;
       }
       try {
@@ -301,13 +284,13 @@ class HttpServer {
         }).detach();
       } catch (...) {
         conns_.fetch_sub(1);
-        closesocket(c);
+        plat::sock_close(c);
       }
     }
   }
 
  private:
-  SOCKET ls_ = INVALID_SOCKET;
+  plat::socket_t ls_ = plat::kNoSocket;
   std::atomic<int> conns_{0};
   std::atomic<size_t> body_bytes_{0};  // (request bodies being read or handled now, see kBodyBudget)
   bool loopback_ = false;  // (bound to this machine only: requests must name it in Host, see serve)
@@ -424,38 +407,35 @@ class HttpServer {
     } catch (...) {}
   }
   // (refused before a handler: logged here, a warning: the request is not one the server reads)
-  static void reply_close(SOCKET c, int status, const char* msg) {
+  static void reply_close(plat::socket_t c, int status, const char* msg) {
     LOG_WRN("HTTP %d, connection closed: %s\n", status, msg);
     HttpResponse rs(c);
     rs.close_after = true;
     rs.send(status, "application/json", std::string("{\"error\":{\"message\":\"") + msg + "\"}}");
-    closesocket(c);
+    plat::sock_close(c);
   }
 
   // One connection: requests until it closes. Nothing may escape this thread (it is detached: an exception would
   // end the whole server), so malformed requests get 400 / 413 and the connection is closed.
-  void serve(SOCKET c) {
+  void serve(plat::socket_t c) {
     try {
       serve_requests(c);
     } catch (...) {
-      closesocket(c);
+      plat::sock_close(c);
     }
   }
-  void serve_requests(SOCKET c) {
-    DWORD tmo = 600000;
-    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tmo, sizeof tmo);
+  void serve_requests(plat::socket_t c) {
+    const unsigned tmo = 600000;
+    plat::sock_recv_timeout(c, tmo);
     // a client that stops reading (half-open connection, stalled proxy) must not hold the engine: sends give up
     // after 60 s, the response is then dead and the generation stops at the next token
-    DWORD stmo = 60000;
-    setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, (const char*)&stmo, sizeof stmo);
-    BOOL nodelay = TRUE;  // (streamed tokens go out at once)
-    setsockopt(c, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof nodelay);
+    plat::sock_send_timeout(c, 60000);
+    plat::sock_flag(c, IPPROTO_TCP, TCP_NODELAY);  // (streamed tokens go out at once)
     bool local_peer = false;
     std::string peer;  // (the client's address, for the log)
     {
       sockaddr_storage sa{};
-      int sl = sizeof sa;
-      if (getpeername(c, (sockaddr*)&sa, &sl) == 0) {
+      if (plat::sock_peer(c, sa)) {
         char pb[64] = "";
         if (sa.ss_family == AF_INET) inet_ntop(AF_INET, &((sockaddr_in*)&sa)->sin_addr, pb, sizeof pb);
         else if (sa.ss_family == AF_INET6) inet_ntop(AF_INET6, &((sockaddr_in6*)&sa)->sin6_addr, pb, sizeof pb);
@@ -476,25 +456,23 @@ class HttpServer {
       // each read gets 30 s and the headers 60 s in all (a client that trickles them in, slowloris, cannot hold one
       // of the 64 connections for long)
       size_t he;
-      setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tmo, sizeof tmo);
+      plat::sock_recv_timeout(c, tmo);
       auto t_head = std::chrono::steady_clock::now();
       bool begun = !buf.empty();
       if (begun) {
-        DWORD rt = 30000;
-        setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&rt, sizeof rt);
+        plat::sock_recv_timeout(c, 30000);
       }
       while ((he = buf.find("\r\n\r\n")) == std::string::npos) {
-        const int n = recv(c, tmp, sizeof tmp, 0);
-        if (n <= 0) { closesocket(c); return; }
+        const int n = plat::sock_recv(c, tmp, (int)sizeof tmp);
+        if (n <= 0) { plat::sock_close(c); return; }
         buf.append(tmp, n);
-        if (buf.size() > kMaxHead) { closesocket(c); return; }
+        if (buf.size() > kMaxHead) { plat::sock_close(c); return; }
         if (!begun) {
           begun = true;
           t_head = std::chrono::steady_clock::now();
-          DWORD rt = 30000;
-          setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&rt, sizeof rt);
+          plat::sock_recv_timeout(c, 30000);
         } else if (std::chrono::steady_clock::now() - t_head > std::chrono::seconds(60)) {
-          closesocket(c);
+          plat::sock_close(c);
           return;
         }
       }
@@ -572,8 +550,8 @@ class HttpServer {
           size_t le;
           while ((le = buf.find("\r\n")) == std::string::npos) {
             if (buf.size() > 4096) return reply_close(c, 400, "chunk size line too long");
-            const int n = recv(c, tmp, sizeof tmp, 0);
-            if (n <= 0) { closesocket(c); return; }
+            const int n = plat::sock_recv(c, tmp, (int)sizeof tmp);
+            if (n <= 0) { plat::sock_close(c); return; }
             buf.append(tmp, n);
             if (body_late(rq.body.size())) return reply_close(c, 408, "request body too slow");
           }
@@ -585,8 +563,8 @@ class HttpServer {
             size_t te;
             while ((te = buf.find("\r\n\r\n", le)) == std::string::npos) {
               if (buf.size() > le + 65536) return reply_close(c, 400, "chunk trailers too long");
-              const int n = recv(c, tmp, sizeof tmp, 0);
-              if (n <= 0) { closesocket(c); return; }
+              const int n = plat::sock_recv(c, tmp, (int)sizeof tmp);
+              if (n <= 0) { plat::sock_close(c); return; }
               buf.append(tmp, n);
               if (body_late(rq.body.size())) return reply_close(c, 408, "request body too slow");
             }
@@ -594,8 +572,8 @@ class HttpServer {
             break;
           }
           while (buf.size() < le + 2 + len + 2) {
-            const int n = recv(c, tmp, sizeof tmp, 0);
-            if (n <= 0) { closesocket(c); return; }
+            const int n = plat::sock_recv(c, tmp, (int)sizeof tmp);
+            if (n <= 0) { plat::sock_close(c); return; }
             buf.append(tmp, n);
             if (body_late(rq.body.size() + len)) return reply_close(c, 408, "request body too slow");
           }
@@ -610,8 +588,8 @@ class HttpServer {
         if (len > kMaxBody) return reply_close(c, 413, "request body too large");
         if (!hold.add(len)) return reply_close(c, 503, "the server is receiving too much at once; try again");
         while (buf.size() < len) {
-          const int n = recv(c, tmp, sizeof tmp, 0);
-          if (n <= 0) { closesocket(c); return; }
+          const int n = plat::sock_recv(c, tmp, (int)sizeof tmp);
+          if (n <= 0) { plat::sock_close(c); return; }
           buf.append(tmp, n);
           if (body_late(len)) return reply_close(c, 408, "request body too slow");
         }
@@ -662,8 +640,8 @@ class HttpServer {
       else run_handler(rq, rs);
       if (rs.streaming() || !rs.alive()) break;
     }
-    shutdown(c, SD_BOTH);
-    closesocket(c);
+    plat::sock_shutdown(c);
+    plat::sock_close(c);
   }
   // the handler, its exception as a 500 (or an error event in a stream that broke off), 404 when it sent nothing
   void run_handler(const HttpRequest& rq, HttpResponse& rs) {
