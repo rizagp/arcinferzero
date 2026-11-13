@@ -226,6 +226,7 @@ class AsyncFile {
     if (w >= WAIT_OBJECT_0 + (DWORD)n) return -1;
     return (int)(w - WAIT_OBJECT_0);
 #else
+    (void)ss;
     return n > 0 ? 0 : -1;  // (every read finished in start)
 #endif
   }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-13: the HTTP server runs on Linux (WSL), its first Linux build
+
+- `tests/test_http.cpp` (the HTTP server with its test client) builds with g++ 13.3 on Ubuntu 24.04 in WSL, with
+  `-Wall -Wextra` and no warnings, and passes all its cases there. The files step 1 of the port moved behind the
+  platform layer pass a Linux syntax check. Fixed on the way: the log (`src/log.h`) used `<io.h>`, `localtime_s` and
+  `_isatty`, now behind `#ifdef _WIN32` with `localtime_r` / `isatty` on Linux. Windows unchanged (the same lines
+  under `_WIN32`; runz, serverz and test_http rebuilt, test_http passes). docs/linux-port.md, Progress.
+
 ## 2026-11-13: the HTTP server's sockets behind the platform layer (Linux port, issue #11)
 
 - **What:** `src/http.h` (the server's HTTP layer) no longer calls Winsock or Win32 directly: its sockets go through

@@ -72,6 +72,13 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   header order (their work is Media Foundation / WIC); `tools/zero_recorder.cpp` is a WASAPI tool and stays
   Windows-only; `tools/web_tools.h` (web_search, web_fetch) is a WinHTTP client, which needs an HTTPS client on
   Linux (libcurl through `dlopen` is the likely choice).
+- 2026-11-13: the first Linux compiles, in WSL (Ubuntu 24.04, g++ 13.3). `tests/test_http.cpp` builds there with
+  `-Wall -Wextra` and no warnings and passes all its cases: the HTTP server (`src/http.h`) runs on Linux. The step-1
+  files (`src/platform.h`, `src/platform_net.h`, `src/app_dir.h`, `src/cl_min.h`, `zero/ze_min.h`, `src/gguf.h`,
+  `zero/expert_store.h`) pass a syntax check. Fixed for it: the log (`src/log.h`, force-included everywhere) had
+  `<io.h>`, `localtime_s` and `_isatty` (now `localtime_r` / `isatty` on Linux; colors on a terminal whose `TERM` is
+  not `dumb`), and an unused parameter in `plat::AsyncFile`'s Linux half. The check, from the repository's folder:
+  `g++ -std=c++20 -Wall -Wextra -include src/log.h tests/test_http.cpp -o test_http -pthread`.
 
 ## The order
 
