@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-13: `zero-server -Host` / `--host`, as serverz's own option
+
+- **`zero-server start -Host 0.0.0.0`** (also `--host 0.0.0.0`, `--host=0.0.0.0`, `-host:0.0.0.0`): the listen
+  address, before only `-ListenHost` (PowerShell keeps `$Host` for itself, so it is an alias of `-ListenHost`, which
+  still works). `--port=8091` too. Before, `--host 0.0.0.0` stopped with "unknown option --host: did you mean -Port?".
+- The "did you mean" hint knows the aliases and prefers a name with the same first letter on a tie (`--hots`:
+  `-Host`, not `-Slots`). Checked with `-DryRun` through `zero-server.cmd`: each form gives serverz `--host 0.0.0.0`,
+  the port forms `--port 8091`, and the `=` forms count as given options (restarts keep them). USAGE.md shows both.
+
 ## 2026-11-13: the NPU on the website; `bench\npu_try.ps1` for newer NPUs
 
 - **Website:** a card for the NPU next to the GPU (`--npu on`): Qwen3.8 27B 4K prompt 133 -> 153-162 tok/s, Gemma 4

@@ -165,6 +165,9 @@ zero-server start -Model 27b -Ctx 65536 -DryRun   # check the options, print the
 zero-server save-preset -Preset long -Model 27b -Ctx 65536 -Npu on   # save options under a name
 zero-server start -Preset long  # start with them (an option given here wins over the preset's)
 zero-server start -Model 27b -Drafter off   # speculative decoding: auto, mtp, dflash, off, or a DFlash2 folder
+zero-server start -Model 27b -Port 8091     # another port (default 8090; also --port 8091, --port=8091)
+zero-server start -Model 27b -Host 0.0.0.0  # reachable from other computers (default 127.0.0.1, this PC only; also
+                                            # --host 0.0.0.0, --host=0.0.0.0, -ListenHost); open it by IP address
 zero-server stop                # stop the server and free the GPU memory (12–16 GB depending on the model)
 zero-server clear-cache         # delete every saved conversation (session cache; on by default, turn off with zero-pi --session-cache 0)
 zero-server start -Model 9b     # start with a particular model without opening Pi
