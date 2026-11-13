@@ -11,17 +11,20 @@
 # -Wide (2026-11-13): also the shapes beyond the default, up to the widest the kernels build: on 16 lanes (B60) 32 x 96
 # (a width's rest after its 96s at 32 x 64), 16 x 128, 64 x 32, 32 x 128, 64 x 64; on 8 lanes (140T) 16 x 64, 64 x 16,
 # 32 x 64. ocloc's register counts say which spill (the kernels' headers); the sweep measures what that costs.
+# -Prefetch (2026-11-13, B60 prefill plan 13.2): the default 32 x 64 with the next chunks prefetched into L1:
+# ARC_GEMM_XW_PF=1 weights / 2 activations / 3 both, ARC_GEMM_XW_PFD=1 / 2 / 4 chunks ahead (all bit-identical).
 param(
   [Parameter(Mandatory = $true)][string]$Model,
   [int[]]$Tokens = @(512, 4096, 16384),
-  [switch]$Wide
+  [switch]$Wide,
+  [switch]$Prefetch
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
 if (-not (Test-Path $Model)) { throw "model not found: $Model" }
-$vars = @("ARC_GEMM_XW", "ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_GEMM_XW_GRF")
+$vars = @("ARC_GEMM_XW", "ARC_GEMM_XW_TM", "ARC_GEMM_XW_NC", "ARC_GEMM_XW_GRF", "ARC_GEMM_XW_PF", "ARC_GEMM_XW_PFD")
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "inferzero-xw-sweep"
 New-Item -ItemType Directory $tmp -Force | Out-Null
@@ -75,6 +78,12 @@ if ($probe -match "gemm_xw8, 8 lanes") {
   $sets["xw 32x128"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_NC = 8 }                       # (spills)
   $sets["xw 64x64"]  = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_TM = 64 }                      # (spills)
 }
+if ($Prefetch -and -not ($probe -match "gemm_xw8, 8 lanes")) {
+  # (the default 32 x 64; ocloc bmg: no spills, +16 prefetch messages a superblock for weights or activations, +32 both)
+  foreach ($pf in 1, 2, 3) {
+    foreach ($d in 1, 2, 4) { $sets["xw pf$pf d$d"] = @{ ARC_GEMM_XW = 1; ARC_GEMM_XW_PF = $pf; ARC_GEMM_XW_PFD = $d } }
+  }
+}
 "inferzero xw_sweep: $(Split-Path $Model -Leaf), $(Get-Date -Format s)"
 $res = @{}
 $base = $null
@@ -88,7 +97,8 @@ foreach ($name in $sets.Keys) {
   if ($name -eq "default") { $base = $h }
   # (a shape that did not run, H8 off or its start-up check failed, would match the default by running gemm.cl:
   #  marked, and left out of the fastest-shape choice)
-  $used = $name -eq "default" -or ($o -match "the H8 GEMMs on XMX with")
+  # (a prefetch set counts only when the engine says it prefetches)
+  $used = ($name -eq "default") -or (($o -match "the H8 GEMMs on XMX with") -and (($name -notmatch " pf") -or ($o -match "gemm_xw prefetches")))
   $same = if (-not $h) { "no logits" } elseif (-not $used) { "xw not used" } elseif ($h -eq $base) { "identical" } else { "DIFFER" }
   "[$name] $note"
   $row = [ordered]@{ set = $name; logits = $same }

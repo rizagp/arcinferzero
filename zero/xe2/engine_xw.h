@@ -69,11 +69,37 @@
     const bool on = e ? atoi(e) != 0 : (p140_ || h8_auto_);
     return h8_ && h8_row() && (xw_try() || (on && xmx_));
   }
+  // ARC_GEMM_XW_PF=1 / 2 / 3 (16 lanes; B60 prefill plan 13.2, opt-in until a B60 measures it): the weights (1), the
+  // activations (2, with 2D loads) or both (3) of the chunk ARC_GEMM_XW_PFD (1 / 2 / 4, default 2) chunks ahead
+  // prefetched into L1; the same results bit for bit (checked at start like every shape)
+  static int xw_pf() {
+    static const int v = [] {
+      const int e = getenv("ARC_GEMM_XW_PF") ? atoi(getenv("ARC_GEMM_XW_PF")) : 0;
+      return e >= 0 && e <= 3 ? e : 0;
+    }();
+    return v;
+  }
+  static int xw_pfd() {
+    static const int v = [] {
+      const int e = getenv("ARC_GEMM_XW_PFD") ? atoi(getenv("ARC_GEMM_XW_PFD")) : 2;
+      return e == 1 || e == 2 || e == 4 ? e : 2;
+    }();
+    return v;
+  }
+  // (the activations' part needs 2D loads: without them, or with DPAS emulated, only the weights' part is built)
+  int xw_pf_eff() const {
+    if (xw_lanes() != 16) return 0;
+    return (!x2d_ || xw_emu_) ? (xw_pf() & 1) : xw_pf();
+  }
+  std::string xw_pf_defs() const {
+    const int pf = xw_pf_eff();
+    return pf ? " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(xw_pfd()) : "";
+  }
   // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel)
   cl_kernel xw_kernel(int nc = 0) {
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
                              std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
-                             (xw_emu_ ? " -DXW_EMU" : "");
+                             (xw_emu_ ? " -DXW_EMU" : "") + (xw_lanes() == 16 ? xw_pf_defs() : std::string());
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : ""), "gemm_xw");
   }
@@ -129,17 +155,20 @@
     static std::mutex mu;
     static std::map<std::string, bool> known;
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
-                            std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "");
+                            std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "") + xw_pf_defs();
     std::lock_guard<std::mutex> g(mu);
     auto it = known.find(key);
     if (it == known.end()) {
       const bool ok = xw_check();
       it = known.emplace(key, ok).first;
-      if (ok)
+      if (ok) {
         zlog::eprintf("inferzero: the H8 GEMMs on XMX with %d x %d tiles (%s, results checked bit for bit)%s%s\n",
                 xw_tm(), 16 * xw_nc(), xw_lanes() == 8 ? "gemm_xw8, 8 lanes" : "gemm_xw", xw_emu_ ? " (DPAS emulated: tests)" : "",
                 xw_nc() == 6 ? "; a width's rest after its 96s 64 columns wide" : "");
-      else
+        if (!xw_pf_defs().empty())
+          zlog::eprintf("inferzero: gemm_xw prefetches the %s of the chunk %d ahead (ARC_GEMM_XW_PF=%d)\n",
+                        xw_pf_eff() == 1 ? "weights" : xw_pf_eff() == 2 ? "activations" : "weights and activations", xw_pfd(), xw_pf());
+      } else
         zlog::eprintf("inferzero: %s differs from gemm.cl or does not build: not used (please report)\n",
                 xw_lanes() == 8 ? "gemm_xw8" : "gemm_xw");
     }
