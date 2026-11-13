@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-14: a split model's sums straight from GPU to GPU where the links allow it; `Connection: close` honoured
+
+- **Multi-GPU (`--gpus`):** the engine times every link at start: each GPU to host memory and back and, when the
+  driver reports peer access (Linux), each GPU to every other. Both go to the log. When direct copies are faster, every
+  GPU gets an inbox in its own memory that the others' parts and sums are copied straight into: one PCIe crossing
+  instead of two, and the kernels read local memory. The logits are the same bit for bit
+  (`ARC_TP_SIM`, forced on: 2 and 3 shards, against release 2026.11.14.04). `ARC_TP_P2P=0` / `=1` forces it off / on.
+  Windows' B60s report no peer access: unchanged there. Speed on Linux B60s: not measured yet (issue #17).
+- **Server:** a request with `Connection: close`, or HTTP/1.0 without `keep-alive`, gets `Connection: close` and the
+  connection ends after the reply. Before, the server answered `keep-alive` and kept the connection waiting for up to
+  600 s.
+
 ## 2026-11-14: the Linux port audited as a whole; its findings fixed (issue #11)
 
 - **Audit:** Pi with DeepSeek read every Linux code path of the port, statically (docs/audit-2026-11-14-linux.md): no

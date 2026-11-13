@@ -80,6 +80,14 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, a split model's sums straight from GPU to GPU** (`ARC_TP_P2P`, auto: chosen from the links timed at
+  start; zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums straight between GPUs"). **Speed: not measured.** It needs
+  GPUs with peer access (Linux B60s, issue #17); the laptop has one GPU and, under `ARC_TP_SIM`, keeps host memory
+  unless forced. Expected on #17's two B60s: the sum time to roughly 40 % (direct ~13 GB/s, one crossing, against
+  ~5 GB/s through host, two). Accuracy: logits bit-identical with it forced on (`ARC_TP_SIM`, `ARC_TP_P2P=1`) against
+  off and against release 2026.11.14.04: 4B, 2 and 3 shards, chunk 256, the prompt's logits and 12 generation steps',
+  also with `ARC_TP_PIPE=0` and `ARC_TP_SUM=f32`; the default (auto) path and one GPU against .04 too.
+
 - **2026-11-12, a split model's FFN sums beside the next chunk's work, opt-in** (`ARC_TP_OVERLAP=1`,
   zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums beside the next chunk's work"). **Speed: not measured** (the laptop
   has one GPU; with `ARC_TP_SIM` all shards share its one compute queue). Laptop numbers say nothing either way:

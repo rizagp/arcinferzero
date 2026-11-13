@@ -74,6 +74,7 @@
   cl_mem tp_flag_ = nullptr;  // (the shared out-of-f16-range flags as this GPU's kernel argument)
   cl_mem tp_ab_ = nullptr;  // (a split model's padded alpha / beta rows, see gdn_ab)
   cl_mem tp_host_ = nullptr;  // (the shared host memory as this GPU's kernel argument)
+  cl_mem tp_in_ = nullptr;    // (this GPU's inbox for direct GPU-to-GPU sums, TpComm::p2p)
   cl_mem tp_part_ = nullptr;                                // (the partial output of a projection, [max_chunk][E])
   bool tp_on() const { return opt.tp_size > 1; }
 

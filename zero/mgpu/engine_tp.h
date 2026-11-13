@@ -8,6 +8,12 @@
 // the buffer: a shard can be one projection ahead of another, never two (it would have passed a barrier the other
 // had not reached).
 //
+// GPUs that do reach each other's memory (peer access, as Linux's driver reports for B60s on one PCIe switch or root
+// port, issue #17) can do better: TpEngine::choose_sums times the links at start and, when a direct copy is faster
+// than the host link, every GPU gets an inbox in its own memory, laid out as a half of the host buffer, which the
+// others' parts and sums are copied straight into (one PCIe crossing instead of two; TpComm::p2p). The kernels then
+// read their own inbox. The same values are summed in the same order: the logits are the same bit for bit.
+//
 // ARC_TP_SIM=1: the "GPUs" are all device 0, each shard with its own command list (tests the split on one GPU).
 #pragma once
 #include <algorithm>
@@ -32,6 +38,13 @@ struct TpComm {
   size_t slot_floats = 0;  // rows x n_embd of one part
   float* host = nullptr;   // pinned host memory: [2 halves][n shards][slot_floats]
   int* flags = nullptr;    // pinned host memory: per shard, its f16 part went out of range (tp_reduce_rs)
+  // Direct GPU-to-GPU sums (TpEngine::choose_sums): per GPU an inbox in its own memory, [2 halves][half_b bytes].
+  // In a half: the reduce-scatter's f16 parts at k * slot_floats halves and its sums after the N parts (as in host
+  // memory), or the one-step f32 sum's parts packed (k * rows * E floats). The f32 failsafe and the flags stay in host
+  // memory. Off (empty) when the sums go through host memory.
+  bool p2p = false;
+  std::vector<char*> inbox;
+  size_t half_b = 0;
   std::vector<int> half;   // per shard: the half its next part goes to
   std::atomic<int> arrived{0}, gen{0};
   std::atomic<bool> failed{false};  // (a shard threw: the others leave their barrier instead of waiting forever)
@@ -201,10 +214,24 @@ inline bool Engine::tp_cancelled() {
 }
 
 inline void Engine::tp_wrap_host() {
-  if (tp_host_) return;
   TpComm& c = *tp_;
-  tp_host_ = zrt::wrap(c.host, (size_t)2 * c.n * c.slot_floats * 4);
-  mems_.push_back(tp_host_);
+  if (!tp_host_) {
+    tp_host_ = zrt::wrap(c.host, (size_t)2 * c.n * c.slot_floats * 4);
+    mems_.push_back(tp_host_);
+  }
+  if (c.p2p && !tp_in_) {
+    tp_in_ = zrt::wrap(c.inbox[opt.tp_rank], 2 * c.half_b);
+    mems_.push_back(tp_in_);
+  }
+}
+// (direct sums: before this GPU's kernels read half h of its inbox, which other GPUs' copy engines wrote over PCIe,
+//  a memory-ranges barrier on its list so no line of an earlier sum's values is read from its caches; the host learnt
+//  the copies were done, the GPU itself did not. Skipped when the loader lacks the call)
+inline void tp_inbox_fence(const TpComm& c, int r, int h) {
+  if (!zeCommandListAppendMemoryRangesBarrier) return;
+  const size_t sz = c.half_b;
+  const void* p = c.inbox[r] + (size_t)h * c.half_b;
+  ZE_CHECK(zeCommandListAppendMemoryRangesBarrier(zrt::imm(), 1, &sz, &p, nullptr, 0, nullptr));
 }
 
 // From this many rows (prompt chunks) the f16 reduce-scatter; fewer (a generated token, drafts) keep the one-step f32
@@ -260,15 +287,26 @@ inline void Engine::tp_reduce_at(int rows, const TpSum& a) {
   if (tp_rs_rows(rows, c.n)) return tp_reduce_rs(rows, a);
   const TpKs ks = tp_ks(a);
   const int h = c.half[r];
-  const cl_ulong off = (cl_ulong)h * c.n * c.slot_floats, stride = c.slot_floats;
-  ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
+  // (direct: the part to every GPU's inbox, its own included, packed; a part too large for a half, which only
+  //  ARC_TP_SUM=f32 makes, goes through host memory as before; every GPU decides alike, from the same rows)
+  const bool p2p = c.p2p && !a.bg && (size_t)c.n * n * 4 <= c.half_b;
+  cl_ulong off = (cl_ulong)h * c.n * c.slot_floats, stride = c.slot_floats;
+  if (p2p) {
+    off = (cl_ulong)(h * c.half_b / 4);
+    stride = n;
+    for (int k = 0; k < c.n; ++k)
+      ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.inbox[k] + (off + (size_t)r * stride) * 4, a.part->ptr, n * 4, nullptr, 0, nullptr));
+  } else {
+    ZE_CHECK(zeCommandListAppendMemoryCopy(zrt::imm(), c.host + off + (size_t)r * stride, a.part->ptr, n * 4, nullptr, 0, nullptr));
+  }
   const auto t0 = std::chrono::steady_clock::now();
   zrt::sync();
   c.barrier(opt.tp_rank);
   c.wait_ms[r] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   ++c.reduces[r];
   int nn = (int)n, np = c.n;
-  set_args(ks.add, 0, a.x, tp_host_, off, nn, np, stride);
+  if (p2p) tp_inbox_fence(c, r, h);
+  set_args(ks.add, 0, a.x, p2p ? tp_in_ : tp_host_, off, nn, np, stride);
   tp_run(a, "tp_add", ks.add, (n + 255) / 256 * 256, 256);
   c.half[r] = h ^ 1;
 }
@@ -399,6 +437,12 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   char* put = region + (size_t)r * stride * 2;
   char* res = region + (size_t)N * stride * 2;
   char* dev = (char*)tp_h_->ptr;
+  // (direct, TpComm::p2p: block k's pieces straight to GPU k's inbox, this GPU's sums to every other GPU's; the
+  //  kernels read their own inbox. The same offsets within a half as in host memory)
+  const bool p2p = c.p2p && !a.bg;
+  auto put_to = [&](int k) { return p2p ? c.inbox[k] + (size_t)h * c.half_b + (size_t)r * stride * 2 : put; };
+  auto res_to = [&](int k) { return p2p ? c.inbox[k] + (size_t)h * c.half_b + (size_t)N * stride * 2 : res; };
+  cl_mem shared = p2p ? tp_in_ : tp_host_;
   ze_command_list_handle_t cp = zrt::tp_copy_list();
   // (events: 0 tp_half done; 1 + p piece p put; 1 + kTpPipeMax + p piece p summed; 1 + 2 kTpPipeMax + p its sums put.
   //  The copy list is idle here (every event of the last sum was waited for), so they can be reset)
@@ -431,7 +475,7 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
       if (k == r) continue;
       size_t p0, p1;
       piece(k, p, p0, p1);
-      if (p1 > p0) ZE_CHECK(zeCommandListAppendMemoryCopy(cp, put + p0 * 2, dev + p0 * 2, (p1 - p0) * 2, nullptr, 0, nullptr));
+      if (p1 > p0) ZE_CHECK(zeCommandListAppendMemoryCopy(cp, put_to(k) + p0 * 2, dev + p0 * 2, (p1 - p0) * 2, nullptr, 0, nullptr));
     }
     ZE_CHECK(zeCommandListAppendBarrier(cp, ev_put(p), 0, nullptr));
   }
@@ -461,7 +505,8 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
   }
   // 3. piece by piece: once every GPU has put it, this GPU's own block summed (tp_rs_sum over the piece's values) and
   //    the piece's sums put by the copy list
-  const cl_ulong put_off = (cl_ulong)h * N * c.slot_floats * 2, str = stride, res_off = put_off + (cl_ulong)N * stride;
+  const cl_ulong put_off = p2p ? (cl_ulong)(h * c.half_b / 2) : (cl_ulong)h * N * c.slot_floats * 2, str = stride,
+                 res_off = put_off + (cl_ulong)N * stride;
   for (int p = 0; p < P; ++p) {
     if (p > 0) {
       zrt::event_wait(ev_put(p));
@@ -470,15 +515,21 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
     }
     size_t p0, p1;
     piece(r, p, p0, p1);
+    if (p2p) tp_inbox_fence(c, r, h);
     if (p1 > p0) {
       int pa = (int)p0, pb = (int)p1;
-      set_args(ks.rs_sum, 0, a.x, a.part, tp_host_, put_off, str, N, r, pa, pb, tp_h_);
+      set_args(ks.rs_sum, 0, a.x, a.part, shared, put_off, str, N, r, pa, pb, tp_h_);
       tp_run(a, "tp_sum", ks.rs_sum, (p1 - p0 + 255) / 256 * 256, l1);
     }
     ze_event_handle_t es = ev_sum(p);
     ZE_CHECK(zeCommandListAppendBarrier(zrt::imm(), es, 0, nullptr));
     ZE_CHECK(zeCommandListAppendBarrier(cp, nullptr, 1, &es));
-    if (p1 > p0) ZE_CHECK(zeCommandListAppendMemoryCopy(cp, res + p0 * 2, dev + p0 * 2, (p1 - p0) * 2, nullptr, 0, nullptr));
+    if (p1 > p0) {
+      if (!p2p) ZE_CHECK(zeCommandListAppendMemoryCopy(cp, res + p0 * 2, dev + p0 * 2, (p1 - p0) * 2, nullptr, 0, nullptr));
+      else
+        for (int k = 0; k < N; ++k)
+          if (k != r) ZE_CHECK(zeCommandListAppendMemoryCopy(cp, res_to(k) + p0 * 2, dev + p0 * 2, (p1 - p0) * 2, nullptr, 0, nullptr));
+    }
     ZE_CHECK(zeCommandListAppendBarrier(cp, ev_res(p), 0, nullptr));
   }
   // 4. piece by piece: once every GPU has put its sums of it, the other blocks' sums added (tp_rs_add_r per block)
@@ -486,13 +537,14 @@ inline void Engine::tp_reduce_rs_pipe(int rows, const TpSum& a) {
     zrt::event_wait(ev_res(p));
     const long t = c.res_n[r].fetch_add(1, std::memory_order_acq_rel) + 1;
     c.wait_all(c.res_n.get(), t, r, "a piece of its sums");
+    if (p2p) tp_inbox_fence(c, r, h);
     for (int k = 0; k < N; ++k) {
       if (k == r) continue;
       size_t p0, p1;
       piece(k, p, p0, p1);
       if (p1 <= p0) continue;
       int ja = (int)p0, jb = (int)p1;
-      set_args(ks.rs_add_r, 0, a.x, tp_host_, res_off, ja, jb);
+      set_args(ks.rs_add_r, 0, a.x, shared, res_off, ja, jb);
       tp_run(a, "tp_sum", ks.rs_add_r, (p1 - p0 + 255) / 256 * 256, l1);
     }
   }
@@ -939,6 +991,7 @@ class TpEngine {
     }
     zrt::oom_throws = false;
     for (int r = 0; r < n; ++r) comm_.flags[r] = 0;
+    choose_sums(sim);
     size_t vocab = 0;
     for (int r = 0; r < n; ++r) vocab += (size_t)shards_[r]->n_logits();
     logits_.assign(vocab, 0.0f);
@@ -986,8 +1039,140 @@ class TpEngine {
     shards_.clear();  // (after a failure: whatever is left, freed here)
     if (comm_.host) zrt::mem_free(zrt::ctx, comm_.host);
     if (comm_.flags) zrt::mem_free(zrt::ctx, comm_.flags);
+    for (char* p : comm_.inbox)
+      if (p) zrt::mem_free(zrt::ctx, p);
+    comm_.inbox.clear();
+    comm_.p2p = false;
     comm_.flags = nullptr;
     comm_.host = nullptr;
+  }
+  // one copy's speed in GB/s on this GPU's copy list (the one the prompt sums use): the best of 4 after 2 warm-ups
+  // (a copy the driver refuses: -1, the link not used. One that does not finish within 20 s: an error that says how
+  //  to load without the direct path; a peer link the driver reports but the IOMMU blocks may do either)
+  static double link_gbps(void* dst, const void* src, size_t b, const char* what) {
+    ze_command_list_handle_t l = zrt::tp_copy_list();
+    double best = 1e30;
+    for (int i = 0; i < 6; ++i) {
+      const auto t0 = std::chrono::steady_clock::now();
+      if (zeCommandListAppendMemoryCopy(l, dst, src, b, nullptr, 0, nullptr) != ZE_RESULT_SUCCESS) return -1;
+      const ze_result_t w = zeCommandListHostSynchronize(l, 20000000000ull);
+      if (w != ZE_RESULT_SUCCESS)
+        throw std::runtime_error(std::string("--gpus: a timed copy ") + what + " did not finish (0x" +
+                                 [&] { char h[16]; snprintf(h, sizeof h, "%x", (unsigned)w); return std::string(h); }() +
+                                 "): restart with ARC_TP_P2P=0 to keep the sums in host memory");
+      const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      if (i >= 2) best = std::min(best, s);
+    }
+    return b / std::max(best, 1e-9) / 1e9;
+  }
+  // How the sums cross between GPUs on this machine, from its links timed once here (16 MB copies, one GPU at a time):
+  // through pinned host memory, which every GPU reaches, or straight into the other GPUs' memory (TpComm::p2p) when
+  // the driver reports peer access between every pair and the slowest direct copy is at least 1.1x the slowest
+  // direction of the host links (a sum's bytes cross PCIe once instead of twice). Both, and the choice, go to the log.
+  // ARC_TP_P2P=0: host memory always; =1: direct whenever peer access is there (under ARC_TP_SIM too, where every
+  // inbox is on GPU 0: a test of the data flow). Not with ARC_TP_OVERLAP (its sum thread's copies stay as they are).
+  // Failsafe: no memory for the inboxes (2 x (N + 1) x chunk x n_embd x 2 bytes per GPU), host memory.
+  void choose_sums(bool sim) {
+    const int n = n_;
+    const char* e = getenv("ARC_TP_P2P");
+    const int want = e && *e ? atoi(e) : -1;  // (-1: by the links)
+    std::vector<int> all;
+    for (int r = 0; r < n; ++r) all.push_back(r);
+    bool peer = sim || zeDeviceCanAccessPeer != nullptr;
+    for (int i = 0; i < n && peer && !sim; ++i)
+      for (int j = 0; j < n && peer; ++j) {
+        uint8_t v = 0;
+        if (i != j && (zeDeviceCanAccessPeer(zrt::devs[i]->dev, zrt::devs[j]->dev, &v) != ZE_RESULT_SUCCESS || !v)) peer = false;
+      }
+    // the links, timed (not under ARC_TP_SIM: one GPU's copies to itself say nothing)
+    const size_t tb = std::min((size_t)16 << 20, (size_t)2 * n * comm_.slot_floats * 4);
+    std::vector<char*> tmp(n, nullptr);
+    std::vector<double> d2h(n, 0), h2d(n, 0);
+    std::vector<std::vector<double>> pp(n, std::vector<double>(n, 0));
+    bool timed = false, refused = false;  // (refused: peer access reported, a direct copy refused)
+    // (ARC_TP_LINKS_SIM=1: timed under ARC_TP_SIM too, GPU 0 to itself: a test of the timing on one GPU)
+    const bool time_sim = getenv("ARC_TP_LINKS_SIM") && atoi(getenv("ARC_TP_LINKS_SIM")) != 0;
+    if ((!sim || time_sim) && want != 0) {
+      struct Free {  // (also when a timed copy throws)
+        std::vector<char*>& v;
+        ~Free() {
+          for (char* p : v)
+            if (p) zrt::mem_free(zrt::ctx, p);
+        }
+      } free_tmp{tmp};
+      // (one GPU at a time, as the shards are made: allocations on several GPUs at once ended in the driver's abort
+      //  on 3 and 4 B60s, issue #4)
+      for (int q = 0; q < n; ++q)
+        run_on({q}, [&](int r) {
+          zrt::oom_throws = true;
+          try { tmp[r] = (char*)zrt::device_alloc(tb); } catch (...) {}
+          zrt::oom_throws = false;
+        }, false, false);
+      timed = std::all_of(tmp.begin(), tmp.end(), [](char* p) { return p != nullptr; });
+      if (timed)
+        for (int q = 0; q < n; ++q)
+          run_on({q}, [&](int r) {
+            d2h[r] = link_gbps(comm_.host, tmp[r], tb, "to host memory");
+            h2d[r] = link_gbps(tmp[r], comm_.host, tb, "from host memory");
+            for (int k = 0; k < n && peer; ++k)
+              if (k != r) pp[r][k] = link_gbps(tmp[k], tmp[r], tb, "between GPUs");
+          }, false, false);
+      for (int r = 0; r < n && timed; ++r) {
+        timed = d2h[r] > 0 && h2d[r] > 0;
+        for (int k = 0; k < n && peer; ++k)
+          if (k != r && pp[r][k] <= 0) peer = false, refused = true;
+      }
+    }
+    double host = 1e30, direct = 1e30;
+    for (int r = 0; r < n && timed; ++r) {
+      std::string line = "inferzero: links: GPU " + std::to_string(r);
+      char b[96];
+      snprintf(b, sizeof b, " -> host %.1f GB/s, host -> GPU %d %.1f GB/s", d2h[r], r, h2d[r]);
+      line += b;
+      host = std::min({host, d2h[r], h2d[r]});
+      for (int k = 0; k < n && (peer || refused); ++k) {
+        if (k == r) continue;
+        snprintf(b, sizeof b, pp[r][k] > 0 ? ", -> GPU %d %.1f GB/s" : ", -> GPU %d refused", k, pp[r][k]);
+        line += b;
+        direct = std::min(direct, pp[r][k]);
+      }
+      zlog::eprintf("%s\n", line.c_str());
+    }
+    bool use = want == 1 ? peer : want == 0 ? false : (peer && timed && direct >= 1.1 * host);
+    std::string why;
+    char b[160];
+    if (want == 0) why = "ARC_TP_P2P=0";
+    else if (refused) why = "peer access reported, but a direct copy was refused";
+    else if (!peer) why = zeDeviceCanAccessPeer ? "the driver reports no peer access between them" : "this Level Zero has no peer query";
+    else if (want == 1) why = sim ? "ARC_TP_P2P=1, ARC_TP_SIM" : "ARC_TP_P2P=1";
+    else if (sim && !time_sim) why = "ARC_TP_SIM: one GPU; ARC_TP_P2P=1 tests the direct path";
+    else if (!timed) why = "the links could not be timed";
+    else snprintf(b, sizeof b, "%.1f GB/s directly against %.1f through host memory", direct, host), why = b;
+    if (use && tpo_wanted()) use = false, why = "ARC_TP_OVERLAP keeps them in host memory";
+    if (use) {
+      comm_.half_b = (size_t)(n + 1) * comm_.slot_floats * 2;
+      comm_.inbox.assign(n, nullptr);
+      for (int q = 0; q < n; ++q)  // (one GPU at a time, as above)
+        run_on({q}, [&](int r) {
+          zrt::oom_throws = true;
+          try { comm_.inbox[r] = (char*)zrt::device_alloc(2 * comm_.half_b); } catch (...) {}
+          zrt::oom_throws = false;
+        }, false, false);
+      if (!std::all_of(comm_.inbox.begin(), comm_.inbox.end(), [](char* p) { return p != nullptr; })) {
+        for (char* p : comm_.inbox)
+          if (p) zrt::mem_free(zrt::ctx, p);
+        comm_.inbox.clear();
+        snprintf(b, sizeof b, "no GPU memory for the inboxes (%.0f MB each)", 2 * comm_.half_b / 1e6);
+        use = false, why = b;
+      }
+    }
+    comm_.p2p = use;
+    zlog::eprintf("inferzero: the GPUs' sums go %s (%s)\n", use ? "straight from GPU to GPU" : "through host memory", why.c_str());
+    // (a slow link: the prompt's sums wait on it; docs/multi-gpu.md says what helps)
+    const double eff = use ? direct : host;
+    if (timed && eff < 4.0)
+      zlog::eprintf("inferzero: the slowest link measures %.1f GB/s: long prompts will wait on their sums (a PCIe x4 or "
+                    "chipset slot?)\n", eff);
   }
   struct Worker {
     std::thread th;

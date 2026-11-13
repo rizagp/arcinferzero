@@ -150,6 +150,15 @@ struct ze_kernel_timestamp_result_t { ze_kernel_timestamp_data_t global, context
 #define ZE_DECL(ret, name, args) typedef ret(__stdcall* PFN_##name) args; inline PFN_##name name = nullptr;
 ZE_FUNCS(ZE_DECL)
 #undef ZE_DECL
+// (optional: null when the loader lacks it; a split model asks it whether its GPUs reach each other's memory,
+//  zero/mgpu/engine_tp.h TpEngine::choose_sums)
+typedef ze_result_t(__stdcall* PFN_zeDeviceCanAccessPeer)(ze_device_handle_t, ze_device_handle_t, uint8_t*);
+inline PFN_zeDeviceCanAccessPeer zeDeviceCanAccessPeer = nullptr;
+// (optional too: the direct sums' reader makes another GPU's copies into its memory visible to its kernels)
+typedef ze_result_t(__stdcall* PFN_zeCommandListAppendMemoryRangesBarrier)(ze_command_list_handle_t, uint32_t, const size_t*,
+                                                                           const void**, ze_event_handle_t, uint32_t,
+                                                                           ze_event_handle_t*);
+inline PFN_zeCommandListAppendMemoryRangesBarrier zeCommandListAppendMemoryRangesBarrier = nullptr;
 
 inline bool ze_load() {
   void* m = plat::dl_open("ze_loader.dll", "libze_loader.so.1");
@@ -159,6 +168,9 @@ inline bool ze_load() {
   if (!name) { zlog::eprintf("the Level Zero loader: %s missing\n", #name); return false; }
   ZE_FUNCS(ZE_LOAD)
 #undef ZE_LOAD
+  zeDeviceCanAccessPeer = (PFN_zeDeviceCanAccessPeer)plat::dl_sym(m, "zeDeviceCanAccessPeer");
+  zeCommandListAppendMemoryRangesBarrier =
+      (PFN_zeCommandListAppendMemoryRangesBarrier)plat::dl_sym(m, "zeCommandListAppendMemoryRangesBarrier");
   return true;
 }
 
