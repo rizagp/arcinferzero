@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-13: the web tools on Linux through libcurl (Linux port, issue #11)
+
+- **What:** `tools/web_tools.h` (web_fetch, web_search, the downloads behind them) has a Linux half on libcurl,
+  loaded at run time (`src/curl_min.h`, no curl headers needed to build; `libcurl.so.4` from a standard Ubuntu
+  install). The same rules as on Windows: public addresses only (each address checked before libcurl connects to
+  it), web ports, http(s), redirects by hand, no proxy, the same limits and flags.
+- **Checked:** one test program built on Windows (WinHTTP) and Linux (libcurl in WSL) gives the same results for 18
+  cases, the refusals included; the Windows serverz's web_fetch / web_search identical to release 2026.11.13.09
+  (the Windows code is the same; its Latin-1 conversion moved into a function both halves use).
+
 ## 2026-11-13: the HTTP server runs on Linux (WSL), its first Linux build
 
 - `tests/test_http.cpp` (the HTTP server with its test client) builds with g++ 13.3 on Ubuntu 24.04 in WSL, with

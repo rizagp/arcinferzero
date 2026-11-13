@@ -79,6 +79,18 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   `<io.h>`, `localtime_s` and `_isatty` (now `localtime_r` / `isatty` on Linux; colors on a terminal whose `TERM` is
   not `dumb`), and an unused parameter in `plat::AsyncFile`'s Linux half. The check, from the repository's folder:
   `g++ -std=c++20 -Wall -Wextra -include src/log.h tests/test_http.cpp -o test_http -pthread`.
+- 2026-11-13: the web tools (`tools/web_tools.h`: web_fetch, web_search, the files and audio they download) on Linux
+  through libcurl, loaded at run time (`src/curl_min.h`: its few declarations, so the build needs no curl headers;
+  `libcurl.so.4`, part of a standard Ubuntu install, and `libidn2.so.0` for internationalized names). The same steps
+  as the WinHTTP path: redirects by hand with each hop's port and host checked, no proxy (the environment's
+  `http_proxy` ignored), http and https only, the deadline over all hops, the body's limit, cut / too_big / timed_out.
+  Where WinHTTP checks the address it connected to, libcurl's socket callback checks each address before it connects.
+  URLs through libcurl's parser. Without libcurl the web tools answer with an error saying so; the rest runs. Checked
+  with one test program built on both systems (18 cases: pages, redirects, a 404, limits, loopback / private / a name
+  resolving to 127.0.0.1 / localhost refused, refused ports and schemes, a timeout, an internationalized host, URL
+  parsing, a search): the same results on Linux and Windows; the Windows serverz's web_fetch / web_search identical to
+  release 2026.11.13.09. Differences left: libidn2 follows IDNA2008 where Windows' IdnToAscii follows IDNA2003 (a few
+  names with ß or ς map differently); a URL with a bare IPv6 address fails on both, with another message.
 
 ## The order
 
