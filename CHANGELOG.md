@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-13: the NPU on the website; `bench\npu_try.ps1` for newer NPUs
+
+- **Website:** a card for the NPU next to the GPU (`--npu on`): Qwen3.8 27B 4K prompt 133 -> 153-162 tok/s, Gemma 4
+  12B +10 % on a Core Ultra 5 125H; mixture-of-experts and small models leave it off; newer NPUs untested.
+- **`bench\npu_try.ps1 -Model <dense gguf>`:** the prompt with the NPU off, on, and with its three shares scaled
+  together (x0.3 / 0.5 / 0.7 / 1.3), the time the GPU waited for it, and the KL against NPU-off over two 4,096-token
+  perplexity chunks. The shares were set on the 125H, whose GPU does ~8.6 int8 TOPS; a Lunar Lake or Panther Lake
+  GPU with XMX is several times faster and likely wants a smaller share. The 125H's 27B at 4K: off 128.4 tok/s, on
+  151.4 (+18 %), x0.3 / 0.5 / 0.7 / 1.3 129.3 / 137.9 / 133.5 / 125.8; KL 0.0012-0.0034 (limit 0.015).
+
 ## 2026-11-13: a fuller GEMV sweep for generation on discrete cards (`bench\decode_try.ps1`)
 
 - **Why:** a Pro B70 generates the 27B at 32.2 tok/s, 30.8 ms a token, where reading its 11.3 GB of weights at the
