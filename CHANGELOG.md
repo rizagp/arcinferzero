@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
+
+- **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),
+  so whether Arc cards copy to each other directly on Linux (they cannot on Windows) can be measured by an owner of two
+  or more cards on native Linux. WSL cannot answer it: one GPU on the laptop, and ~77 us per GPU round trip there
+  against 4.7 us on Windows (the same probe, the same machine), which is also why WSL generates ~15 % slower.
+- **WSL's compute runtime 26.40** (Intel's packages for Ubuntu 24.04, in place of Ubuntu's 23.43): the 4B's logits on
+  Linux bit-identical between the two runtimes, KL 0.00090 against the f32 reference. Windows' build unchanged
+  (mgpu_probe rebuilt, the same output shape). docs/linux-port.md, Progress.
+
 ## 2026-11-13: runz runs on Linux (WSL2, the laptop's Arc iGPU)
 
 - **What:** `zero/runz.cpp` and the engine build with g++ 13.3 on Ubuntu 24.04 and run on the iGPU through Ubuntu's

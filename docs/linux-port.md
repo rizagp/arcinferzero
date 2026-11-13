@@ -107,6 +107,20 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   2026.11.13.09 (the 4B and the 35B-A3B). Not tried yet on Linux: MoE models streaming experts (`O_DIRECT` through
   WSL's disk), split models, the NPU, a newer compute runtime; Level Zero reports a 1.1 GB allocation limit there, which
   the 4B's buffers did not hit.
+- 2026-11-13: **the compute runtime updated in WSL** to Intel's packages for Ubuntu 24.04 (the `kobuk-team/intel-graphics`
+  PPA their GPU docs point to): compute runtime 26.40.40196.15, IGC 2.42, Level Zero loader 1.34 (Ubuntu's 23.43 has no
+  Battlemage, B580 / B60 / B70, and likely no Arrow Lake H). The 4B: the same 32 tokens, KL 0.00090 (max 0.0071), 14.3-
+  14.8 tok/s, and its logits **bit-identical to those of runtime 23.43** (and from run to run). So the kernel compiler
+  is not what makes Linux's logits differ from Windows' (KL 3.5e-4 between them): more likely the CPU side, MSVC's
+  `/fp:fast` and its math library against GCC's (an open question; within the limits either way).
+- 2026-11-13: **`mgpu_probe` on Linux** (the peer-access probe of docs/multi-gpu.md: `zeDeviceCanAccessPeer` and, for
+  every pair of GPUs, a 20 KB / 40 MB copy directly and through host memory, on the compute queue and the copy engine):
+  built with the same line as runz (`zero/mgpu_probe.cpp`). Whether peer copies work between Arc cards on Linux can only be
+  seen on a native Linux machine with two or more cards (issue #4's owners): WSL has the laptop's one iGPU, and WSL's
+  GPU paravirtualization adds ~72 us to every round trip. The same probe on the same laptop: a 4-byte copy and its
+  wait 77.0 us in WSL against 4.7 us on Windows; 20 KB GPU -> GPU 74.6 / 5.2 us; 40 MB 35.9 / 40.7 GB/s. A split model
+  syncs ~128 times a token, so WSL says nothing about multi-GPU speed. That latency is also why the 4B generates at
+  14.7 tok/s in WSL against 16.6-19.1 on Windows (bandwidth is close: pinned host -> GPU 34.9 / 38.0 GB/s).
 
 ## The order
 
@@ -134,6 +148,7 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 ## Open questions
 
 - Native Linux may allow GPU-to-GPU peer copies for split models (Intel's multi-B60 stack on Linux mentions PCIe peer
-  to peer), which Windows does not: a later step for `zero/mgpu/`, after `serverz` runs.
+  to peer), which Windows does not: a later step for `zero/mgpu/`, after `serverz` runs. `mgpu_probe` builds on Linux
+  now, so a B60 owner on native Linux can answer it (not WSL: one GPU here, and ~77 us per round trip).
 - The iGPU's memory share works differently (no WDDM "shared GPU memory" cap): `--ctx auto` and the expert cache need
   their budget from the driver and the free RAM; to measure on a 285H.
