@@ -2,7 +2,7 @@
 
 ## 2026-11-14: the Linux port audited as a whole; its findings fixed (issue #11)
 
-- **Audit:** Pi with DeepSeek read every Linux code path of the port, statically (docs/audit-2026-11-14.md): no
+- **Audit:** Pi with DeepSeek read every Linux code path of the port, statically (docs/audit-2026-11-14-linux.md): no
   Windows change; every fix of the first audit in place.
 - **Fixed on Linux:** models in the Hugging Face cache are found where `hf download` puts them (`~/.cache/huggingface`,
   or `$XDG_CACHE_HOME`), without `HF_HOME` (before: the model list was empty on a stock install); the expert file's

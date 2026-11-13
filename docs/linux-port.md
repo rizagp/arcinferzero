@@ -161,7 +161,7 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
     the project paths, the crash handler's safety, kill before reap, FIFOs refused, `$TMPDIR`, atomic terminal state).
   - **Not yet:** a CMake build and a release archive (step 4); `web_view` (headless Chromium); the recorder (WASAPI);
     the GPU memory budget through Sysman; a native Linux machine's numbers.
-- 2026-11-14: **a second audit, of all the Linux work** (Pi / DeepSeek, static, docs/audit-2026-11-14.md): no Windows
+- 2026-11-14: **a second audit, of all the Linux work** (Pi / DeepSeek, static, docs/audit-2026-11-14-linux.md): no Windows
   change; every fix of the first audit in place. Fixed after it: the Hugging Face cache found where `hf download`
   writes it on Linux (`$XDG_CACHE_HOME` or `~/.cache/huggingface/hub`: the model list, Whisper and Qwen3-ASR found no
   model without `HF_HOME` set), the expert file's writer taking a short `write(2)` as the rest to write, a child process
