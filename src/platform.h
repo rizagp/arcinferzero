@@ -346,6 +346,85 @@ class DirectWriter {
 #endif
 };
 
+// A file read in order, opened shared for writing and deleting (the server's media, src/http.h send_file: a file being
+// played can still be replaced or deleted). Windows: CreateFileW (FILE_SHARE_READ | WRITE | DELETE,
+// FILE_FLAG_SEQUENTIAL_SCAN), GetFileSizeEx, SetFilePointerEx, ReadFile, the calls send_file made before. Linux: open,
+// fstat, lseek, read (no locks to share: a file replaced while read keeps its old contents for this reader).
+class SeqFile {
+ public:
+  SeqFile() = default;
+  SeqFile(const SeqFile&) = delete;
+  SeqFile& operator=(const SeqFile&) = delete;
+  ~SeqFile() { close(); }
+  bool open(const std::filesystem::path& p) {
+    close();
+#ifdef _WIN32
+    h_ = CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                     OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    return h_ != INVALID_HANDLE_VALUE;
+#else
+    fd_ = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd_ < 0) return false;
+    struct stat st{};
+    if (fstat(fd_, &st) != 0 || S_ISDIR(st.st_mode)) {  // (a folder: refused, as CreateFileW refuses it)
+      close();
+      return false;
+    }
+    return true;
+#endif
+  }
+  bool size(uint64_t& out) const {
+#ifdef _WIN32
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(h_, &sz)) return false;
+    out = (uint64_t)sz.QuadPart;
+#else
+    struct stat st{};
+    if (fstat(fd_, &st) != 0) return false;
+    out = (uint64_t)st.st_size;
+#endif
+    return true;
+  }
+  void seek(uint64_t off) {
+#ifdef _WIN32
+    LARGE_INTEGER pos{};
+    pos.QuadPart = (LONGLONG)off;
+    SetFilePointerEx(h_, pos, nullptr, FILE_BEGIN);
+#else
+    lseek(fd_, (off_t)off, SEEK_SET);
+#endif
+  }
+  // up to n bytes: the count read, 0 at the end or on an error
+  size_t read(void* dst, size_t n) {
+#ifdef _WIN32
+    DWORD rd = 0;
+    return ReadFile(h_, dst, (DWORD)n, &rd, nullptr) ? (size_t)rd : 0;
+#else
+    while (true) {
+      const ssize_t r = ::read(fd_, dst, n);
+      if (r < 0 && errno == EINTR) continue;
+      return r > 0 ? (size_t)r : 0;
+    }
+#endif
+  }
+  void close() {
+#ifdef _WIN32
+    if (h_ != INVALID_HANDLE_VALUE) CloseHandle(h_);
+    h_ = INVALID_HANDLE_VALUE;
+#else
+    if (fd_ >= 0) ::close(fd_);
+    fd_ = -1;
+#endif
+  }
+
+ private:
+#ifdef _WIN32
+  HANDLE h_ = INVALID_HANDLE_VALUE;
+#else
+  int fd_ = -1;
+#endif
+};
+
 // Page-aligned memory of n bytes, zeroed (VirtualAlloc; mmap on Linux): nullptr when there is none. Freed by page_free(p, n).
 inline void* page_alloc(size_t n) {
 #ifdef _WIN32

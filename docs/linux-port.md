@@ -53,6 +53,17 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   Windows, its bytes on Linux); transcripts identical. Left: `src/whisper.h` still passes the path through a narrow
   string (`.string()`), so a folder name outside the code page fails on Windows as before; Whisper's decompression
   (compressapi) and Media Foundation audio stay Windows-only for now. Next: sockets (`src/http.h`).
+- 2026-11-13: the HTTP server's sockets through `src/platform_net.h` (`plat::socket_t`, `net_init`, `sock_open` /
+  `close` / `shutdown`, `sock_flag`, `sock_recv_timeout` / `sock_send_timeout`, `sock_bind_listen`, `sock_accept`,
+  `sock_peer`, `sock_send` / `sock_recv`, `sock_peer_gone`), and its media files (`send_file`) through
+  `plat::SeqFile` in `src/platform.h`: `src/http.h` has no Windows calls left. On Windows each is the Winsock / Win32
+  call made before, with the same arguments. On Linux: `send` with `MSG_NOSIGNAL` (a client gone must not end the
+  server by SIGPIPE), `EINTR` retried, sockets made with `SOCK_CLOEXEC` / `accept4` (not inherited by the terminal
+  tool's children), time limits as a `timeval`, `poll` + a non-blocking peek for a client gone. Checked on Windows
+  with a real server (the 4B) against release 2026.11.13.09's serverz: the same replies, streaming, a stream cancelled
+  by the client, two clients at once, a chunked body, file ranges; `test_http` passes. Not compiled on Linux yet (no
+  WSL distribution or cross compiler on this laptop). Left for sockets: the 7 other files that use Winsock
+  (`src/audio.h`, `src/image.h`, the web tools, the recorder), and `tests/test_http.cpp`'s own client.
 
 ## The order
 
