@@ -1,5 +1,17 @@
 # Before and after
 
+## 2026-11-13: bounded expert uploads (native Linux B70)
+
+| Change | Before | After | Check / scope |
+|---|---|---|---|
+| Warmup and demand copies use the source layer's record length rather than its pool's padded slot length | Downstream Flash Next UD-Q4_K_XL with a 32 GiB pinned RAM tier crashed during warmup or misses | 32 and 64 GiB tiers complete | Same 8K prompt plus four generated tokens: previous no-RAM build versus fixed 32 GiB tier, dumped logits byte-identical. |
+
+These are downstream measurements on an Arc Pro B70, Ubuntu native Linux, full 262,144 context allocation,
+based on 080e588 with additional Linux and model-loading changes. They establish the observed failure and
+its fix there, not a benchmark of unmodified current main. This patch carries only the two remaining copy
+length corrections onto 3e81fc6; main already bounds the deep-prefetch copy. No speed improvement claimed.
+Windows/iGPU validation and a mixed-record main-only GPU reproduction remain pending.
+
 Every change that moves speed, memory or accuracy gets a row here with the numbers before and after, measured the
 same way, and the check that the answers did not change. Newest first. The long story is in
 [review.md](review.md) and [speed-progress.md](speed-progress.md); what each finding taught is in

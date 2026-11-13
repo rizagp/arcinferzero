@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased: copy expert records without their pool padding
+
+- Warmup and demand uploads copy the layer's record length, matching deep prefetch. A pool slot can be larger
+  than the pinned RAM record supplying it; reading the padding can overrun that source. No kernel or weight
+  representation changes. Downstream native Linux B70 checks and their limits are in docs/before-after.md.
+
 ## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
 
 - **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),
