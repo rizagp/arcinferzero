@@ -158,7 +158,7 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   }
   eo.stream_reserve = encoder_reserve(model, so.mmproj, so.img_max) + so.whisper_bytes;  // (streamed experts' cache)
   if (so.gpus > 1) {
-    // (failsafe: a model that cannot be split (Gemma 4 for transcripts, Flash Next) or a split that fails to load
+    // (failsafe: a model that cannot be split (Gemma 4 for transcripts) or a split that fails to load
     //  (memory, the GPUs' layouts) loads on one GPU instead, with every feature, rather than failing the server)
     try {
       L->tp.reset(new TpEngine(model, eo, so.gpus));
