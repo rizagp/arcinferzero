@@ -373,3 +373,14 @@ Measure before and after on the same build options with a pause in between, best
 noisy, and state the check: bit-identical logits (`runz --dump-logits A.bin` vs `B.bin`, `cmp`), identical greedy
 text, or KL against the f32 reference / the int8 cache (`runz --ppl-kl-save` / `--ppl-kl`) for changes that are
 meant to change the numbers.
+
+## 2026-11-13: AutoRound hybrid RFC (historical downstream measurements)
+
+| Measurement | Q4XL control | AutoRound INT4 expert hybrid | Scope |
+|---|---:|---:|---|
+| Warm 15,599-token PP / TG | 695.63 / 25.78 | 783.59 / 42.36 | Changed expert quant; downstream optimized runtime, not this branch. |
+| Incremental PP / TG | 102.41 / 24.53 | 194.15 / 38.53 | Same profile, mean turn 3.461 -> 2.137 s. |
+| First-use PP | 484.48 | 300.79 | Regressed; cold/JIT costs not isolated. |
+| Workflow engine mean / maximum KL vs own F32 | 0.00700 / 0.58798 | 0.01074 / 0.83681 | Cross-quant F32 KL 0.149171; BF16 quality parity not established. |
+
+See docs/autoround-b70-rfc.md for quant provenance, full-context/Pi checks and pending upstream validation.

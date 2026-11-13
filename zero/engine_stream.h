@@ -279,6 +279,8 @@
     if (hp.moe_std) {
       for (int i = 0; i < 3; ++i) {
         const GgufTensor& t = f_.get(p + "ffn_" + names[i] + "_exps.weight");
+        if (t.type == GGML_AR4_128 && (zrt::integrated() || tp_on() || !hp.hc || !fn_precise()))
+          throw std::runtime_error("AR4_128 requires precise Flash Next on one discrete GPU");
         const uint64_t K = t.dims.empty() ? 0 : t.dims[0];  // (the shape tested below before anything else of it)
         if (t.dims.size() != 3 || t.dims[2] != (uint64_t)hp.n_expert || t.nelements() != per_expert * hp.n_expert ||
             K != (i == 2 ? (uint64_t)hp.n_ff_exp : (uint64_t)E) ||

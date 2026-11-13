@@ -494,6 +494,20 @@ inline void dequant_q3_k(const uint8_t* p, float* y) {
 
 // Dequantizes one full row (K elements) of a GGUF matrix to float (CPU reference / embeddings).
 inline void dequant_row(uint32_t type, const uint8_t* row, int K, float* out) {
+  if (type == GGML_AR4_128) {
+    if (K % 128) throw std::runtime_error("AR4_128 row is not divisible by 128");
+    for (int b = 0; b < K / 128; ++b) {
+      const uint8_t* p = row + (size_t)b * 66;
+      const float d = fp16_to_f32(rd16(p));
+      for (int c = 0; c < 4; ++c) for (int j = 0; j < 16; ++j) {
+        const uint8_t q = p[2 + c * 16 + j];
+        out[b * 128 + c * 32 + j] = d * (float)((q & 15) - 8);
+        out[b * 128 + c * 32 + 16 + j] = d * (float)((q >> 4) - 8);
+      }
+    }
+    return;
+  }
+
   if (type == GGML_Q3_K) {
     for (int s = 0; s < K / 256; ++s) dequant_q3_k(row + (size_t)s * 110, out + (size_t)s * 256);
     return;
@@ -580,7 +594,7 @@ inline void quantize_act_cpu(const float* x, int M, int K, int8_t* aq, float* as
 // Small-block types (IQ4_NL: 32 elements / 18 bytes, Q2_0: 64 / 18) whose consecutive blocks are read as 256-element
 // "superblocks" by the GPU (144 / 72 bytes). A row whose K is not a multiple of 256 (Qwen3.8 Flash Next down
 // projections: K = 640) is padded to the next multiple with zero blocks (scale 0, dequantizing to zeros).
-inline bool is_small_block_type(uint32_t t) { return t == GGML_IQ4_NL || t == GGML_Q2_0; }
+inline bool is_small_block_type(uint32_t t) { return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_AR4_128; }
 inline int padded_k(int K) { return (K + 255) / 256 * 256; }
 // N rows of K elements of a small-block type -> N rows of padded_k(K) elements (dst holds N * the padded row bytes)
 inline void pad_small_block_rows(uint32_t type, const uint8_t* src, int N, int K, uint8_t* dst) {
@@ -595,6 +609,7 @@ inline void pad_small_block_rows(uint32_t type, const uint8_t* src, int N, int K
 
 inline bool is_w8_type(uint32_t t) {
   switch (t) {
+    case GGML_AR4_128:
     case GGML_Q2_K: case GGML_Q3_K: case GGML_Q4_K: case GGML_Q5_K: case GGML_Q6_K: case GGML_IQ2_XXS: case GGML_IQ2_XS:
     case GGML_IQ2_S: case GGML_IQ3_XXS: case GGML_IQ3_S: case GGML_IQ1_S: case GGML_IQ1_M: case GGML_IQ4_XS: case GGML_Q8_0: case GGML_Q4_0:
     case GGML_IQ4_NL: case GGML_Q2_0: return true;
@@ -607,7 +622,7 @@ inline bool is_w8_type(uint32_t t) {
 // end, docs/archive/review_notes.md).
 inline bool w8_requant(uint32_t t) { return t == GGML_Q2_K || t == GGML_Q4_K || t == GGML_Q5_K; }
 inline int w8_variant(uint32_t t) {
-  if (t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0)
+  if (t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_AR4_128)
     return 4;  // per-32 f32 scales (the GEMM runs them as its native Q8_0 form)
   const bool sc32 = t == GGML_IQ4_XS || t == GGML_IQ3_S || t == GGML_IQ3_XXS || t == GGML_IQ2_XXS ||
                     t == GGML_Q4_K || t == GGML_Q5_K;
@@ -644,11 +659,17 @@ inline bool gpu_d_last(uint32_t type) {
   return type == GGML_IQ2_XXS || type == GGML_IQ2_XS || type == GGML_IQ2_S || type == GGML_IQ3_XXS || type == GGML_IQ3_S;
 }
 inline bool gpu_regrouped(uint32_t type) {
-  return type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0 || gpu_d_last(type);
+  return type == GGML_AR4_128 || type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0 || gpu_d_last(type);
 }
 // One superblock in its GPU raw form (dst: raw_padded_sb_bytes(type) bytes).
 inline void gpu_raw_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
   const size_t bb = gguf_sb_bytes(type), bp = raw_padded_sb_bytes(type);
+  if (type == GGML_AR4_128) {
+    memcpy(dst, src, 2); memcpy(dst + 2, src + 66, 2);
+    memcpy(dst + 4, src + 2, 64); memcpy(dst + 68, src + 68, 64);
+    memset(dst + 132, 0, bp - 132);
+    return;
+  }
   if (type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0) {
     // nb blocks (f16 d + quants) -> the nb scales, then the quants (Q4_0 / Q8_0 / IQ4_NL: 8 blocks of 32;
     // Q2_0: 4 blocks of 64, so its scales take 8 bytes)

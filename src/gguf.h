@@ -21,6 +21,9 @@ enum GgmlType : uint32_t {
   GGML_Q8_K = 15, GGML_IQ2_XXS = 16, GGML_IQ2_XS = 17, GGML_IQ3_XXS = 18, GGML_IQ1_S = 19, GGML_IQ4_NL = 20,
   GGML_IQ3_S = 21, GGML_IQ2_S = 22, GGML_IQ4_XS = 23, GGML_I8 = 24, GGML_I16 = 25, GGML_I32 = 26, GGML_IQ1_M = 29,
   GGML_BF16 = 30, GGML_MXFP4 = 39,
+  // Private inferzero package type, not a standard GGML/GGUF quant identifier.
+  // 128 values: source F16 scale + four Q4_0-order nibble blocks; zero point is 8.
+  GGML_AR4_128 = 0x41523447u,
   GGML_Q2_0 = 42,  // blocks of 64: f16 scale + 2-bit codes, value (q - 1) * d (Qwen3.8 Flash Next down projections)
 };
 
@@ -33,6 +36,7 @@ inline const char* ggml_type_name(uint32_t t) {
     case GGML_IQ4_NL: return "IQ4_NL"; case GGML_IQ4_XS: return "IQ4_XS"; case GGML_BF16: return "BF16";
     case GGML_IQ2_XXS: return "IQ2_XXS"; case GGML_IQ2_XS: return "IQ2_XS"; case GGML_IQ3_XXS: return "IQ3_XXS";
     case GGML_IQ1_S: return "IQ1_S"; case GGML_IQ3_S: return "IQ3_S"; case GGML_IQ2_S: return "IQ2_S"; case GGML_IQ1_M: return "IQ1_M";
+    case GGML_AR4_128: return "AR4_128";
     case GGML_MXFP4: return "MXFP4"; case GGML_Q2_0: return "Q2_0"; default: return "?";
   }
 }
@@ -45,6 +49,7 @@ inline void ggml_block_info(uint32_t t, int& blk, int& bytes) {
     case GGML_I8: blk = 1; bytes = 1; return;
     case GGML_I32: blk = 1; bytes = 4; return;
     case GGML_Q4_0: blk = 32; bytes = 18; return;
+    case GGML_AR4_128: blk = 128; bytes = 66; return;
     case GGML_Q4_1: blk = 32; bytes = 20; return;
     case GGML_Q5_0: blk = 32; bytes = 22; return;
     case GGML_Q5_1: blk = 32; bytes = 24; return;

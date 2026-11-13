@@ -4272,3 +4272,7 @@ one kv head) ran at only ~20 GB/s, 0.7 ms per layer.
 - Segmented layer-major prefill (16K tokens) and the largest contexts that fit 16.5 GiB for every model
   (`scripts/arc-server.ps1`, `scripts/install-pi.ps1`).
 - Review page `docs/review.html` (EN/ID) with `bench/review_data.py`; prompt benchmark `bench/prompt_bench.py`.
+
+## 2026-11-13: RFC AutoRound INT4 expert import
+
+- Add an experimental private AR4_128 importer, CPU/reference and generic native decode plumbing, plus source/package checks. Keep existing model defaults. Downstream AutoRound-hybrid benchmarks and accuracy limits are explicitly separate from upstream-branch validation; see docs/autoround-b70-rfc.md.

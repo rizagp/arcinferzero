@@ -15,7 +15,7 @@
 #define MOE_MIN 1  // (types with per-block mins: the activation sums per 16 are computed here, there is no absum)
 #endif
 // (types with a vector decoder, vblock: the block is read straight into registers instead of a staged window)
-#if (QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || defined(GRID_OFF)) && !defined(MOE_WINDOW)
+#if (QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || defined(GRID_OFF)) && !defined(MOE_WINDOW)
 #define MOE_VB 1
 #endif
 inline void moe_stage(__local uint* lgrid, __local uint* laux, __global const uint* tabs) {
@@ -470,7 +470,7 @@ __kernel void moe_down_q(__global const uchar* rd, int N, int K, __global const 
 // (Q4_0 / Q8_0: each 32-block read straight from global memory with vblock, gemv_v's decoder, instead of copying the
 // whole superblock into registers first: that copy (36 / 68 words per lane) made moe_rg spill 2.6 KB per thread on
 // Gemma 4's Q4_0 experts. The same bytes and the same weights: bit-identical. -DRG_COPY: the copy, for A/B)
-#if (QT == Q4_0 || QT == Q8_0) && !defined(RG_COPY)
+#if (QT == AR4_128 || QT == Q4_0 || QT == Q8_0) && !defined(RG_COPY)
 #define RG_VB 1
 #endif
 #ifdef XCACHE
