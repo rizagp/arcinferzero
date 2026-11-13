@@ -240,10 +240,8 @@
               folder.c_str(), std::filesystem::file_size(file, e) / 1048576.0, ms_since(t0) / 1000);
     };
     // (the host snapshot taken at n equals the current state: written once, taken again after loading)
-    MEMORYSTATUSEX ms;
-    ms.dwLength = sizeof(ms);
     const uint64_t bytes = 8 + 4 * n + eng_.saved_size((int)n);
-    if (GlobalMemoryStatusEx(&ms) && ms.ullAvailPhys > bytes + (2ull << 30)) {
+    if (plat::ram_available() > bytes + (2ull << 30)) {
       auto pieces = std::make_shared<std::vector<std::vector<uint8_t>>>();
       pieces->emplace_back((const uint8_t*)h, (const uint8_t*)(h + 2));
       pieces->emplace_back((const uint8_t*)P.data(), (const uint8_t*)(P.data() + n));
@@ -337,7 +335,7 @@
     // (a saved conversation of this server's: its first 4 bytes are "ARSV"; another program's .arcs is left alone,
     //  for a --session-dir set to a folder with other things next to it)
     auto is_conv = [](const fs::path& p) {
-      FILE* f = _wfopen(p.c_str(), L"rb");
+      FILE* f = plat::fopen_path(p, "rb");
       if (!f) return false;
       int32_t m = 0;
       const bool ok = fread(&m, 4, 1, f) == 1 && m == kConvMagic;
@@ -406,9 +404,7 @@
     head.insert(head.end(), {last_gen_cut_, floor, (int32_t)res.size()});
     head.insert(head.end(), res.begin(), res.end());
     const uint64_t bytes = head.size() * 4 + eng_.saved_size(last_gen_cut_);
-    MEMORYSTATUSEX ms;
-    ms.dwLength = sizeof(ms);
-    const bool bg = GlobalMemoryStatusEx(&ms) && ms.ullAvailPhys > bytes + (2ull << 30);
+    const bool bg = plat::ram_available() > bytes + (2ull << 30);
     auto failed = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<std::thread> writer;
     bool ok;

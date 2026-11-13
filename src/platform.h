@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 
 #ifdef _WIN32
@@ -16,6 +17,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <io.h>  // (_get_osfhandle)
 #else
 #include <cerrno>
 #include <dlfcn.h>
@@ -372,13 +374,15 @@ class SeqFile {
                      OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     return h_ != INVALID_HANDLE_VALUE;
 #else
-    fd_ = ::open(p.c_str(), O_RDONLY | O_CLOEXEC);
+    // (O_NONBLOCK: a FIFO would block the open until a writer came; only a regular file is read, then blocking reads)
+    fd_ = ::open(p.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd_ < 0) return false;
     struct stat st{};
-    if (fstat(fd_, &st) != 0 || S_ISDIR(st.st_mode)) {  // (a folder: refused, as CreateFileW refuses it)
+    if (fstat(fd_, &st) != 0 || !S_ISREG(st.st_mode)) {  // (a folder, a FIFO, a device: refused)
       close();
       return false;
     }
+    fcntl(fd_, F_SETFL, fcntl(fd_, F_GETFL) & ~O_NONBLOCK);
     return true;
 #endif
   }
@@ -499,6 +503,16 @@ inline uint64_t ram_available() {
   return (uint64_t)kb * 1024;
 #endif
 }
+// The physical memory in all, in bytes (ullTotalPhys; Linux: sysconf's pages)
+inline uint64_t ram_total() {
+#ifdef _WIN32
+  MEMORYSTATUSEX ms{sizeof ms};
+  GlobalMemoryStatusEx(&ms);
+  return ms.ullTotalPhys;
+#else
+  return (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGESIZE);
+#endif
+}
 // A FILE*'s position past 2 GB (_fseeki64 / _ftelli64; fseeko / ftello on Linux, whose off_t is 64-bit there)
 inline int fseek64(FILE* f, int64_t off, int whence) {
 #ifdef _WIN32
@@ -534,6 +548,80 @@ inline unsigned long thread_id() {
   return GetCurrentThreadId();
 #else
   return (unsigned long)gettid();
+#endif
+}
+
+// A time as local / UTC calendar time (localtime_s / gmtime_s; localtime_r / gmtime_r): true when it converted.
+inline bool local_time(std::time_t t, std::tm& out) {
+#ifdef _WIN32
+  return localtime_s(&out, &t) == 0;
+#else
+  return localtime_r(&t, &out) != nullptr;
+#endif
+}
+inline bool utc_time(std::time_t t, std::tm& out) {
+#ifdef _WIN32
+  return gmtime_s(&out, &t) == 0;
+#else
+  return gmtime_r(&t, &out) != nullptr;
+#endif
+}
+// fopen by a std::filesystem::path: _wfopen with its wide form on Windows (any characters), its bytes on Linux.
+// mode: "rb", "wb", "ab"...
+inline FILE* fopen_path(const std::filesystem::path& p, const char* mode) {
+#ifdef _WIN32
+  wchar_t wm[8] = {};
+  for (int i = 0; i < 7 && mode[i]; ++i) wm[i] = (wchar_t)mode[i];
+  return _wfopen(p.c_str(), wm);
+#else
+  return fopen(p.c_str(), mode);
+#endif
+}
+// A link to elsewhere, not followed by folder walks: a reparse point on Windows (junction, symbolic link), a symbolic
+// link on Linux. false when it cannot be told.
+inline bool is_link(const std::filesystem::path& p) {
+#ifdef _WIN32
+  const DWORD at = GetFileAttributesW(p.c_str());
+  return at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT);
+#else
+  std::error_code ec;
+  return std::filesystem::is_symlink(std::filesystem::symlink_status(p, ec));
+#endif
+}
+// A file or folder the system hides (Windows' hidden / system attributes; Linux: none beyond the leading dot, which
+// the callers check by name).
+inline bool is_hidden_or_system(const std::filesystem::path& p) {
+#ifdef _WIN32
+  const DWORD at = GetFileAttributesW(p.c_str());
+  return at != INVALID_FILE_ATTRIBUTES && (at & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM));
+#else
+  (void)p;
+  return false;
+#endif
+}
+#ifndef _WIN32
+// (Linux) a inside b, at a '/' boundary, case-sensitive as the filesystem is (b itself counts when or_same); the
+// callers pass canonical paths. Windows' callers keep their own case-blind '\' comparisons.
+inline bool path_inside(const std::filesystem::path& a, const std::filesystem::path& b, bool or_same) {
+  std::string x = a.lexically_normal().string(), y = b.lexically_normal().string();
+  while (x.size() > 1 && x.back() == '/') x.pop_back();
+  while (y.size() > 1 && y.back() == '/') y.pop_back();
+  if (y.empty() || x.compare(0, y.size(), y) != 0) return false;
+  if (x.size() == y.size()) return or_same;
+  return y == "/" || x[y.size()] == '/';
+}
+#endif
+// Two open files are one file on disk (Windows: volume and file index; Linux: device and inode).
+inline bool same_file(FILE* a, FILE* b) {
+#ifdef _WIN32
+  BY_HANDLE_FILE_INFORMATION a1{}, a2{};
+  const HANDLE ha = (HANDLE)_get_osfhandle(_fileno(a)), hb = (HANDLE)_get_osfhandle(_fileno(b));
+  return ha != INVALID_HANDLE_VALUE && GetFileInformationByHandle(ha, &a1) && GetFileInformationByHandle(hb, &a2) &&
+         a1.dwVolumeSerialNumber == a2.dwVolumeSerialNumber && a1.nFileIndexHigh == a2.nFileIndexHigh &&
+         a1.nFileIndexLow == a2.nFileIndexLow;
+#else
+  struct stat sa{}, sb{};
+  return fstat(fileno(a), &sa) == 0 && fstat(fileno(b), &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
 #endif
 }
 

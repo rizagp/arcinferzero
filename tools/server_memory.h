@@ -54,7 +54,7 @@ inline bool write(const std::string& project, const std::string& text) {
 inline std::string today() {
   const std::time_t t = std::time(nullptr);
   std::tm tm{};
-  localtime_s(&tm, &t);
+  plat::local_time(t, tm);
   char b[16];
   std::strftime(b, sizeof b, "%Y-%m-%d", &tm);
   return b;

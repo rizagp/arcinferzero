@@ -18,7 +18,7 @@ inline std::string iso_now() {
   const auto now = std::chrono::system_clock::now();
   const std::time_t t = std::chrono::system_clock::to_time_t(now);
   std::tm g{};
-  gmtime_s(&g, &t);
+  plat::utc_time(t, g);
   char b[40];
   strftime(b, sizeof b, "%Y-%m-%dT%H:%M:%S", &g);
   const long ms = (long)(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
