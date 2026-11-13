@@ -293,13 +293,22 @@
       return;
     }
     size_t raw = 0, w8 = 0;
+    double raw_s = 0, w8_s = 0;  // (a split model: this shard's part, tp_weight_share in zero/mgpu/engine_tp_shard.h)
     for (auto& t : f_.tensors) {
       int il = -1;
       if (t.dims.size() != 2 || sscanf(t.name.c_str(), "blk.%d.", &il) != 1 || il >= hp.n_layer) continue;
       raw += t.nbytes;
       w8 += (size_t)t.dims[0] * t.dims[1] * 41 / 40;
+      if (tp_on()) {
+        const double sh = tp_weight_share(t.name);
+        raw_s += (double)t.nbytes * sh;
+        w8_s += (double)((size_t)t.dims[0] * t.dims[1] * 41 / 40) * sh;
+      }
     }
-    w8_resident = (raw + w8) / 1073741824.0 <= opt.w8_budget_gb;
+    // (ARC_TP_SIM: every shard on the one GPU, so the budget is theirs together, as device_mem is divided there)
+    const double budget =
+        opt.w8_budget_gb / (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0 ? opt.tp_size : 1);
+    w8_resident = (tp_on() ? raw_s + w8_s : (double)(raw + w8)) / 1073741824.0 <= budget;
   }
 
   cl_kernel kernel(const std::string& which, const std::string& defs, const char* name) {

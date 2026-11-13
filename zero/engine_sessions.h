@@ -593,6 +593,7 @@
         stage_h_[r] = buf(stage_have_h_[r] = std::max(stage_need_h_[r], stage_have_h_[r]));
         stage_owner_[r] = nullptr;
         stage_h8_[r] = false;
+        stage_packed_[r] = false;
       }
   }
   const GpuWeight* stage_owner_[kRoles] = {};

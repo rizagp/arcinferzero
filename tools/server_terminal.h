@@ -3,8 +3,25 @@
 // (see server.cpp): a server opened to the network with --host never runs a command for another computer.
 // The command runs in a job object, so a timeout ends it and every process it started; its output (stdout and stderr
 // together) is kept up to kMaxOut: the start and the end of a longer one.
+// Linux: bash instead of PowerShell, a process group instead of the job object, the same session state file.
 #pragma once
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "../src/json.h"
+#include "../src/platform_proc.h"  // (plat::ignore_sigpipe)
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -27,6 +44,241 @@ struct Result {
 
 inline constexpr size_t kMaxOut = 64 * 1024;
 
+// the head (3/4 of kMaxOut) and the tail of a long output, as both systems keep it
+struct OutKeep {
+  std::string head, tail;
+  size_t total = 0;
+  void add(const char* b, size_t n) {
+    total += n;
+    try {
+      const size_t room = kMaxOut * 3 / 4 > head.size() ? kMaxOut * 3 / 4 - head.size() : 0;
+      head.append(b, std::min<size_t>(room, n));
+      if (n > room) {
+        tail.append(b + room, n - room);
+        if (tail.size() > kMaxOut / 4 * 2) tail.erase(0, tail.size() - kMaxOut / 4);
+      }
+    } catch (...) {}
+  }
+  void into(Result& r) {
+    if (tail.size() > kMaxOut / 4) tail.erase(0, tail.size() - kMaxOut / 4);
+    r.truncated = total > head.size() + tail.size();
+    r.output = head + (r.truncated ? "\n[... " + std::to_string(total - head.size() - tail.size()) + " bytes left out ...]\n" : "") + tail;
+  }
+};
+
+#ifndef _WIN32
+// ---------------------------------------------------------------- Linux: bash
+// this program's folder (runz, serverz and the other tools next to it)
+inline std::string exe_dir() {
+  std::error_code ec;
+  const std::filesystem::path p = std::filesystem::read_symlink("/proc/self/exe", ec);
+  return ec ? std::string(".") : p.parent_path().string();
+}
+// the environment as name -> value
+inline std::map<std::string, std::string> env_map(char** env) {
+  std::map<std::string, std::string> m;
+  for (char** e = env; e && *e; ++e) {
+    const char* eq = strchr(*e, '=');
+    if (eq) m[std::string(*e, eq - *e)] = eq + 1;
+  }
+  return m;
+}
+// a word in single quotes for bash ('it'\''s')
+inline std::string sh_quote(const std::string& s) {
+  std::string o = "'";
+  for (char c : s) o += c == '\'' ? std::string("'\\''") : std::string(1, c);
+  return o + "'";
+}
+// (variables bash sets itself on every start: not carried in the session's state)
+inline bool shell_own(const std::string& k) { return k == "PWD" || k == "OLDPWD" || k == "SHLVL" || k == "_"; }
+
+// command (bash) in cwd; extra_path goes first in PATH (':'-separated); state: the session's file ("": a fresh
+// shell), the same JSON as on Windows ({cwd, env: the variables that differ from a fresh shell's, null for one
+// removed}): applied to the child's environment and folder here, written back here from what the shell left
+// (its folder and `env -0` at its exit, an EXIT trap: also after `exit`). A venv's deactivate is defined again while
+// one is active. cancelled: asked every 200 ms, as on Windows.
+inline Result run(const std::string& command, const std::string& cwd, const std::string& extra_path, int timeout_s,
+                  const std::string& state = "", const std::function<bool()>& cancelled = nullptr) {
+  Result r;
+  plat::ignore_sigpipe();
+  // the fresh shell's environment: the server's, PATH with extra_path first
+  std::map<std::string, std::string> base = env_map(environ);
+  // (no PATH at all, as under `env -i`: the usual folders, so the shell still finds ls, grep, python3)
+  base["PATH"] = extra_path + ":" + (base.count("PATH") ? base["PATH"] : std::string("/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"));
+  // (no locale named, as for a systemd service: UTF-8, as the Windows half sets its output encoding; else tools print
+  //  non-ASCII as '?' or octal escapes)
+  if (!base.count("LANG") && !base.count("LC_ALL") && !base.count("LC_CTYPE")) base["LC_ALL"] = "C.UTF-8";
+  std::map<std::string, std::string> env = base;
+  std::string dir = cwd;
+  if (!state.empty()) {
+    std::ifstream f(state, std::ios::binary);
+    const std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    Json j;
+    if (!s.empty() && Json::try_parse(s, j) && j.is_object()) {
+      for (const auto& [k, v] : j["env"].entries()) {
+        if (v.is_null()) env.erase(k);
+        else if (v.is_string()) env[k] = v.str();
+      }
+      std::error_code ec;
+      if (!j["cwd"].str().empty() && std::filesystem::is_directory(j["cwd"].str(), ec)) dir = j["cwd"].str();
+    }
+  }
+  // the script in a file of its own (no length limit, and the command's own stdin stays /dev/null), and the files the
+  // EXIT trap writes the folder and the environment to
+  auto tmp = [](const char* name) {
+    std::string p = plat::temp_dir() + "/inferzero-" + name + "-XXXXXX";
+    const int fd = mkstemp(p.data());
+    if (fd < 0) throw std::runtime_error("cannot make a temporary file");
+    ::close(fd);
+    return p;
+  };
+  const std::string script = tmp("cmd"), out_pwd = state.empty() ? "" : tmp("pwd"), out_env = state.empty() ? "" : tmp("env");
+  struct Gone {
+    std::vector<std::string> p;
+    ~Gone() {
+      for (const std::string& s : p) if (!s.empty()) unlink(s.c_str());
+    }
+  } gone{{script, out_pwd, out_env}};
+  {
+    std::string body;
+    if (!state.empty())
+      // (the two paths in variables: the command may change its own arguments, `set --`, which the trap read before)
+      body = "__az_pwd=" + sh_quote(out_pwd) + "; __az_env=" + sh_quote(out_env) + "\n"
+             "trap '__az_rc=$?; pwd -P > \"$__az_pwd\" 2>/dev/null; env -0 > \"$__az_env\" 2>/dev/null; exit $__az_rc' EXIT\n"
+             "if [ -n \"$VIRTUAL_ENV\" ] && [ -n \"$_OLD_VIRTUAL_PATH\" ]; then deactivate() { export PATH=\"$_OLD_VIRTUAL_PATH\"; "
+             "unset VIRTUAL_ENV _OLD_VIRTUAL_PATH VIRTUAL_ENV_PROMPT; unset -f deactivate; }; fi\n";
+    body += command + "\n";
+    std::ofstream o(script, std::ios::binary);
+    o << body;
+    if (!o) throw std::runtime_error("cannot write the command's script");
+  }
+  std::vector<std::string> envs;
+  for (const auto& [k, v] : env) envs.push_back(k + "=" + v);
+  std::vector<char*> envp;
+  for (std::string& e : envs) envp.push_back(e.data());
+  envp.push_back(nullptr);
+  std::vector<std::string> args = {"bash", "--noprofile", "--norc", script};
+  std::vector<char*> argv;
+  for (std::string& a : args) argv.push_back(a.data());
+  argv.push_back(nullptr);
+  {
+    std::error_code ec;
+    if (!dir.empty() && !std::filesystem::is_directory(dir, ec)) throw std::runtime_error("the terminal's folder is not there: " + dir);
+  }
+  int po[2];
+  if (pipe2(po, O_CLOEXEC) != 0) throw std::runtime_error("cannot make a pipe");
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_adddup2(&fa, po[1], 1);
+  posix_spawn_file_actions_adddup2(&fa, po[1], 2);
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+  posix_spawn_file_actions_addclosefrom_np(&fa, 3);  // (only its three: not the server's other files, a --log-file)
+#endif
+  if (!dir.empty()) posix_spawn_file_actions_addchdir_np(&fa, dir.c_str());
+  posix_spawnattr_t at;
+  posix_spawnattr_init(&at);
+  posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+  posix_spawnattr_setpgroup(&at, 0);  // (a group of its own: a timeout ends everything it started, as the job object)
+  sigset_t def, none;
+  sigemptyset(&def);
+  sigaddset(&def, SIGPIPE);
+  sigemptyset(&none);
+  posix_spawnattr_setsigdefault(&at, &def);
+  posix_spawnattr_setsigmask(&at, &none);
+  const auto t0 = std::chrono::steady_clock::now();
+  pid_t pid = -1;
+  const int sp = posix_spawnp(&pid, "bash", &fa, &at, argv.data(), envp.data());
+  posix_spawn_file_actions_destroy(&fa);
+  posix_spawnattr_destroy(&at);
+  ::close(po[1]);
+  if (sp != 0) {
+    ::close(po[0]);
+    throw std::runtime_error(std::string("cannot start bash (") + strerror(sp) + ")");
+  }
+  fcntl(po[0], F_SETFL, fcntl(po[0], F_GETFL) | O_NONBLOCK);
+  OutKeep keep;
+  char b[8192];
+  auto drain = [&] {  // (false: the pipe ended)
+    for (;;) {
+      const ssize_t n = ::read(po[0], b, sizeof b);
+      if (n > 0) { keep.add(b, (size_t)n); continue; }
+      return !(n == 0 || (errno != EAGAIN && errno != EINTR));
+    }
+  };
+  const auto deadline = t0 + std::chrono::seconds(timeout_s);
+  bool open = true, exited = false, killed = false;
+  int st = 0;
+  // (the shell's end seen without reaping it, WNOWAIT: its group is killed while it is a zombie, whose id no other
+  //  process can take meanwhile; reaped after)
+  auto ended = [&] {
+    siginfo_t si{};
+    return waitid(P_PID, pid, &si, WEXITED | WNOHANG | WNOWAIT) == 0 && si.si_pid == pid;
+  };
+  while (!exited) {
+    pollfd p{po[0], POLLIN, 0};
+    if (open && poll(&p, 1, 200) > 0) open = drain();
+    if (!open) usleep(20000);
+    if ((exited = ended())) break;
+    const bool over = std::chrono::steady_clock::now() >= deadline, gone_ = !over && cancelled && cancelled();
+    if (!over && !gone_) continue;
+    (over ? r.timed_out : r.cancelled) = true;
+    killed = true;
+    break;
+  }
+  // what it left running in the background ends with it (its pipe closes), as the job object's end does; then the
+  // shell reaped; what is still in the pipe read for up to 2 s
+  kill(-pid, SIGKILL);
+  while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+  for (int k = 0; k < 20 && open; ++k) {
+    pollfd p{po[0], POLLIN, 0};
+    if (poll(&p, 1, 100) > 0) open = drain();
+  }
+  ::close(po[0]);
+  r.exit_code = killed ? 1 : WIFEXITED(st) ? WEXITSTATUS(st) : WIFSIGNALED(st) ? 128 + WTERMSIG(st) : -1;
+  // the session's state from what the shell left (a killed command left nothing: the state stays as it was)
+  if (!state.empty() && !killed) {
+    std::ifstream fp(out_pwd), fe(out_env, std::ios::binary);
+    std::string pwd;
+    std::getline(fp, pwd);
+    const std::string raw((std::istreambuf_iterator<char>(fe)), std::istreambuf_iterator<char>());
+    if (!raw.empty()) {
+      std::map<std::string, std::string> now;
+      for (size_t i = 0; i < raw.size();) {
+        const size_t e = raw.find('\0', i), end = e == std::string::npos ? raw.size() : e;
+        const std::string kv = raw.substr(i, end - i);
+        const size_t eq = kv.find('=');
+        if (eq != std::string::npos) now[kv.substr(0, eq)] = kv.substr(eq + 1);
+        i = end + 1;
+      }
+      Json ej = Json::object();
+      for (const auto& [k, v] : now)
+        if (!shell_own(k) && (!base.count(k) || base[k] != v)) ej.set(k, Json(v));
+      for (const auto& [k, v] : base)
+        if (!shell_own(k) && !now.count(k)) ej.set(k, Json());
+      Json sj = Json::object();
+      sj.set("cwd", Json(pwd.empty() ? dir : pwd));
+      sj.set("env", ej);
+      static std::atomic<uint64_t> seq{0};  // (two commands of one chat at once: two temporary files, never one)
+      const std::string tmp_state = state + "." + std::to_string(plat::process_id()) + "-" + std::to_string(++seq) + ".tmp";
+      {
+        std::ofstream o(tmp_state, std::ios::binary | std::ios::trunc);
+        o << sj.dump();
+        o.close();
+        if (!o) {
+          unlink(tmp_state.c_str());
+          throw std::runtime_error("cannot write the terminal's state");
+        }
+      }
+      if (::rename(tmp_state.c_str(), state.c_str()) != 0) unlink(tmp_state.c_str());
+    }
+  }
+  keep.into(r);
+  r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  return r;
+}
+
+#else
 inline std::wstring wide(const std::string& s) {
   if (s.empty()) return L"";
   const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
@@ -234,5 +486,7 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   r.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   return r;
 }
+
+#endif
 
 }  // namespace term

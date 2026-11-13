@@ -43,8 +43,8 @@ struct ClRt {
     clGetDeviceInfo(device, CL_DRIVER_VERSION, sizeof(drv) - 1, drv, nullptr);
     device_id = std::string(name) + "|" + drv;
     if (!getenv("ARC_NO_KCACHE")) {  // (a folder per driver, swept once per process: kcache.h)
-      cache_dir = kcache_dir(app_dir() + "\\kernels", drv);
-      kcache_sweep(app_dir() + "\\kernels", cache_dir);
+      cache_dir = kcache_dir(app_dir() + PLAT_SEP "kernels", drv);
+      kcache_sweep(app_dir() + PLAT_SEP "kernels", cache_dir);
     }
     return true;
   }
@@ -57,7 +57,7 @@ struct ClRt {
       const uint64_t h = fnv1a(src + "\x01" + opts + "\x01" + device_id);
       char hex[17];
       snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)h);
-      path = cache_dir + "\\" + hex + ".bin";
+      path = cache_dir + PLAT_SEP + hex + ".bin";
       std::ifstream f(path, std::ios::binary);
       if (f) {
         std::vector<unsigned char> bin((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());

@@ -61,9 +61,13 @@ inline bool save(const std::vector<Project>& ps) {
   return files::write_shared(list_path(), j.dump());
 }
 inline std::string id_of(const fs::path& folder) {
+#ifdef _WIN32
   std::wstring w = folder.wstring();
   for (wchar_t& c : w) c = (wchar_t)towlower(c);
   const std::string s = fs::path(w).string();
+#else
+  const std::string s = folder.lexically_normal().string();  // (case-sensitive names, their bytes as they are)
+#endif
   uint64_t h = 1469598103934665603ull;
   for (unsigned char b : s) h = (h ^ b) * 1099511628211ull;
   char b[17];
@@ -85,17 +89,33 @@ inline std::string refuse(const fs::path& f) {
   if (!f.is_absolute()) return "not a full path";
   if (!fs::is_directory(f, ec)) return "no such folder";
   auto under = [&](const fs::path& a, const fs::path& b) {  // (a inside b, or b itself; any case)
+#ifndef _WIN32
+    return plat::path_inside(a, b, true);  // (Linux: '/', case-sensitive)
+#else
     std::wstring x = a.wstring(), y = b.wstring();
     for (wchar_t& c : x) c = (wchar_t)towlower(c);
     for (wchar_t& c : y) c = (wchar_t)towlower(c);
     while (!y.empty() && (y.back() == L'\\' || y.back() == L'/')) y.pop_back();
     return !y.empty() && x.compare(0, y.size(), y) == 0 && (x.size() == y.size() || x[y.size()] == L'\\');
+#endif
   };
   const fs::path data = fs::weakly_canonical(fs::path(app_dir()), ec);
   if (under(f, data) || under(data, f)) return "the inferzero data folder (its chats, caches and memory) cannot be a project folder, nor a folder that holds it";
   for (const char* v : {"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"})
     if (const char* d = getenv(v); d && *d && under(f, fs::path(d))) return std::string("a system folder (") + d + ")";
   if (under(f, f.root_path() / "Windows")) return "a Windows folder";
+#ifndef _WIN32
+  // (Linux: the system's own folders, and the home folder with its settings and keys, as the profile below on Windows)
+  for (const char* d : {"/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/boot", "/dev", "/proc", "/sys", "/run",
+                        "/var/lib", "/var/log", "/snap"})
+    if (under(f, fs::path(d))) return std::string("a system folder (") + d + ")";
+  if (const char* up = plat::home_env(); up && *up) {
+    const fs::path u = fs::weakly_canonical(fs::path(up), ec);
+    if (under(u, f)) return "your whole home folder (or a folder that holds it): pick a folder in it, e.g. ~/Documents";
+    for (const char* sub : {".ssh", ".gnupg", ".aws", ".azure", ".config", ".kube", ".docker", ".local/share/keyrings", ".pki"})
+      if (under(f, u / sub)) return std::string("a settings or keys folder (") + sub + ")";
+  }
+#endif
   if (const char* up = getenv("USERPROFILE"); up && *up) {  // (the profile itself, and its settings and keys)
     const fs::path u = fs::weakly_canonical(fs::path(up), ec);
     if (under(u, f)) return "your whole user folder (or a folder that holds it): pick a folder in it, e.g. Documents";
@@ -137,10 +157,14 @@ inline bool resolve_in(const Project& p, std::string& rel, fs::path& file, std::
     return false;
   }
   const fs::path f = fs::weakly_canonical(root / fs::path(rel), ec);
+#ifdef _WIN32
   std::wstring r = root.wstring(), x = f.wstring();
   for (wchar_t& c : r) c = (wchar_t)towlower(c);
   for (wchar_t& c : x) c = (wchar_t)towlower(c);
   if (ec || x.compare(0, r.size(), r) != 0 || x.size() <= r.size() || x[r.size()] != L'\\') {
+#else
+  if (ec || !plat::path_inside(f, root, false)) {
+#endif
     err = "outside the project's folder: " + rel;
     return false;
   }
@@ -178,8 +202,7 @@ inline std::vector<Entry> walk(const Project& p, size_t limit, bool& more) {
   for (; it != end && !ec; it.increment(ec)) {
     const std::string name = it->path().filename().string();
     // (a junction or link: not followed, its files may be outside the folder; resolve() refuses them too)
-    const DWORD at = GetFileAttributesW(it->path().c_str());
-    const bool reparse = at != INVALID_FILE_ATTRIBUTES && (at & FILE_ATTRIBUTE_REPARSE_POINT);
+    const bool reparse = plat::is_link(it->path());
     if (it->is_directory(ec)) {
       bool drop = reparse || (!name.empty() && name[0] == '.');
       for (const char* s : skip) drop = drop || files::lower(name) == s;
@@ -263,13 +286,17 @@ inline void api(const HttpRequest& rq, HttpResponse& rs) {
       Json d = Json::array();
       std::error_code ec;
       if (path.empty()) {  // (the drives, and the user's own folders)
+#ifdef _WIN32
         const DWORD drives = GetLogicalDrives();
         for (int k = 0; k < 26; ++k)
           if (drives & (1u << k)) {
             const std::string root = std::string(1, (char)('A' + k)) + ":\\";
             if (fs::is_directory(fs::path(root), ec)) d.push(Json(root));
           }
-        if (const char* up = getenv("USERPROFILE"))
+#else
+        d.push(Json(std::string("/")));  // (the root, then the home folder's usual folders)
+#endif
+        if (const char* up = plat::home_env())
           for (const char* sub : {"Documents", "Desktop", "Downloads", "OneDrive"})
             if (fs::is_directory(fs::path(up) / sub, ec)) d.push(Json((fs::path(up) / sub).string()));
         Json r = Json::object();
@@ -281,8 +308,7 @@ inline void api(const HttpRequest& rq, HttpResponse& rs) {
       for (fs::directory_iterator it(f, fs::directory_options::skip_permission_denied, ec), end; it != end && !ec; it.increment(ec)) {
         if (!it->is_directory(ec)) continue;
         const std::string n = it->path().filename().string();
-        const DWORD at = GetFileAttributesW(it->path().c_str());
-        if (n.empty() || n[0] == '.' || n[0] == '$' || (at != INVALID_FILE_ATTRIBUTES && (at & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)))) continue;
+        if (n.empty() || n[0] == '.' || n[0] == '$' || plat::is_hidden_or_system(it->path())) continue;
         d.push(Json(n));
         if (d.size() >= 2000) break;
       }

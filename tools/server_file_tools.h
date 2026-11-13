@@ -60,7 +60,7 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
     char b[40] = "";
     const std::time_t ct = (std::time_t)t;
     std::tm tm{};
-    if (localtime_s(&tm, &ct) == 0) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+    if (plat::local_time(ct, tm)) strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
     return std::string(b);
   };
   try {
@@ -940,7 +940,8 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       const std::string cmd = a["command"].str();
       const bool session = a["session"].is_bool() && a["session"].as_bool(), reset = a["reset"].is_bool() && a["reset"].as_bool();
       if (cmd.empty() && !reset && !session) return fail(400, "command required");
-      // (a command line holds 32767 characters: the script goes in as base64 of UTF-16, 2.7 characters a byte)
+      // (Windows: a command line holds 32767 characters, and the script goes in as base64 of UTF-16, 2.7 characters a
+      //  byte. Linux runs a script file, without that limit; the same 8000 keep one command a size a model can review)
       if (cmd.size() > 8000) return fail(400, "command too long (8000 characters at most): split it, e.g. write a script with Set-Content in parts, then run it");
       const std::string chat = a["chat_id"].str();
       const std::string cwd = files::valid_id(chat) ? st.chat_dir_make(chat) : app_dir();
@@ -975,7 +976,14 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       }
       const int tmo = (int)std::clamp(a["timeout_s"].as_number(120), 1.0, 600.0);
       std::string path = term::exe_dir();
-      if (std::filesystem::is_directory(std::filesystem::path(app_dir()) / "bin", ec)) path = (std::filesystem::path(app_dir()) / "bin").string() + ";" + path;
+#ifdef _WIN32
+      const char* const list_sep = ";";
+      const char* const filter_hint = "(Select-Object -First N, Select-String, a file)";
+#else
+      const char* const list_sep = ":";  // (PATH's separator on Linux)
+      const char* const filter_hint = "(head -n N, grep, a file)";
+#endif
+      if (std::filesystem::is_directory(std::filesystem::path(app_dir()) / "bin", ec)) path = (std::filesystem::path(app_dir()) / "bin").string() + list_sep + path;
       // (the page closed the request, Stop or Esc: the command ends with it, not at its timeout)
       term::Result t = term::run(cmd, start, path, tmo, session ? state.string() : "", [&] { return rs.client_gone(); });
       if (t.cancelled) return;  // (nobody reads the reply)
@@ -986,8 +994,8 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
         size_t head = budget * 3 / 4, tail = t.output.size() - (budget - head);
         while (head > 0 && ((unsigned char)t.output[head] & 0xC0) == 0x80) --head;
         while (tail < t.output.size() && ((unsigned char)t.output[tail] & 0xC0) == 0x80) ++tail;
-        t.output = t.output.substr(0, head) + "\n[... " + std::to_string(tail - head) + " characters left out: a smaller output "
-                   "(Select-Object -First N, Select-String, a file) shows the part you need ...]\n" + t.output.substr(tail);
+        t.output = t.output.substr(0, head) + "\n[... " + std::to_string(tail - head) + " characters left out: a smaller output " +
+                   filter_hint + " shows the part you need ...]\n" + t.output.substr(tail);
         t.truncated = true;
       }
       Json r = Json::object();

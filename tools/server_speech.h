@@ -136,7 +136,7 @@ inline void attach_e4b(srvwh::Service& wh, const std::vector<ModelInfo>& catalog
     //  last-model.txt as it is)
     rq.headers["x-arc-speech"] = "1";
     rq.body = audio_chat_body(wav, "wav", e4b, lang, context, false, secs).dump();
-    HttpResponse rs(INVALID_SOCKET);
+    HttpResponse rs(plat::kNoSocket);
     int status = 0;
     std::string out;
     rs.on_send = [&](int st, const std::string& b) { status = st; out = b; };

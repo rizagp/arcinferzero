@@ -42,10 +42,13 @@ static void warn_gpu_neighbours() {
   // (Linux: the processes' names in /proc/<pid>/comm, "serverz", "runz", "llama-...")
   std::string found;
   std::error_code ec;
-  for (const auto& d : std::filesystem::directory_iterator("/proc", ec)) {
-    const std::string pid = d.path().filename().string();
-    if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos || std::stoul(pid) == plat::process_id()) continue;
-    std::ifstream f(d.path() / "comm");
+  const std::string me = std::to_string(plat::process_id());
+  // (the error_code forms throughout: a process ending during the walk must not end runz with an exception)
+  for (std::filesystem::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
+    const std::filesystem::path& d = it->path();
+    const std::string pid = d.filename().string();
+    if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos || pid == me) continue;
+    std::ifstream f(d / "comm");
     std::string n;
     if (!std::getline(f, n)) continue;
     if (n == "serverz" || n == "runz" || n.rfind("llama-", 0) == 0) found += (found.empty() ? "" : ", ") + n + " (pid " + pid + ")";
@@ -575,6 +578,29 @@ static int run_main(int argc, char** argv) {
              mid, ok ? "ok" : "FAILED", tail, same ? "bit-identical" : "DIFFER");
       all = all && same;
       if (host) eng.drop_host_snapshot(); else eng.drop_snapshot(0);
+    }
+    // Flash Next verification embeds directly: forward() after restore would hide stale host PLE IDs.
+    // Fixed draft IDs keep this independent of the drafter's predictions; every vocabulary logit is compared.
+    // Both snapshots: the device one (restore(slot)) had the same gap as the host one.
+    if (eng.hp.ple_layer >= 0 && eng.has_mtp) {
+      const std::vector<int> drafts{toks[a + 1]};
+      eng.reset();
+      feed(toks.data(), a);
+      const std::vector<float> cold = eng.verify(toks[a], drafts);
+      eng.verify_done(0);
+      for (int host = 0; host < 2; ++host) {
+        eng.reset();
+        feed(toks.data(), a);
+        if (host) eng.snapshot_host(); else eng.snapshot(0);
+        feed(other.data(), mid);
+        const bool ok = (host ? eng.restore_host() : eng.restore(0)) && eng.pos == a;
+        const std::vector<float> back = ok ? eng.verify(toks[a], drafts) : std::vector<float>();
+        const bool same = ok && back.size() == cold.size() && memcmp(back.data(), cold.data(), back.size() * 4) == 0;
+        if (ok) eng.verify_done(0);
+        if (host) eng.drop_host_snapshot(); else eng.drop_snapshot(0);
+        printf("%s snapshot followed directly by verify: %s\n", host ? "host" : "device", same ? "bit-identical" : "DIFFER");
+        all = all && same;
+      }
     }
     // a saved conversation: the prompt to a and a snapshot there, saved to a file; the engine's caches then overwritten
     // by other tokens (reset() leaves the caches' contents), reset, the file loaded: the next tokens, then the loaded

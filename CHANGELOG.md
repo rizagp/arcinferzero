@@ -7,6 +7,157 @@
   Add a model-free regression to test_quant_rows and run it in CI. The GPU still
   rejects Q5_1; this repairs CPU references, not KL for models main can run.
 
+## 2026-11-14: a split model's sums straight from GPU to GPU where the links allow it; `Connection: close` honoured
+
+- **Multi-GPU (`--gpus`):** the engine times every link at start: each GPU to host memory and back and, when the
+  driver reports peer access (Linux), each GPU to every other. Both go to the log. When direct copies are faster, every
+  GPU gets an inbox in its own memory that the others' parts and sums are copied straight into: one PCIe crossing
+  instead of two, and the kernels read local memory. The logits are the same bit for bit
+  (`ARC_TP_SIM`, forced on: 2 and 3 shards, against release 2026.11.14.04). `ARC_TP_P2P=0` / `=1` forces it off / on.
+  Windows' B60s report no peer access: unchanged there. Speed on Linux B60s: not measured yet (issue #17).
+- **Server:** a request with `Connection: close`, or HTTP/1.0 without `keep-alive`, gets `Connection: close` and the
+  connection ends after the reply. Before, the server answered `keep-alive` and kept the connection waiting for up to
+  600 s.
+
+## 2026-11-14: the Linux port audited as a whole; its findings fixed (issue #11)
+
+- **Audit:** Pi with DeepSeek read every Linux code path of the port, statically (docs/audit-2026-11-14-linux.md): no
+  Windows change; every fix of the first audit in place.
+- **Fixed on Linux:** models in the Hugging Face cache are found where `hf download` puts them (`~/.cache/huggingface`,
+  or `$XDG_CACHE_HOME`), without `HF_HOME` (before: the model list was empty on a stock install); the expert file's
+  writer survives a short `write(2)`; a child process (the terminal's shell, an MCP server, ffmpeg) gets only its own
+  three files, not the server's log; the terminal's session state is safe with two commands at once and with a command
+  that runs `set --`; a filesystem that takes `O_DIRECT` only at open is read cached; smaller ones (an error number,
+  `PATH` when none is set, `runz`'s process scan, the probes' kernel-cache paths, `-rdynamic` in the build line).
+- **Checked:** Linux (WSL, the 4B) and Windows give the same server replies; the terminal and project-folder tests on
+  both; Windows' CI build and unit tests; the 4B's logits on Windows bit-identical to release 2026.11.14.01.
+- **Found while testing, left for later (both systems, older than the port):** the HTTP server keeps a connection open
+  when the request says `Connection: close`.
+
+## 2026-11-14: DeepSeek's audit of the day's changes (docs/audit-2026-11-14.md): no high or medium findings; 5 small fixes
+
+- `clEnqueueMapBuffer` bounds- and null-checked; unmap writes back only maps for writing; `logit_bias` ids past
+  INT_MAX ignored (they wrapped to another token); `rmsnorm_h8r`'s limits as build errors; a plain norm ends the fused
+  norm's rotation mark; `tests/test_pbkdf2.cpp` in CI. Logits identical to release 2026.11.14.03 (default, the fused
+  norm, the 140T packing emulated).
+
+## 2026-11-14: the Arc 140T's prompt GEMM reads its operands in the DPAS order (issue #5)
+
+- **Why:** PascalSoftwares' `xw_peak` on a Core Ultra 9 285H (2026-11-13): `gemm_xw8` 32 x 16 with both operands in
+  the DPAS operand order ("packAW") ran the 27B's FFN shapes at 25.0 TOPS against the default's 23.4 (4,096 tokens,
+  +7 %) and 24.5 against 21.6 (512, +13 %), bit-identical. Only `xw_peak` made those layouts (on the CPU); the engine
+  wrote the plain order. His model sweep found the default 32 x 16 already the best tile (329.7 tok/s at 4K).
+- **What:** `ARC_GEMM_XW_PACK=3` (the 140T preset's default; `1` activations, `2` weights, `0` off): the kernels that
+  make the GEMM's inputs write them in that order themselves, with no repacking pass: `h8r_act` the activations,
+  `h8r_decode` (or `h8r_weights` on a weight's first decode) the staged weights, and `gemm_xw8` reads them with
+  `-DXW_PACKA -DXW_PACKW`. Only where `gemm_xw8` takes the GEMM (one column group a sub-group, its shapes); resident
+  weights stay plain; a staged weight records its order and is decoded again for a GEMM that needs the other one; the
+  fused norm (`ARC_H8_NORM`) steps aside. The start-up check also tests each packed form against gemm.cl.
+- **Checked** (laptop, the 140T preset with DPAS emulated, `ARC_140T=1 ARC_XMX_TRY=2`): the 27B's logits with packing
+  3 / 1 / 2 identical to 0, and the packed kernels built (`ARC_KLIST`); the 4B with weights decoded just in time the
+  same; the default path identical to release 2026.11.14.02. Expected on a 140T: the 27B's prompt +4-5 % at 4K,
+  ~+7 % at 512 (its GEMMs are ~72 % of the prompt); the owner to measure. Review: no defect; packing limited to one
+  column group a sub-group (with wider tiles a packed input could reach a GEMM gemm_xw8 declines).
+
+## 2026-11-14: the kernels are compiled for the GPU they run on (issue #11)
+
+- **Why:** the engine runs its kernels through Level Zero, which only Intel's driver has, but compiles them with
+  OpenCL and loads the result as a native binary. OpenCL used the first GPU of the first platform that had one. A
+  machine can list others' OpenCL first: Mesa's rusticl on Linux (a `clinfo` of 2 Pro B60s on issue #11 shows it next to
+  Intel's platform), Microsoft's OpenCLOn12 on Windows (a B70 on issue #12 has it), or an Intel iGPU before an Arc card.
+  Then the kernels would be compiled for the wrong device: the load fails, or the card's features (8-lane sub-groups,
+  XMX, 2D loads) are read from the other one.
+- **What** (`zero/clrt.h`): Level Zero starts first; OpenCL then takes Intel's platforms before others' (rusticl,
+  OpenCLOn12, Clover, PoCL last), and on them the GPU with Level Zero GPU 0's PCI device id, else its name, else the
+  first Intel GPU, else the first GPU as before.
+- **Checked** (laptop, one Arc iGPU, Intel's GPU and CPU platforms): the same device as before, logits bit-identical to
+  release 2026.11.14.02; `serverz`, `mgpu_probe`, `gpu_bench` start as before. The cases it fixes need such machines;
+  the review traced them in the code.
+
+## 2026-11-14: the norm and the H8 rotation of its rows in one kernel, opt-in (B60 prefill plan 13.5)
+
+- **Why:** with H8 (the default on Arc B-series cards) each layer input was normalized by `rmsnorm_quant`, which also
+  wrote an f32 copy of the rows, and then `h8r_act` read that copy back to rotate it: on a Pro B60's 27B 4K prompt
+  232 ms of 3,051 (docs/xe2-tuning.md section 13).
+- **What:** `ARC_H8_NORM=1` runs the norm of the DeltaNet, attention and FFN inputs inside the H8Share scope of the
+  GEMMs that read them, as one kernel (`ops.cl rmsnorm_h8r`): `rmsnorm_quant`'s body unchanged (the same work-group
+  and reduction, the same int8 rows), the f32 values in local memory instead of the copy, and `h8r_act`'s rotation
+  made from them. The copy's write and read and 128 of a prompt's 256 rotation launches are gone. Off by default
+  until a B60 measures it.
+- **Checked** (laptop, `ARC_H8=1`): logits bit-identical with and without it (the 4B over chunks of 512 with a padded
+  last chunk, the 27B, the 4B split over 2 with `ARC_TP_SIM`); without it the default and H8 paths identical to
+  release 2026.11.14.01. The 27B's 2,048-token prompt: norm + rotation 687-694 ms -> 498-545 ms of GPU time (the
+  fused norm 267-270 ms against `rmsnorm_quant`'s 327); the whole prompt within noise on the laptop, whose GEMMs
+  dominate. Review: no defect; a size check added (a row past ~15,000 values would not fit in local memory).
+
+## 2026-11-13 (evening): serverz runs on Linux (step 3 of the port, issue #11)
+
+- **What:** `serverz` builds and runs on Linux (checked in WSL with the 4B on the Arc iGPU). Images, audio and PDF
+  pages go through `ffmpeg`, `ffprobe` and poppler when installed (`src/platform_proc.h` runs them with time and size
+  limits, in a process group), with a message naming the package when not. The terminal tool runs bash with the same
+  chat sessions; MCP servers through `posix_spawn`; the remote access password hash in C++ (`src/pbkdf2.h`, the same
+  hashes as Windows' CNG); a crash report from the crash signals. The web UI words the terminal for bash when
+  `/props` says `"platform": "linux"`. `web_view` and the recorder stay Windows-only for now.
+- **Checked:** the server test gives the same replies in WSL as on Windows, generated text included; the terminal,
+  project folders and the media functions tested on both systems (docs/linux-port.md, Progress). Windows: every CI
+  target builds, its unit tests pass, the server's replies as release 2026.11.13.09's.
+- **Audited:** by Pi with DeepSeek (docs/audit-2026-11-13b.md): no Windows change found; its findings fixed before the
+  commit, among them a PDF page error that could end an OCR batch, a wait that could outlive its deadline, the project
+  folder checks on Linux, and the crash handler's safety. A stereo file's mix is the channels' average, as on Windows.
+
+## 2026-11-13: the wide-tile GEMM prefetches its next chunks, opt-in (B60 prefill plan 13.2)
+
+- **Why:** on a Pro B60 the 27B's prompt GEMMs run at ~52 % of the XMX peak (~103 of ~197 TOPS), and the tile
+  sweep found no better shape than 32 x 64 (docs/xe2-tuning.md section 13): what is left is feeding the engines.
+- **What:** `ARC_GEMM_XW_PF=1` prefetches into L1 the weights of the 64-value chunk `ARC_GEMM_XW_PFD` (1 / 2 / 4,
+  default 2) chunks ahead, one 2D prefetch per column group (its 1 KB chunk as a 64-byte-wide surface of 16 rows:
+  a quarter of the messages two buffer prefetches made); `=2` the activations (2D loads only), `=3` both. ocloc
+  `bmg`: no spills, 128 DPAS a superblock as before, +16 messages a superblock for each part. Off by default;
+  `bench\xw_sweep.ps1 -Prefetch` tries the nine settings.
+- **Checked:** the start-up check passes for each setting; with DPAS emulated (16 lanes, H8) the 4B's logits are
+  identical to gemm.cl's at PF 1 (PFD 1 / 2 / 4) and 3; the default path identical to release 2026.11.13.11.
+  Without 2D loads (or emulated) only the weights' part is built, and the log says so (found by the review).
+
+## 2026-11-13: a split model keeps its decoded weights when its own share fits `--budget` (B60 prefill plan 13.1)
+
+- **Why:** `plan_weights()` compared the whole model's raw + decoded W8 weights with `--budget`, also on a split, so
+  the 27B (~11 GB raw + ~26 GB W8) decoded its weights for every prompt chunk on 2-4 B60s, though a shard of 2 needs
+  ~5.7 + ~13 GB. At a 512-token prompt that decode is ~40 % of one B60's prompt time (docs/xe2-tuning.md section 13).
+- **What:** each layer matrix counts by the share a shard holds (`tp_weight_share`, `zero/mgpu/engine_tp_shard.h`,
+  the same rules as the split itself), rank 0's share on every shard: on an uneven split (the 27B over 3: k-heads
+  6 / 6 / 4) the shards must decide alike, or the split's layout check fails it over to one GPU (found by the
+  review). Under `ARC_TP_SIM` the budget is divided by the shards, which all sit on the one GPU. The default budget
+  (9 GB) is unchanged: the 27B over 2 B60s keeps its weights with `--budget 20`, over 4 with `--budget 10`. One GPU:
+  the same sum as before.
+- **Checked** (laptop, `ARC_TP_SIM`): the 27B's decision from serverz's `--ctx auto` dry probe; a split's resident
+  weights against just-in-time (`--budget 0`), the 4B over 2 / 3 shards, with and without `ARC_H8=1`: logits
+  bit-identical; the uneven 27B split over 3 at a budget between its shards' shares loads and runs; one GPU
+  bit-identical to release 2026.11.13.11. Speed: the B60s to measure.
+
+## 2026-11-13: Flash Next's PLE history after a snapshot restore (chumbleyjl, PR #15)
+
+- **The bug:** Flash Next's n-gram embedding (PLE) needs the two token ids before each position; the GPU keeps them in
+  the PLE layer's state, the host a copy that `forward()` refreshes (`ple_sync`). `verify()` (speculative decoding)
+  embeds without that refresh, so a verification right after restoring a snapshot used the ids of the continuation
+  that was dropped. On a native Linux B70 a replayed reasoning answer drifted at character 344.
+- **The fix:** both restores refresh the host's ids from the restored state: `restore_host()` (the PR) and
+  `restore(slot)`, the device snapshot, which had the same gap (added to the PR; the server uses both). `runz
+  --snap-test` checks a verification straight after each restore against a cold one, bit for bit, for a Flash Next
+  model with MTP.
+- **Checked:** the owner's B70 runs: restored and cold continuations bit-identical (two restore paths, 256 tokens
+  each). Laptop: other models unchanged (the 4B's `--snap-test` and logits as before; the change runs only with PLE).
+
+## 2026-11-13: expert records copied without their pool's padding (chumbleyjl, PR #14)
+
+- **The bug:** a pool's slots are padded to its largest record. With the RAM tier (discrete cards with free RAM,
+  `ARC_XRAM_GB`), a record is copied to the GPU from where it sits in RAM, packed at its layer's own size, and the
+  warm-up, demand and deep-prefetch copies read a whole padded slot from it: past the record, past a 1 GiB piece for
+  the last one. On a native Linux Arc Pro B70 with a 32 GiB tier that crashed Flash Next; on the laptop it read
+  readable memory without a crash.
+- **The fix:** every copy takes the layer's record size (`zero/xcache.h`; the deep-prefetch copy added to the PR).
+  No kernel or weight change; the padding is never read.
+- **Checked:** the 35B-A3B forced into padded pools, RAM tier off and on, the same logits as before bit for bit
+  (docs/before-after.md); the B70 owner's runs with 32 / 64 GiB tiers complete.
 
 ## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
 

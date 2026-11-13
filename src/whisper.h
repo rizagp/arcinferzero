@@ -10,7 +10,9 @@
 #include "json.h"
 #include "tokenizer.h"
 #include "platform.h"  // (windows.h on Windows; plat::FileMap)
+#ifdef _WIN32
 #include <compressapi.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -527,6 +529,19 @@ using Progress = std::function<bool(double done, double total, const std::vector
 // gzip-style compression ratio of a text (openai: len(text) / len(zlib.compress(text))), with Windows' MSZIP (deflate)
 inline float compression_ratio(const std::string& text) {
   if (text.empty()) return 0.0f;
+#ifndef _WIN32
+  // (Linux: zlib itself, loaded at run time, as openai's own measure; no zlib: 1, as a failed compression on Windows)
+  typedef int (*Compress2)(unsigned char*, unsigned long*, const unsigned char*, unsigned long, int);
+  static const Compress2 z = [] {
+    void* h = plat::dl_open(nullptr, "libz.so.1");
+    return h ? (Compress2)plat::dl_sym(h, "compress2") : (Compress2) nullptr;
+  }();
+  if (!z) return 1.0f;
+  std::vector<unsigned char> zout(text.size() + text.size() / 1000 + 64);
+  unsigned long zn = (unsigned long)zout.size();
+  if (z(zout.data(), &zn, (const unsigned char*)text.data(), (unsigned long)text.size(), 6) != 0 || zn == 0) return 1.0f;
+  return (float)text.size() / (float)zn;
+#else
   COMPRESSOR_HANDLE h = nullptr;
   if (!CreateCompressor(COMPRESS_ALGORITHM_MSZIP, nullptr, &h)) return 1.0f;
   std::vector<uint8_t> out(text.size() * 2 + 1024);
@@ -537,6 +552,7 @@ inline float compression_ratio(const std::string& text) {
   // (MSZIP frames the deflate stream with a 2-byte "CK" signature per block where zlib has a 2-byte header and a
   //  4-byte checksum: within a few bytes of zlib's size)
   return (float)text.size() / (float)(n + 4);
+#endif
 }
 
 inline void log_softmax(const float* x, int n, std::vector<float>& out) {
@@ -1425,7 +1441,11 @@ inline std::string find_model() {
   std::vector<fs::path> roots;
   if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
   if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
+#ifdef _WIN32
   if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
+#else
+  if (const std::string h = plat::hf_home_hub(); !h.empty()) roots.push_back(h);  // ($XDG_CACHE_HOME or ~/.cache)
+#endif
   // (large-v3 first since 2026-10-28: the user's choice of transcript models is Qwen3-ASR, Gemma 4 E4B and
   //  large-v3; turbo when it is the only one)
   for (const char* name : {"models--Systran--faster-whisper-large-v3", "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo",

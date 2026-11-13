@@ -693,6 +693,11 @@ class Service {
       fs::path w = e.path();
       w.replace_extension(".wav");
       if (!side["complete"].as_bool()) {
+#ifndef _WIN32
+        // (Linux: no zero-recorder yet; a recording whose process is still alive is left to it)
+        const long pid = (long)side["pid"].as_number(0);
+        const bool running = pid > 0 && kill((pid_t)pid, 0) == 0;
+#else
         const DWORD pid = (DWORD)side["pid"].as_number(0);
         HANDLE ev = OpenEventW(SYNCHRONIZE, FALSE, L"Local\\inferzero-recorder-stop");
         // (the recorder before the rename to inferzero, 2026-11-10, named its event so)
@@ -701,6 +706,7 @@ class Service {
         const bool running = ev && h && WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
         if (h) CloseHandle(h);
         if (ev) CloseHandle(ev);
+#endif
         if (running) continue;
         fix_wav_sizes(w);
       }
@@ -2089,7 +2095,7 @@ class Service {
     for (int i = 0; i < 100; ++i) {
       const std::time_t t = std::time(nullptr);
       std::tm tm{};
-      localtime_s(&tm, &t);
+      plat::local_time(t, tm);
       char b[40];
       std::strftime(b, sizeof b, "%Y%m%d-%H%M%S", &tm);
       char r[12];

@@ -59,6 +59,54 @@ All GPUs compute the same float sum, so their residual streams stay identical. H
 Windows have no peer access to each other: `mgpu_probe` on 4× B60 showed every direct copy failing, and copies through
 host memory taking ~16 µs for 20 KB.
 
+### Sums straight between GPUs (`ARC_TP_P2P`, 2026-11-14)
+
+On Linux the driver can report peer access between B60s (scenic6942's two cards, issue #17: direct copies at ~13 GB/s,
+against ~5 GB/s through host memory). At start the engine now times every link, one GPU at a time, with 16 MB copies
+on the copy engine the prompt sums use: each GPU to host memory and back, and, when the driver reports peer access
+between every pair, each GPU to every other. The log shows each link and the choice:
+
+```
+inferzero: links: GPU 0 -> host 12.1 GB/s, host -> GPU 0 11.8 GB/s, -> GPU 1 13.0 GB/s
+inferzero: the GPUs' sums go straight from GPU to GPU (13.0 GB/s directly against 11.8 through host memory)
+```
+
+The sums go direct when the slowest direct copy is at least 1.1 times the slowest direction of the host links. Then
+every GPU gets an inbox in its own memory, 2 × (N + 1) × chunk × n_embd × 2 bytes (2 GPUs, the 27B at chunk 512:
+31 MB). Its layout is a half of the host buffer:
+- the prompt sums (the f16 reduce-scatter in pieces): a GPU's copy engine writes block k's pieces straight into GPU
+  k's inbox, and its own block's sums into every other GPU's inbox;
+- the one-step f32 sum (generated tokens): each GPU copies its part into every GPU's inbox.
+
+The kernels then read their own inbox, not host memory across PCIe. Each value crosses PCIe once instead of twice.
+The same values are summed in the same order, so the logits are the same bit for bit (checked under `ARC_TP_SIM` with
+the direct path forced: 2 and 3 shards, the pieces on and off, `ARC_TP_SUM=f32`, against release 2026.11.14.04).
+
+What stays in host memory:
+- the f16 failsafe's f32 sum and the flags;
+- everything under `ARC_TP_OVERLAP`, and under `ARC_TP_PIPE=0` the prompt sums.
+
+Switches:
+- `ARC_TP_P2P=0`: host memory always;
+- `ARC_TP_P2P=1`: direct whenever there is peer access, whatever the times (and under `ARC_TP_SIM`, where every inbox
+  is on GPU 0: a test of the data flow on one GPU);
+- `ARC_TP_LINKS_SIM=1`: the links timed under `ARC_TP_SIM` too (GPU 0 to itself: a test of the timing and the choice).
+
+Failsafes:
+- a GPU without memory for its inbox: the sums go through host memory;
+- a direct copy the driver refuses at the timing, though it reported peer access (an IOMMU in the way): host memory, and
+  the log says so;
+- a timed copy that does not finish within 20 s: the load stops with an error that says to set `ARC_TP_P2P=0`;
+- before a GPU's kernels read its inbox, a memory-ranges barrier on its list, so it never reads an earlier sum's values
+  from its caches (the host knows the other GPUs' copies are done; the GPU itself is not told). One GPU cannot show such
+  a problem: comparing `--dump-logits` with `ARC_TP_P2P=1` and `=0` on the B60s is the check.
+
+The timing and the inboxes are set up one GPU at a time, as the shards are: allocations on several GPUs at once ended in
+the driver's abort on 3 and 4 B60s (issue #4). A link slower than 4 GB/s gets a line in the log: long prompts will wait
+on their sums there.
+
+On Windows the B60s report no peer access, so nothing changes there.
+
 A count that does not divide by N is split as evenly as its unit allows, the first GPUs taking one unit more:
 - k-heads in pairs (a pair's v-values are one 256-value block of `ssm_out`'s columns);
 - kv-heads one by one;
@@ -447,6 +495,10 @@ too). The next step is to overlap the sums with the next chunk's work (the `ARC_
 2026-11-13, with the wide-tile H8 GEMM on by default on each shard (release 2026.11.13.05, issue #4): the 27B's 4K
 prompt over 2 Pro B60s 1,596.6 tok/s, over 4 1,887.6 (from 1,368.8 / 1,734.0).
 
+Over 3 Pro B60s (release 2026.11.13.11): 1,723.9 tok/s. Flash Next on the same cards: a 4K prompt 665 / 1,202 /
+1,491 tok/s and generation 5.72 / 34.4 / 32.7 tok/s over 1 / 2 / 4 (over 4, 13 GB of experts per GPU: all of them
+cached; over 1, 33 %).
+
 **`--ctx auto` on a split model (2026-11-12):** the dry probe is shard 0 of N (`tp_size` N, `tp_rank` 0: the
 largest shard, which takes the extra unit of a count that does not divide), so the context is what one GPU's share
 of the weights and the KV leaves on GPU 0. Before, it sized the whole model on one GPU, and a model bigger than one
@@ -493,6 +545,9 @@ Other failsafes:
   logits then equal `ARC_TP_SUM=f32` bit for bit.
 - **The same layout on every GPU:** shards whose GPUs chose another weight layout, chunk or context than GPU 0 would
   run different passes and miss each other's barriers; the load fails with the values to give instead.
+- **Decoded weights per shard** (2026-11-13): a shard keeps its W8 weights when its own share of raw + W8 fits
+  `--budget` (before, the whole model was counted). The 27B: ~18.5 GB per GPU over 2 (`--budget 20`), ~9.3 over 4
+  (`--budget 10`); then no decode per prompt chunk. The default budget stays 9 GB, as the context then shrinks.
 - **Host memory of the sums:** `2 x N x chunk x n_embd x 4` bytes of pinned host memory, outside `--budget` (the 27B
   over 4 GPUs: 671 MB at chunk 4096, 1.3 GB at 8192): a larger `--chunk` doubles it.
 - **`serverz`:** a model that cannot be split (Gemma 4, e.g. for transcripts) or a split that fails to
@@ -556,6 +611,12 @@ If the B60s show a clear gain, the decode sums get an `ARC_TP_SYNC=event` path (
 ```
 
 ## Not yet
+
+- **A layer split for slow links.** Each GPU would hold whole layers (GPU 0 the first half, GPU 1 the rest) and pass
+  the activations along once per chunk: ~84 MB per 4K prompt of the 27B, against ~5.4 GB of sums with the tensor
+  split (MaineTim's second card on a chipset x4 link at 1.3-3.1 GB/s, issue #19). The chunks would be pipelined, so
+  both GPUs work at once. Generation would run the GPUs one after the other: about one GPU's speed, against the tensor
+  split's two. So the engine would choose it at load, from the links timed above, only when the link is too slow.
 
 - The launcher (a choice of which GPUs), and with `serverz --gpus`: MTP / DFlash2, images, the prompt and session
   caches on disk.

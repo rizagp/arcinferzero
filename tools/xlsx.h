@@ -109,7 +109,7 @@ inline std::string civil(long long z) {  // (days since 1970-01-01 -> "yyyy-mm-d
   const long long era = (z >= 0 ? z : z - 146096) / 146097, doe = z - era * 146097;
   const long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
   const long long mp = (5 * doy + 2) / 153, d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
-  char b[32];
+  char b[64];  // (room GCC can prove: the values are bounded, its -Wformat-truncation does not see it)
   snprintf(b, sizeof b, "%04lld-%02lld-%02lld", yoe + era * 400 + (m <= 2), m, d);
   return b;
 }
@@ -126,7 +126,7 @@ inline std::string serial_text(double s, bool time_only, bool d1904) {
   std::string o;
   if (!time_only || day >= 1) o = day == 60 ? "1900-02-29" : civil(day < 60 ? day - 25568 : day - 25569);
   if (secs || time_only) {
-    char b[24];
+    char b[64];
     if (secs % 60) snprintf(b, sizeof b, "%02lld:%02lld:%02lld", secs / 3600, secs / 60 % 60, secs % 60);
     else snprintf(b, sizeof b, "%02lld:%02lld", secs / 3600, secs / 60 % 60);
     o += (o.empty() ? "" : " ") + std::string(b);

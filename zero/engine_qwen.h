@@ -6,19 +6,21 @@
     const int E = hp.n_embd, C = hp.conv_dim(), nv = hp.ssm_nv, nk = hp.ssm_nk, Di = hp.ssm_d_inner;
     float eps = hp.eps;
     const int a_in = act32_for(false);
-    if (!hp.hc) rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
     // (one token with the stacked weights: one GEMV, the outputs are views of qz_out_)
     cl_mem bigc = big_, zc = z_, gbc = gb_;
     if (cur_T_ == 1 && L.qz.raw) {
+      if (!hp.hc) rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
       matmul("gemm_qkvz", L.qz, Mp, qz_out_, 0, 0, false, a_in);
       bigc = qz_out_;
       zc = qz_z_;
       if (L.qz_ab) gbc = qz_ab_;
       else gdn_ab(L, Mp, a_in);
     } else {
-      const bool npu = npu_qkv_start(L, T, Mp);  // (ARC_NPU=1: the NPU's share of attn_qkv, zero/npu/engine_npu.h)
+      bool npu = false;
       {
-        H8Share sh(this);  // (one rotation of the input for both, engine_h8.h)
+        H8Share sh(this);  // (one rotation of the input for both, engine_h8.h; with ARC_H8_NORM made by the norm)
+        if (!hp.hc) rmsnorm_h8(x_, 0, L.attn_norm, E, Mp, T, a_in, L.qkv);
+        npu = npu_qkv_start(L, T, Mp);  // (ARC_NPU=1: the NPU's share of attn_qkv, zero/npu/engine_npu.h)
         if (!npu) matmul("gemm_qkv", L.qkv, Mp, big_, C, 0, false, a_in);
         matmul("gemm_z", L.z, Mp, z_, Di, 0, false, a_in);
       }
@@ -218,11 +220,12 @@
     const int E = hp.n_embd, nh = hp.n_head, nkv = hp.n_head_kv, hd = hp.head_dim, hpg = nh / nkv;
     const int ldq = (nh + 2 * nkv) * hd;
     const int a_in = act32_for(false);
-    rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
     if (!L.wk.N) {  // (q, k, v stacked: one matmul, see load_attn)
+      rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
       matmul("gemm_qkv", L.wq, Mp, big_, ldq, 0, false, a_in);
     } else {
-      H8Share sh(this);  // (one rotation of the input for the three, engine_h8.h)
+      H8Share sh(this);  // (one rotation of the input for the three, engine_h8.h; with ARC_H8_NORM made by the norm)
+      rmsnorm_h8(x_, 0, L.attn_norm, E, Mp, T, a_in, L.wq);
       matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
       matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd, false, a_in);
       matmul("gemm_v", L.wv, Mp, big_, ldq, (nh + nkv) * hd, false, a_in);
@@ -296,11 +299,12 @@
     const int E = hp.n_embd, nh = hp.n_head, nkv = hp.n_head_kv, hd = hp.head_dim;
     const int ldq = nh * hd * 2 + 2 * nkv * hd;
     const int a_in = act32_for(false);
-    if (!hp.hc) rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
     if (!L.wk.N) {  // (q, k, v stacked: float weights, see load_attn)
+      if (!hp.hc) rmsnorm_quant(x_, 0, L.attn_norm, E, Mp, T, a_in);
       matmul("gemm_qkv", L.wq, Mp, big_, ldq, 0, false, a_in);
     } else {
-      H8Share sh(this);  // (one rotation of the input for the three, engine_h8.h)
+      H8Share sh(this);  // (one rotation of the input for the three, engine_h8.h; with ARC_H8_NORM made by the norm)
+      if (!hp.hc) rmsnorm_h8(x_, 0, L.attn_norm, E, Mp, T, a_in, L.wq);
       matmul("gemm_q", L.wq, Mp, big_, ldq, 0, false, a_in);
       matmul("gemm_k", L.wk, Mp, big_, ldq, nh * hd * 2, false, a_in);
       matmul("gemm_v", L.wv, Mp, big_, ldq, nh * hd * 2 + nkv * hd, false, a_in);
@@ -385,13 +389,14 @@
     if (npu_ffn(L, T, Mp)) return;  // (ARC_NPU=1: a share of gate / up on the NPU, zero/npu/engine_npu.h)
     const int E = hp.n_embd, F = hp.n_ff;
     const int a_in = act32_for(false);
-    rmsnorm_quant(x_, 0, L.post_norm, E, Mp, T, a_in);
     // prompt chunks: the up GEMM applies silu(gate) * up in its epilogue (no split-K for K = n_embd <= 8192)
     const int fused = cur_T_ > 8 && E <= 8192 && !q2mm_ && L.up.N ? 1 : 0;  // (two passes: no fused epilogue)
+    if (!fused) rmsnorm_quant(x_, 0, L.post_norm, E, Mp, T, a_in);
     if (!L.up.N) {  // (gate and up stacked, rows [gate | up] as below: one matmul; Qwen3 dense, see load_weights)
       matmul("gemm_gateup", L.gate, Mp, big_, 2 * F, 0, 0, a_in);
     } else if (fused) {
-      H8Share sh(this);  // (one rotation of the input for both, engine_h8.h)
+      H8Share sh(this);  // (one rotation of the input for both, engine_h8.h; with ARC_H8_NORM made by the norm)
+      rmsnorm_h8(x_, 0, L.post_norm, E, Mp, T, a_in, L.gate);
       matmul("gemm_gate", L.gate, Mp, big_, F, 0, 0, a_in);
       matmul("gemm_up", L.up, Mp, big_, F, 0, 2, a_in);
     } else if (gemv_gu(L.gate, L.up, Mp, big_)) {  // (one token, ARC_GEMV_GU=1: both in one launch, the same rows)
