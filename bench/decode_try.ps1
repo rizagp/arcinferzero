@@ -32,17 +32,29 @@
 #   (at the end, per model: a --prof-gen table, the GPU time of a generation step by kernel)
 #   MOE_GR_GU=2/4, MOE_GR_DN=2/8   MoE models: rows per sub-group of the experts' gate / up and down GEMVs for one
 #                  token (ARC_MOE_GR_GU, default 1; ARC_MOE_GR_DN, default 4)
+# Added 2026-11-13 (a GEMV sweep for the B60 / B70, issue #12):
+#   GVROWS=8       plain, 8 rows per sub-group (the most ARC_GVROWS takes)
+#   GV4=0          plain, the codebook types (IQ1 / IQ2 / IQ3_XXS) at 2 rows per sub-group instead of 4 (ARC_GV4=0)
+#   GV_IQ3S=1 GVROWS=1/8   the IQ3_S path at the ends of the range
+#   mtp MOE_GR_DN_S=1/2/8, MOE_GRF=128   MoE models: rows per sub-group of the experts' down GEMV for 2-8 tokens (the
+#                  verification; default 4), the experts' GEMVs with the default register file (ARC_MOE_GRF=128)
+#   long context (-Ctx, default 16384; 0 skips it): the prompt of that length, then 64 tokens, best of 2
+#   (runz --bench-pp N --n 64): plain, ATTN_DEC_GRF=128 (the generation attention with the default register file),
+#   ATTN_DEC_SG=256/1024 (the sub-groups its key split aims for, default 512), ATTN_DEC_SMAX=128/512 (keys per split
+#   at most, default 256), and a --prof-gen table there
 param(
   [Parameter(Mandatory = $true)][string[]]$Models,
   [string]$DFlash = "",
-  [int]$N = 256
+  [int]$N = 256,
+  [int]$Ctx = 16384
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $runz = Join-Path $root "bin\runz.exe"
 if (-not (Test-Path $runz)) { throw "bin\runz.exe not found (run from the inferzero folder)" }
 $vars = @("ARC_GEMV_GRF", "ARC_GVROWS", "ARC_GEMV_MT_GRF", "ARC_GEMV_PF", "ARC_GV_IQ3S", "ARC_MOE_GR_GU", "ARC_MOE_GR_DN", "ARC_BATCH", "ARC_XALL",
-          "ARC_WIDE_ROWS", "ARC_GEMV_SMALL_WG", "ARC_GEMV_GU")
+          "ARC_WIDE_ROWS", "ARC_GEMV_SMALL_WG", "ARC_GEMV_GU", "ARC_GV4", "ARC_MOE_GR_DN_S", "ARC_MOE_GRF", "ARC_ATTN_DEC_GRF",
+          "ARC_ATTN_DEC_SG", "ARC_ATTN_DEC_SMAX")
 # (Qwen chat format, thinking off: the answer starts right away)
 $q = Join-Path ([IO.Path]::GetTempPath()) "inferzero-decode-try.txt"
 $text = "<|im_start|>user`nWrite a Python module with a class LRUCache (get, put, a capacity, O(1) operations using " +
@@ -117,13 +129,14 @@ foreach ($model in $Models) {
   Line "mtp7" (Invoke-Run $model @("--mtp", "--mtp-drafts", "7") @{})
   if ($DFlash) { Line "dflash" (Invoke-Run $model @("--dflash", $DFlash, "--draft", "auto") @{}) }
   Line "GEMV_GRF=256" (Invoke-Run $model @() @{ ARC_GEMV_GRF = "256" })
-  foreach ($g in 1, 2, 4) { Line "GVROWS=$g" (Invoke-Run $model @() @{ ARC_GVROWS = "$g" }) }
+  foreach ($g in 1, 2, 4, 8) { Line "GVROWS=$g" (Invoke-Run $model @() @{ ARC_GVROWS = "$g" }) }
+  Same "GV4=0" (Invoke-Run $model @() @{ ARC_GV4 = "0" }) $plain
   Line "mtp MT_GRF=256" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "256" })
   Line "mtp MT_GRF=128" (Invoke-Run $model @("--mtp") @{ ARC_GEMV_MT_GRF = "128" })
   # (the prefetch is on by default on discrete cards, dense and MoE models: the row without it)
   Line "GEMV_PF=0" (Invoke-Run $model @() @{ ARC_GEMV_PF = "0" })
   Line "GV_IQ3S=1" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1" })
-  foreach ($g in 2, 4) { Line "GV_IQ3S=1 GVROWS=$g" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1"; ARC_GVROWS = "$g" }) }
+  foreach ($g in 1, 2, 4, 8) { Line "GV_IQ3S=1 GVROWS=$g" (Invoke-Run $model @() @{ ARC_GV_IQ3S = "1"; ARC_GVROWS = "$g" }) }
   foreach ($b in 16, 32, 128) { Same "BATCH=$b" (Invoke-Run $model @() @{ ARC_BATCH = "$b" }) $plain }
   Line "mtp BATCH=32" (Invoke-Run $model @("--mtp") @{ ARC_BATCH = "32" })
   if ($plain.moe) {  # (MoE models: the experts' per-tile GEMVs of one token, rows per sub-group)
@@ -133,6 +146,44 @@ foreach ($model in $Models) {
     Line "mtp XALL=0" (Invoke-Run $model @("--mtp") @{ ARC_XALL = "0" })
     foreach ($g in 2, 4) { Line "MOE_GR_GU=$g" (Invoke-Run $model @() @{ ARC_MOE_GR_GU = "$g" }) }
     foreach ($g in 2, 8) { Line "MOE_GR_DN=$g" (Invoke-Run $model @() @{ ARC_MOE_GR_DN = "$g" }) }
+    foreach ($g in 1, 2, 8) { Line "mtp MOE_GR_DN_S=$g" (Invoke-Run $model @("--mtp") @{ ARC_MOE_GR_DN_S = "$g" }) }
+    Same "MOE_GRF=128" (Invoke-Run $model @() @{ ARC_MOE_GRF = "128" }) $plain
+  }
+  # (generation after a long prompt: the attention's share grows with the context)
+  if ($Ctx -gt 0) {
+    "--- after a $Ctx-token prompt: 64 tokens, best of 2"
+    function Tg([hashtable]$envs, [switch]$Prof) {
+      $best = 0.0; $txt = ""
+      for ($i = 0; $i -lt $(if ($Prof) { 1 } else { 2 }); ++$i) {
+        $eap = $ErrorActionPreference
+        try {
+          $ErrorActionPreference = "Continue"
+          foreach ($k in $envs.Keys) { Set-Item "Env:$k" $envs[$k] }
+          $a = @("--bench-pp", "$Ctx", "--n", "64") + $(if ($Prof) { @("--prof-gen") } else { @() })
+          $o = & $runz $model @a 2>&1 | Out-String
+        } finally {
+          $ErrorActionPreference = $eap
+          foreach ($v in $vars) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue }
+        }
+        $m = [regex]::Match($o, "tg\d+: [\d.]+ ms\s+->\s+([\d.]+) tokens/s")
+        if ($m.Success -and [double]$m.Groups[1].Value -gt $best) { $best = [double]$m.Groups[1].Value }
+        $txt = $o
+      }
+      if ($Prof) { return $txt }
+      if ($best -eq 0) { $err = ($txt -split "`n" | Where-Object { $_ -match "error|cannot|failed|exception" } | Select-Object -First 1); return "failed: $err" }
+      [string]::Format($inv, "{0,8:F2} tok/s", $best)
+    }
+    $ctxRuns = [ordered]@{
+      "plain"            = @{}
+      "ATTN_DEC_GRF=128" = @{ ARC_ATTN_DEC_GRF = "128" }
+      "ATTN_DEC_SG=256"  = @{ ARC_ATTN_DEC_SG = "256" }
+      "ATTN_DEC_SG=1024" = @{ ARC_ATTN_DEC_SG = "1024" }
+      "ATTN_DEC_SMAX=128" = @{ ARC_ATTN_DEC_SMAX = "128" }
+      "ATTN_DEC_SMAX=512" = @{ ARC_ATTN_DEC_SMAX = "512" }
+    }
+    foreach ($k in $ctxRuns.Keys) { "{0,-22} {1}" -f "ctx $k", (Tg $ctxRuns[$k]) }
+    "--- generation profile after the $Ctx-token prompt (plain)"
+    (Tg @{} -Prof) -split "`n" | Where-Object { $_ -match "^tg\d+:|tg steps|weights read|GPU time by kernel|^\s+\w+\s+[\d.]+ ms" } | ForEach-Object { $_.TrimEnd() }
   }
   # (where a generation step's GPU time goes, per kernel, plain: --prof-gen over 32 steps after a 128-token prompt)
   "--- generation profile (plain, 32 steps)"

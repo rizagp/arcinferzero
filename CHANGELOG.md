@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-13: a fuller GEMV sweep for generation on discrete cards (`bench\decode_try.ps1`)
+
+- **Why:** a Pro B70 generates the 27B at 32.2 tok/s, 30.8 ms a token, where reading its 11.3 GB of weights at the
+  measured 547 GB/s would take ~20.7 ms (issue #12): ~10 ms a token goes somewhere else.
+- **New rows:** `ARC_GVROWS=8`, `ARC_GV4=0`, the IQ3_S path at 1 to 8 rows, and for MoE models the verification's
+  experts' down GEMV at 1 / 2 / 8 rows (`ARC_MOE_GR_DN_S`) and `ARC_MOE_GRF=128`. **Generation after a long prompt**
+  (`-Ctx`, 16,384 by default): plain and the generation attention's switches (`ARC_ATTN_DEC_GRF=128`,
+  `ARC_ATTN_DEC_SG=256 / 1024`, `ARC_ATTN_DEC_SMAX=128 / 512`), with a per-kernel profile there too.
+- Run on the laptop with the 4B (`-N 32 -Ctx 2048`): every row runs, the bit-identical switches give the same
+  tokens as plain. The B60 / B70 owners to measure.
+
 ## 2026-11-13: gpu_bench's FP16 vector test fixed; a 32-wide FP16 row on Xe2 (issue #12)
 
 - **Why:** a Pro B70 measured FP16 (vector) at 21.4 of 45.9 TFLOPS on paper (47 %), a B580 the same share
