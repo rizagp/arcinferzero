@@ -80,6 +80,15 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-13, draft Flash precise repair** (`zero/engine_load.h`, `engine_qwen.h`,
+  `ops_attn.cl`, `ops_flashnext.cl`). Historical downstream UD-Q4_K_XL eight-ID
+  mean KL 0.11597 -> <0.000005; workflow projection repair 0.07673 -> 0.00324
+  prefill and 0.04018 -> 0.00864 decode, maxima 0.19503 / 0.32222. These are not
+  rebased-branch measurements. Rebased speed/memory, model KL and default-path
+  bit checks remain gates. Batched changes are Flash-only; normal non-precise
+  --attn-f32 remains refused. Details: docs/flash-precise-repair-2026-11-13.md.
+
+
 - **2026-11-12, a split model's FFN sums beside the next chunk's work, opt-in** (`ARC_TP_OVERLAP=1`,
   zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums beside the next chunk's work"). **Speed: not measured** (the laptop
   has one GPU; with `ARC_TP_SIM` all shards share its one compute queue). Laptop numbers say nothing either way:
@@ -373,13 +382,3 @@ Measure before and after on the same build options with a pause in between, best
 noisy, and state the check: bit-identical logits (`runz --dump-logits A.bin` vs `B.bin`, `cmp`), identical greedy
 text, or KL against the f32 reference / the int8 cache (`runz --ppl-kl-save` / `--ppl-kl`) for changes that are
 meant to change the numbers.
-
-## 2026-11-13: draft Flash precise repair
-
-| Measurement | Before | After | Scope |
-|---|---:|---:|---|
-| Eight-ID mean KL, corrected Q5_1 reference | 0.11597 | <0.000005 | Historical downstream UD-Q4_K_XL, not AutoRound or rebased-main execution. |
-| Workflow prefill / decode mean KL, F32 DeltaNet projections | 0.07673 / 0.04018 | 0.00324 / 0.00864 | Same historical quant; maxima 0.19503 / 0.32222. |
-| Rebased native Linux engine builds | Main base | runz/serverz pass | GPU/model KL and Windows/iGPU/TP/slots pending; keep draft. |
-
-See docs/flash-precise-repair-2026-11-13.md for evidence and limits.

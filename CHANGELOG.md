@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-13: draft Flash precise repair
+
+- Preserve precise source mixer values and DeltaNet gate projections; add float
+  QSA masking and split decode attention. Limit batched changes to Flash Next
+  and retain normal-mode --attn-f32 rejection. Rebased GPU/model checks and
+  before/after performance/memory measurements are required before merging.
+
+
 ## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
 
 - **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),
@@ -4272,11 +4280,3 @@ one kv head) ran at only ~20 GB/s, 0.7 ms per layer.
 - Segmented layer-major prefill (16K tokens) and the largest contexts that fit 16.5 GiB for every model
   (`scripts/arc-server.ps1`, `scripts/install-pi.ps1`).
 - Review page `docs/review.html` (EN/ID) with `bench/review_data.py`; prompt benchmark `bench/prompt_bench.py`.
-
-## 2026-11-13: draft Flash precise repair
-
-- Preserve precise source mixer values and DeltaNet gate projections; add float
-  QSA masking and split decode attention. Both native Linux engines build;
-  rebased GPU/model and other-platform gates remain pending. Historical
-  downstream UD-Q4_K_XL reference results and limits are in
-  docs/flash-precise-repair-2026-11-13.md. AutoRound is a separate quant.

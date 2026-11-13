@@ -338,7 +338,7 @@
       for (const BatchSeq& q : batch_) {
         point_to(q.slot);
         float eps = hp.eps, theta_scale = std::pow(hp.rope_base, -2.0f / hp.n_rot), kq_scale = 1.0f / std::sqrt((float)hd);
-        int p0 = q.pos, nr = hp.n_rot, cx = ctx, f32a = opt.attn_int8 ? 0 : 1, rs = q.rs, ur = 0, Tq = q.n;
+        int p0 = q.pos, nr = hp.n_rot, cx = ctx, f32a = hp.hc && !opt.attn_int8 ? 1 : 0, rs = q.rs, ur = 0, Tq = q.n;
         struct alignas(16) Int4 { int x, y, z, w; } sect = {hp.rope_sect[0], hp.rope_sect[1], hp.rope_sect[2], hp.rope_sect[3]};
         qi_ = from(qi0, (size_t)q.row * nh * hd);
         qsc_ = from(qsc0, (size_t)q.row * nh * 4);
