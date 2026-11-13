@@ -118,6 +118,10 @@ struct Dev {
   std::atomic<uint64_t> sync_timeout_ns{UINT64_MAX};
   std::atomic<const std::atomic<bool>*> abort{nullptr};
   std::atomic<std::atomic<bool>*> fault{nullptr};  // (set when a wait gave up on its GPU: the split model is not trusted again)
+  // (a second Dev of the same GPU with lists of its own, a split model's sum thread (ARC_TP_OVERLAP, zero/mgpu/
+  //  engine_tp.h): its waits take the limit, abort and fault of this GPU's own Dev, which TpEngine sets and disarms)
+  Dev* guard = nullptr;
+  Dev& g() { return guard ? *guard : *this; }
   // (ARC_BATCH, see zrt::batch_max: the regular lists kernels are recorded into, each appended to `cl` when full and
   //  signalling `done` when it has run; `rec` the one being recorded, rec_n kernels in it, rec_cap its size)
   struct RecList { ze_command_list_handle_t l = nullptr; ze_event_handle_t done = nullptr; bool used = false; };
@@ -276,7 +280,8 @@ inline void sync() {
     flush(d);
     d.rec_cap = 0;  // (the GPU will be idle: the next lists start small again)
   }
-  if (!tp_guarded || (d.sync_timeout_ns.load() == UINT64_MAX && !d.abort.load())) {
+  Dev& gd = d.g();
+  if (!tp_guarded || (gd.sync_timeout_ns.load() == UINT64_MAX && !gd.abort.load())) {
     ZE_CHECK(zeCommandListHostSynchronize(d.cl, UINT64_MAX));
     return;
   }
@@ -285,12 +290,12 @@ inline void sync() {
     const ze_result_t r = zeCommandListHostSynchronize(d.cl, 100000000ull);
     if (r == ZE_RESULT_SUCCESS) return;
     if (r != ZE_RESULT_NOT_READY) ZE_CHECK(r);
-    const std::atomic<bool>* ab = d.abort.load();
+    const std::atomic<bool>* ab = gd.abort.load();
     if (ab && ab->load(std::memory_order_relaxed))
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": wait left, another GPU failed");
-    const uint64_t lim = d.sync_timeout_ns.load();
+    const uint64_t lim = gd.sync_timeout_ns.load();
     if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > lim) {
-      if (std::atomic<bool>* f = d.fault.load()) f->store(true);
+      if (std::atomic<bool>* f = gd.fault.load()) f->store(true);
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": its work did not finish within " +
                          std::to_string(lim / 1000000000ull) + " s (the GPU hangs?)");
     }
@@ -301,7 +306,8 @@ inline void sync() {
 template <class W>
 inline void wait_guarded(W w) {
   Dev& d = D();
-  if (!tp_guarded || (d.sync_timeout_ns.load() == UINT64_MAX && !d.abort.load())) {
+  Dev& gd = d.g();
+  if (!tp_guarded || (gd.sync_timeout_ns.load() == UINT64_MAX && !gd.abort.load())) {
     ZE_CHECK(w(UINT64_MAX));
     return;
   }
@@ -310,12 +316,12 @@ inline void wait_guarded(W w) {
     const ze_result_t r = w(100000000ull);
     if (r == ZE_RESULT_SUCCESS) return;
     if (r != ZE_RESULT_NOT_READY) ZE_CHECK(r);
-    const std::atomic<bool>* ab = d.abort.load();
+    const std::atomic<bool>* ab = gd.abort.load();
     if (ab && ab->load(std::memory_order_relaxed))
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": wait left, another GPU failed");
-    const uint64_t lim = d.sync_timeout_ns.load();
+    const uint64_t lim = gd.sync_timeout_ns.load();
     if ((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count() > lim) {
-      if (std::atomic<bool>* f = d.fault.load()) f->store(true);
+      if (std::atomic<bool>* f = gd.fault.load()) f->store(true);
       throw GpuWaitError("GPU " + std::to_string(d.index) + ": its copies did not finish within " +
                          std::to_string(lim / 1000000000ull) + " s (the GPU hangs?)");
     }

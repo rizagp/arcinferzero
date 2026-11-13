@@ -263,16 +263,50 @@
   void tp_out(const char* name, const GpuWeight& w, int Mp, int act32) {
     // (attention kept whole on every shard: its output is the same everywhere, added as in one piece)
     if (!tp_on() || (tp_att_whole_ && !strcmp(name, "gemm_o"))) return matmul(name, w, Mp, x_, hp.n_embd, 0, 1, act32);
+    if (tpo_ && tpo_out(name, w, Mp, act32)) return;  // (ARC_TP_OVERLAP: the sum on the sum thread)
     if (!tp_part_) tp_part_ = buf((size_t)max_chunk * hp.n_embd * 4);
     matmul(name, w, Mp, tp_part_, hp.n_embd, 0, 0, act32);
     tp_reduce(cur_T_);
   }
   bool tp_served() const;  // (zero/engine_tp.h: the server drives this split model)
   bool tp_cancelled();
-  void tp_reduce(int rows);  // (zero/engine_tp.h)
-  void tp_reduce_rs(int rows);
-  void tp_reduce_rs_pipe(int rows);
+  // One sum's buffers: the residual rows it adds to and the partial output it sums; bg: on the sum thread
+  // (ARC_TP_OVERLAP: its own kernels and command lists, no profiling)
+  struct TpSum {
+    cl_mem x = nullptr, part = nullptr;
+    bool bg = false;
+  };
+  struct TpKs { cl_kernel add, half, rs_sum, rs_add, rs_add_r; };
+  void tp_reduce(int rows) { tp_reduce_at(rows, TpSum{x_, tp_part_, false}); }  // (zero/engine_tp.h)
+  void tp_reduce_at(int rows, const TpSum& a);
+  void tp_reduce_rs(int rows, const TpSum& a);
+  void tp_reduce_rs_pipe(int rows, const TpSum& a);
+  TpKs tp_ks(const TpSum& a) const;
+  void tp_run(const TpSum& a, const char* name, cl_kernel k, size_t g, size_t l);
   void tp_wrap_host();
+  cl_program tp_prog_ = nullptr;  // (tp.cl as built on this GPU: the sum thread makes its own kernels of it)
+  // ARC_TP_OVERLAP=1 (zero/mgpu/engine_tp.h): a layer-major prompt's sums on a thread of their own, the FFN's left
+  // running while the next chunk's attention is computed. The pass's hooks (forward_layer_major); nothing when the
+  // model is not split or the switch is off
+  struct TpOverlap;
+  TpOverlap* tpo_ = nullptr;
+  void tpo_begin(int nch);
+  void tpo_chunk(int c);   // (before chunk c goes through a layer)
+  void tpo_join();         // (every sum queued so far done: before a barrier of the main thread, tp_cancelled)
+  void tpo_end();          // (after the last layer)
+  void tpo_abandon();      // (the pass left early)
+  void tpo_free();         // (release_all)
+  void tpo_gpu_done();
+  void tpo_wait(ze_event_handle_t e);
+  bool tpo_out(const char* name, const GpuWeight& w, int Mp, int act32);
+  void tpo_loop();
+  struct TpoPass {
+    Engine& e;
+    TpoPass(Engine& en, int nch) : e(en) { e.tpo_begin(nch); }
+    ~TpoPass() { e.tpo_abandon(); }
+    TpoPass(const TpoPass&) = delete;
+    TpoPass& operator=(const TpoPass&) = delete;
+  };
   // rows of a matrix the GEMM must see in whole tiles of 16: a split model's DeltaNet alpha / beta (2 x its v-heads:
   // 24 for the 27B's 12 over 4 GPUs) padded with rows of zeros; unchanged in one piece
   int tp_rows(int n) const { return tp_on() ? (n + 15) / 16 * 16 : n; }
@@ -300,6 +334,7 @@
     const std::string src = read_file(opt.kernel_dir + "/tp.cl");
     cl_program p = cl_.build(src, "-cl-std=CL3.0");
     progs_.push_back(p);
+    tp_prog_ = p;
     k_tp_add_ = cl_.kernel(p, "tp_add");
     k_tp_pack_ = cl_.kernel(p, "tp_pack");
     k_tp_half_ = cl_.kernel(p, "tp_half");

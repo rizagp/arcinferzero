@@ -160,6 +160,26 @@ From a Pro B60 owner's runs (issue #4, package fffaf1a) and a Reddit user's two 
   field in the launcher (kept on a restart like `-Slots`; the memory estimate per GPU). `serverz --list-models --gpus N`
   and `/props` "gpus": Pi's model list gives each model the context a split server loads it with.
 
+## 2026-11-12: a split model's FFN sums beside the next chunk's work (opt-in, `ARC_TP_OVERLAP=1`, stage 1)
+
+- **Why:** a tester's two Arcs (27B IQ4_XS, 32K prompt over 2 GPUs) spent ~31 s of a 31.7-s pass inside the 1,024
+  sums, the GPU mostly idle while its thread waited; `ARC_TP_PIPE=1` gave only +14 %.
+- **What:** in prompts that run layer by layer (just-in-time weights, longer than a chunk) each shard's sums go to a
+  sum thread of its own, with its own command lists and kernels (`zero/mgpu/engine_tp.h`, `TpOverlap`). Chunk c's
+  FFN sum is waited for only when the next layer reaches chunk c, so the GPU computes chunk c+1's attention while it
+  crosses PCIe. Attention / DeltaNet sums are still waited for at once. One more partial buffer per GPU (80 MB for the
+  27B at chunk 4096). Dense models only (not the 35B MoE); generation and chunk-by-chunk prompts unchanged.
+- The sums run the same code as before (`tp_reduce_rs` / `_pipe` now take their buffers as arguments) in the same
+  order on every shard: **the logits are the same bit for bit** with the switch on and off, and off equals the build
+  before. Checked: see `docs/before-after.md` (2026-11-12) and `docs/multi-gpu.md`, "Sums beside the next chunk's
+  work".
+- **Failsafes:** a sum's error is thrown on the main thread; a pass that stops with sums queued fails the split model
+  so the others leave their barriers; the hang tests (`ARC_TP_HANG`) end as before.
+- Found on the way: on a GPU with one compute queue (the laptop's iGPU) a GPU-side wait of one list for an event of
+  the other never ends; every wait between the two lists is a host wait first.
+- **Off by default, speed unmeasured** (the laptop has one GPU). Stages 2 (the attention sums hidden too) and 3
+  (chunk-major prompts) are written up, not built.
+
 ## 2026-11-12: the server's log, as llama.cpp's; GET /metrics, as vLLM's
 
 [docs/logging.md](docs/logging.md) describes all of it.

@@ -223,6 +223,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     // (a split model's pipelined sums, ARC_TP_PIPE: copies still queued after a failure read tp_h_ and host memory;
     //  they drain once the compute list has: every wait of that list comes after its signal)
     if (zrt::D().cl_tp) zrt::list_wait(zrt::D().cl_tp);
+    tpo_free();  // (ARC_TP_OVERLAP's sum thread and its lists, when it ran)
     if (npu_runs_) zlog::eprintf("ARC_NPU: %d NPU runs, %.0f ms waited for the NPU after the GPU's share\n", npu_runs_, npu_wait_ms_);
     npu_teardown();  // (ARC_NPU=1 only)
     for (auto& [m, p] : orig_ptrs_) m->ptr = p;  // (slots: each buffer object frees its own memory)
@@ -557,6 +558,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
                                     media_rpos_->data() + (size_t)(tokens - media_base_) * 3, 0, nullptr, nullptr));
       rp_seg = rpos_all_;
     }
+    // (a split model with ARC_TP_OVERLAP: its sums on a thread of their own; nothing otherwise, zero/mgpu/engine_tp.h)
+    TpoPass tpo_pass{*this, nch};
     for (size_t li = 0; li < layers_.size(); ++li) {
       Layer& L = layers_[li];
       for (int c = 0; c < nch; ++c) {
@@ -568,6 +571,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
           rpos_ = from(rp_seg, (size_t)c * max_chunk * 3 * 4);
           use_rpos_ = 1;
         }
+        tpo_chunk(c);
         run_layer(L, cur_T_, chunk_Mp(c));
       }
       if (progress) {
@@ -575,11 +579,15 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
         progress(prog_base_ + (int)((double)n * (li + 1) / layers_.size()), total);
       }
       if (profile) collect_profile();
-      if (cancel && li + 1 < layers_.size() && cancelled()) {
-        x_ = x_saved;
-        cancel_block(pos0);
+      if (cancel && li + 1 < layers_.size()) {
+        tpo_join();  // (a split model's cancel check meets at a barrier: no sum may run then)
+        if (cancelled()) {
+          x_ = x_saved;
+          cancel_block(pos0);
+        }
       }
     }
+    tpo_end();
     pos = pos0 + n;
     if (mtp_block_)
       for (int c = 0; c < nch; ++c) {
