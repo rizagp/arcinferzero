@@ -197,6 +197,20 @@ class AsyncFile {
     fd_ = ::open(path, O_RDONLY | O_DIRECT | O_CLOEXEC);
     if (fd_ < 0 && errno == EINVAL) fd_ = ::open(path, O_RDONLY | O_CLOEXEC);  // (a filesystem without O_DIRECT: cached)
     if (fd_ < 0) return 1;
+    {  // (a filesystem that takes O_DIRECT at open but refuses its reads, EINVAL: a block larger than 4 KB, some FUSE
+       //  and network ones: tried once here, on one aligned block, and opened cached then)
+      void* probe = nullptr;
+      if (posix_memalign(&probe, 4096, 4096) == 0) {
+        const ssize_t r = pread(fd_, probe, 4096, 0);
+        const int e = errno;
+        free(probe);
+        if (r < 0 && e == EINVAL) {
+          ::close(fd_);
+          fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
+          if (fd_ < 0) return 1;
+        }
+      }
+    }
 #endif
     return 0;
   }
@@ -213,6 +227,7 @@ class AsyncFile {
 #else
     size_t got = 0;
     ok_[s] = false;
+    err_[s] = 0;  // (no number left from an earlier read of this slot)
     while (got < n) {
       const ssize_t r = pread(fd_, (char*)dst + got, n - got, (off_t)(off + got));
       if (r < 0) {
@@ -220,7 +235,10 @@ class AsyncFile {
         err_[s] = (unsigned long)errno;
         return false;
       }
-      if (r == 0) return true;  // (the file ends first: started, and finish() says it failed, as a short read)
+      if (r == 0) {  // (the file ends first: started, and finish() says it failed, as a short read)
+        err_[s] = EIO;
+        return true;
+      }
       got += (size_t)r;
     }
     ok_[s] = true;
@@ -329,13 +347,17 @@ class DirectWriter {
 #ifdef _WIN32
       DWORD got = 0;
       if (!WriteFile(h_, p, (DWORD)c, &got, nullptr) || got != (DWORD)c) return false;
-#else
-      const ssize_t got = ::write(fd_, p, (size_t)c);
-      if (got < 0 && errno == EINTR) continue;
-      if (got != (ssize_t)c) return false;
-#endif
       p = (const uint8_t*)p + c;
       n -= c;
+#else
+      // (write(2) may write less than asked, after a signal or at a filesystem's limit: the rest written next; only an
+      //  error or a write of nothing fails. With O_DIRECT a short count stays a 4 KB multiple, so the rest stays aligned)
+      const ssize_t got = ::write(fd_, p, (size_t)c);
+      if (got < 0 && errno == EINTR) continue;
+      if (got <= 0) return false;
+      p = (const uint8_t*)p + got;
+      n -= (uint64_t)got;
+#endif
     }
     return true;
   }
@@ -600,6 +622,14 @@ inline bool is_hidden_or_system(const std::filesystem::path& p) {
 #endif
 }
 #ifndef _WIN32
+// (Linux) the Hugging Face cache where its tools write it when neither HF_HUB_CACHE nor HF_HOME is set:
+// $XDG_CACHE_HOME/huggingface/hub, else ~/.cache/huggingface/hub; "" when the home folder is not known. (Windows' callers
+// keep their %USERPROFILE%\.cache\huggingface\hub lines as they were.)
+inline std::string hf_home_hub() {
+  if (const char* x = getenv("XDG_CACHE_HOME"); x && *x == '/') return std::string(x) + "/huggingface/hub";
+  if (const char* h = getenv("HOME"); h && *h) return std::string(h) + "/.cache/huggingface/hub";
+  return "";
+}
 // (Linux) a inside b, at a '/' boundary, case-sensitive as the filesystem is (b itself counts when or_same); the
 // callers pass canonical paths. Windows' callers keep their own case-blind '\' comparisons.
 inline bool path_inside(const std::filesystem::path& a, const std::filesystem::path& b, bool or_same) {

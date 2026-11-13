@@ -44,7 +44,11 @@ static std::string find_dflash(const std::string& model);  // (defined below) a 
 static std::string hf_hub_dir() {
   if (const char* v = getenv("HF_HUB_CACHE")) return v;
   if (const char* h = getenv("HF_HOME")) return std::string(h) + "/hub";
+#ifdef _WIN32
   if (const char* u = getenv("USERPROFILE")) return std::string(u) + "/.cache/huggingface/hub";
+#else
+  if (const std::string h = plat::hf_home_hub(); !h.empty()) return h;  // ($XDG_CACHE_HOME or ~/.cache)
+#endif
   return "";
 }
 // extra model folders (e.g. a second drive): ARC_MODEL_DIRS (';'-separated) and %USERPROFILE%\.inferzero\model-dirs.txt

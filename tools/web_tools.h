@@ -339,7 +339,10 @@ inline int curl_open_socket(void* user, int /*purpose*/, curlm::curl_sockaddr* a
   CurlHop& h = *(CurlHop*)user;
   // (each address libcurl connects to, its own lookup's: a name that answered with a public address for check_host
   //  and a local one now, DNS rebinding, gets no connection)
-  if (!public_addr(&a->addr)) {
+  // (libcurl passes its whole address, 28 bytes for IPv6 (checked: ::ffff:127.0.0.1 arrives whole); one shorter than
+  //  its family's form is refused rather than judged from bytes it does not hold)
+  const size_t need = a->family == AF_INET6 ? sizeof(sockaddr_in6) : a->family == AF_INET ? sizeof(sockaddr_in) : 0;
+  if (!need || a->addrlen < need || !public_addr(&a->addr)) {
     h.refused = true;
     return curlm::SOCKET_BAD;
   }

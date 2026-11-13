@@ -114,6 +114,9 @@ inline ProcResult run_program(const std::vector<std::string>& argv, const std::s
   posix_spawn_file_actions_adddup2(&fa, pin[0], 0);
   posix_spawn_file_actions_adddup2(&fa, pout[1], 1);
   posix_spawn_file_actions_adddup2(&fa, perr[1], 2);
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+  posix_spawn_file_actions_addclosefrom_np(&fa, 3);  // (only its three: not the server's other files, a --log-file)
+#endif
   posix_spawnattr_t at;
   posix_spawnattr_init(&at);
   posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);

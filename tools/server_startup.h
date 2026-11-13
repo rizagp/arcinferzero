@@ -100,7 +100,11 @@ inline std::string switches() {
     for (const char* w : {"token", "secret", "pass", "key", "auth", "cred", "cookie"})
       secret = secret || up.find(w) != std::string::npos;
     if (!home.empty())
+#ifdef _WIN32
       for (size_t at; (at = lower(v).find(lower(home))) != std::string::npos;) v.replace(at, home.size(), "%USERPROFILE%");
+#else
+      for (size_t at; (at = v.find(home)) != std::string::npos;) v.replace(at, home.size(), "~");  // (case-sensitive paths)
+#endif
     for (char& c : v)
       if ((unsigned char)c < 0x20) c = '?';
     o += (o.empty() ? "" : " ") + k + "=" + (secret ? std::string("(set)") : v);
