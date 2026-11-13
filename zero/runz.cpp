@@ -164,6 +164,31 @@ static int run_tp(const std::string& model, const EngineOptions& eo, int gpus, c
     if (got != ref.size() || ref.size() != V * prompt.size()) { zlog::eprintf("reference must hold every position\n"); return 1; }
     double sum = 0, mxk = 0;
     int agree = 0;
+    // the prompt path first (a prompt of one chunk: every row's logits from the rows the pass left, keep_rows), then
+    // the same tokens fed one by one
+    if ((int)prompt.size() <= e0.max_chunk) {
+      for (int r = 0; r < gpus; ++r) tp.shard(r).keep_rows = true;
+      tp.forward(prompt.data(), (int)prompt.size());
+      for (size_t r = 0; r < prompt.size(); ++r) {
+        const auto& l = tp.logits_at((int)r);
+        const double mx = *std::max_element(l.begin(), l.end());
+        double z = 0;
+        for (float v : l) z += std::exp((double)v - mx);
+        const float* rr = ref.data() + r * V;
+        double kl = 0;
+        for (size_t i = 0; i < V; ++i)
+          if (rr[i] > -1e30f) kl += std::exp((double)rr[i]) * (rr[i] - (l[i] - mx - std::log(z)));
+        sum += kl;
+        mxk = std::max(mxk, kl);
+        agree += (std::max_element(l.begin(), l.end()) - l.begin()) == (std::max_element(rr, rr + V) - rr);
+      }
+      printf("KL prompt path (ref || inferzero) = %.5f (mean over %zu positions, max %.5f), top-1 agreement %d/%zu\n",
+             sum / prompt.size(), prompt.size(), mxk, agree, prompt.size());
+      for (int r = 0; r < gpus; ++r) tp.shard(r).keep_rows = false;
+      tp.reset();
+      sum = mxk = 0;
+      agree = 0;
+    }
     for (size_t r = 0; r < prompt.size(); ++r) {
       const auto& l = tp.forward(&prompt[r], 1);
       const double mx = *std::max_element(l.begin(), l.end());
@@ -280,8 +305,8 @@ static int run_main(int argc, char** argv) {
             "  --ctx N               context (default: what the prompt needs)     --chunk N   prompt tokens per step\n"
             "  --feed-step N         feed the prompt in calls of N tokens (tests resuming mid-prompt)\n"
             "  --budget GB           keep decoded weights resident up to GB\n"
-            "  --gpus N              the model split over N GPUs (Qwen3.5 / 3.6 / 3.8, the 35B-A3B too): the prompt or --bench-pp, then\n"
-            "                        greedy generation (ARC_TP_SIM=1: N shards on GPU 0, to test the split)\n"
+            "  --gpus N              the model split over N GPUs (Qwen3.5 / 3.6 / 3.8, the 35B-A3B, Flash Next): the prompt\n"
+            "                        or --bench-pp, then greedy generation (ARC_TP_SIM=1: N shards on GPU 0, to test the split)\n"
             "  --attn-f32            f32 attention (f16 K/V)      --act256    one activation scale per 256 values (not 32)\n"
             "  --npu on|off|force    the NPU computes part of each prompt chunk next to the GPU (27B, Gemma 12B; force: any)\n"
             "profiling:\n"

@@ -1,7 +1,7 @@
 // Tensor parallel: one shard of a model split over GPUs (zero/mgpu/engine_tp.h runs the shards, one thread and GPU
 // each). A part of class Engine (zero/engine.h), included inside the class body: not a header of its own. The
 // multi-GPU code stays in zero/mgpu/ and its kernels in zero/kernels/tp.cl; the one-GPU code only calls the hooks
-// below (T, tp_head, tp_out, gdn_ab, tp_conv_lws, tp_loaded), which do what it did before when the model is not split.
+// below (T, tp_head, tp_out, tp_out_hc, gdn_ab, tp_conv_lws, tp_loaded), which do what it did before when the model is not split.
 //
 // The split (Qwen3.5 / 3.6 / 3.8 dense, qwen35): every shard holds the whole residual stream x_ and computes the
 // norms itself; the heads and FFN columns are divided, so each GPU reads 1 / tp_size of the weights per token:
@@ -27,6 +27,12 @@
 // than GPUs (the 35B has 2) keeps its attention whole on every shard (the same output everywhere, no sum), or with
 // ARC_TP_ATT_QSPLIT=1 divides it by q-head where the GPUs split the kv-heads and their q-heads evenly (35B over 4: 4
 // q-heads of one kv-head per shard, tp_att_qsplit_).
+//
+// Qwen3.8 Flash Next (qwen4exp): DeltaNet, attention and the experts as above (2 kv-heads: attention divided over 2
+// GPUs, whole over 3-4); the hyper-connection mixers, the QSA indexer, PLE and the shared expert whole on every shard
+// (they read the whole residual streams, which every shard holds). A block's output (ssm_out, attn_output, the MoE
+// combine) goes to hco_, not x_: split, its partial sums are summed into hco_ (tp_out_hc / tp_reduce_hc) and
+// hc_combine adds it to the streams as on one GPU. docs/multi-gpu.md, "Flash Next".
 
  public:
   TpComm* tp_ = nullptr;  // (set by TpEngine before the first forward)
@@ -75,8 +81,11 @@
   void tp_setup() {
     const int N = opt.tp_size, r = opt.tp_rank;
     const bool moe = hp.moe && hp.moe_std;
-    if ((hp.arch != "qwen35" && !(hp.arch == "qwen35moe" && moe)) || hp.hc || hp.gemma || hp.qwen3)
-      throw std::runtime_error("multi-GPU (--gpus) runs Qwen3.5 / 3.6 / 3.8 models (dense, or the 35B-A3B MoE) only for now (this is " +
+    // (Flash Next, qwen4exp: its MoE as the 35B's, the mixers and PLE whole on every shard, each block's output summed
+    //  into hco_ before hc_combine: tp_out_hc)
+    const bool fn = hp.arch == "qwen4exp" && hp.hc && moe;
+    if ((hp.arch != "qwen35" && !(hp.arch == "qwen35moe" && moe) && !fn) || (hp.hc && !fn) || hp.gemma || hp.qwen3)
+      throw std::runtime_error("multi-GPU (--gpus) runs Qwen3.5 / 3.6 / 3.8 models (dense, the 35B-A3B MoE, Flash Next) only for now (this is " +
                                hp.arch + ")");
     if (r < 0 || r >= N) throw std::runtime_error("tensor parallel: bad rank");
     tpg_ = {hp.ssm_nk, hp.ssm_nv, hp.n_head, hp.n_head_kv, hp.n_ff, hp.n_vocab};
@@ -94,7 +103,8 @@
       const int nkv = hp.n_head_kv, hpg_g = nkv > 0 ? hp.n_head / nkv : 0, per = nkv > 0 ? N / nkv : 0;
       // (opt-in until B60s measure it: it adds a sum per attention layer, which costs more than it saves at short
       //  contexts, and saves K / V reads and attention work at long ones)
-      const bool want = getenv("ARC_TP_ATT_QSPLIT") && atoi(getenv("ARC_TP_ATT_QSPLIT")) != 0;
+      // (not Flash Next: its QSA attention by q-head is not checked)
+      const bool want = getenv("ARC_TP_ATT_QSPLIT") && atoi(getenv("ARC_TP_ATT_QSPLIT")) != 0 && !hp.hc;
       if (tp_att_whole_ && want && nkv > 0 && N % nkv == 0 && hpg_g % per == 0 && (hpg_g / per * hp.head_dim) % 256 == 0) {
         tp_att_whole_ = false;
         tp_att_qsplit_ = true;
@@ -171,7 +181,8 @@
     set_args(k_tp_moe_combine_, 0, tp_part_, msh_, sgate_, my_, minv_, N, nu, shared);
     size_t gws[2] = {((size_t)E + 255) / 256 * 256, (size_t)T}, lws[2] = {256, 1};
     run("moe_combine", k_tp_moe_combine_, 2, gws, lws);
-    tp_reduce(T);
+    if (hp.hc) tp_reduce_hc(T);
+    else tp_reduce(T);
   }
 
   // rows `rows` (empty: all) and columns `cols` (empty: all; whole blocks of the type) of a 1-D or 2-D tensor
@@ -267,6 +278,18 @@
     if (!tp_part_) tp_part_ = buf((size_t)max_chunk * hp.n_embd * 4);
     matmul(name, w, Mp, tp_part_, hp.n_embd, 0, 0, act32);
     tp_reduce(cur_T_);
+  }
+  // Flash Next's block output (ssm_out, attn_output): into hco_, which hc_combine then adds to the residual streams;
+  // split, the shards' partial outputs summed into hco_ (cleared first: the same sums as tp_out's, another destination)
+  void tp_out_hc(const char* name, const GpuWeight& w, int Mp, int act32) {
+    if (!tp_on() || (tp_att_whole_ && !strcmp(name, "gemm_o"))) return matmul(name, w, Mp, hco_, hp.n_embd, 0, 0, act32);
+    if (!tp_part_) tp_part_ = buf((size_t)max_chunk * hp.n_embd * 4);
+    matmul(name, w, Mp, tp_part_, hp.n_embd, 0, 0, act32);
+    tp_reduce_hc(cur_T_);
+  }
+  void tp_reduce_hc(int rows) {
+    fill(hco_, (size_t)rows * hp.n_embd * 4);
+    tp_reduce_at(rows, TpSum{hco_, tp_part_, false});
   }
   bool tp_served() const;  // (zero/engine_tp.h: the server drives this split model)
   bool tp_cancelled();

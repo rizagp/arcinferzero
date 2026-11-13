@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-13: Qwen3.8 Flash Next over several GPUs (`--gpus N`)
+
+- **Why:** over 4 Pro B60s (96 GB) Flash Next's 52 GB of experts fit in the GPUs' memory instead of streaming from
+  the SSD (manoreken2, issue #4). `--gpus` refused it until now.
+- **How it is split** (docs/multi-gpu.md, "Flash Next"): the 512 experts by expert as the 35B-A3B's (128 per GPU over
+  4, each GPU streaming and caching only its own); DeltaNet by k-head; attention by kv-head over 2 GPUs, whole on
+  every GPU over 3-4; the hyper-connection mixers, PLE, the QSA indexer and the shared expert whole on every GPU.
+  Each block's output is summed over the GPUs into the block-output buffer, then added to the 4 residual streams as
+  on one GPU.
+- **Accuracy** (laptop, `ARC_TP_SIM`, KL against the f32 reference on 450 tokens, prompt / decode): one GPU 0.0168 /
+  0.0151, over 2-4 GPUs 0.0140-0.0176; with `ARC_FN_PRECISE=1` one GPU 0.0093 / 0.0096, split 0.0083-0.0110. One GPU
+  and the existing splits (27B, 35B-A3B) give the same logits bit for bit as before.
+- **runz:** `--kl-ref` with `--gpus` measures the prompt path too (before: the tokens one by one only).
+- Speed on several cards is to be measured by their owners.
+
 ## 2026-11-13: a fuller GEMV sweep for generation on discrete cards (`bench\decode_try.ps1`)
 
 - **Why:** a Pro B70 generates the 27B at 32.2 tok/s, 30.8 ms a token, where reading its 11.3 GB of weights at the

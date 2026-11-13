@@ -1,7 +1,8 @@
 # Multi-GPU: one model split over several GPUs
 
-`runz --gpus N` splits a dense Qwen3.5 / 3.6 / 3.8 model (the 27B, the 9B, the 4B) or the Qwen3.6 35B-A3B MoE
-(and fine-tunes of it such as Ornith 1.5 35B) over N GPUs with tensor parallelism; see "Mixture of experts" below. Each GPU reads 1/N of the weights per token, so token generation can get up to N times faster.
+`runz --gpus N` splits a dense Qwen3.5 / 3.6 / 3.8 model (the 27B, the 9B, the 4B), the Qwen3.6 35B-A3B MoE
+(and fine-tunes of it such as Ornith 1.5 35B) or Qwen3.8 Flash Next over N GPUs with tensor parallelism; see "Mixture
+of experts" and "Flash Next" below. Each GPU reads 1/N of the weights per token, so token generation can get up to N times faster.
 Generation is bound by memory bandwidth, so this is the only kind of split that speeds it up; a layer split only adds
 capacity. The server does not use it yet (see "Not yet").
 
@@ -20,7 +21,7 @@ The output adds:
 
 Code, apart from the one-GPU engine: `zero/mgpu/engine_tp_shard.h` (what one shard holds), `zero/mgpu/engine_tp.h`
 (`TpEngine`: the shards on their threads and the sums), kernels in `zero/kernels/tp.cl`. The one-GPU code only calls
-hooks (`T`, `tp_head`, `tp_out`, `gdn_ab`, `tp_conv_lws`, `tp_loaded`) that do what it did before when the model is
+hooks (`T`, `tp_head`, `tp_out`, `tp_out_hc`, `gdn_ab`, `tp_conv_lws`, `tp_loaded`) that do what it did before when the model is
 not split.
 
 Every GPU keeps the whole residual stream and computes the norms itself. The heads and FFN columns are divided:
@@ -249,6 +250,70 @@ logits are bit-identical to the build before (full cache, and a 1.2 GiB cache at
 speed the same (best of two: 608 vs 612 tok/s prompt, 21.6 vs 21.8 tok/s generation). Two GPUs give the same logits
 run after run, with full and with small (2 GiB) caches.
 
+## Flash Next (Qwen3.8 Flash Next, qwen4exp, 2026-11-13)
+
+Asked for on issue #4 (manoreken2): over 4 Pro B60s (96 GB) its experts fit in the GPUs' memory instead of
+streaming from the SSD. The plan, written before the code:
+
+| Part | How it is split | Why |
+|---|---|---|
+| Routed experts (512, 10 per token) | by expert, as the 35B: GPU r holds experts [e0, e1) (128 each over 4), global ids everywhere | the same hooks as the 35B (`tp_moe_mask` / `tp_moe_scatter` / `tp_moe_tiles1` / `tp_moe_combine`); by column would need the 640-wide FFN cut in 256 units, which it is not |
+| Shared expert (FFN 640) | whole on every GPU, added by GPU 0 | 640 is not a multiple of 256; it is ~5 MB a layer |
+| DeltaNet (36 layers, 16 k-heads, 48 v-heads) | by k-head pairs, as the dense models (3 GPUs: 6 / 6 / 4 k-heads) | the largest dense part (~2/3 of the non-expert weights); its sigmoid output gate is per v-head |
+| Attention (12 layers, 2 kv-heads, 24 q-heads) | over 2 GPUs by kv-head (12 q-heads each, half the KV cache); over 3 or 4 whole on every GPU (no sum), as the 35B | the 35B's rule; `ARC_TP_ATT_QSPLIT` stays the 35B's (not tried here) |
+| QSA indexer (keys, pooled-key cache, queries) | whole on every GPU | its block choice is one per row for all heads, from the block input every GPU has |
+| Hyper-connection mixers (`hc_attn_*`, `hc_ffn_*`, `output_hc_*`) | whole on every GPU, on the 4 streams of the residual every GPU holds | they read the whole residual; cutting them would need an all-gather of the 10,240 gates per mixer (97 more sums per token) |
+| PLE (layer 1: the host n-gram rows, key / value, the dilated conv) | whole on every GPU (each shard's thread reads its rows) | small; its state is next to the DeltaNet state of layer 1 |
+| Output head | vocabulary rows, as before; the final mixer whole | |
+
+**Where the sums go.** On one GPU each block writes its output to `hco_` and `hc_combine` adds it to the 4 streams,
+each with its own weight. Split, each GPU's block output (`ssm_out`, `attn_output`, the MoE combine) is a partial sum;
+it is summed over the GPUs into `hco_` (cleared first: the same sums as the dense models', `tp_reduce_at` with `hco_` as
+the destination) and `hc_combine` then runs as on one GPU. Every GPU gets the same float sum, so the streams stay
+identical. Sums per token: 2 per layer over 2 GPUs (96), 84 over 3 or 4 (the attention whole).
+
+**Expert streaming per shard.** Kept, not refused: each GPU streams and caches only its own experts (the XCache range
+the 35B already has). Over 4 B60s each holds a quarter of the experts, which fits; over 2 the cache holds what fits of
+each half and streams the rest, as one GPU does with all of them.
+
+**Off in a split model:** MTP and DFlash2 drafting (as for every split model), and the sums beside the next chunk
+(`ARC_TP_OVERLAP`, dense models only).
+
+**Cost left on every GPU:** the mixers are ~0.9 GB of Q8_0 per token read by each GPU (97 mixers of ~9 MB), as much as
+the routed experts of a token on one GPU; the next step for speed, if the B60s show it, is to divide each mixer's up
+projection by column and all-gather its 2,560-value output (one more small sum per mixer).
+
+**Memory per GPU** (laptop logs, ARC_TP_SIM, a 450-token context): the weights and buffers without the experts 5.45 GiB
+on one GPU, 3.93 GiB per GPU over 2 and 3, 3.66 over 4 (the mixers, PLE and, over 3-4, the attention are on every GPU);
+the experts 26.1 / 17.4 / 13.0 GiB per GPU over 2 / 3 / 4. Over 4 B60s (24 GB each) every GPU holds all of its experts
+(~16.7 GiB with the rest) and room for the context; over 3 it is close (~21.3 GiB before the context); over 2 they
+stream as on one GPU.
+
+**Checked** on the laptop with `ARC_TP_SIM=1` (2026-11-13), Flash Next IQ3_S, KL against the f32 reference
+(`tools/ref_forward`, `REF_ALL=1`) on 450 tokens of README.md, every position; the split's `runz --kl-ref` now
+measures the prompt path too (the prompt in one pass, every row's logits read from the rows it left), then the same
+tokens one by one:
+
+| GPUs | Default: prompt / decode | top-1 | `ARC_FN_PRECISE=1`: prompt / decode | top-1 |
+|---|---|---|---|---|
+| 1 | 0.0168 / 0.0151 | 421 / 424 of 450 | 0.0093 / 0.0096 | 430 / 428 |
+| 2 | 0.0157 / 0.0140 | 430 / 429 | 0.0097 / 0.0110 | 425 / 430 |
+| 3 | 0.0159 / 0.0176 | 424 / 419 | 0.0095 / 0.0084 | 431 / 427 |
+| 4 | 0.0165 / 0.0162 | 426 / 431 | 0.0083 / 0.0088 | 431 / 431 |
+
+The split lands inside one GPU's own spread (the same model on one GPU with chunks of 512 instead of 2,048 moves the
+last prompt position's KL by 0.014, a decode step's by up to 0.033), in both modes: the default within the ~0.02
+allowed for Flash Next's fast mode, precise under 0.015. Greedy text over 2 GPUs after a 1,830-token prompt: the same
+4 tokens as one GPU, then a near tie. (`ARC_H8=1` on one GPU, asked on the way: 0.0219 instead of 0.0168; H8 rotates
+Flash Next's activations after their int8 rounding, so it does not help here.)
+
+- **Failsafes** (2 GPUs, `ARC_TP_TIMEOUT=5`): `ARC_TP_HANG=1:20` (a prompt sum), `1:20:wait` and `0:97` (the first
+  generation sum) each ended with the expected error in 43-90 s (the load included), no process left.
+- **Unchanged:** Flash Next on one GPU, the 27B over 2 and the 35B over 2 and 4 give the same logits bit for bit
+  as the build before (1,830-token prompt + 4 tokens, `--dump-logits`).
+- **Not checked:** speed (it needs several GPUs), `serverz --gpus` with Flash Next (the same mirrored calls as the 35B),
+  prompts past QSA's 2,048 keys over 2 GPUs (the attention divided there).
+
 ## Experts in RAM (GPUs with memory of their own)
 
 Experts are read from the SSD unbuffered (no Windows file cache), so a machine with a large RAM never used it for
@@ -430,7 +495,7 @@ Other failsafes:
   run different passes and miss each other's barriers; the load fails with the values to give instead.
 - **Host memory of the sums:** `2 x N x chunk x n_embd x 4` bytes of pinned host memory, outside `--budget` (the 27B
   over 4 GPUs: 671 MB at chunk 4096, 1.3 GB at 8192): a larger `--chunk` doubles it.
-- **`serverz`:** a model that cannot be split (Gemma 4, e.g. for transcripts; Flash Next) or a split that fails to
+- **`serverz`:** a model that cannot be split (Gemma 4, e.g. for transcripts) or a split that fails to
   load is loaded on one GPU instead, with a line in the log. A shard that runs out of GPU or host memory while it
   is made counts as such a failure (`zrt::oom_throws`: its allocation throws instead of ending the process).
   `ARC_TP_OOM=r` (tests) fails shard r's first allocation of 256 MB or more.
@@ -494,7 +559,7 @@ If the B60s show a clear gain, the decode sums get an `ARC_TP_SYNC=event` path (
 
 - The launcher (a choice of which GPUs), and with `serverz --gpus`: MTP / DFlash2, images, the prompt and session
   caches on disk.
-- MoE models: Flash Next (hyper-connections, its two-pass precise mode) and Gemma 4 26B; the 35B is split (above).
-  Measured numbers of the 35B over B60s.
+- MoE models: Gemma 4 26B; the 35B and Flash Next are split (above). Measured numbers of the 35B and Flash Next over
+  B60s.
 - Fewer host round trips per sum (an event the next GPU waits on instead of a host wait and a barrier). The f16
   reduce-scatter for prompts is in (2026-11-02), not yet measured on B60s.
