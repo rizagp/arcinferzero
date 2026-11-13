@@ -95,11 +95,38 @@
     const int pf = xw_pf_eff();
     return pf ? " -DXW_PF=" + std::to_string(pf) + " -DXW_PFD=" + std::to_string(xw_pfd()) : "";
   }
-  // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel)
-  cl_kernel xw_kernel(int nc = 0) {
+  // ARC_GEMM_XW_PACK (8 lanes: the Arc 140T; issue #5, its xw_peak of 2026-11-13: packAW 32 x 16 against the default,
+  // the 27B's FFN shapes, 4K 23.4 -> 25.0 TOPS, 512 21.6 -> 24.5): the activations (1), the weights (2) or both (3)
+  // written in the DPAS operand order gemm_xw8 -DXW_PACKA / -DXW_PACKW reads, by the kernels that make them (h8r_act;
+  // h8r_decode or h8r_weights), so without a repacking pass. Both by default in the 140T preset, 0 off; only where
+  // gemm_xw8 takes the GEMM (its shapes; resident weights, converted once in place, stay in the plain order). The same
+  // values in another order: the same results, checked at start for every form used (xw_check).
+  static int xw_pack_env() {
+    static const int v = [] {
+      const char* e = getenv("ARC_GEMM_XW_PACK");
+      return e ? std::clamp(atoi(e), 0, 3) : -1;
+    }();
+    return v;
+  }
+  int xw_pack_cfg() const {  // (the forms this engine may use; xw_ itself is decided by the check)
+    // (one column group a sub-group only, the default on 8 lanes: there every H8 weight's N fits the tile, so a packed
+    //  input is never left to a GEMM gemm_xw8 declines; wider tiles were slower on the 140T anyway. Review 2026-11-14)
+    if (xw_lanes() != 8 || !h8_row() || xw_nc() != 1) return 0;
+    const int e = xw_pack_env();
+    return e >= 0 ? e : (p140_ ? 3 : 0);
+  }
+  bool xw_pack_a(int Mp, int K) const { return xw_ && (xw_pack_cfg() & 1) && Mp % xw_tm() == 0 && K % 256 == 0; }
+  bool xw_pack_w(const GpuWeight& w, int Mp) const {
+    return xw_ && (xw_pack_cfg() & 2) && !w.wq && Mp % xw_tm() == 0 && w.N % (16 * xw_nc()) == 0 && w.K % 256 == 0;
+  }
+  // (nc: column groups per sub-group, 0 = xw_nc(); the 32 x 96 tiles' tail runs the nc 4 kernel. pack: gemm_xw8's
+  //  packed operands, bit 1 the activations, bit 2 the weights)
+  cl_kernel xw_kernel(int nc = 0, int pack = 0) {
     const std::string defs = std::string(xw_grf256() ? "-cl-intel-256-GRF-per-thread " : "") + "-DXW_TM=" +
                              std::to_string(xw_tm()) + " -DXW_NC=" + std::to_string(nc ? nc : xw_nc()) +
-                             (xw_emu_ ? " -DXW_EMU" : "") + (xw_lanes() == 16 ? xw_pf_defs() : std::string());
+                             (xw_emu_ ? " -DXW_EMU" : "") + (xw_lanes() == 16 ? xw_pf_defs() : std::string()) +
+                             (xw_lanes() == 8 && (pack & 1) ? " -DXW_PACKA" : "") +
+                             (xw_lanes() == 8 && (pack & 2) ? " -DXW_PACKW" : "");
     if (xw_lanes() == 8) return kernel("xw8", defs, "gemm_xw8");
     return kernel("xw", defs + (x2d_ && !xw_emu_ ? " -DX2D" : ""), "gemm_xw");
   }
@@ -123,9 +150,10 @@
   bool xw_takes_n(int N) const { return xw_nc() == 6 ? xw_cols96(N) >= 0 : N % (16 * xw_nc()) == 0; }
   // one piece of K over all N columns: one launch, or with NC 6 the 96-wide part and the rest in 64-wide tiles
   void xw_piece(const char* name, cl_mem wq, cl_mem wh, cl_mem aq, cl_mem asc, int M, int N, int K, cl_mem C, int ldc,
-                int c_off, int a, int rgroup, int s0, int s1, int wgy) {
+                int c_off, int a, int rgroup, int s0, int s1, int wgy, int pack = 0) {
     const int nc = xw_nc();
-    if (nc != 6) return xw_run(name, xw_kernel(), wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, nc, 0);
+    if (nc != 6) return xw_run(name, xw_kernel(0, pack), wq, wh, aq, asc, M, N, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, nc, 0);
+    if (pack) throw std::logic_error("gemm_xw: packed operands with NC 6");
     const int n96 = xw_cols96(N);
     if (n96 > 0) xw_run(name, xw_kernel(6), wq, wh, aq, asc, M, n96, K, C, ldc, c_off, a, rgroup, s0, s1, wgy, 6, 0);
     if (n96 < N)
@@ -133,7 +161,8 @@
   }
   // h8_matmul's GEMM through gemm_xw / gemm_xw8, with gemm.cl's split-K pieces and row groups; false: a shape it does
   // not take (the old kernel runs it)
-  bool xw_matmul(const char* name, cl_mem wq, cl_mem hh, int Mp, int N, int K, cl_mem C, int ldc, int c_off, int a) {
+  bool xw_matmul(const char* name, cl_mem wq, cl_mem hh, int Mp, int N, int K, cl_mem C, int ldc, int c_off, int a,
+                 int pack = 0) {
     const int tm = xw_tm();
     if (Mp % tm || !xw_takes_n(N) || K % 256) return false;
     static const int rg_env = getenv("ARC_GEMM_RG") ? std::max(1, atoi(getenv("ARC_GEMM_RG"))) : 4;
@@ -144,7 +173,7 @@
     while (wgy < wgy_max && (Mp / tm) % (wgy * 2) == 0) wgy *= 2;
     for (int sp = 0; sp < splits; ++sp)
       xw_piece(name, wq, hh, h8_aq_, h8_asc_, Mp, N, K, C, ldc, c_off, sp == 0 ? a : 1, rg_env, nsb * sp / splits,
-               nsb * (sp + 1) / splits, wgy);
+               nsb * (sp + 1) / splits, wgy, pack);
     return true;
   }
   void xw_init() {
@@ -155,7 +184,8 @@
     static std::mutex mu;
     static std::map<std::string, bool> known;
     const std::string key = cl_.device_id + "|" + std::to_string(xw_lanes()) + "|" + std::to_string(xw_tm()) + "x" +
-                            std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "") + xw_pf_defs();
+                            std::to_string(xw_nc()) + (xw_emu_ ? "|emulated" : "") + (x2d_ ? "|2d" : "") + xw_pf_defs() +
+                            "|pack" + std::to_string(xw_pack_cfg());
     std::lock_guard<std::mutex> g(mu);
     auto it = known.find(key);
     if (it == known.end()) {
@@ -208,10 +238,38 @@
         cl_mem bq = buf(wq.size() * 4, wq.data()), bh = buf(wh.size() * 4, wh.data()), ba = buf(aq.size(), aq.data()),
                bs = buf(asc.size() * 4, asc.data()), bb = buf((size_t)(K / 16) * M * 2), bc = buf(c0.size() * 4);
         bufs.insert(bufs.end(), {bq, bh, ba, bs, bb, bc});
+        // (ARC_GEMM_XW_PACK: the same data in gemm_xw8's packed orders, made here as h8r_act / h8r_decode / h8r_weights
+        //  make them, and each form used checked too: plain, activations, weights, both)
+        const int pcfg = xw_pack_cfg(), nch = K / 64;
+        cl_mem bqp = nullptr, bap = nullptr;
+        if (pcfg & 2) {  // ([group][chunk][lo0, lo1, hi0, hi1][8 words][8 lanes] from [group][chunk][16 words][16 columns])
+          std::vector<uint32_t> wp(wq.size());
+          for (size_t gc = 0; gc < (size_t)ng * nch; ++gc)
+            for (int j = 0; j < 16; ++j)
+              for (int cl = 0; cl < 16; ++cl)
+                wp[gc * 256 + ((j / 8) * 2 + cl / 8) * 64 + (j % 8) * 8 + cl % 8] = wq[gc * 256 + j * 16 + cl];
+          bqp = buf(wp.size() * 4, wp.data());
+          bufs.push_back(bqp);
+        }
+        if (pcfg & 1) {  // ([M / 8][chunk][2 halves][8 rows][8 words] from [M][K])
+          std::vector<uint32_t> aw((size_t)M * K / 4), ap(aw.size());
+          memcpy(aw.data(), aq.data(), aq.size());
+          for (int m = 0; m < M; ++m)
+            for (int c = 0; c < nch; ++c)
+              for (int h = 0; h < 2; ++h)
+                for (int l = 0; l < 8; ++l)
+                  ap[((size_t)(m / 8) * nch + c) * 128 + h * 64 + (m % 8) * 8 + l] = aw[(size_t)m * (K / 4) + c * 16 + h * 8 + l];
+          bap = buf(ap.size() * 4, ap.data());
+          bufs.push_back(bap);
+        }
+        std::vector<int> forms = {0};
+        for (int p = 1; p <= 3; ++p)
+          if ((p & pcfg) == p) forms.push_back(p);
         for (int mode = 0; mode < 4; ++mode) {  // store, split-K pieces, add, fused SwiGLU
           const int acc = mode == 2 ? 1 : mode == 3 ? 2 : 0, pieces = mode == 1 ? 3 : 1;
           for (int wgy : {1, 2}) {
             if ((M / tm) % wgy) continue;
+            for (int form : forms) {
             std::vector<float> out[2];
             for (int x = 0; x < 2; ++x) {
               CL_CHECK(clEnqueueWriteBuffer(cl_.queue, bc, CL_TRUE, 0, c0.size() * 4, c0.data(), 0, nullptr, nullptr));
@@ -224,7 +282,8 @@
                   set_args(k, 0, bq, bh, ba, bs, bb, bc, MM, NN, KK, ld, co, ac, rg, s0, s1);
                   run("xw_check", k, 2, gws, lws);
                 } else {
-                  xw_piece("xw_check", bq, bh, ba, bs, M, N, K, bc, ld, co, ac, rg, s0, s1, wgy);
+                  xw_piece("xw_check", (form & 2) ? bqp : bq, bh, (form & 1) ? bap : ba, bs, M, N, K, bc, ld, co, ac, rg, s0,
+                           s1, wgy, form);
                 }
               }
               out[x].resize(c0.size());
@@ -240,7 +299,9 @@
               for (size_t i = 0; i < c0.size(); ++i) diff += memcmp(&out[0][i], &out[1][i], 4) != 0;
               bad += " " + std::to_string(M) + "x" + std::to_string(N) + "/" +
                      (mode == 0 ? "store" : mode == 1 ? "split" : mode == 2 ? "add" : "swiglu") + "/wgy" +
-                     std::to_string(wgy) + "(" + std::to_string(diff) + " differ)";
+                     std::to_string(wgy) + (form ? "/pack" + std::to_string(form) : std::string()) + "(" +
+                     std::to_string(diff) + " differ)";
+            }
             }
           }
         }
