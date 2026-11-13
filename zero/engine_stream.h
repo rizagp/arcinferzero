@@ -23,10 +23,8 @@
     if (ram_gb > 0) {
       ram = (uint64_t)(ram_gb * 1073741824.0);
     } else if (ram_gb < 0 && !zrt::integrated()) {
-      MEMORYSTATUSEX ms{sizeof ms};
-      GlobalMemoryStatusEx(&ms);
-      const uint64_t keep = 16ull << 30;
-      ram = ms.ullAvailPhys > keep ? (ms.ullAvailPhys - keep) / std::max(1, opt.tp_size) : 0;
+      const uint64_t keep = 16ull << 30, avail = plat::ram_available();
+      ram = avail > keep ? (avail - keep) / std::max(1, opt.tp_size) : 0;
     }
     ram = std::min(ram, xc_->st.file_bytes);
     if (ram >= (1ull << 30)) {

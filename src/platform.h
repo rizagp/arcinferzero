@@ -28,6 +28,14 @@
 #endif
 #endif
 
+// The folder separator as a string literal, to join with others: app_dir() + PLAT_SEP "kernels" (Windows: the same
+// bytes as the "\\kernels" written before)
+#ifdef _WIN32
+#define PLAT_SEP "\\"
+#else
+#define PLAT_SEP "/"
+#endif
+
 namespace plat {
 
 // A shared library by its Windows and its Linux name ("ze_loader.dll" / "libze_loader.so.1"): nullptr when absent.
@@ -470,6 +478,62 @@ inline unsigned long last_error() {
   return GetLastError();
 #else
   return (unsigned long)errno;
+#endif
+}
+
+// The physical memory free now, in bytes (GlobalMemoryStatusEx's ullAvailPhys; Linux: /proc/meminfo's MemAvailable,
+// which counts the file cache that can be dropped, as Windows' standby list is counted). 0 when unknown.
+inline uint64_t ram_available() {
+#ifdef _WIN32
+  MEMORYSTATUSEX ms{sizeof ms};
+  GlobalMemoryStatusEx(&ms);
+  return ms.ullAvailPhys;
+#else
+  FILE* f = fopen("/proc/meminfo", "r");
+  if (!f) return 0;
+  char line[256];
+  unsigned long long kb = 0;
+  while (fgets(line, sizeof line, f))
+    if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) break;
+  fclose(f);
+  return (uint64_t)kb * 1024;
+#endif
+}
+// A FILE*'s position past 2 GB (_fseeki64 / _ftelli64; fseeko / ftello on Linux, whose off_t is 64-bit there)
+inline int fseek64(FILE* f, int64_t off, int whence) {
+#ifdef _WIN32
+  return _fseeki64(f, off, whence);
+#else
+  return fseeko(f, (off_t)off, whence);
+#endif
+}
+inline int64_t ftell64(FILE* f) {
+#ifdef _WIN32
+  return _ftelli64(f);
+#else
+  return (int64_t)ftello(f);
+#endif
+}
+// An environment variable set for this process (and the children it starts): _putenv_s / setenv.
+inline void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+  _putenv_s(name, value);
+#else
+  setenv(name, value, 1);
+#endif
+}
+inline unsigned long process_id() {
+#ifdef _WIN32
+  return GetCurrentProcessId();
+#else
+  return (unsigned long)getpid();
+#endif
+}
+inline unsigned long thread_id() {
+#ifdef _WIN32
+  return GetCurrentThreadId();
+#else
+  return (unsigned long)gettid();
 #endif
 }
 

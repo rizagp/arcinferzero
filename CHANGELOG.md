@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-13: runz runs on Linux (WSL2, the laptop's Arc iGPU)
+
+- **What:** `zero/runz.cpp` and the engine build with g++ 13.3 on Ubuntu 24.04 and run on the iGPU through Ubuntu's
+  compute runtime in WSL2. The engine's last Windows calls went behind `src/platform.h` (free RAM, 64-bit seeks, ids,
+  environment, path separators) or `#ifdef _WIN32` (the CPU check, power throttling, DXGI's budget, the process list).
+- **Measured:** the 4B gives the same 32 greedy tokens as on Windows, 14.7 tok/s (Windows 16.6-19.1), and KL 0.00090
+  against its f32 reference (Windows 0.00100; the limit 0.015). Not bit-identical to Windows (another kernel compiler).
+- **Windows unchanged:** bit-identical to release 2026.11.13.09 (the 4B, 32 tokens; the 35B-A3B, 16 tokens).
+  docs/linux-port.md (Progress) has the build line and what is not tried yet; docs/before-after.md a row.
+
 ## 2026-11-13: the web tools on Linux through libcurl (Linux port, issue #11)
 
 - **What:** `tools/web_tools.h` (web_fetch, web_search, the downloads behind them) has a Linux half on libcurl,

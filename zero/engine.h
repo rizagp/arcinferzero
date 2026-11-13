@@ -438,7 +438,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (opt.dry && tp_on()) gpu_bytes += (size_t)max_chunk * (size_t)hp.n_embd * 10;
     mem_load_ = gpu_bytes;
     // the GGUF pages read while loading leave the working set (standby: Windows reuses them when it needs RAM)
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    plat::trim_working_set();
     clFinish(cl_.queue);
     load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     reset();
@@ -717,7 +717,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
                                              "|" + std::to_string(opt.mtp) + "|" + opt.dflash + (opt.mtp_block ? "" : "|nomtp") +
                                              "|" + std::to_string(opt.mtp_drafts) +
                                              "|" + std::to_string(max_chunk) + "|" + cl_.device_id + "|w2"));
-    const std::string marker = dir.empty() ? std::string() : dir + "\\warm-" + hex;
+    const std::string marker = dir.empty() ? std::string() : dir + PLAT_SEP "warm-" + hex;
     // (every start (prompt = true): a prompt long enough for the large-chunk kernels (moe_rg from 320 rows), then a token: their first
     //  use in a process cost seconds even from the kernel cache; 35B with drafters, a first 1,749-token request 8.6 s
     //  (203 tok/s), the next ones 3.5 s)

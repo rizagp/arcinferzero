@@ -91,6 +91,22 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   parsing, a search): the same results on Linux and Windows; the Windows serverz's web_fetch / web_search identical to
   release 2026.11.13.09. Differences left: libidn2 follows IDNA2008 where Windows' IdnToAscii follows IDNA2003 (a few
   names with ß or ς map differently); a URL with a bare IPv6 address fails on both, with another message.
+- 2026-11-13: **`runz` builds and runs on Linux** (step 2's first part), in WSL2 on the laptop with Ubuntu's own
+  compute runtime (`intel-opencl-icd`, `libze-intel-gpu1`, `libze1`: 23.43; OpenCL and Level Zero both see the Arc
+  iGPU through `/dev/dxg`). What it took: the CPU check (`src/cpu_check.h`: `__builtin_cpu_supports` on GCC), the
+  power-throttling call (`src/full_speed.h`: nothing on Linux), DXGI's GPU budget (`zrt::video_budget`: false on Linux,
+  Sysman later; the memory line shows the engine's allocations and the free RAM), the free RAM (`plat::ram_available`:
+  `/proc/meminfo`'s MemAvailable), the working-set trim, 64-bit file seeks, an environment variable, the process and
+  thread ids, the NPU runtime's library lookups and page memory (it uses Level Zero's graph extension, which Intel's
+  Linux NPU driver has too: compiled, not run), path joins (`PLAT_SEP`), the "other GPU processes" note (`/proc/*/comm`).
+  The build, from the repository's folder: `g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -fopenmp -include src/cpu_check.h
+  -include src/log.h -I third_party -pthread zero/runz.cpp -o runz` (no warnings with the flags above; CMake to come).
+  The 4B: the same 32 greedy tokens as on Windows, 14.7 tok/s (the model read through `/mnt/c`; Windows 16.6-19.1),
+  KL 0.00090 against its f32 reference (Windows 0.00100). The logits are not bit-identical to Windows' (another
+  driver's kernel compiler: KL 3.5e-4 between the two), as step 2 expected. The Windows build bit-identical to release
+  2026.11.13.09 (the 4B and the 35B-A3B). Not tried yet on Linux: MoE models streaming experts (`O_DIRECT` through
+  WSL's disk), split models, the NPU, a newer compute runtime; Level Zero reports a 1.1 GB allocation limit there, which
+  the 4B's buffers did not hit.
 
 ## The order
 

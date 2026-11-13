@@ -45,7 +45,7 @@ struct Rt {
   ze_graph_dditable_t* g = nullptr;
   ze_device_graph_properties_t gp{};
   std::string cache_dir;
-  std::vector<void*> blobs_;  // (native binaries of the graphs loaded from the cache)
+  std::vector<std::pair<void*, size_t>> blobs_;  // (native binaries of the graphs loaded from the cache, their sizes)
   std::vector<void*> hosts_;  // (host allocations of host())
   std::vector<ze_graph_handle_t> graphs_;
   uint32_t driver_version = 0;
@@ -56,19 +56,19 @@ struct Rt {
   ~Rt() {  // (everything of this context: the engine of a server switching models goes, its NPU memory with it)
     if (cl) zeCommandListHostSynchronize(cl, UINT64_MAX);
     for (ze_graph_handle_t gr : graphs_) g->pfnDestroy(gr);
-    for (void* b : blobs_) VirtualFree(b, 0, MEM_RELEASE);
+    for (auto [b, n] : blobs_) plat::page_free(b, n);
     for (void* p : hosts_) zeMemFree(ctx, p);
     if (cl) zeCommandListDestroy(cl);
     if (ctx) zeContextDestroy(ctx);
   }
   // (needs ze_load() and zeInit(0) done: zeInit(1), GPUs only, hides the NPU driver)
   bool init() {
-    const HMODULE zl = GetModuleHandleA("ze_loader.dll");  // (not loaded: no Level Zero at all; BUGS.md appendix)
+    void* const zl = plat::dl_loaded("ze_loader.dll", "libze_loader.so.1");  // (not loaded: no Level Zero at all; BUGS.md appendix)
     if (!zl) {
       why = "Level Zero (ze_loader.dll) is not loaded";
       return false;
     }
-    auto getExt = (ze_result_t(*)(ze_driver_handle_t, const char*, void**))(void*)GetProcAddress(zl, "zeDriverGetExtensionFunctionAddress");
+    auto getExt = (ze_result_t(*)(ze_driver_handle_t, const char*, void**))plat::dl_sym(zl, "zeDriverGetExtensionFunctionAddress");
     uint32_t nd = 0;
     zeDriverGet(&nd, nullptr);
     std::vector<ze_driver_handle_t> ds(nd);
@@ -95,8 +95,7 @@ struct Rt {
     }
     {  // (the driver's version: part of the blob cache's key, so a driver update compiles the graphs again)
       struct DriverProps { uint32_t stype; void* pNext; uint8_t uuid[16]; uint32_t driverVersion; } dp{0x1u, nullptr, {}, 0};
-      auto getProps = (ze_result_t(*)(ze_driver_handle_t, DriverProps*))(void*)GetProcAddress(zl,
-                                                                                             "zeDriverGetProperties");
+      auto getProps = (ze_result_t(*)(ze_driver_handle_t, DriverProps*))plat::dl_sym(zl, "zeDriverGetProperties");
       if (getProps && getProps(drv, &dp) == 0) driver_version = dp.driverVersion;
     }
     gp.stype = ZE_STYPE_DEVICE_GRAPH_PROPERTIES;
@@ -105,7 +104,7 @@ struct Rt {
     if (zeContextCreate(drv, &cd, &ctx) != 0) return false;
     ze_command_queue_desc_t qd{ZE_STYPE_COMMAND_QUEUE_DESC, nullptr, 0, 0, 0, 0, 0};
     if (zeCommandListCreateImmediate(ctx, dev, &qd, &cl) != 0) return false;
-    cache_dir = app_dir() + "\\npu";  // (src/app_dir.h: %USERPROFILE%\.inferzero)
+    cache_dir = app_dir() + PLAT_SEP "npu";  // (src/app_dir.h: %USERPROFILE%\.inferzero)
     return true;
   }
   // compiled graph of ir: from the blob cache when it holds one for this model text and compiler, else compiled (and
@@ -115,7 +114,7 @@ struct Rt {
     char hex[17];
     snprintf(hex, sizeof hex, "%016llx",
              (unsigned long long)fnv1a(&driver_version, sizeof driver_version, fnv1a(in.data(), in.size())));
-    const std::string path = cache_dir.empty() ? std::string() : cache_dir + "\\" + hex + ".blob";
+    const std::string path = cache_dir.empty() ? std::string() : cache_dir + PLAT_SEP + hex + ".blob";
     std::vector<uint8_t> blob;
     if (!path.empty()) {
       std::ifstream f(path, std::ios::binary);
@@ -126,13 +125,13 @@ struct Rt {
     cached = false;
     if (!blob.empty()) {
       // (the driver reads the native binary in place for the graph's lifetime: page-aligned memory, kept)
-      uint8_t* ab = (uint8_t*)VirtualAlloc(nullptr, blob.size(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+      uint8_t* ab = (uint8_t*)plat::page_alloc(blob.size());
       if (ab) {
         memcpy(ab, blob.data(), blob.size());
         ze_graph_desc_t gd{ZE_STYPE_GRAPH_DESC, nullptr, ZE_GRAPH_FORMAT_NATIVE, blob.size(), ab, ""};
         cached = g->pfnCreate(ctx, dev, &gd, &gr) == 0;
-        if (!cached) { gr = nullptr; VirtualFree(ab, 0, MEM_RELEASE); }  // (another driver's blob: compiled below)
-        else blobs_.push_back(ab);
+        if (!cached) { gr = nullptr; plat::page_free(ab, blob.size()); }  // (another driver's blob: compiled below)
+        else blobs_.push_back({ab, blob.size()});
       }
     }
     if (!gr) {
@@ -154,8 +153,8 @@ struct Rt {
           std::error_code ec;
           std::filesystem::create_directories(cache_dir, ec);
           // (a temporary file of this process and thread: two processes compiling the same graph do not interleave)
-          const std::string tmp = path + "." + std::to_string(GetCurrentProcessId()) + "_" +
-                                  std::to_string(GetCurrentThreadId()) + ".tmp";
+          const std::string tmp = path + "." + std::to_string(plat::process_id()) + "_" +
+                                  std::to_string(plat::thread_id()) + ".tmp";
           bool ok = false;
           {
             std::ofstream o(tmp, std::ios::binary);
