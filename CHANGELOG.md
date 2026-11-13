@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-14: the kernels are compiled for the GPU they run on (issue #11)
+
+- **Why:** the engine runs its kernels through Level Zero, which only Intel's driver has, but compiles them with
+  OpenCL and loads the result as a native binary. OpenCL used the first GPU of the first platform that had one. A
+  machine can list others' OpenCL first: Mesa's rusticl on Linux (a `clinfo` of 2 Pro B60s on issue #11 shows it next to
+  Intel's platform), Microsoft's OpenCLOn12 on Windows (a B70 on issue #12 has it), or an Intel iGPU before an Arc card.
+  Then the kernels would be compiled for the wrong device: the load fails, or the card's features (8-lane sub-groups,
+  XMX, 2D loads) are read from the other one.
+- **What** (`zero/clrt.h`): Level Zero starts first; OpenCL then takes Intel's platforms before others' (rusticl,
+  OpenCLOn12, Clover, PoCL last), and on them the GPU with Level Zero GPU 0's PCI device id, else its name, else the
+  first Intel GPU, else the first GPU as before.
+- **Checked** (laptop, one Arc iGPU, Intel's GPU and CPU platforms): the same device as before, logits bit-identical to
+  release 2026.11.14.02; `serverz`, `mgpu_probe`, `gpu_bench` start as before. The cases it fixes need such machines;
+  the review traced them in the code.
+
 ## 2026-11-14: the norm and the H8 rotation of its rows in one kernel, opt-in (B60 prefill plan 13.5)
 
 - **Why:** with H8 (the default on Arc B-series cards) each layer input was normalized by `rmsnorm_quant`, which also

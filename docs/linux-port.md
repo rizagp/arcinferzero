@@ -35,6 +35,10 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 
 ## Progress
 
+- **2026-11-14: the kernels' compiler is the OpenCL of Intel's driver, for Level Zero's GPU 0** (`zero/clrt.h`): a
+  Linux machine may list Mesa's rusticl too (MaineTim's 2 B60s, issue #11); it is now skipped unless nothing else has a
+  GPU. rusticl and OpenCLOn12 have no Level Zero, so their binaries could never load.
+
 - 2026-11-13: step 1 started: `src/platform.h` with the libraries' loading (`plat::dl_open` / `dl_loaded` / `dl_sym`
   / `dl_close`, `dlopen` on Linux) and the home folder (`plat::home_env`); the four GPU-runtime loaders and the data
   folder use it. The Windows build bit-identical (runz's logits against release 2026.11.12.19).
