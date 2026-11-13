@@ -2,6 +2,15 @@
 // A part of class Engine (zero/engine.h), included inside the class body at the place it was cut from: not a
 // header of its own. Split out of engine.h unchanged on 2026-10-23 (QUEUE F26.3).
 
+  void gdn_ab_input(Layer& L, int Mp, int act32) {
+    if (!L.ab_f32) return gdn_ab(L, Mp, act32);
+    const int rt = cur_T_ > 8 ? 4 : 1, tt = cur_T_ > 8 ? 4 : 1;
+    cl_kernel k = kernel("ops", "-DW_F32 -DRT=" + std::to_string(rt) + " -DTT=" + std::to_string(tt), "gemv_bf16");
+    int K = hp.n_embd, N = 2 * hp.ssm_nv, T = cur_T_, ld = N;
+    set_args(k, 0, hco_, K, L.ab_f32, N, T, gb_, ld);
+    size_t global[2] = {(size_t)16 * ((N + rt - 1) / rt), (size_t)(T + tt - 1) / tt}, local[2] = {16, 1};
+    run("gemm_ab", k, 2, global, local);
+  }
   void layer_gdn(Layer& L, int T, int Mp) {
     const int E = hp.n_embd, C = hp.conv_dim(), nv = hp.ssm_nv, nk = hp.ssm_nk, Di = hp.ssm_d_inner;
     float eps = hp.eps;
@@ -14,7 +23,7 @@
       bigc = qz_out_;
       zc = qz_z_;
       if (L.qz_ab) gbc = qz_ab_;
-      else gdn_ab(L, Mp, a_in);
+      else gdn_ab_input(L, Mp, a_in);
     } else {
       const bool npu = npu_qkv_start(L, T, Mp);  // (ARC_NPU=1: the NPU's share of attn_qkv, zero/npu/engine_npu.h)
       {
@@ -22,7 +31,7 @@
         if (!npu) matmul("gemm_qkv", L.qkv, Mp, big_, C, 0, false, a_in);
         matmul("gemm_z", L.z, Mp, z_, Di, 0, false, a_in);
       }
-      gdn_ab(L, Mp, a_in);
+      gdn_ab_input(L, Mp, a_in);
       if (npu) npu_qkv_finish(L, Mp);
     }
     const bool fuse = gdn_fuse_ && !spec_;  // (gates in gdn_recur, the conv history in gdn_conv for one token)
@@ -291,6 +300,24 @@
     matmul("gemm_o", L.wo, Mp, x_, E, 0, 1, a_out);
   }
 
+  void qsa_float_attention(Layer& L, int T, int pos0, bool sparse) {
+    const bool split = T <= 8 && pos0 + T > 128;
+    const int ns = split ? std::min(64, ((pos0 + T + 15) / 16 + 7) / 8) : 1;
+    const std::string defs = "-cl-intel-256-GRF-per-thread -DGQ=" + std::to_string(gq()) + " -DFA_QSA" + (split ? " -DFA_QSA_SPLIT" : "");
+    cl_kernel k = kernel("ops", defs, "attn_fa");
+    int cap = ctx, nh = hp.n_head, nkv = hp.n_head_kv, pp = pos0, tt = T;
+    int qmw = sparse ? qsa_mask_words(ctx) : 0, qr = std::max(1, L.qr);
+    set_args(k, 0, qrope_, L.kc, L.vc, cap, nh, nkv, pp, tt, o_, qsa_mask_, qmw, qr);
+    if (split) set_args(k, 12, ns, fa_part_);
+    size_t gws[3] = {16, (size_t)(nh / gq()), (size_t)((T * ns + 15) / 16 * 16)}, lws[3] = {16, 1, 16};
+    run("attention", k, 3, gws, lws);
+    if (split) {
+      cl_kernel combine = kernel("ops", defs, "qsa_fa_combine");
+      set_args(combine, 0, fa_part_, nh, ns, o_);
+      size_t global[3] = {256, (size_t)nh, (size_t)T}, local[3] = {256, 1, 1};
+      run("attn_combine", combine, 3, global, local);
+    }
+  }
   void layer_attn(Layer& L, int T, int Mp) {
     if (hp.qwen3) return layer_qwen3_attn(L, T, Mp);
     const int E = hp.n_embd, nh = hp.n_head, nkv = hp.n_head_kv, hd = hp.head_dim;
@@ -311,7 +338,7 @@
       for (const BatchSeq& q : batch_) {
         point_to(q.slot);
         float eps = hp.eps, theta_scale = std::pow(hp.rope_base, -2.0f / hp.n_rot), kq_scale = 1.0f / std::sqrt((float)hd);
-        int p0 = q.pos, nr = hp.n_rot, cx = ctx, f32a = 0, rs = q.rs, ur = 0, Tq = q.n;
+        int p0 = q.pos, nr = hp.n_rot, cx = ctx, f32a = opt.attn_int8 ? 0 : 1, rs = q.rs, ur = 0, Tq = q.n;
         struct alignas(16) Int4 { int x, y, z, w; } sect = {hp.rope_sect[0], hp.rope_sect[1], hp.rope_sect[2], hp.rope_sect[3]};
         qi_ = from(qi0, (size_t)q.row * nh * hd);
         qsc_ = from(qsc0, (size_t)q.row * nh * 4);
@@ -320,7 +347,9 @@
                  theta_scale, nr, kq_scale, qrope_, L.kc, L.vc, cx, qi_, qsc_, L.kq, L.ksc, L.vq, L.vsc, f32a, rs, qsc_, ur, sect);
         size_t gws[2] = {(size_t)(nh + nkv) * 16, (size_t)Tq}, lws[2] = {16, 1};
         run("attn_prep", k_attn_prep_, 2, gws, lws);
-        if (L.qr > 0 && qsa_seq(L, q.row, Tq, q.pos)) qsa_attention(L, Tq, q.pos);  // (Flash Next: its blocks)
+        const bool sparse = L.qr > 0 && qsa_seq(L, q.row, Tq, q.pos);
+        if (!opt.attn_int8 && L.qr > 0) qsa_float_attention(L, Tq, q.pos, sparse);
+        else if (sparse) qsa_attention(L, Tq, q.pos);  // (Flash Next: its blocks)
         else attn_decode_rows("attention", L, ctx, nkv, nh / nkv, hd, q.pos, Tq, 0);
       }
       qi_ = qi0;
@@ -338,6 +367,8 @@
     const bool qsa = batch_.empty() && L.qr > 0 && qsa_prepare(L, T, Mp, a_in);
     if (!batch_.empty()) {
       // (done above, per sequence)
+    } else if (!opt.attn_int8 && L.qr > 0) {
+      qsa_float_attention(L, T, pos, qsa);
     } else if (qsa) {
       qsa_attention(L, T, pos);
     } else if (opt.attn_int8 && T <= 8) {

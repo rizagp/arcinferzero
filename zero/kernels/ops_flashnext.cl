@@ -199,6 +199,17 @@ inline float bf16sb_dot_v(__global const ushort* p, __local const float* x, int 
   return acc;
 }
 
+inline float f32sb_dot(__global const float* p, __local const float* x, int nv) {
+  const int lane = get_sub_group_local_id();
+  const float16 q = 16 * lane < nv ? vload16(lane, p) : (float16)0.0f;
+  const float w[16] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7,
+                       q.s8, q.s9, q.sa, q.sb, q.sc, q.sd, q.se, q.sf};
+  float acc = 0.0f;
+#pragma unroll
+  for (int j = 0; j < 16; ++j) acc += w[j] * x[16 * j + lane];
+  return acc;
+}
+
 #define HCF_TM 16
 #endif
 __attribute__((intel_reqd_sub_group_size(16)))
@@ -223,14 +234,20 @@ __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, 
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     if (n < N) {
-#ifdef HC_BF16
+#if defined(HC_F32)
+      __global const float* p = (__global const float*)wq + ((size_t)n * nsb + sb) * 256;
+#elif defined(HC_BF16)
       __global const uint* p = (__global const uint*)((__global const ushort*)wq + ((size_t)n * nsb + sb) * 256);
 #else
       __global const uchar* p = wq + ((size_t)n * nsb + sb) * 272;
 #endif
       for (int l = 0; l < 16; ++l) {
         if (lo_in && sb * 256 + 16 * l >= LR) break;  // (the up projection's zero padding past LR)
-#ifdef HC_BF16
+#if defined(HC_F32)
+        const float16 q = vload16(l, p);
+        const float wf[16] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7,
+                              q.s8, q.s9, q.sa, q.sb, q.sc, q.sd, q.se, q.sf};
+#elif defined(HC_BF16)
         const uint8 q = vload8(l, p);
         const uint w8[8] = {q.s0, q.s1, q.s2, q.s3, q.s4, q.s5, q.s6, q.s7};
 #else
@@ -240,7 +257,9 @@ __kernel void hc_gemm_f32(__global const float* x, int ld_in, int K, int lo_in, 
 #endif
 #pragma unroll
         for (int j = 0; j < 16; ++j) {
-#ifdef HC_BF16
+#if defined(HC_F32)
+          const float w = wf[j];
+#elif defined(HC_BF16)
           const float w = bf16_at(w8[j / 2], j % 2);
 #else
           const float w = d * (float)(char)((w4[j / 4] >> (8 * (j % 4))) & 0xFF);
@@ -626,7 +645,9 @@ __kernel void hc_down1(__global const float* res, int r0, __global const float* 
   for (int sb = 0; sb < SL / 256; ++sb)
 #pragma unroll
     for (int r = 0; r < HC_RT; ++r)
-#ifdef HC_BF16
+#if defined(HC_F32)
+      acc[r] += f32sb_dot((__global const float*)wd + ((size_t)n * nsb + s0 + sb) * 256, xs[r] + sb * 256, 256);
+#elif defined(HC_BF16)
       acc[r] += bf16sb_dot((__global const ushort*)wd + ((size_t)n * nsb + s0 + sb) * 256, xs[r] + sb * 256);
 #else
       acc[r] += q8sb_dot(wd + ((size_t)n * nsb + s0 + sb) * 272, xs[r] + sb * 256);
@@ -668,7 +689,9 @@ __kernel void hc_up1(__global const float* res, int r0, __global const float* w,
     for (int sb = 0; sb < nsb; ++sb)
 #pragma unroll
       for (int r = 0; r < HC_RT; ++r)
-#ifdef HC_BF16
+#if defined(HC_F32)
+        acc[r] += f32sb_dot((__global const float*)wu + ((size_t)n * nsb + sb) * 256, xs[r] + sb * 256, LR - sb * 256);
+#elif defined(HC_BF16)
         acc[r] += bf16sb_dot_v((__global const ushort*)wu + ((size_t)n * nsb + sb) * 256, xs[r] + sb * 256, LR - sb * 256);
 #else
         acc[r] += q8sb_dot_v(wu + ((size_t)n * nsb + sb) * 272, xs[r] + sb * 256, LR - sb * 256);

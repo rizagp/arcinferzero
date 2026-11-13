@@ -373,3 +373,13 @@ Measure before and after on the same build options with a pause in between, best
 noisy, and state the check: bit-identical logits (`runz --dump-logits A.bin` vs `B.bin`, `cmp`), identical greedy
 text, or KL against the f32 reference / the int8 cache (`runz --ppl-kl-save` / `--ppl-kl`) for changes that are
 meant to change the numbers.
+
+## 2026-11-13: draft Flash precise repair
+
+| Measurement | Before | After | Scope |
+|---|---:|---:|---|
+| Eight-ID mean KL, corrected Q5_1 reference | 0.11597 | <0.000005 | Historical downstream UD-Q4_K_XL, not AutoRound or rebased-main execution. |
+| Workflow prefill / decode mean KL, F32 DeltaNet projections | 0.07673 / 0.04018 | 0.00324 / 0.00864 | Same historical quant; maxima 0.19503 / 0.32222. |
+| Rebased native Linux engine builds | Main base | runz/serverz pass | GPU/model KL and Windows/iGPU/TP/slots pending; keep draft. |
+
+See docs/flash-precise-repair-2026-11-13.md for evidence and limits.

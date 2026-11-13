@@ -119,9 +119,21 @@ __kernel void attn_prep(__global const float* qkv, int ldq, int nh, int nkv, __g
 #define BC16(x, i) intel_sub_group_shuffle((x), (i))
 __attribute__((intel_reqd_sub_group_size(SG)))
 __kernel void attn_fa(__global const float* q, __global const half* kc, __global const half* vc, int ctx, int nh,
-                      int nkv, int pos0, int M_valid, __global float* out) {
+                      int nkv, int pos0, int M_valid, __global float* out
+#ifdef FA_QSA
+                      , __global const uint* qmask, int qmw, int qr
+#endif
+#ifdef FA_QSA_SPLIT
+                      , int nsplits, __global float* parts
+#endif
+                      ) {
   const int lane = get_sub_group_local_id();
-  const int hg = get_global_id(1), m = get_global_id(2);
+  const int hg = get_global_id(1);
+#ifdef FA_QSA_SPLIT
+  const int m = get_global_id(2) / nsplits, split = get_global_id(2) % nsplits;
+#else
+  const int m = get_global_id(2);
+#endif
   if (m >= M_valid) return;
   const int pos = pos0 + m, g = (hg * GQ) / (nh / nkv);
   __global const float* qp = q + ((size_t)m * nh + hg * GQ) * 256;
@@ -133,8 +145,21 @@ __kernel void attn_fa(__global const float* q, __global const half* kc, __global
   for (int r = 0; r < GQ; ++r) { o[r] = 0.0f; mx[r] = -INFINITY; lp[r] = 0.0f; }
 
   const int nblk = pos / 16 + 1;
-  for (int b = 0; b < nblk; ++b) {
+#ifdef FA_QSA_SPLIT
+  const int chunk = (nblk + nsplits - 1) / nsplits;
+  const int b0 = split * chunk, b1 = min(nblk, b0 + chunk);
+#else
+  const int b0 = 0, b1 = nblk;
+#endif
+  for (int b = b0; b < b1; ++b) {
     const int t0 = b * 16;
+#ifdef FA_QSA
+    const int key = t0 + lane;
+    bool selected = key <= pos;
+    if (qmw && key < (pos + 1) / qr * qr)
+      selected = selected && ((qmask[(size_t)m * qmw + (key / qr) / 32] >> ((key / qr) & 31)) & 1u);
+    if (!sub_group_any(selected)) continue;  // Do not read K/V for an entirely excluded tile.
+#endif
     float s[GQ];
 #pragma unroll
     for (int r = 0; r < GQ; ++r) s[r] = 0.0f;
@@ -157,12 +182,20 @@ __kernel void attn_fa(__global const float* q, __global const half* kc, __global
         s[r] = a;
       }
     }
-    const bool valid = t0 + lane <= pos;
+    bool valid = t0 + lane <= pos;
+#ifdef FA_QSA
+    valid = selected;
+#endif
 #pragma unroll
     for (int r = 0; r < GQ; ++r) {
       const float sv = valid ? s[r] : -INFINITY;
       const float mn = fmax(mx[r], sub_group_reduce_max(sv));
+#ifdef FA_QSA
+      // A selected-block mask may exclude an entire leading tile. Keep its empty accumulator finite.
+      const float corr = isfinite(mn) ? exp(mx[r] - mn) : 1.0f;
+#else
       const float corr = exp(mx[r] - mn);
+#endif
       const float p = valid ? exp(sv - mn) : 0.0f;
       lp[r] = lp[r] * corr + p;
       o[r] *= corr;
@@ -179,9 +212,36 @@ __kernel void attn_fa(__global const float* q, __global const half* kc, __global
 #pragma unroll
   for (int r = 0; r < GQ; ++r) {
     const float L = sub_group_reduce_add(lp[r]);
+#ifdef FA_QSA_SPLIT
+    const size_t at = (((size_t)m * nh + hg * GQ + r) * nsplits + split) * 258;
+    vstore16(o[r], 0, parts + at + 16 * lane);
+    if (lane == 0) { parts[at + 256] = mx[r]; parts[at + 257] = L; }
+#else
     vstore16(o[r] / L, 0, out + ((size_t)m * nh + hg * GQ + r) * 256 + 16 * lane);
+#endif
   }
 }
+
+#ifdef FA_QSA_SPLIT
+// Stable merge of the unnormalized numerators and denominators from disjoint key ranges.
+__kernel void qsa_fa_combine(__global const float* parts, int nh, int nsplits, __global float* out) {
+  const int d = get_global_id(0), h = get_global_id(1), m = get_global_id(2);
+  const size_t base = ((size_t)m * nh + h) * nsplits * 258;
+  float maximum = -INFINITY;
+  for (int s = 0; s < nsplits; ++s)
+    if (parts[base + (size_t)s * 258 + 257] > 0.0f) maximum = fmax(maximum, parts[base + (size_t)s * 258 + 256]);
+  float numerator = 0.0f, denominator = 0.0f;
+  for (int s = 0; s < nsplits; ++s) {
+    const size_t at = base + (size_t)s * 258;
+    const float L = parts[at + 257];
+    if (L <= 0.0f) continue;
+    const float scale = exp(parts[at + 256] - maximum);
+    numerator += parts[at + d] * scale;
+    denominator += L * scale;
+  }
+  out[((size_t)m * nh + h) * 256 + d] = numerator / denominator;
+}
+#endif
 
 // y = attn_out * sigmoid(gate), gate from the q|gate interleaved projection; quantized (K = nh*256).
 __attribute__((intel_reqd_sub_group_size(SG)))
