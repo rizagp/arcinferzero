@@ -175,6 +175,7 @@
     ~H8Share() {
       e->h8_share_ = 0;
       e->h8_last_K_ = -1;
+      e->h8_pre_live_ = false;  // (rmsnorm_h8's rotation is good for this scope's GEMMs only)
     }
     H8Share(const H8Share&) = delete;
     H8Share& operator=(const H8Share&) = delete;
@@ -199,8 +200,41 @@
     H8Src(const H8Src&) = delete;
     H8Src& operator=(const H8Src&) = delete;
   };
+  // ---- the norm and the rotation of its rows in one kernel (B60 prefill plan 13.5; ops.cl rmsnorm_h8r; ARC_H8_NORM=1,
+  // opt-in until a B60 measures it): the norm of a layer's input runs inside the H8Share scope of the GEMMs that read
+  // it and leaves h8_aq_ / h8_asc_ rotated (h8_pre_live_), so their h8_act has nothing left to do; the scope's end or
+  // any other rotation ends it. The same values bit for bit as rmsnorm_quant + h8r_act from the f32 copy (H8F), which
+  // it no longer writes: the copy's write and read and a launch saved per input (the 27B: 128 of a prompt's 256 h8_act)
+  bool h8_pre_live_ = false;
+  int h8_pre_M_ = -1, h8_pre_K_ = -1;
+  static bool h8_norm_env() {
+    static const bool on = getenv("ARC_H8_NORM") && atoi(getenv("ARC_H8_NORM")) != 0;
+    return on;
+  }
+  // rmsnorm_quant for the input of `next` (the first GEMM of the open H8Share scope that reads it); rmsnorm_quant as
+  // before where the fused form does not apply
+  void rmsnorm_h8(cl_mem x, int row_off, cl_mem w, int K, int Mp, int T, int act32, const GpuWeight& next) {
+    const int hb = h8_block(K);
+    if (!h8_norm_env() || !h8_share_ || !h8_row() || h8f_defs_.empty() || wide_rows(T) || !h8_takes(next, Mp) ||
+        next.K != K || K % 256 || K % hb || K / hb > 16 || (size_t)K * 4 + 64 > 60 * 1024) {  // (the row in local memory)
+      rmsnorm_quant(x, row_off, w, K, Mp, T, act32);
+      return;
+    }
+    static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
+    cl_kernel k = kernel("ops", std::string("-cl-intel-256-GRF-per-thread -DH8NORM") + (d ? " -DH8_D" : "") + " -DHB=" +
+                                    std::to_string(hb) + " -DH8N_K=" + std::to_string(K), "rmsnorm_h8r");
+    float eps = hp.eps;
+    int wh = 0, KK = K, MM = Mp, TT = T, a32 = act32;
+    set_args(k, 0, x, row_off, w, KK, MM, TT, eps, aq_, asc_, absum_, big_, wh, a32, h8_aq_, h8_asc_);
+    size_t gws[2] = {256, (size_t)Mp}, lws[2] = {256, 1};
+    run("rmsnorm_h8r", k, 2, gws, lws);
+    h8_pre_live_ = true, h8_pre_M_ = Mp, h8_pre_K_ = K;
+  }
   // this GEMM's input (aq_ / asc_, per-32 scales when act32) rotated into h8_aq_ / h8_asc_
   void h8_act(int Mp, int K, bool act32) {
+    // (rmsnorm_h8 left this input rotated: from the f32 values, so per-32 scales or not make no difference)
+    if (h8_pre_live_ && !h8_fsrc_ && h8_row() && Mp == h8_pre_M_ && K == h8_pre_K_) return;
+    h8_pre_live_ = false;
     const cl_mem src = h8_fsrc_ ? h8_fsrc_ : aq_;
     if (h8_share_) {
       if (h8_last_K_ == K && h8_last_M_ == Mp && h8_last_a32_ == (act32 ? 1 : 0) && h8_last_aq_ == src) return;
