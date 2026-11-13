@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-13: Q5_1 CPU reference rows
+
+- Decode Q5_1 rows in 32-value blocks, including K=640 tails. Before: short rows
+  were unwritten and rows of at least 256 values threw unsupported-type errors.
+  Add a model-free regression to test_quant_rows and run it in CI. The GPU still
+  rejects Q5_1; this repairs CPU references, not KL for models main can run.
+
+
 ## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
 
 - **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),
@@ -4272,10 +4280,3 @@ one kv head) ran at only ~20 GB/s, 0.7 ms per layer.
 - Segmented layer-major prefill (16K tokens) and the largest contexts that fit 16.5 GiB for every model
   (`scripts/arc-server.ps1`, `scripts/install-pi.ps1`).
 - Review page `docs/review.html` (EN/ID) with `bench/review_data.py`; prompt benchmark `bench/prompt_bench.py`.
-
-## 2026-11-13: Q5_1 CPU reference rows
-
-- Decode every 32-value Q5_1 block in dequant_row, including K=640 rows.
-  Add independent full-code fixtures, short rows and output guards. GPU kernels
-  and GPU layouts are unchanged; this repairs the reference rather than proving
-  existing GPU arithmetic accurate.

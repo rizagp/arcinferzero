@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-13, Q5_1 CPU reference rows** (`src/quants.h`, `tests/test_quant_rows.cpp`).
+  Before: K<256 left output unwritten; K>=256 threw `decode_sb: unsupported type`.
+  After: 3,424 independently encoded values at eight widths (including 640) and
+  output guards pass; ASan/UBSan pass. CPU-only repair; main's GPU loader still
+  rejects Q5_1. No speed or supported-model KL change is claimed.
+
+
 - **2026-11-12, a split model's FFN sums beside the next chunk's work, opt-in** (`ARC_TP_OVERLAP=1`,
   zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums beside the next chunk's work"). **Speed: not measured** (the laptop
   has one GPU; with `ARC_TP_SIM` all shards share its one compute queue). Laptop numbers say nothing either way:
@@ -373,9 +380,3 @@ Measure before and after on the same build options with a pause in between, best
 noisy, and state the check: bit-identical logits (`runz --dump-logits A.bin` vs `B.bin`, `cmp`), identical greedy
 text, or KL against the f32 reference / the int8 cache (`runz --ppl-kl-save` / `--ppl-kl`) for changes that are
 meant to change the numbers.
-
-## 2026-11-13: Q5_1 CPU reference decoding
-
-| Measurement | Before | After | Scope |
-|---|---|---|---|
-| Independent Q5_1 rows, K=32/64/128/256/512/640/768/1024 | Fails first width, leaves sentinel at K=32 | All eight widths and output guards pass | CPU reference only; no GPU speed/KL claim. |
