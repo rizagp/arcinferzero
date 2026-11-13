@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-13: expert records copied without their pool's padding (chumbleyjl, PR #14)
+
+- **The bug:** a pool's slots are padded to its largest record. With the RAM tier (discrete cards with free RAM,
+  `ARC_XRAM_GB`), a record is copied to the GPU from where it sits in RAM, packed at its layer's own size, and the
+  warm-up, demand and deep-prefetch copies read a whole padded slot from it: past the record, past a 1 GiB piece for
+  the last one. On a native Linux Arc Pro B70 with a 32 GiB tier that crashed Flash Next; on the laptop it read
+  readable memory without a crash.
+- **The fix:** every copy takes the layer's record size (`zero/xcache.h`; the deep-prefetch copy added to the PR).
+  No kernel or weight change; the padding is never read.
+- **Checked:** the 35B-A3B forced into padded pools, RAM tier off and on, the same logits as before bit for bit
+  (docs/before-after.md); the B70 owner's runs with 32 / 64 GiB tiers complete.
+
 ## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
 
 - **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),
