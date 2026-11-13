@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased: restore Flash Next host PLE history
+
+- After a host snapshot restore, refresh the CPU n-gram predecessor IDs from the restored PLE state.
+  Speculative verification embeds directly and does not pass through forward()'s refresh. Add an optional
+  direct-verification regression to runz --snap-test when an MTP model is loaded.
+
 ## 2026-11-13: the peer-access probe on Linux; a newer compute runtime in WSL
 
 - **`mgpu_probe` builds on Linux** (`zero/mgpu_probe.cpp`: the library lookup and page memory through `src/platform.h`),

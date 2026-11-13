@@ -1,5 +1,17 @@
 # Before and after
 
+## 2026-11-13: Flash Next host restore before verification
+
+| Change | Before | After | Check / scope |
+|---|---|---|---|
+| Refresh CPU PLE predecessor IDs after host snapshot restore | Same 8,304-token prompt and 1,024-token replay diverged at character 344 of reasoning | Cold versus restored continuations match | Downstream B70: 256 generated IDs and 63,569,920 predictive floats per restored replay; two restore implementations, 127,139,840 comparisons, bit-identical. Full 262,144 allocation, native MTP2. |
+
+Measurements above were made on the downstream Linux port based on 080e588 with other loading and server
+changes. The minimal fix is now rebased onto 3e81fc6; these are not current-main performance measurements.
+No kernel, weight format or sampling change. Windows/iGPU checks and the added current-main regression's
+GPU run remain pending. The existing forward-only snapshot test cannot expose this bug because forward()
+refreshes PLE history itself.
+
 Every change that moves speed, memory or accuracy gets a row here with the numbers before and after, measured the
 same way, and the check that the answers did not change. Newest first. The long story is in
 [review.md](review.md) and [speed-progress.md](speed-progress.md); what each finding taught is in

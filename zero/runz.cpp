@@ -576,6 +576,26 @@ static int run_main(int argc, char** argv) {
       all = all && same;
       if (host) eng.drop_host_snapshot(); else eng.drop_snapshot(0);
     }
+    // Flash Next verification embeds directly: forward() after restore would hide stale host PLE IDs.
+    // Fixed draft IDs keep this independent of the drafter's predictions; every vocabulary logit is compared.
+    if (eng.hp.ple_layer >= 0 && eng.has_mtp) {
+      const std::vector<int> drafts{toks[a + 1]};
+      eng.reset();
+      feed(toks.data(), a);
+      const std::vector<float> want = eng.verify(toks[a], drafts);
+      eng.verify_done(0);
+      eng.reset();
+      feed(toks.data(), a);
+      eng.snapshot_host();
+      feed(other.data(), mid);
+      const bool ok = eng.restore_host() && eng.pos == a;
+      const std::vector<float> got = ok ? eng.verify(toks[a], drafts) : std::vector<float>();
+      const bool same = ok && got.size() == want.size() && memcmp(got.data(), want.data(), got.size() * 4) == 0;
+      if (ok) eng.verify_done(0);
+      eng.drop_host_snapshot();
+      printf("host snapshot followed directly by verify: %s\n", same ? "bit-identical" : "DIFFER");
+      all = all && same;
+    }
     // a saved conversation: the prompt to a and a snapshot there, saved to a file; the engine's caches then overwritten
     // by other tokens (reset() leaves the caches' contents), reset, the file loaded: the next tokens, then the loaded
     // snapshot restored after other tokens and the next tokens again. A file cut in half must be refused. (Gemma: a

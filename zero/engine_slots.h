@@ -127,6 +127,9 @@
       pend_toks_.clear();
     }
     pos = hsnap_.pos;
+    // verify() embeds directly, without forward()'s PLE predecessor refresh.
+    // The restored convolution state owns the history for this checkpoint.
+    if (hp.ple_layer >= 0) ple_sync();
     return true;
   }
 
