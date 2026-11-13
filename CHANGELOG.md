@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-14: the Linux port audited as a whole; its findings fixed (issue #11)
+
+- **Audit:** Pi with DeepSeek read every Linux code path of the port, statically (docs/audit-2026-11-14-linux.md): no
+  Windows change; every fix of the first audit in place.
+- **Fixed on Linux:** models in the Hugging Face cache are found where `hf download` puts them (`~/.cache/huggingface`,
+  or `$XDG_CACHE_HOME`), without `HF_HOME` (before: the model list was empty on a stock install); the expert file's
+  writer survives a short `write(2)`; a child process (the terminal's shell, an MCP server, ffmpeg) gets only its own
+  three files, not the server's log; the terminal's session state is safe with two commands at once and with a command
+  that runs `set --`; a filesystem that takes `O_DIRECT` only at open is read cached; smaller ones (an error number,
+  `PATH` when none is set, `runz`'s process scan, the probes' kernel-cache paths, `-rdynamic` in the build line).
+- **Checked:** Linux (WSL, the 4B) and Windows give the same server replies; the terminal and project-folder tests on
+  both; Windows' CI build and unit tests; the 4B's logits on Windows bit-identical to release 2026.11.14.01.
+- **Found while testing, left for later (both systems, older than the port):** the HTTP server keeps a connection open
+  when the request says `Connection: close`.
+
 ## 2026-11-14: DeepSeek's audit of the day's changes (docs/audit-2026-11-14.md): no high or medium findings; 5 small fixes
 
 - `clEnqueueMapBuffer` bounds- and null-checked; unmap writes back only maps for writing; `logit_bias` ids past

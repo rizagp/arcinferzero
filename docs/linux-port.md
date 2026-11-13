@@ -28,7 +28,7 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 | Audio decoding (M4A, MP3, AAC, FLAC, Opus) | `src/audio.h` (Media Foundation) | WAV in C++ as now; the others through `ffmpeg` if installed, else refused with a message (done 2026-11-13) |
 | PDF pages as images (OCR models) | `tools/pdf_render.h` (Windows.Data.Pdf) | `pdftoppm` (poppler) if installed, else OCR of scanned PDFs off; text PDFs read as now |
 | `web_view` (a page as a browser shows it) | `tools/web_view.h` (headless Edge, a job-checked proxy) | headless Chromium if installed, with the same proxy; off by default at first |
-| The NPU | `zero/npu/` | off (the NPU's Linux driver is another API) |
+| The NPU | `zero/npu/` | the same Level Zero graph extension, which Intel's Linux NPU driver has too: ported and compiled (2026-11-13), not run; `--npu` is not refused on Linux |
 | Process details | `SetProcessWorkingSetSize`, power requests, the AVX2 check's message box | `madvise`, nothing, a message on stderr |
 | The build | `build.ps1` (MSVC `cl`, `/FI` force-includes, `/openmp`) | CMake with GCC or Clang (`-include`, `-fopenmp`, `-mavx2 -mfma`) |
 | The scripts and the launcher | the 14 scripts in `scripts/` (4,300 lines; 30 `.ps1` files in all with `bench/` and `tests/`), the WinForms launcher | a small shell script to start `serverz`, a systemd unit; PowerShell 7 runs on Linux for some of the rest (not `vcvars.ps1`, `make-package.ps1` or the launcher's); the launcher stays Windows-only |
@@ -103,8 +103,9 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   `/proc/meminfo`'s MemAvailable), the working-set trim, 64-bit file seeks, an environment variable, the process and
   thread ids, the NPU runtime's library lookups and page memory (it uses Level Zero's graph extension, which Intel's
   Linux NPU driver has too: compiled, not run), path joins (`PLAT_SEP`), the "other GPU processes" note (`/proc/*/comm`).
-  The build, from the repository's folder: `g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -fopenmp -include src/cpu_check.h
-  -include src/log.h -I third_party -pthread zero/runz.cpp -o runz` (no warnings with the flags above; CMake to come).
+  The build, from the repository's folder: `g++ -std=c++20 -O2 -mavx2 -mfma -mf16c -fopenmp -rdynamic -include
+  src/cpu_check.h -include src/log.h -I third_party -pthread zero/runz.cpp -o runz` (no warnings; `-rdynamic` gives the
+  crash report its function names; `serverz` the same with `zero/serverz.cpp`; CMake to come).
   The 4B: the same 32 greedy tokens as on Windows, 14.7 tok/s (the model read through `/mnt/c`; Windows 16.6-19.1),
   KL 0.00090 against its f32 reference (Windows 0.00100). The logits are not bit-identical to Windows' (another
   driver's kernel compiler: KL 3.5e-4 between the two), as step 2 expected. The Windows build bit-identical to release
@@ -160,6 +161,18 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
     the project paths, the crash handler's safety, kill before reap, FIFOs refused, `$TMPDIR`, atomic terminal state).
   - **Not yet:** a CMake build and a release archive (step 4); `web_view` (headless Chromium); the recorder (WASAPI);
     the GPU memory budget through Sysman; a native Linux machine's numbers.
+- 2026-11-14: **a second audit, of all the Linux work** (Pi / DeepSeek, static, docs/audit-2026-11-14-linux.md): no Windows
+  change; every fix of the first audit in place. Fixed after it: the Hugging Face cache found where `hf download`
+  writes it on Linux (`$XDG_CACHE_HOME` or `~/.cache/huggingface/hub`: the model list, Whisper and Qwen3-ASR found no
+  model without `HF_HOME` set), the expert file's writer taking a short `write(2)` as the rest to write, a child process
+  (the terminal's shell, an MCP server, ffmpeg) getting only its own three files, not the server's log file, the
+  terminal's session state with a temporary file of its own per command and its EXIT trap's paths in variables (`set --`
+  moved them), the expert file opened cached when the filesystem takes `O_DIRECT` at open but not at read, and smaller
+  ones. On Linux the live GPU memory figure is not there (no DXGI): the speech service's check before loading Whisper
+  and the memory view's budget are skipped; `--ctx auto` and the expert cache use the size Level Zero reports.
+  Checked: Linux (WSL, the 4B): the server test, the terminal (with `set --` and the child's open files), project
+  folders, the model list from `~/.cache` with no `HF_*` set; Windows: the CI build and its 11 unit tests, the server
+  and terminal tests, the 4B's logits bit-identical to release 2026.11.14.01; the server's replies the same on both.
 
 ## The order
 

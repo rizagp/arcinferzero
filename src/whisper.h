@@ -1441,7 +1441,11 @@ inline std::string find_model() {
   std::vector<fs::path> roots;
   if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
   if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
+#ifdef _WIN32
   if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
+#else
+  if (const std::string h = plat::hf_home_hub(); !h.empty()) roots.push_back(h);  // ($XDG_CACHE_HOME or ~/.cache)
+#endif
   // (large-v3 first since 2026-10-28: the user's choice of transcript models is Qwen3-ASR, Gemma 4 E4B and
   //  large-v3; turbo when it is the only one)
   for (const char* name : {"models--Systran--faster-whisper-large-v3", "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo",

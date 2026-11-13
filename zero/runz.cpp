@@ -42,10 +42,13 @@ static void warn_gpu_neighbours() {
   // (Linux: the processes' names in /proc/<pid>/comm, "serverz", "runz", "llama-...")
   std::string found;
   std::error_code ec;
-  for (const auto& d : std::filesystem::directory_iterator("/proc", ec)) {
-    const std::string pid = d.path().filename().string();
-    if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos || std::stoul(pid) == plat::process_id()) continue;
-    std::ifstream f(d.path() / "comm");
+  const std::string me = std::to_string(plat::process_id());
+  // (the error_code forms throughout: a process ending during the walk must not end runz with an exception)
+  for (std::filesystem::directory_iterator it("/proc", ec), end; !ec && it != end; it.increment(ec)) {
+    const std::filesystem::path& d = it->path();
+    const std::string pid = d.filename().string();
+    if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos || pid == me) continue;
+    std::ifstream f(d / "comm");
     std::string n;
     if (!std::getline(f, n)) continue;
     if (n == "serverz" || n == "runz" || n.rfind("llama-", 0) == 0) found += (found.empty() ? "" : ", ") + n + " (pid " + pid + ")";

@@ -83,6 +83,12 @@ inline std::map<std::string, std::string> env_map(char** env) {
   }
   return m;
 }
+// a word in single quotes for bash ('it'\''s')
+inline std::string sh_quote(const std::string& s) {
+  std::string o = "'";
+  for (char c : s) o += c == '\'' ? std::string("'\\''") : std::string(1, c);
+  return o + "'";
+}
 // (variables bash sets itself on every start: not carried in the session's state)
 inline bool shell_own(const std::string& k) { return k == "PWD" || k == "OLDPWD" || k == "SHLVL" || k == "_"; }
 
@@ -97,7 +103,8 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   plat::ignore_sigpipe();
   // the fresh shell's environment: the server's, PATH with extra_path first
   std::map<std::string, std::string> base = env_map(environ);
-  base["PATH"] = extra_path + (base.count("PATH") ? ":" + base["PATH"] : std::string());
+  // (no PATH at all, as under `env -i`: the usual folders, so the shell still finds ls, grep, python3)
+  base["PATH"] = extra_path + ":" + (base.count("PATH") ? base["PATH"] : std::string("/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"));
   // (no locale named, as for a systemd service: UTF-8, as the Windows half sets its output encoding; else tools print
   //  non-ASCII as '?' or octal escapes)
   if (!base.count("LANG") && !base.count("LC_ALL") && !base.count("LC_CTYPE")) base["LC_ALL"] = "C.UTF-8";
@@ -135,7 +142,9 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   {
     std::string body;
     if (!state.empty())
-      body = "trap '__az_rc=$?; pwd -P > \"$1\" 2>/dev/null; env -0 > \"$2\" 2>/dev/null; exit $__az_rc' EXIT\n"
+      // (the two paths in variables: the command may change its own arguments, `set --`, which the trap read before)
+      body = "__az_pwd=" + sh_quote(out_pwd) + "; __az_env=" + sh_quote(out_env) + "\n"
+             "trap '__az_rc=$?; pwd -P > \"$__az_pwd\" 2>/dev/null; env -0 > \"$__az_env\" 2>/dev/null; exit $__az_rc' EXIT\n"
              "if [ -n \"$VIRTUAL_ENV\" ] && [ -n \"$_OLD_VIRTUAL_PATH\" ]; then deactivate() { export PATH=\"$_OLD_VIRTUAL_PATH\"; "
              "unset VIRTUAL_ENV _OLD_VIRTUAL_PATH VIRTUAL_ENV_PROMPT; unset -f deactivate; }; fi\n";
     body += command + "\n";
@@ -149,7 +158,6 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   for (std::string& e : envs) envp.push_back(e.data());
   envp.push_back(nullptr);
   std::vector<std::string> args = {"bash", "--noprofile", "--norc", script};
-  if (!state.empty()) args.insert(args.end(), {out_pwd, out_env});
   std::vector<char*> argv;
   for (std::string& a : args) argv.push_back(a.data());
   argv.push_back(nullptr);
@@ -164,6 +172,9 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
   posix_spawn_file_actions_adddup2(&fa, po[1], 1);
   posix_spawn_file_actions_adddup2(&fa, po[1], 2);
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+  posix_spawn_file_actions_addclosefrom_np(&fa, 3);  // (only its three: not the server's other files, a --log-file)
+#endif
   if (!dir.empty()) posix_spawn_file_actions_addchdir_np(&fa, dir.c_str());
   posix_spawnattr_t at;
   posix_spawnattr_init(&at);
@@ -248,7 +259,8 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
       Json sj = Json::object();
       sj.set("cwd", Json(pwd.empty() ? dir : pwd));
       sj.set("env", ej);
-      const std::string tmp_state = state + "." + std::to_string(plat::process_id()) + ".tmp";
+      static std::atomic<uint64_t> seq{0};  // (two commands of one chat at once: two temporary files, never one)
+      const std::string tmp_state = state + "." + std::to_string(plat::process_id()) + "-" + std::to_string(++seq) + ".tmp";
       {
         std::ofstream o(tmp_state, std::ios::binary | std::ios::trunc);
         o << sj.dump();

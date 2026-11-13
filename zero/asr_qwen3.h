@@ -420,7 +420,11 @@ inline std::string find_model() {
   std::vector<fs::path> roots;
   if (const char* h = getenv("HF_HUB_CACHE")) roots.push_back(h);
   if (const char* h = getenv("HF_HOME")) roots.push_back(fs::path(h) / "hub");
+#ifdef _WIN32
   if (const char* u = getenv("USERPROFILE")) roots.push_back(fs::path(u) / ".cache" / "huggingface" / "hub");
+#else
+  if (const std::string h = plat::hf_home_hub(); !h.empty()) roots.push_back(h);  // ($XDG_CACHE_HOME or ~/.cache)
+#endif
   for (const char* size : {"1.7B", "0.6B"}) {
     std::string first;
     for (const fs::path& r : roots) {
