@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-14: an AutoRound package refuses an expert file from another checkpoint (PR #25, chumbleyjl)
+
+- The package's `inferzero.autoround.revision` (the checkpoint's 40-digit SHA) is checked against the expert file's
+  fingerprint, which the importer sets to the SHA's first 16 hex digits (src/autoround_revision.h): an expert file of
+  the same shapes from another import used to load without a word and decode other weights. Both loaders check it,
+  the engine (zero/expert_store.h `valid`) and tools/ref_forward. A malformed or missing revision is refused too;
+  packages without AR4_128 experts and plain models are not affected. Found by the pair audit of 2026-11-14.
+- `tests/test_autoround_revision.cpp` (no model, no GPU): 23 checks, in CI.
+- Checked by chumbleyjl on the B70: the matching package's logits bit-identical before and after. Checked here: see
+  the merge's commit.
+
 ## 2026-11-14: Linux: AutoRound packages open, expert reads into host memory, split models freed in turn (PR #24, chumbleyjl)
 
 - **The expert file's layer table compared field by field** (zero/expert_store.h `LayerInfo::operator==`), not with

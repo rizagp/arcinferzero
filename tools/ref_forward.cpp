@@ -2,6 +2,7 @@
 // Used to measure how close inferzero and llama.cpp are to the unquantized-activation result.
 // usage: ref_forward model.gguf 1,2,3|@ids_file [inferzero_top_logits_file]
 #include "../src/gguf.h"
+#include "../src/autoround_revision.h"
 #include "../src/quants.h"
 #include <cmath>
 #include <cstdio>
@@ -37,6 +38,8 @@ static void open_package(const std::string& gguf) {
   if (!PX->f) { zlog::eprintf("cannot open %s\n", path.c_str()); exit(1); }
   struct { uint32_t magic, version; uint64_t fp, layers, experts, bytes; } h{};
   if (fread(&h, sizeof h, 1, PX->f) != 1 || h.magic != 0x58435241u) { zlog::eprintf("not an expert file: %s\n", path.c_str()); exit(1); }
+  try { check_autoround_expert_revision(*F, h.fp); }
+  catch (const std::exception& e) { zlog::eprintf("%s\n", e.what()); fclose(PX->f); PX->f = nullptr; exit(1); }
   PX->layers.resize(h.layers);
   if (fread(PX->layers.data(), sizeof(PackExperts::Layer), h.layers, PX->f) != h.layers) { zlog::eprintf("short expert file header\n"); exit(1); }
   zlog::eprintf("ref_forward: experts from the package's expert file %s\n", path.c_str());

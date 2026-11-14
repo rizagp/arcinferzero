@@ -80,6 +80,10 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, an AutoRound package checks its expert file's checkpoint** (src/autoround_revision.h; pull request #25
+  by chumbleyjl). No speed or numbers change: a metadata check at load. Measured by its author on a B70: the matching
+  package's logits bit-identical before and after (two prompts, their last rows); a synthetic package with the same
+  shapes and another fingerprint, accepted before, refused.
 - **2026-11-14, Linux: expert files compared field by field, `EFAULT` reads through aligned memory, split shards freed
   in turn** (zero/expert_store.h, src/platform.h, zero/mgpu/engine_tp.h; pull request #24 by chumbleyjl). Measured by
   its author on a B70 (Linux, GCC 15): the AutoRound package, refused before (`memcmp` over the layer table's padding
