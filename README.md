@@ -98,12 +98,13 @@ these rows: [docs/models.md](docs/models.md).
 
 | Family | Models | Input | Drafts tokens with |
 |---|---|---|---|
-| Qwen3.5 / 3.6 / 3.8 | 0.8B-27B dense, 35B-A3B MoE, Flash Next (512 experts) | text, images (`mmproj`) | MTP block, DFlash2 |
+| Qwen3.5 / 3.6 / 3.8 | 0.8B-27B dense, 35B-A3B MoE, Flash Next (512 experts; also with Intel's AutoRound INT4 experts, `setup -Models flash-ar4`) | text, images (`mmproj`) | MTP block, DFlash2 |
+| DeepSeek-V4.1 | Flash (384 experts: ISTA's GSQ-RCO IQ2_XS, Unsloth's UD-Q8_K_XL), one GPU or several | text | |
 | Gemma 4 | E4B, 12B, 26B-A4B MoE, 31B (Google's QAT Q4_0) | text, images, audio | Gemma 4 assistant drafters |
 | OCR | Xiaomi-OCR-0 | images, PDFs | |
 | Speech to text | Qwen3-ASR, Whisper large-v3 | audio, video | |
 
-GGUF files as they are (IQ1-IQ4, Q2_K-Q8_0, F16 / BF16 small matrices); the architectures, weight types and each
+GGUF files as they are (IQ1-IQ4, Q2_K-Q8_0, Q5_1, MXFP4, F16 / BF16 small matrices); the architectures, weight types and each
 model's details: [docs/models.md](docs/models.md).
 
 ## The engine
@@ -119,10 +120,11 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) run the same engine, with switches of their own in `zero/xe2/` that
 the iGPUs never take. Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
-- **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,322 tok/s (release
-  2026.11.14.05); ~1,529 expected with the next release, which prefetches the weights by default (measured on .05 with
-  `ARC_GEMM_XW_PF=1 ARC_GEMM_XW_PFD=1`). Generation 23.7 tok/s, 51.6 with MTP (2026.11.13.11). Qwen3.6 35B-A3B: 4K
-  prompt 3,508 tok/s (2026.11.10), generation 82.4 tok/s, 111.9 with MTP (2026.11.13.11).
+- **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,522 tok/s (release
+  2026.11.14.09, which prefetches the weights by default; 1,322 before), generation 23.3 tok/s, 51.6 with MTP
+  (2026.11.13.11). Qwen3.6 35B-A3B: 4K prompt 3,536 tok/s (2026.11.14.09), generation 82.4 tok/s, 111.9 with MTP
+  (2026.11.13.11). The switches still off by default (`ARC_X16`, `ARC_GV_IQ3S`, `ARC_H8_NORM`, H8 on MoE models,
+  `--chunk 8192`) were measured there on 2026-11-14 and none is faster: [docs/xe2-tuning.md](docs/xe2-tuning.md).
 - **One Pro B70** ([issue #12](https://github.com/rizagp/inferzero/issues/12), 2026-11-13): 4K prompt 2,107 tok/s,
   generation 32.2 tok/s, 75.2 with MTP.
 - **Arc 140T** (the Core Ultra 9 285H's iGPU, [issue #5](https://github.com/rizagp/inferzero/issues/5)): 4K prompt
@@ -135,6 +137,9 @@ the iGPUs never take. Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named)
   - 2 Pro B60s on Linux (scenic6942, [issue #17](https://github.com/rizagp/inferzero/issues/17), PCIe 4.0 x8 each):
     the sums go straight from GPU to GPU (`ARC_TP_P2P`, chosen at load since 2026.11.14.06): 4K prompt 1,630 tok/s
     against 1,442 through host memory, generation 37.8 tok/s, the same logits.
+  - DeepSeek-V4.1-Flash over 4 Pro B60s with 1 TB of RAM (issue #4, release 2026.11.14.09): ISTA's IQ2_XS generates
+    10.3 / 18.0 / 16.6 / 17.6 tok/s on 1 / 2 / 3 / 4 cards, its 512-token prompt 171 / 227 tok/s over 3 / 4; Unsloth's
+    UD-Q8_K_XL 109 / 7.6 over 3 ([docs/multi-gpu.md](docs/multi-gpu.md)).
   - A slow link sets the pace: with one card in an x4 slot at 2.4 GB/s (issue #19, the 27B UD-Q5_K_XL) the prompt over
     2 cards is half of one card's (620 against 1,223 tok/s). A layer split for such links is planned, not built.
   - Batched slots work over a split model.
