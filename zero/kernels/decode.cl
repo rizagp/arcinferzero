@@ -17,15 +17,34 @@
 #define TAB_KFP4 8484  // (MXFP4's 16 values, src/quants.h kvalues_mxfp4)
 
 #define Q4_0 2
-#ifndef AR4_128
-#define AR4_128 0x41523447
-#endif
 #define Q8_0 8
 #define IQ4_NL 20
 #define Q2_0 42
 #define MXFP4 39
-// per-32 float scales (decoded into the W8 GEMM's VARIANT 4 layout: one f32 per 32-block in the header)
+// (a private inferzero type, not a GGML one: AutoRound INT4, 128 values to one f16 scale, zero point 8, pull request
+//  #22; tools/import_autoround_experts.py)
+#define AR4_128 0x41523447
+// The per-type lists, in one place (a new type goes here, and in src/quants.h is_per32_type / is_small_block_type):
+// per-32 float scales (decoded into the W8 GEMM's VARIANT 4 layout: one f32 per 32-block in the header; C++
+// is_per32_type)
 #define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128)
+// a vector decoder, vblock (gemv_v, and the experts' MOE_VB / moe_rg): each 32-block read straight into registers
+#define VB_TYPE (QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || \
+                 QT == MXFP4)
+
+#if QT == AR4_128
+// AR4_128's GPU superblock: the two 128-groups' f16 scales, then 8 x 16 nibble bytes in Q4_0 order, 4 pad bytes. A
+// 32-block's 16 bytes -> 8 words of four int8 values (low nibbles 0..15, high nibbles 16..31), each nibble - 8.
+inline void ar4_unpack(uint4 q, uint* w) {
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    const uint v = q[k];
+    const uint lo = v & 0x0f0f0f0fu, hi = (v >> 4) & 0x0f0f0f0fu;
+    w[k] = ((lo | 0x80808080u) - 0x08080808u) ^ 0x80808080u;
+    w[k + 4] = ((hi | 0x80808080u) - 0x08080808u) ^ 0x80808080u;
+  }
+}
+#endif
 // header uints per superblock and lane: W8 (d, dmin, 16 scales, 16 mins) or, for PER32, the 8 f32 block scales in
 // the layout of the GEMM's native Q8_0 form (kernels/gemm.cl QTYPE 8), which reads the decoded weights directly
 #if PER32
@@ -978,8 +997,7 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
   }
 }
 
-#if QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || \
-    defined(GRID_OFF)
+#if VB_TYPE || defined(GRID_OFF)
 // GEMVs that read the weights straight into registers (gemv_v: one token, gemv_mt_v: TB tokens): IQ4_XS, and Q6_K
 // for output heads. As gemv / gemv_mt, lane l handles 32-element block (l % 8) of superblock (sp + l / 8), the 16
 // lanes two contiguous superblocks; but each lane vector-loads its own bytes from global memory instead of the

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-14: the per-type lists in one place; the AutoRound files tidied
+
+- **One list per kind of type** instead of a copy in every place that needs it (adding MXFP4, MXFP8 and AR4_128 meant
+  editing about ten lists, and pull request #22's merge conflicted in six of them): `is_per32_type()` in
+  `src/quants.h` (the per-32-scale types, used by `w8_variant`, `gpu_regrouped` and `moe_rg_type`), with its kernel
+  twin `PER32`, and `VB_TYPE` in `kernels/decode.cl` (the types with a vector decoder, used by `gemv_v` and the
+  experts' `MOE_VB`).
+- `kernels/ar4.cl` folded into `kernels/decode.cl`: one `AR4_128` definition next to the other type ids (it was in
+  both), and `bench/gemv_bench` / `bench/moe_bench`, which read `decode.cl` alone, now get `ar4_unpack` too.
+- `tools/import_autoround_pack.cpp`, `tests/test_autoround_decode.cpp` and `tests/test_autoround_package.cpp`
+  rewritten in the project's style (the same checks; usage and exit codes explained, a message on each failure).
+- Logits bit-identical to release 2026.11.14.10 (Qwen3.5 4B, Qwen3.8 27B, Qwen3.6 35B-A3B, Flash Next IQ3_S); the
+  AR4 decode test passes; the expert kernels build for AR4_128, Q4_0, IQ4_XS and MXFP4.
+
 ## 2026-11-14: a split model's GPU out of memory shrinks its expert cache; AR4 experts on iGPUs
 
 - **Out of device memory on a split model** (zero/xcache.h, zero/engine_stream.h): a kernel launch or allocation that
@@ -23,7 +37,7 @@
 ## 2026-11-14: AutoRound INT4 experts (AR4_128, pull request #22 by chumbleyjl)
 
 - An experimental private AR4_128 importer (`tools/import_autoround_experts.py`, `tools/import_autoround_pack.cpp`),
-  CPU/reference and generic native decode plumbing (`kernels/ar4.cl`), plus source/package checks. Existing model
+  CPU/reference and generic native decode plumbing (`ar4_unpack` in `kernels/decode.cl`), plus source/package checks. Existing model
   defaults kept. Downstream AutoRound-hybrid benchmarks and accuracy limits are separate from upstream-branch
   validation; see docs/autoround-b70-rfc.md.
 - Merged with main's MXFP4 / MXFP8 types (both kept). AR4 experts also run on a split model (`--gpus`): each GPU

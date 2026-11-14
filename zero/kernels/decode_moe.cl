@@ -15,8 +15,7 @@
 #define MOE_MIN 1  // (types with per-block mins: the activation sums per 16 are computed here, there is no absum)
 #endif
 // (types with a vector decoder, vblock: the block is read straight into registers instead of a staged window)
-#if (QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || \
-     defined(GRID_OFF)) && !defined(MOE_WINDOW)
+#if (VB_TYPE || defined(GRID_OFF)) && !defined(MOE_WINDOW)
 #define MOE_VB 1
 #endif
 inline void moe_stage(__local uint* lgrid, __local uint* laux, __global const uint* tabs) {

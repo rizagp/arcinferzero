@@ -647,7 +647,15 @@ inline void quantize_act_cpu(const float* x, int M, int K, int8_t* aq, float* as
 // Small-block types (IQ4_NL: 32 elements / 18 bytes, Q2_0: 64 / 18) whose consecutive blocks are read as 256-element
 // "superblocks" by the GPU (144 / 72 bytes). A row whose K is not a multiple of 256 (Qwen3.8 Flash Next down
 // projections: K = 640) is padded to the next multiple with zero blocks (scale 0, dequantizing to zeros).
-inline bool is_small_block_type(uint32_t t) { return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128; }
+inline bool is_small_block_type(uint32_t t) {
+  return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128;
+}
+// Types with a float scale per 32-block (their own block of 32, or AR4_128's per 128): decoded into the W8 GEMM's
+// native Q8_0 form (w8_variant 4), regrouped on the GPU (scales first), read by moe_rg. The kernels' list of the same
+// types: PER32 in zero/kernels/decode.cl.
+inline bool is_per32_type(uint32_t t) {
+  return t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128;
+}
 inline int padded_k(int K) { return (K + 255) / 256 * 256; }
 // N rows of K elements of a small-block type -> N rows of padded_k(K) elements (dst holds N * the padded row bytes)
 inline void pad_small_block_rows(uint32_t type, const uint8_t* src, int N, int K, uint8_t* dst) {
@@ -675,8 +683,7 @@ inline bool is_w8_type(uint32_t t) {
 // end, docs/archive/review_notes.md).
 inline bool w8_requant(uint32_t t) { return t == GGML_Q2_K || t == GGML_Q4_K || t == GGML_Q5_K; }
 inline int w8_variant(uint32_t t) {
-  if (t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 || t == GGML_AR4_128)
-    return 4;  // per-32 f32 scales (the GEMM runs them as its native Q8_0 form)
+  if (is_per32_type(t)) return 4;  // per-32 f32 scales (the GEMM runs them as its native Q8_0 form)
   const bool sc32 = t == GGML_IQ4_XS || t == GGML_IQ3_S || t == GGML_IQ3_XXS || t == GGML_IQ2_XXS ||
                     t == GGML_Q4_K || t == GGML_Q5_K;
   const bool mins = !w8_requant(t) && (t == GGML_Q2_K || t == GGML_Q4_K || t == GGML_Q5_K);
@@ -713,8 +720,7 @@ inline bool gpu_d_last(uint32_t type) {
   return type == GGML_IQ2_XXS || type == GGML_IQ2_XS || type == GGML_IQ2_S || type == GGML_IQ3_XXS || type == GGML_IQ3_S;
 }
 inline bool gpu_regrouped(uint32_t type) {
-  return type == GGML_AR4_128 || type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0 ||
-         type == GGML_MXFP4 || gpu_d_last(type);
+  return is_per32_type(type) || gpu_d_last(type);
 }
 // One superblock in its GPU raw form (dst: raw_padded_sb_bytes(type) bytes).
 inline void gpu_raw_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
