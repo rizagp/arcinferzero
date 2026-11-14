@@ -670,7 +670,26 @@ Checked (laptop, `ARC_TP_SIM`), the tiny model with Unsloth's UD-Q8_K_XL types (
 | 3 | 0.0053 / 0.0052 |
 | 4 | 0.0051 / 0.0052 |
 
-at the real widths (--real --unsloth: 384 experts, top 6, MXFP4) 0.066 on 1 GPU, 0.067 on 2 and on 4 (the random router's near-tied experts; the split adds nothing). Not measured yet: the speed (manoreken2's four B60s with 1 TB of RAM, issue #4).
+at the real widths (--real --unsloth: 384 experts, top 6, MXFP4) 0.066 on 1 GPU, 0.067 on 2 and on 4 (the random router's near-tied experts; the split adds nothing).
+
+**Measured** (manoreken2's four Arc Pro B60s, Xeon Gold 6330, 1 TB of RAM; release 2026.11.14.09, runz, issue #4):
+
+| Model | GPUs | 512-token prompt | generation |
+|---|---|---|---|
+| ISTA IQ2_XS | 1 | | 10.3 tok/s (13 tokens) |
+| ISTA IQ2_XS | 2 | | 18.0 |
+| ISTA IQ2_XS | 3 | 171 tok/s | 16.6 |
+| ISTA IQ2_XS | 4 | 227 | 17.6 |
+| Unsloth UD-Q8_K_XL | 1 (serverz) | 23 | 4.7 |
+| Unsloth UD-Q8_K_XL | 3 | 109 | 7.6 |
+| Unsloth UD-Q8_K_XL | 4 | stopped: a GPU missed the 120 s limit of a sum | |
+
+Two GPUs nearly double generation; past two it stays flat (the sums: 40 a token, 4-8 ms of each token waiting)
+while the prompt keeps gaining. The first prompt of a run reads the experts from the SSD (IQ2_XS over 4: 15.2 s, of
+it 6.5 s waiting at the sums; the next ones 2.3 s). The Q8_K_XL over 4 ran on release .09, whose expert cache was
+planned to 0.01 GiB of the memory limit (fixed in .10, and since .11 a GPU out of memory shrinks its own cache): to
+run again. "The capital of France is" continues differently over 3 and 4 GPUs ("Paris." and the end) than over 1
+and 2: the parts of a sum are added in another order, and the second token is a near-tie.
 
 ## Not yet
 
