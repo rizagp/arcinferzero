@@ -126,7 +126,7 @@ the iGPUs never take. Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named)
 - **One Pro B70** ([issue #12](https://github.com/rizagp/inferzero/issues/12), 2026-11-13): 4K prompt 2,107 tok/s,
   generation 32.2 tok/s, 75.2 with MTP.
 - **Arc 140T** (the Core Ultra 9 285H's iGPU, [issue #5](https://github.com/rizagp/inferzero/issues/5)): 4K prompt
-  302 tok/s (release 2026.11.11), 330 with the xw8 tiles of a 2026.11.13.11 sweep.
+  330 tok/s (release 2026.11.13.11, its default 32x16 XMX tiles with H8; 302 on 2026.11.11).
 - **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel):
   - 4 Pro B60s on Windows (issue #4; no peer access there, so the sums go through host memory): the 27B's 4K prompt
     1,597 / 1,724 / 1,888 tok/s over 2 / 3 / 4 cards (2026.11.13.05 and .11), generation 35.7 / 43 / 53 tok/s (run of

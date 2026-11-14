@@ -134,18 +134,32 @@
   // blocks of 512 / 1024, once the column scales are known (the first decode keeps the two passes). ARC_H8_FUSE=0: off.
   bool h8_dec_ok(const GpuWeight& w) const {
     static const bool on = !getenv("ARC_H8_FUSE") || atoi(getenv("ARC_H8_FUSE")) != 0;
-    return on && w.raw && w.gemm_qtype >= 100 && w.gemm_qtype <= 103 && !w8_requant(w.type) && w8_variant(w.type) != 4 &&
-           w.type != GGML_IQ1_M && w.type != GGML_IQ1_S && h8_block(w.K) >= 512 && w.N % 16 == 0;
+    // (since 2026-11-14 the per-32 float types too (W8 variant 4, the Q8_0 form, gemm_qtype 8: Q8_0, Q4_0, IQ4_NL, Q2_0,
+    //  MXFP4), B60 prefill plan 13.3; the requantized ones (Q2_K / Q4_K / Q5_K) keep the two passes, kernels/decode.cl
+    //  H8RDEC says why; ARC_H8_FUSE=1: only the types of before)
+    static const bool old_set = getenv("ARC_H8_FUSE") && atoi(getenv("ARC_H8_FUSE")) == 1;
+    const bool type_ok = !w8_requant(w.type) &&
+                         ((w.gemm_qtype >= 100 && w.gemm_qtype <= 103) || (!old_set && w.gemm_qtype == GGML_Q8_0 && w8_variant(w.type) == 4));
+    return on && w.raw && type_ok && w.type != GGML_IQ1_M && w.type != GGML_IQ1_S && h8_block(w.K) >= 512 && w.N % 16 == 0;
   }
   void h8r_decode(const GpuWeight& w, cl_mem wq, cl_mem col, bool packed = false) {
     static const bool d = getenv("ARC_H8_D") && atoi(getenv("ARC_H8_D")) != 0;
+    // (ARC_H8_DEC_PRIV=1: each lane loads its superblock into registers, as before 2026-11-14; the default stages the
+    //  work-group's superblocks in local memory once, B60 prefill plan 13.3, the same values bit for bit)
+    static const bool priv = getenv("ARC_H8_DEC_PRIV") && atoi(getenv("ARC_H8_DEC_PRIV")) != 0;
+    // (ARC_H8_DEC_R=n: n rotation blocks per work-group, 1 / 2 / 4 / 8)
+    static const int rb = [] {
+      const int e = getenv("ARC_H8_DEC_R") ? atoi(getenv("ARC_H8_DEC_R")) : 4;
+      return e == 1 || e == 2 || e == 4 || e == 8 ? e : 4;  // (4: the laptop 27B, 1,180 -> 953 (1) -> 876 ms (4), 2026-11-14)
+    }();
     const int hb = h8_block(w.K);
-    cl_kernel k = kernel("decode", std::string("-cl-intel-256-GRF-per-thread -DH8RDEC") + (d ? " -DH8_D" : "") + " -DQT=" +
+    cl_kernel k = kernel("decode", std::string("-cl-intel-256-GRF-per-thread -DH8RDEC") + (d ? " -DH8_D" : "") + (priv ? " -DH8D_PRIV" : "") +
+                                       " -DH8DR=" + std::to_string(rb) + " -DQT=" +
                                        std::to_string(w.type) + " -DHB=" + std::to_string(hb) + " -DSRC=" +
                                        std::to_string(w.gemm_qtype) + (packed ? " -DXW_PACKW_OUT" : ""), "h8r_decode");
     int N = w.N, K = w.K;
     set_args(k, 0, w.raw, N, K, tabs_, wq, col);
-    size_t gws[2] = {(size_t)N / 16 * 256, (size_t)(K / hb)}, lws[2] = {256, 1};
+    size_t gws[2] = {(size_t)N / 16 * 256, (size_t)((K / hb + rb - 1) / rb)}, lws[2] = {256, 1};
     run("h8_decode", k, 2, gws, lws);
   }
   // W8 / Q8_0 weights (wq, wh) into H8 in place, their scales into hh

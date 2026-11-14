@@ -80,6 +80,19 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, `h8_decode` from local memory, 4 blocks a work-group, the per-32 types too** (kernels/decode.cl
+  `h8r_decode`, zero/engine_h8.h; B60 prefill plan 13.3). Laptop (125H), the 27B GSQ-RCO IQ3_S, `ARC_H8=1`, 2K prompt,
+  `--prof`, the kernel's GPU time, three interleaved rounds: registers (before) 1,180.3 / 1,200.8 / 1,144.8 ms, local
+  memory 942.3 / 964.2 / 952.8, local memory with 4 blocks a work-group 859.1 / 875.5 / 927.6 (median 1,180 -> 876);
+  against release 2026.11.14.09 in alternating pairs 923.7 / 937.7 -> 871.6 / 870.7 ms (the pass 124.4 / 124.1 ->
+  124.1 / 125.4 tok/s). The 4B (`--budget 0`): decode_w8 + h8_weights + h8_decode 489 / 460 -> 443 / 443 ms, 732.7 /
+  831.1 -> 837.1 / 838.2 tok/s. Logits bit-identical against the two passes (`ARC_H8_FUSE=0`), the old kernel and
+  .09 (27B, 4B), the defaults against .09. Tried and left out: the requantized types in the fused kernel, -33 % of
+  the 27B's decode time (1,444 -> 970 ms) but ~2 values in a million 1 apart (KL 0.0001-0.0009 per row).
+- **2026-11-14, `ARC_W8_PARTIAL_GB` (opt-in): part of the decoded weights resident** (zero/engine_load.h; plan 13.6).
+  Laptop, 27B, `ARC_H8=1`, 512-token prompt, alternating: none 98.1 / 98.1 tok/s, 4 GB (62 of 400 matrices) 101.2 /
+  102.6 (h8_decode 856 / 853 -> 710 / 702 ms). Logits bit-identical to none (with and without H8).
+
 - **2026-11-14, `ARC_GEMM_XW_PF=1 PFD=1` by default on 16-lane XMX cards** (zero/xe2/engine_xw.h). Measured by
   manoreken2 on a Pro B60 with release 2026.11.14.05 (`bench\xw_sweep.ps1 -Prefetch`, the 27B GSQ-RCO IQ3_S, one
   run each): 512 tokens 737.3 -> 867.2 tok/s, 4K 1,321.7 -> 1,529.0 (pf1 d2 859.7 / 1,509.8, pf1 d4 845.2 / 1,467.3,

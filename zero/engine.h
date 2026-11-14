@@ -443,6 +443,9 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     plat::trim_working_set();
     clFinish(cl_.queue);
     load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (w8_part_n_ > 0)
+      zlog::eprintf("inferzero: %d layer matrices keep their decoded W8 copy resident (%.2f GiB, ARC_W8_PARTIAL_GB); the "
+                    "rest are decoded just in time\n", w8_part_n_, w8_part_bytes_ / 1073741824.0);
     reset();
   }
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-14: `h8_decode` reads each superblock once and covers the per-32 types; part of the decoded weights resident (opt-in)
+
+- **`h8_decode`** (H8's decode + rotation in one pass, the B60 prefill plan's step 13.3): a work-group's 16 rows of
+  superblocks are read once, in row order, into local memory, and each work-group does 4 rotation blocks (its codebook
+  copied once for them). Before, each lane loaded a whole superblock into registers to decode one or two of its eight
+  32-blocks. The laptop's 27B, 2K prompt, `ARC_H8=1`, interleaved runs: 1,180 -> 876 ms (the kernel alone; against
+  release 2026.11.14.09 in back-to-back pairs 924 / 938 -> 872 / 871 ms). `ARC_H8_DEC_PRIV=1`: the old loads;
+  `ARC_H8_DEC_R=1 / 2 / 4 / 8`: blocks per work-group.
+- It now also takes the per-32 float types (Q8_0, Q4_0, IQ4_NL, Q2_0, MXFP4), which kept two passes (the 4B's Q8_0
+  matrices: 33 -> 57 fused decodes per 2K prompt). The requantized types (Q2_K / Q4_K / Q5_K) keep two passes: their
+  requantization repeated in the fused kernel gave ~2 values in a million 1 apart (the rounding of decode_w8's division
+  and multiply-adds under `-cl-mad-enable`), so they are not bit-identical there.
+- **`ARC_W8_PARTIAL_GB=x`** (step 13.6, opt-in): with the weights decoded just in time, the layer matrices loaded first
+  keep their decoded copy resident up to x GB, so a prompt chunk decodes only the rest. The laptop's 27B with 4 GB (62
+  of 400 matrices): 512-token prompt 98.1 -> 101.2 / 102.6 tok/s. A B60's best size is to be measured (issue #4).
+- Logits bit-identical: H8 against the two-pass path, the old kernel and release 2026.11.14.09 (27B, 4B with
+  `--budget 0`), the partial residency against none (27B, with and without H8), the default paths against .09.
+
 ## 2026-11-14: the XMX prompt GEMM prefetches its weights a chunk ahead by default on B60 / B70 (+16 % prompt)
 
 - `ARC_GEMM_XW_PF` now defaults to 1 (the weights) and `ARC_GEMM_XW_PFD` to 1 (one chunk ahead) on 16-lane XMX cards.

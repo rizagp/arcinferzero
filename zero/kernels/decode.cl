@@ -567,14 +567,18 @@ __kernel void decode_w8_sb(__global const uchar* raw, int N, int K, __global con
 // ---- H8R straight from the raw rows (zero/engine_h8.h, ARC_H8=1; -DH8RDEC -DHB=<block> -DSRC=<W8 layout 100..103>):
 // decode_w8_sb + h8.cl h8r_weights in one pass, without writing and reading back the W8 copy. A lane decodes its two
 // 32-blocks with decode32 and forms each value as h8r_load forms it from that W8 copy (d * (float)sc, minus dmin * mn,
-// the scale and min bytes as stored there), so the rotated weights are those of the two kernels bit for bit. Types
-// that decode_w8 requantizes (Q2_K / Q4_K / Q5_K) or stores with per-32 floats (Q8_0, Q4_0, IQ4_NL, Q2_0) keep the
-// two passes. The column scales (col) come from the first decode's h8r_colmax.
-// grid (N / 16 * 256, K / HB), local (256, 1): sub-group c = row (column) c of the group, lane l = values 64 l .. + 63
-// of the rotation block (HB 1024: two 32-blocks of one superblock; HB 512: one).
-#if QT == Q2_K || QT == Q4_K || QT == Q5_K || PER32
-#error "H8RDEC: types decoded to W8 without requantizing, with per-16 / per-32 int8 scales"
+// the scale and min bytes as stored there), so the rotated weights are those of the two kernels bit for bit. The column
+// scales (col) come from the first decode's h8r_colmax. Since 2026-11-14 also (B60 prefill plan 13.3):
+//  - the per-32 float types (Q8_0, Q4_0, IQ4_NL, Q2_0, MXFP4; -DSRC=8): decode32's block scale d and scale 1, so
+//    d * 1 * q - 0, the value h8r_load reads back (d * q);
+// The types decode_w8 requantizes (Q2_K / Q4_K / Q5_K) keep the two passes: their requantization repeated here gave ~2
+// values in a million 1 apart on the laptop (27B, 2026-11-14), the rounding of decode_w8_sb's division and multiply-adds
+// depending on the code around them under -cl-mad-enable.
+#if QT == Q2_K || QT == Q4_K || QT == Q5_K
+#error "H8RDEC: the requantized types keep decode_w8 + h8r_weights"
 #endif
+// grid (N / 16 * 256, K / HB / H8DR), local (256, 1): sub-group c = row (column) c of the group, lane l = values 64 l
+// .. + 63 of the rotation block (HB 1024: two 32-blocks of one superblock; HB 512: one).
 #define H8NV (HB / 16)  // values per lane: 64 (HB 1024) or 32 (512), whole 32-blocks
 #if H8NV % 32
 #error "H8RDEC: HB 512 or 1024"
@@ -637,10 +641,26 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
   const uint* aux = tabs;
 #endif
   __local uint tout[16 * H8TP];
-  barrier(CLK_LOCAL_MEM_FENCE);
+#define H8SB (HB / 256)
+#define H8RU (H8SB * BBP / 4)  // (uints of one row's superblocks; BBP is a multiple of 8)
+#ifndef H8D_PRIV
+  __local uint sraw[16 * H8RU];
+#endif
   const int c = get_sub_group_id(), l = get_sub_group_local_id();
-  const int g = get_group_id(0), blk = get_group_id(1), nsb = K / 256;
+  const int g = get_group_id(0), nsb = K / 256, nb = K / HB;
+  // (H8DR rotation blocks of the same 16 rows one after another per work-group, so its codebook copy into local memory
+  //  serves H8DR times the weights; the same work per block as before)
+#ifndef H8DR
+#define H8DR 1
+#endif
+  for (int jb = 0; jb < H8DR; ++jb) {
+  const int blk = get_group_id(1) * H8DR + jb;
+  if (blk >= nb) break;  // (the same for the whole work-group: its barriers stay uniform)
   const int n = g * 16 + c, e0 = blk * HB + H8NV * l, s = e0 / 256, ib0 = (e0 % 256) / 32;
+#ifdef H8D_PRIV
+  // (before 2026-11-14, -DH8D_PRIV: each lane loads its whole superblock into registers, of which it decodes one or two
+  //  32-blocks: the work-group fetched every superblock 4 (HB 1024) or 8 (HB 512) times, in scattered 8-byte loads)
+  barrier(CLK_LOCAL_MEM_FENCE);
   uint sbu[BBP / 4];
   {
     __global const uint* src = (__global const uint*)(raw + ((size_t)n * nsb + s) * BBP);
@@ -652,6 +672,20 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
     }
   }
   const uchar* p = (const uchar*)sbu;
+#else
+  // the work-group's 16 rows x HB / 256 superblocks, read once by its 256 lanes in row order (each row's bytes are
+  // contiguous) into local memory; each lane decodes its 32-blocks from there (B60 prefill plan 13.3, 2026-11-14).
+  // (a later block's loads come after the previous block's barrier before its stores: every lane is past its decode)
+  {
+    const int s0 = blk * H8SB;
+    for (int i = get_local_id(0); i < 16 * H8RU; i += 256) {
+      const int r = i / H8RU, o = i % H8RU;
+      sraw[i] = ((__global const uint*)(raw + ((size_t)(g * 16 + r) * nsb + s0) * BBP))[o];
+    }
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const uchar* p = (const uchar*)(sraw + c * H8RU) + (s - blk * H8SB) * BBP;
+#endif
   float v[H8NV];
 #pragma unroll
   for (int h = 0; h < H8NV / 32; ++h) {
@@ -702,6 +736,7 @@ __kernel void h8r_decode(__global const uchar* raw, int N, int K, __global const
     wq[(((size_t)g * nsb + e / 256) * 64 + (e % 256) / 4) * 16 + cl] = tout[cl * H8TP + row];
 #endif
   }
+  }  // (jb)
 }
 #endif  // H8RDEC
 

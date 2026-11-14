@@ -130,6 +130,23 @@
 
   // Uploads a matrix: raw rows always, plus its prompt-processing form when resident.
   // (view: the raw rows already on the GPU, a sub-buffer of a stacked upload)
+  // ARC_W8_PARTIAL_GB=x (B60 prefill plan 13.6, opt-in until a discrete card measures it): when the weights are
+  // decoded just in time (raw + W8 above --budget), the layer matrices loaded first, up to x GB of decoded W8, keep
+  // that copy resident, so a prompt chunk decodes only the rest. The same values as decoded just in time (one decoder),
+  // so the logits are the same bit for bit. Not with a split model or MoE (their own plans); the head stays raw.
+  double w8_part_left_ = -1, w8_part_bytes_ = 0;
+  int w8_part_n_ = 0;
+  bool w8_part_take(int role, size_t bytes) {
+    if (w8_part_left_ < 0) {
+      const char* e = getenv("ARC_W8_PARTIAL_GB");
+      w8_part_left_ = e && !tp_on() && !hp.moe ? std::max(0.0, atof(e)) * 1073741824.0 : 0.0;
+    }
+    if (role >= kRoles - 1 || (double)bytes > w8_part_left_) return false;
+    w8_part_left_ -= (double)bytes;
+    w8_part_bytes_ += (double)bytes;
+    ++w8_part_n_;
+    return true;
+  }
   GpuWeight make_weight(uint32_t type, const uint8_t* data, size_t nbytes, int N, int K, int role = kRoles - 1,
                         const cl_mem* view = nullptr) {
     GpuWeight w;
@@ -160,7 +177,7 @@
     // such W8 variant)
     w.gemm_qtype = w8_variant(type) == 4 ? (int)GGML_Q8_0 : 100 + w8_variant(type);
     const size_t qb = w8_bytes_q(N, K), hb = w8_bytes_h(N, K);
-    if (w8_resident) {
+    if (w8_resident || w8_part_take(role, qb + hb)) {
       w.wq = buf(qb);
       w.wh = buf(hb);
       if (!opt.dry) decode_w8(w, w.wq, w.wh);
