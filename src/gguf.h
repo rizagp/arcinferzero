@@ -340,7 +340,9 @@ class GgufFile {
     if (a64 <= 0 || a64 > (1 << 20) || (a64 & (a64 - 1))) throw std::runtime_error("gguf: bad alignment");
     const uint64_t align = (uint64_t)a64;
     const uint64_t data_start = (pos_ + align - 1) / align * align;
-    if (data_start > size_) throw std::runtime_error("gguf: truncated");
+    // (a part with no tensors, a split model's first part of metadata only, may end right after its header, without
+    //  the padding to the alignment: Unsloth's DeepSeek-V4.1 UD-Q8_K_XL part 1, issue #4)
+    if (nt > 0 && data_start > size_) throw std::runtime_error("gguf: truncated");
     for (uint64_t i = 0; i < nt; ++i) {
       auto& t = tensors[i];
       int blk = 0, bytes = 0;

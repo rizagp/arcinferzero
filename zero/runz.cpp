@@ -1199,7 +1199,20 @@ static int run_main(int argc, char** argv) {
             std::partial_sort(ib.begin(), ib.begin() + 5, ib.end(), [&](int a, int b) { return rr[a] > rr[b]; });
             for (int a = 0; a < 5; ++a) top5 += std::find(ib.begin(), ib.begin() + 5, ia[a]) != ib.begin() + 5 ? 0.2 : 0.0;
           }
-          if (getenv("ARC_KL_SHOW") && k > atof(getenv("ARC_KL_SHOW"))) printf("pos %zu KL %.3f\n", r, k);  // (ARC_KL_SHOW=x: positions above x)
+          if (getenv("ARC_KL_SHOW") && k > atof(getenv("ARC_KL_SHOW"))) {  // (ARC_KL_SHOW=x: positions above x)
+            // (with each side's top token and its probability of the prompt's next token: which one the text agrees with)
+            double lm = *std::max_element(l.begin(), l.end()), z = 0;
+            for (float v : l) z += std::exp((double)v - lm);
+            const size_t te = std::max_element(l.begin(), l.end()) - l.begin(), tr = std::max_element(rr, rr + V) - rr;
+            if (r + 1 < toks.size()) {
+              const int nx = toks[r + 1];
+              printf("pos %zu KL %.3f | next %d: inferzero p %.4f, ref p %.4f | top inferzero %zu (%.3f), ref %zu (%.3f)\n", r, k,
+                     nx, std::exp((double)l[nx] - lm) / z, std::exp((double)rr[nx]), te, std::exp((double)l[te] - lm) / z, tr,
+                     std::exp((double)rr[tr]));
+            } else {
+              printf("pos %zu KL %.3f\n", r, k);
+            }
+          }
           sum += k;
           mx = std::max(mx, k);
           agree += std::max_element(l.begin(), l.end()) - l.begin() == std::max_element(rr, rr + V) - rr;

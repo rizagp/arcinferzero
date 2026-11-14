@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-14: a split GGUF whose first part holds metadata only and ends without padding is read (issue #4)
+
+- `src/gguf.h`: a part with no tensors may end right after its header (Unsloth's DeepSeek-V4.1-Flash UD-Q8_K_XL part 1
+  of 9, 5.8 MB of metadata). It was refused as "gguf: truncated", so runz could not open the model at all.
+- `runz --kl-ref` with `ARC_KL_SHOW=x`: each position above x also prints both sides' probability of the prompt's next
+  token and their top tokens (which side the text agrees with).
+
 ## 2026-11-14: DeepSeek-V4.1-Flash in Unsloth's UD-Q8_K_XL types: MXFP4 experts, MXFP8 Engram (issue #4)
 
 - **MXFP4 weights** (ggml type 39: 32 E2M1 codes and one E8M0 scale): decoded on the GPU into the per-32 int8 form
