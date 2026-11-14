@@ -35,9 +35,9 @@
     k_attn_ = kernel("ops", big, "attn_fa");
     // (ARC_GDN_PF=2..8, opt-in: gdn_recur keeps that many tokens' operands in flight, bit-identical; kernels/ops.cl)
     const int gdn_pf = getenv("ARC_GDN_PF") ? std::clamp(atoi(getenv("ARC_GDN_PF")), 1, 8) : 1;
-    // (ARC_GDN_L1PF=D, opt-in: token t+D's operands prefetched into L1, bit-identical; only on GPUs whose driver has
-    //  cl_intel_subgroup_buffer_prefetch, ignored elsewhere)
-    const int gdn_l1 = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : 0;
+    // (ARC_GDN_L1PF=D: token t+D's operands prefetched into L1, bit-identical; 2 by default on discrete cards, off on
+    //  iGPUs: zero/xe2/engine_xe2.h xe2_gdn_l1pf; only where the driver has cl_intel_subgroup_buffer_prefetch)
+    const int gdn_l1 = xe2_gdn_l1pf();
     const std::string gpf = (gdn_pf > 1 ? " -DGDN_PF=" + std::to_string(gdn_pf) : std::string()) +
                             (gdn_l1 > 1 ? " -DGDN_L1PF=" + std::to_string(gdn_l1) : std::string());
     k_gdn_recur_ = kernel("ops", big + gpf, "gdn_recur");

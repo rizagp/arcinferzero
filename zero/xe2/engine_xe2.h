@@ -122,6 +122,15 @@
   // since 2026-11-09: a Pro B60 holding the 35B's 14.7 GiB of experts, package 2c132a9, 78.77 -> 88.05 tok/s, host
   // waits 43 -> 3 a token, the same tokens (issue #4). Off on iGPUs (they never hold a 35B's experts; unchanged there).
   // ARC_XALL=0 / 1
+  // ARC_GDN_L1PF (zero/engine_load.h, kernels/ops.cl gdn_recur): token t+D's DeltaNet operands prefetched into L1.
+  // 2 by default on discrete cards since 2026-11-15: a Pro B70's 27B 4K prompt, gdn_recur 293 -> 263 ms, 2,216 ->
+  // 2,247 tok/s, logits identical over 18,566 tokens (joshdev-de, issue #27; 2 / 4 the same, further ahead slower).
+  // Where the driver lacks cl_intel_subgroup_buffer_prefetch the kernel ignores it. iGPUs: 0 (unchanged).
+  // ARC_GDN_L1PF=0 turns it off, =D sets the distance
+  int xe2_gdn_l1pf() const {
+    static const int e = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : -1;
+    return e >= 0 ? e : (zrt::integrated() ? 0 : 2);
+  }
   bool xe2_xall() const {
     static const int e = getenv("ARC_XALL") ? (atoi(getenv("ARC_XALL")) != 0 ? 1 : 0) : -1;
     return e < 0 ? !zrt::integrated() : e == 1;

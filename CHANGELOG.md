@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-11-15: the DeltaNet recurrence's L1 prefetch on by default on discrete cards (+1.4 % on a B70's 27B prompt)
+
+- `ARC_GDN_L1PF=2` is the default on discrete cards (`zero/xe2/engine_xe2.h` `xe2_gdn_l1pf`): a Pro B70's 27B 4K
+  prompt, `gdn_recur` 293 -> 263 ms, 2,216 -> 2,247 tok/s, the logits identical over 18,566 tokens (joshdev-de,
+  issue #27). `ARC_GDN_L1PF=0` turns it off. iGPUs: unchanged. `ARC_GDN_PF=2` stays off (slower on the B70).
+
 ## 2026-11-15: the GPU sweeps in Python, for Linux and Windows alike (issue #27)
 
 - `bench/b60_sweep.py` and `bench/decode_try.py`: the same runs, order, variables, best-of and 3 % rules, KL and
