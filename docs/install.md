@@ -59,6 +59,10 @@ The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newe
    (`~/.config/systemd/user/inferzero.service`, with the cache variables you have set); then
    `systemctl --user daemon-reload`, `systemctl --user enable inferzero`, `systemctl --user restart inferzero`; its
    log: `journalctl --user -u inferzero -f`.
+   An existing unit is left unchanged. For a separate test instance, pass
+   `--service-name inferzero-test` and use that name in the printed commands.
+   Use `--replace-service` only when you intend to replace an existing unit;
+   replacement swaps the unit file itself rather than writing through a symlink.
 
 From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz` and `mgpu_probe` into `bin/`.
 `scripts/make-package-linux.sh` makes the package (into `dist/`). Not on Linux yet: the window launcher, speech

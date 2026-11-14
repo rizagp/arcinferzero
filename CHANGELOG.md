@@ -22,6 +22,13 @@
 - Both keep the arithmetic and its order: logits bit-identical (4B, 3,584 tokens: `ARC_GDN_PF=2` and `=4` against the
   default). Off by default; the B70 owners measure them.
 
+## 2026-11-14: Linux service installation preserves existing units
+
+- `--install-service` refuses to overwrite an existing unit unless
+  `--replace-service` is explicit. `--service-name` supports a separate instance.
+- Unit writes are atomic, do not follow existing symlinks, and reject line
+  breaks in cache environment values. Ten model-free tests cover these cases.
+
 ## 2026-11-14: builds with GCC 16 (issue #27, joshdev-de)
 
 - GCC 16's libstdc++ no longer brings in `<climits>` through other headers, so `INT_MAX` was undeclared in

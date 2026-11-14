@@ -11,7 +11,7 @@
 # `--` goes to serverz as it is (e.g. -- --slots 2; not --port / --host, which the launcher must know).
 # The catalog below follows scripts/model-catalog.ps1 (tests/check_catalog_sync.py checks that they agree). Flash
 # Next's AutoRound import (flash-ar4) and the speech models are setup.ps1's on Windows and not offered here.
-import argparse, os, shutil, signal, socket, subprocess, sys, time, urllib.request
+import argparse, os, re, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVERZ = os.path.join(ROOT, 'bin', 'serverz')
@@ -215,31 +215,55 @@ def exposed(host):
 
 
 def install_service(cmd, a):
-    if any(('\n' in c or '\r' in c) for c in cmd):
-        print('--install-service: a path or option holds a line break; a unit file cannot carry it')
+    name = a.service_name
+    if name.endswith('.service'): name = name[:-8]
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}', name):
+        print('--service-name: use a simple unit name, without a path or whitespace')
+        return 1
+    values = list(cmd) + [os.environ[k] for k in CACHE_ENV if os.environ.get(k)]
+    if any(('\n' in c or '\r' in c) for c in values):
+        print('--install-service: a path, option or cache environment value holds a line break')
         return 1
     base = os.environ.get('XDG_CONFIG_HOME', '')
     base = base if base.startswith('/') else os.path.join(os.path.expanduser('~'), '.config')
     d = os.path.join(base, 'systemd', 'user')
     os.makedirs(d, exist_ok=True)
-    unit = os.path.join(d, 'inferzero.service')
+    unit = os.path.join(d, name + '.service')
+    existed = os.path.lexists(unit)
+    if existed and not a.replace_service:
+        print(f'{unit} already exists; left unchanged. Use --service-name NAME for a separate service, '
+              'or --replace-service to replace this unit explicitly.')
+        return 1
     # (systemd's own quoting, not the shell's: each word in double quotes with \ and " escaped, and its % specifiers
     #  and $ variables doubled so a path holding them stays as it is)
     def sq(c):
         return '"' + c.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
     env = ''.join(f'Environment={sq(k + "=" + os.environ[k])}\n' for k in CACHE_ENV if os.environ.get(k))
-    existed = os.path.exists(unit)
     # (KillMode=control-group, the default: the server's children (terminal tool, MCP servers) end with it;
     #  WorkingDirectory: the package, where the server finds its kernels and web UI)
-    with open(unit, 'w', newline='') as f:
-        f.write('[Unit]\nDescription=inferzero server\nAfter=network.target\n\n[Service]\n'
-                f'WorkingDirectory={sq(ROOT)}\n{env}ExecStart={" ".join(sq(c) for c in cmd)}\n'
-                'Restart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n')
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile('w', dir=d, prefix='.inferzero-', delete=False, newline='', encoding='utf-8') as f:
+            tmp = f.name
+            f.write('[Unit]\nDescription=inferzero server\nAfter=network.target\n\n[Service]\n'
+                    f'WorkingDirectory={sq(ROOT)}\n{env}ExecStart={" ".join(sq(c) for c in cmd)}\n'
+                    'Restart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n')
+        if a.replace_service:
+            os.replace(tmp, unit)  # replace a symlink itself, never write through it
+            tmp = None
+        else:
+            try:
+                os.link(tmp, unit)  # atomic no-clobber, including a file created during the write
+            except FileExistsError:
+                print(f'{unit} already exists; left unchanged.')
+                return 1
+    finally:
+        if tmp is not None: os.unlink(tmp)
     print(f'{"replaced" if existed else "wrote"} {unit}')
     if exposed(a.host):
         print(f'note: --host {a.host} makes the server reachable from your network; it has no password of its own')
-    print('start it now and at every login:\n  systemctl --user daemon-reload\n  systemctl --user enable inferzero\n'
-          '  systemctl --user restart inferzero\nits log: journalctl --user -u inferzero -f\n'
+    print(f'start it now and at every login:\n  systemctl --user daemon-reload\n  systemctl --user enable {name}\n'
+          f'  systemctl --user restart {name}\nits log: journalctl --user -u {name} -f\n'
           '(to keep it running while logged out: sudo loginctl enable-linger $USER)')
     return 0
 
@@ -339,6 +363,8 @@ def main():
     ap.add_argument('--no-browser', action='store_true')
     ap.add_argument('--yes', action='store_true', help='download without asking')
     ap.add_argument('--install-service', action='store_true', help='a systemd user service for --model instead of starting it')
+    ap.add_argument('--service-name', default='inferzero', help='systemd user service name (default: inferzero)')
+    ap.add_argument('--replace-service', action='store_true', help='explicitly replace an existing service unit')
     argv = sys.argv[1:]
     extra = []
     if '--' in argv:
@@ -350,6 +376,7 @@ def main():
         if x.split('=', 1)[0] in ('--port', '--host'):
             ap.error(f'{x.split("=", 1)[0]} after --: give it to the launcher itself (before --)')
     a.extra = extra
+    if a.replace_service and not a.install_service: ap.error('--replace-service needs --install-service')
     if not 1 <= a.port <= 65535: ap.error('--port: 1..65535')
     if a.check:
         return 0 if print_check() else 1
