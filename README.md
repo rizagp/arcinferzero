@@ -67,19 +67,26 @@ builds everything, downloads the models you pick and connects the [Pi](https://p
 ([docs/install.md](docs/install.md)). Day-to-day use, the web UI, Pi and the server's options:
 **[USAGE.md](USAGE.md)**.
 
-## Results at a glance (2026-10-25)
+## Results at a glance
 
-| Model | Prompt | Generation | KL vs f32 reference |
-|---|---|---|---|
-| Qwen3.6 35B-A3B UD-IQ4_XS (MoE, experts on the SSD) | 604 tok/s (32K prompt), 324 (128K) | 20.6 tok/s; code 49.9 with DFlash2; 12.6 at 128K depth | 0.004-0.008 |
-| Qwen3.8 27B IQ3_S (dense) | ~135 tok/s | 4.9 tok/s; code 18.1 with DFlash2 + MTP | 0.0003-0.0004 |
-| Qwen3.8 27B-AP IQ4_XS, GPU + NPU (`--npu on`, 2026-10-25) | 153.8 tok/s (2K; off 133.5), 152.6 (11K; off 132.7), 131.3 (34K; off 116.2) | unchanged (~3.8 tok/s) | 0.0028-0.0031 (off 0.00066) |
-| Qwen3.8 Flash Next IQ3_S (512 experts on the SSD) | ~164 tok/s (4K), 163 (32K), 123 (125K) | 6-7 tok/s | 0.0143 / 0.0147 (363 tokens); 0.0186 / 0.0177 at 3.5K (QSA); `-Precise` 0.0127 / 0.0132 (prompt / decode) |
-| Qwen3.5 4B | 911 tok/s (2K) | 17.6 tok/s | 0.0021 |
-| Gemma 4 E4B (Google QAT) | 724 tok/s (4K), 615 (14K) | 32 tok/s with its drafter | 0.00088 |
-| Gemma 4 12B (Google QAT) | 137 tok/s (4K), 102 (14K); +10 % with `--npu on` | 19.0 tok/s with its drafter | 0.0002 (two-pass int8 activations) |
-| Gemma 4 31B (Google QAT, dense; 32 GB laptop: ~2K context, see docs/models.md) | ~48 tok/s (2K) | 3.6 tok/s; 7.8 with its drafter | 0.00000 (two-pass int8 activations) |
-| Gemma 4 26B-A4B (Google QAT, MoE, experts on the SSD) | 252 tok/s (4K), 210 (14K) | ~25 tok/s with its drafter; 14 after a 14K prompt without | 0.0042 (two-pass int8 activations) |
+On the laptop (Core Ultra 5 125H, 32 GB, Windows 11; `bench/website_bench.ps1`, 2026-11-09, the 27B's 131K row and
+Gemma's KL again on 2026-11-10). Prompt in tok/s with the wait for the first token; generation in tok/s for 256
+tokens, plain and with the model's drafters:
+
+| Model | 8K prompt | 32K prompt | 131K prompt | Generation | With drafting | KL vs f32 |
+|---|---|---|---|---|---|---|
+| Qwen3.6 35B-A3B (MoE, experts on the SSD) | 851, 9.6 s | 637, 51 s | 324, 6.7 min | 21.6 | 38.1 (MTP + DFlash2) | 0.0040 |
+| Qwen3.8 Flash Next (MoE, 52 GB of experts on the SSD) | 205, 40 s | 174, 3.1 min | 146, 15 min | 6.3 | 7.6 (DFlash2) | 0.0117 |
+| Qwen3.8 27B (dense) | 135, 61 s | 125, 4.4 min | 81, 27 min | 5.1 | 12.9 (MTP + DFlash2) | 0.0005 |
+| Gemma 4 26B-A4B (MoE) | 232, 35 s | 124, 4.4 min | 44, 50 min | 19.8 | – | 0.0048 |
+| Qwen3.5 9B | 487, 17 s | 435, 75 s | 278, 7.8 min | 11.8 | 21.6 (MTP) | 0.0014 |
+| Gemma 4 E4B | 707, 12 s | 494, 66 s | 222, 9.8 min | 19.1 | 41.8 (drafter) | 0.0027 |
+| Qwen3.5 4B | 896, 9.2 s | 705, 47 s | 366, 6.0 min | 21.0 | 35.8 (MTP) | 0.0010 |
+
+Flash Next's precise mode (`-Precise`) lowers its KL on prose to 0.0060 (3,584 tokens, 0.0105 by default) at about
+half the prompt speed. The discrete cards' numbers: [Discrete GPUs](#discrete-arc-gpus-experimental).
+
+Against llama.cpp on the same files and laptop (2026-10-25):
 
 | vs llama.cpp (same file, same laptop) | inferzero | llama.cpp Vulkan | llama.cpp SYCL |
 |---|---|---|---|
