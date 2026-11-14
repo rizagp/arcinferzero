@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>inferzero: fast local LLMs on Intel Arc, laptop iGPU to Pro B60</title>
-<meta name="description" content="A from-scratch LLM inference engine for Intel Arc on Windows and Linux. Qwen3.6 35B at 851 tok/s on a Core Ultra laptop iGPU, the 27B past 1,000 tok/s on one Arc Pro B60. Every number measured, every model checked against an f32 reference.">
+<meta name="description" content="A from-scratch LLM inference engine for Intel Arc on Windows and Linux. Qwen3.6 35B at 851 tok/s on a Core Ultra laptop iGPU, the 27B at 1,522 tok/s on one Arc Pro B60. Every number measured, every model checked against an f32 reference.">
 <meta name="color-scheme" content="dark light">
 <meta property="og:title" content="inferzero">
 <meta property="og:description" content="Fast local LLMs on Intel Arc, laptop iGPU to Pro B60. Every number measured, every answer checked.">
@@ -91,6 +91,7 @@ section{border-top:1px solid var(--hair);padding-block:96px}
 .sh p{max-width:34rem;font-size:15.5px}
 @media (max-width:860px){.sh{grid-template-columns:1fr}}
 .src{font-family:var(--mono);font-size:12px;color:var(--mute);margin-top:20px;line-height:1.55}
+.src ul{margin:8px 0 0;padding-left:18px}.src li{margin-top:4px}
 .src a{color:var(--mute);text-decoration:underline;text-decoration-color:var(--hair-2);text-underline-offset:3px}
 
 /* ---------- hero ---------- */
@@ -256,10 +257,6 @@ td .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;letter-spa
 .endcta{display:flex;flex-wrap:wrap;gap:10px;margin-top:40px;align-items:center}
 .endcta .mono{font-size:12.5px;color:var(--mute);margin-left:6px}
 
-/* ---------- discrete ---------- */
-.disc{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
-@media (max-width:860px){.disc{grid-template-columns:1fr}}
-.disc .card code{font-size:12.5px;background:var(--surface-2);padding:1px 6px;border-radius:4px;color:var(--ink)}
 
 footer{border-top:1px solid var(--hair);padding-block:48px 64px;font-size:14px}
 footer .wrap{display:grid;grid-template-columns:minmax(0,1.4fr) repeat(3,minmax(0,1fr));gap:32px}
@@ -284,11 +281,12 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <li><a href="#results">Results</a></li>
       <li><a href="#features">Features</a></li>
       <li><a href="#agents">API</a></li>
+      <li><a href="#start">Get started</a></li>
       <li><a href="https://github.com/rizagp/inferzero/blob/main/USAGE.md">Docs</a></li>
       <li><a href="https://github.com/rizagp/inferzero/blob/main/CHANGELOG.md">Changelog</a></li>
     </ul>
     <div class="right">
-      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.11</a>
+      <a class="gh" href="https://github.com/rizagp/inferzero">github · 2026.11.14.13</a>
       <a class="btn p sm" href="https://github.com/rizagp/inferzero/releases/latest">Download</a>
     </div>
   </div>
@@ -309,7 +307,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
           <a class="btn s" href="https://github.com/rizagp/inferzero/releases/latest">Download for Linux <kbd>7 MB</kbd></a>
           <a class="btn s" href="#results">See the measurements</a>
         </div>
-        <p class="req">Windows 11 · Core Ultra with Arc graphics · 16 GB RAM for 4B / E4B, 32 GB for 12B-35B<br>Linux: the headless server and a terminal launcher, <a href="https://github.com/rizagp/inferzero/blob/main/docs/install.md#linux">linux-x64 package</a> · Arc B580 / Pro B60 / Pro B70: experimental · Apache-2.0</p>
+        <p class="req">Windows 11 · Core Ultra with Arc graphics · 16 GB RAM for 4B / E4B, 32 GB for 12B-35B<br>Linux: the headless server and a terminal launcher, <a href="https://github.com/rizagp/inferzero/blob/main/docs/install.md#linux">linux-x64 package</a> · <a href="#start">how to start</a> · Arc B580 / Pro B60 / Pro B70: experimental · Apache-2.0</p>
       </div>
       <div class="term" role="img" aria-label="A benchmark run: Qwen3.6 35B-A3B, 8,192-token prompt at 851 tok/s on a Core Ultra 5 125H, 38.1 tok/s generation with MTP and DFlash2, KL 0.0040 against f32, logits bit-identical to the previous run">
         <div class="bar"><i></i><i></i><i></i><span>runz · Core Ultra 5 125H · 32 GB</span></div>
@@ -321,9 +319,9 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <div><div class="eb">Core Ultra 5 125H</div><b>851<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 8K prompt, experts streamed from the SSD. A 131K-token context read in 6.7 minutes.</p></div>
       <div><div class="eb">Core Ultra 9 285H</div><b>330<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt on the Arc 140T's XMX. Flash Next generates 26 tok/s there with DFlash2.</p></div>
       <div><div class="eb">1× Arc Pro B60</div><b>1,522<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt, with the weight prefetch that is on by default. The 35B reads 3,536 tok/s and generates 82 tok/s, 112 with MTP.</p></div>
-      <div><div class="eb">4× Arc Pro B60</div><b>4,264<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 4K prompt, one model split over four cards with tensor parallelism.</p></div>
+      <div><div class="eb">4× Arc Pro B60</div><b>2,152<small>tok/s</small></b><p>Qwen3.6 35B-A3B, a 64K-token prompt, one model split over four cards. 1,267 at 131K, 700 at 262K.</p></div>
     </div>
-    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, 2026-11-09. 285H and B60: measured by users on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a> and <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, 2026-11-02 to 11-14.</p>
+    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, commit 281b083, 2026-11-09. 285H: a user on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a>, release 2026.11.13.11. B60s: a user on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, releases 2026.11.14.09 (one card) and 2026.11.14.05 (four cards), 2026-11-14.</p>
   </div>
 </section>
 
@@ -335,32 +333,50 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <div class="eb">Hardware</div>
         <h2>One engine, from a laptop iGPU to four Pro B60s. <span>The same Qwen3.8 27B file on every machine.</span></h2>
       </div>
-      <p>The engine was built and tuned on a Core Ultra 5 125H, which has no matrix engines. Where a GPU has XMX, the prompt's matrix products move onto it after a start-up check against the DP4a kernels. One model can be split over several cards with <code>--gpus N</code>.</p>
+      <p>The engine was built and tuned on a Core Ultra 5 125H, which has no matrix engines. Where a GPU has XMX, the prompt's matrix products move onto it after a start-up check against the DP4a kernels. One model can be split over several cards with <code>--gpus N</code>; where the driver offers peer access (Linux) the sums go straight from GPU to GPU. Discrete cards are experimental, their defaults set from their owners' runs.</p>
     </div>
     <div class="charts">
       <div>
         <div class="cap"><span>Prompt · tok/s</span><span>4K prompt unless noted</span></div>
         <div class="row me"><span class="n">Core Ultra 5 125H<small>Xe-LPG · DP4a · 8K</small></span><span class="t"><span class="f" style="width:6.4%"></span></span><span class="v">135</span></div>
-        <div class="row"><span class="n">Core Ultra 9 285H<small>Arc 140T · XMX · H8</small></span><span class="t"><span class="f" style="width:15.7%"></span></span><span class="v">330</span></div>
-        <div class="row"><span class="n">1× Arc Pro B60<small>XMX · H8</small></span><span class="t"><span class="f" style="width:72.3%"></span></span><span class="v">1,522</span></div>
-        <div class="row"><span class="n">1× Arc Pro B70<small>XMX · H8</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">2,105</span></div>
-        <div class="row"><span class="n">2× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:75.8%"></span></span><span class="v">1,597</span></div>
-        <div class="row"><span class="n">3× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:81.9%"></span></span><span class="v">1,724</span></div>
-        <div class="row"><span class="n">4× Arc Pro B60<small>tensor parallel</small></span><span class="t"><span class="f" style="width:89.6%"></span></span><span class="v">1,888</span></div>
+        <div class="row"><span class="n">Core Ultra 9 285H<small>Arc 140T · 2026.11.13.11</small></span><span class="t"><span class="f" style="width:15.7%"></span></span><span class="v">330</span></div>
+        <div class="row"><span class="n">1× Arc Pro B60<small>2026.11.14.09</small></span><span class="t"><span class="f" style="width:72.3%"></span></span><span class="v">1,522</span></div>
+        <div class="row"><span class="n">1× Arc Pro B70<small>2026.11.13.06 · rerun asked</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">2,105</span></div>
+        <div class="row"><span class="n">2× Arc Pro B60<small>Windows · 2026.11.13.05</small></span><span class="t"><span class="f" style="width:75.8%"></span></span><span class="v">1,597</span></div>
+        <div class="row"><span class="n">3× Arc Pro B60<small>Windows · 2026.11.13.11</small></span><span class="t"><span class="f" style="width:81.9%"></span></span><span class="v">1,724</span></div>
+        <div class="row"><span class="n">4× Arc Pro B60<small>Windows · 2026.11.13.05</small></span><span class="t"><span class="f" style="width:89.6%"></span></span><span class="v">1,888</span></div>
       </div>
       <div>
         <div class="cap"><span>Generation · tok/s</span><span>plain decoding</span></div>
         <div class="row me"><span class="n">Core Ultra 5 125H<small>12.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:9.6%"></span></span><span class="v">5.1</span></div>
         <div class="row"><span class="n">Core Ultra 9 285H<small>16.9 with MTP + DFlash2</small></span><span class="t"><span class="f" style="width:11.3%"></span></span><span class="v">6.0</span></div>
-        <div class="row"><span class="n">1× Arc Pro B60<small>51.6 with MTP</small></span><span class="t"><span class="f" style="width:44.7%"></span></span><span class="v">23.7</span></div>
-        <div class="row"><span class="n">1× Arc Pro B70<small>75.2 with MTP</small></span><span class="t"><span class="f" style="width:60.8%"></span></span><span class="v">32.2</span></div>
-        <div class="row"><span class="n">2× Arc Pro B60<small>Linux, 2026-11-14</small></span><span class="t"><span class="f" style="width:71.3%"></span></span><span class="v">37.8</span></div>
-        <div class="row"><span class="n">3× Arc Pro B60<small>run of 2026-10-31</small></span><span class="t"><span class="f" style="width:81.1%"></span></span><span class="v">43</span></div>
-        <div class="row"><span class="n">4× Arc Pro B60<small>run of 2026-10-31</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">53</span></div>
+        <div class="row"><span class="n">1× Arc Pro B60<small>2026.11.14.09</small></span><span class="t"><span class="f" style="width:42.8%"></span></span><span class="v">22.7</span></div>
+        <div class="row"><span class="n">1× Arc Pro B70<small>75.2 with MTP · 2026.11.13.06</small></span><span class="t"><span class="f" style="width:60.8%"></span></span><span class="v">32.2</span></div>
+        <div class="row"><span class="n">2× Arc Pro B60<small>Linux, GPU to GPU · 11-14</small></span><span class="t"><span class="f" style="width:71.3%"></span></span><span class="v">37.8</span></div>
+        <div class="row"><span class="n">3× Arc Pro B60<small>Windows · run of 2026-10-31</small></span><span class="t"><span class="f" style="width:81.1%"></span></span><span class="v">43</span></div>
+        <div class="row"><span class="n">4× Arc Pro B60<small>Windows · run of 2026-10-31</small></span><span class="t"><span class="f" style="width:100%"></span></span><span class="v">53</span></div>
       </div>
     </div>
     <div class="legend"><span><i class="me"></i>the reference laptop</span><span><i></i>measured by users</span><span><i class="d"></i>a shorter prompt, not comparable</span></div>
-    <p class="src">Qwen3.8 27B GSQ-RCO IQ3_S. On Windows the B60s have no peer access, so several cards add their partial sums through host memory; 3-4 cards' generation was measured there on 2026-10-31, before the newer single-card defaults. On Linux two B60s (a user's run on <a href="https://github.com/rizagp/inferzero/issues/17">issue #17</a>, 2026-11-14, PCIe 4.0 x8 each) sum straight from GPU to GPU: a 4K prompt at 1,630 tok/s against 1,442 through host memory, generation 37.8 against 36.1 tok/s, the same logits. A card on a slow link sets the pace: one in an x4 slot (2.4 GB/s, issue #19) halves the prompt over two cards. Over four B60s at long contexts (release 2026.11.14.05): a 131K-token prompt at 970 tok/s (the 27B), 1,267 (the 35B) and 778 (Flash Next). The 35B on the same ladder reads 851 tok/s on the laptop, 726 on the 285H, 3,508 on one B60 and 4,264 on four (4,292 on a 16K prompt with the attention split by q-head, <code>ARC_TP_ATT_QSPLIT=1</code>, which stays off: its run generated 13 tok/s against 102). The first Xe3 report, a Core Ultra X7 358H (Arc B390) with a Qwen3.8 27B fine-tune in Q3_K_M, another file: 245-255 tok/s on a 10K prompt against 170 for llama.cpp's Vulkan back end, 7.4-7.7 tok/s generation against 6.1-7.3 (a user's report, 2026-11-11; its matrix engines on, no Xe3 tuning yet). The 2- and 4-card prompts run with the sums in pieces, the default since 2026-11-12 (1,299 / 1,630 tok/s without). DeepSeek-V4.1-Flash (IQ2_XS, 162 GB of experts) ran for the first time on one B60 next to 1 TB of RAM: the right answer to its first prompt, 3.6 tok/s with 9 % of the experts on the GPU (a user's report, 2026-11-12). Two Arc cards of another user, the second on a PCIe x4 slot, a 27B fine-tune in IQ4_XS: a 32K-token prompt at 904 tok/s, 1,034 with the sums in pieces (<code>ARC_TP_PIPE=1</code>), 30 tok/s generation (2026-11-12). Qwen3.8 Flash Next (its 52 GB of experts) over Pro B60s (2026-11-13): a 4K prompt at 665 / 1,202 / 1,491 tok/s on 1 / 2 / 4 cards, generation 5.7 / 34.4 / 32.7 tok/s, as the experts no longer stream from the SSD. One Arc Pro B70 (32 GB, a user's run on <a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>, 2026-11-13): 2,105 tok/s on a 4K prompt, 1,906-1,930 on 16K, 1,112 on 512, and 32.2 tok/s generation at 67 % of its memory bandwidth. Details: <a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/inferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>.</p>
+    <div class="src">Qwen3.8 27B GSQ-RCO IQ3_S; the laptop's prompt is 8K, the others 4K. Each bar is one user's run, with its release; the B70's (<a href="https://github.com/rizagp/inferzero/issues/12">issue #12</a>) and the several-B60 bars (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>) are from before the weight prefetch that took one B60 from 1,322 to 1,522 tok/s, and newer runs are coming.
+      <ul>
+        <li>One B60 with MTP: the 27B generates 51.6 tok/s, the 35B 82.4 and 111.9 (release 2026.11.13.11). The 35B's 4K prompt: 3,536 tok/s (2026.11.14.09).</li>
+        <li>On Windows the B60s have no peer access, so several cards add their sums through host memory. On Linux two B60s (<a href="https://github.com/rizagp/inferzero/issues/17">issue #17</a>, PCIe 4.0 x8 each) sum straight from GPU to GPU: a 4K prompt at 1,630 tok/s against 1,442 through host memory, generation 37.8 against 36.1, the same logits.</li>
+        <li>A card on a slow link sets the pace: one in an x4 slot (2.4 GB/s, <a href="https://github.com/rizagp/inferzero/issues/19">issue #19</a>, another 27B file) makes two cards half as fast as one on the prompt (620 against 1,223 tok/s).</li>
+        <li>Qwen3.8 Flash Next (52 GB of experts) over 1 / 2 / 4 B60s: a 4K prompt at 665 / 1,202 / 1,491 tok/s, generation 5.7 / 34.4 / 32.7 (2026-11-13).</li>
+        <li>DeepSeek-V4.1-Flash (ISTA's IQ2_XS) next to 1 TB of RAM: generation 10.3 / 18.0 / 16.6 / 17.6 tok/s over 1 / 2 / 3 / 4 B60s (release 2026.11.14.09).</li>
+        <li>The first Xe3 report, a Core Ultra X7 358H (Arc B390) with a 27B fine-tune in Q3_K_M: 245-255 tok/s on a 10K prompt against 170 for llama.cpp's Vulkan back end (a user's report, 2026-11-11, no Xe3 tuning yet).</li>
+      </ul>
+      Details: <a href="https://github.com/rizagp/inferzero/blob/main/docs/multi-gpu.md">docs/multi-gpu.md</a>, <a href="https://github.com/rizagp/inferzero/blob/main/docs/xe2-tuning.md">docs/xe2-tuning.md</a>. Have a card? <code>bench\website_bench.ps1</code> and <code>bench\decode_try.ps1</code> print everything needed; post the output on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>.</div>
+    <div class="tbl" style="margin-top:40px">
+      <table>
+        <tr><th>4× Arc Pro B60, long prompts</th><th class="r">64K prompt</th><th class="r">131K prompt</th><th class="r">262K prompt</th><th class="r">Generation after 131K</th><th class="r">after 262K</th></tr>
+        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">2,152<small>30 s</small></td><td class="r">1,267<small>1.7 min</small></td><td class="r">700<small>6.2 min</small></td><td class="r">44.5</td><td class="r">37.0</td></tr>
+        <tr><td>Qwen3.8 27B</td><td class="r">1,258<small>52 s</small></td><td class="r">970<small>2.3 min</small></td><td class="r">640<small>6.8 min</small></td><td class="r">32.2</td><td class="r">29.0</td></tr>
+        <tr><td>Qwen3.8 Flash Next <span class="tag">MoE</span></td><td class="r">948<small>69 s</small></td><td class="r">778<small>2.8 min</small></td><td class="r">526<small>8.3 min</small></td><td class="r">26.9</td><td class="r">22.4</td></tr>
+      </table>
+    </div>
+    <p class="src">One run per model and length on a user's four Arc Pro B60s (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, Windows, sums through host memory), release 2026.11.14.05, 2026-11-14: <code>runz --gpus 4 --bench-pp N --n 32</code>. Prompt in tok/s, the middle of three passes, with the time it took; the passes spread most for the 35B at 64K (1,857-2,187, the first pass the slowest) and 131K (1,230-1,360), and for the 27B at 262K (634-662). Generation is 32 tokens right after the prompt. Files: 35B UD-IQ4_XS, 27B and Flash Next GSQ-RCO IQ3_S.</p>
   </div>
 </section>
 
@@ -431,7 +447,7 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
     <p class="src">Core Ultra 5 125H, 32 GB, Windows 11; commit 281b083, 2026-11-09 (the 27B's 131K row and Gemma's KL measured again 2026-11-10). Prompt in tok/s with the wait for the first token; generation in tok/s for a 256-token coding answer; KL over 480 tokens of USAGE.md. Drafting never changes the text: the drafts are checked by the full model, so the answer is the one plain decoding gives.</p>
     <div class="tbl" style="margin-top:40px">
       <table>
-        <tr><th>1× Arc Pro B60, a user's run</th><th class="r">8K prompt</th><th class="r">32K prompt</th><th class="r">131K prompt</th><th class="r">Generation</th><th class="r">With drafting</th><th class="r">KL vs f32</th></tr>
+        <tr><th>1× Arc Pro B60, a user's run of 2026-11-10</th><th class="r">8K prompt</th><th class="r">32K prompt</th><th class="r">131K prompt</th><th class="r">Generation</th><th class="r">With drafting</th><th class="r">KL vs f32</th></tr>
         <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">3,652<small>2.2 s</small></td><td class="r">2,710<small>12 s</small></td><td class="r">1,302<small>1.7 min</small></td><td class="r">56.9</td><td class="r hl">109.0<small>MTP</small></td><td class="r kl-ok">0.0056</td></tr>
         <tr><td>Qwen3.8 27B</td><td class="r">1,022<small>8.0 s</small></td><td class="r">809<small>41 s</small></td><td class="r">420<small>5.2 min</small></td><td class="r">23.7</td><td class="r hl">52.0<small>MTP</small></td><td class="r kl-ok">0.0011</td></tr>
         <tr><td>Gemma 4 12B</td><td class="r">644<small>13 s</small></td><td class="r">377<small>87 s</small></td><td class="r">144<small>15 min</small></td><td class="r">38.0</td><td class="r hl">73.1<small>drafter</small></td><td class="r">–</td></tr>
@@ -439,7 +455,15 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <tr><td>Qwen3.5 4B</td><td class="r">4,630<small>1.8 s</small></td><td class="r">3,196<small>10 s</small></td><td class="r">1,430<small>1.5 min</small></td><td class="r">64.2</td><td class="r hl">128.9<small>MTP</small></td><td class="r kl-ok">0.0020</td></tr>
       </table>
     </div>
-    <p class="src">Arc Pro B60 (24 GB), the same <code>bench/website_bench.ps1</code> run by a user on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>; commit 97d225b, 2026-11-10. The 35B is the UD-IQ4_XS file. Gemma 4 12B's KL is left out: that day's check read the wrong rows for it (fixed 2026-11-11). Since then (releases 2026.11.13.11 to 2026.11.14.09, <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>): the 27B's 4K prompt at 1,522 tok/s with the weight prefetch on by default, 16K at 1,359 (1,368 with <code>--chunk 8192</code>), generation 23.7 tok/s and 51.6 with MTP; the 35B generates 82.4 tok/s, 111.9 with MTP. On the Arc 140T (Core Ultra 9 285H), a user's runs of the 27B since its XMX tiles became the default (2026-11-11): 512 / 4K / 16K-token prompts at 205 / 299 / 283 tok/s, 302 at 4K in a later run, and 330 with the xw8 tiles of a 2026.11.13.11 sweep.</p>
+    <p class="src">Arc Pro B60 (24 GB), the same <code>bench/website_bench.ps1</code> run by a user on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>; commit 97d225b, 2026-11-10. <b>Older than the card's speed now:</b> it predates the weight prefetch, on by default since release 2026.11.14.09, and a run on release 2026.11.14.12 has been asked for; this table will be replaced by it as a whole. The 35B is the UD-IQ4_XS file. Gemma 4 12B's KL is left out: that day's check read the wrong rows for it (fixed 2026-11-11).</p>
+    <div class="tbl" style="margin-top:28px">
+      <table>
+        <tr><th>1× Arc Pro B60, release 2026.11.14.09</th><th class="r">4K prompt</th><th class="r">16K prompt</th><th class="r">Generation</th></tr>
+        <tr><td>Qwen3.8 27B</td><td class="r">1,522<small>2.7 s</small></td><td class="r">1,359<small>12 s</small></td><td class="r">22.7</td></tr>
+        <tr><td>Qwen3.6 35B-A3B <span class="tag">MoE</span></td><td class="r">3,536<small>1.2 s</small></td><td class="r">–</td><td class="r">73.8</td></tr>
+      </table>
+    </div>
+    <p class="src">The same user's card, 2026-11-14 (<a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>): each row's 4K prompt and generation from one <code>runz --bench-pp 4096 --n 128</code>, the 27B's 16K from <code>--bench-pp 16384 --n 0</code> in the same session. A second 27B run gave 1,524 and 23.3. Generation is 128 tokens after a 4K prompt, so it does not compare with the 256-token column above. The prefetch took the 27B's 4K prompt from 1,322 tok/s (release 2026.11.14.05) to 1,522.</p>
   </div>
 </section>
 
@@ -585,36 +609,6 @@ zero-server start -Model 27b -Slots 2</pre>
   </div>
 </section>
 
-<!-- ================= DISCRETE ================= -->
-<section id="discrete">
-  <div class="wrap">
-    <div class="sh">
-      <div>
-        <div class="eb">Discrete Arc · experimental</div>
-        <h2>Arc B-series cards, one or four. <span>Tuned from users' measurements.</span></h2>
-      </div>
-      <p>B580, Pro B60 and Pro B70 run the same engine with switches of their own that the iGPUs never take. Their speed comes from people who own the cards and post their runs; every default for them was set from those numbers.</p>
-    </div>
-    <div class="disc">
-      <article class="card">
-        <div class="eb">XMX</div>
-        <h3>Prompts on the matrix engines</h3>
-        <p>The prompt GEMMs run as int8 DPAS, checked bit for bit against DP4a at start. H8 rotations with 4 column groups took the 27B from 766 to 1,024 tok/s at 4K, fewer small kernels around them to 1,081, and wider tiles (32 tokens x 64 columns per sub-group) to 1,292 (1,322 in release 2026.11.14.05). Prefetching the weights a chunk ahead took it to 1,522, on by default since release 2026.11.14.09.</p>
-      </article>
-      <article class="card">
-        <div class="eb">Tensor parallel</div>
-        <h3>One model over several GPUs</h3>
-        <p><code>--gpus N</code> splits the 27B or the 35B by heads and columns. Where the driver offers peer access (Linux), the sums go straight from GPU to GPU. A GPU that hangs makes the request fail and <code>/health</code> answer 503; the server stays up.</p>
-      </article>
-      <article class="card">
-        <div class="eb">Measure yours</div>
-        <h3>Scripts that report back</h3>
-        <p><code>bench\website_bench.ps1</code>, <code>decode_try.ps1</code> and <code>f33_sweep.ps1</code> print everything needed. Post the output on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>.</p>
-      </article>
-    </div>
-  </div>
-</section>
-
 <!-- ================= START ================= -->
 <section id="start">
   <div class="wrap">
@@ -626,9 +620,9 @@ zero-server start -Model 27b -Slots 2</pre>
       <p>The launcher ticks the model that suits your RAM, downloads it with resume and a checksum, and opens the web UI when the server is ready.</p>
     </div>
     <div class="steps">
-      <div class="step"><h3>Download</h3><p>Get <code>inferzero-&lt;version&gt;-win64.zip</code> from the latest release and unpack it anywhere.</p></div>
-      <div class="step"><h3>Start</h3><p>Double-click <code>zero-launcher.cmd</code>. Windows may ask once: "More info", then "Run anyway".</p></div>
-      <div class="step"><h3>Pick a model</h3><p>Choose one and press "Download and start". The web UI opens at <code>127.0.0.1:8090</code>.</p></div>
+      <div class="step"><h3>Download</h3><p>From the latest release, <code>inferzero-&lt;version&gt;-win64.zip</code> for Windows or <code>inferzero-&lt;version&gt;-linux-x64.tar.gz</code> for Linux. Unpack it anywhere.</p></div>
+      <div class="step"><h3>Start</h3><p>Windows: double-click <code>zero-launcher.cmd</code> (Windows may ask once: "More info", then "Run anyway"). Linux: run <code>./zero-launcher.sh</code> in a terminal.</p></div>
+      <div class="step"><h3>Pick a model</h3><p>Choose one and download it; the server starts when it is ready. The web UI is at <code>127.0.0.1:8090</code>.</p></div>
     </div>
     <div class="need">
       <div><b>System</b>Windows 11, 64-bit, with Intel's graphics driver. Or Linux (Ubuntu 24.04 and newer; users run CachyOS too) with Intel's compute runtime and Python 3: unpack <code>inferzero-&lt;version&gt;-linux-x64.tar.gz</code> and run <code>./zero-launcher.sh</code> (a terminal menu, no window), or build from source with <code>./build.sh</code>. The headless server only: no speech recording or desktop window there yet.</div>

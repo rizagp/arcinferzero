@@ -134,18 +134,20 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) run the same engine, with switches of their own in `zero/xe2/` that
 the iGPUs never take. Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
 - **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,522 tok/s (release
-  2026.11.14.09, which prefetches the weights by default; 1,322 before), generation 23.3 tok/s (2026.11.14.09), 51.6 with MTP
+  2026.11.14.09, which prefetches the weights by default; 1,322 before), generation 22.7-23.3 tok/s (two runs, 2026.11.14.09), 51.6 with MTP
   (2026.11.13.11). Qwen3.6 35B-A3B: 4K prompt 3,536 tok/s (2026.11.14.09), generation 82.4 tok/s, 111.9 with MTP
   (2026.11.13.11). The switches still off by default (`ARC_X16`, `ARC_GV_IQ3S`, `ARC_H8_NORM`, H8 on MoE models,
   `--chunk 8192`) were measured there on 2026-11-14 and none is faster: [docs/xe2-tuning.md](docs/xe2-tuning.md).
-- **One Pro B70** ([issue #12](https://github.com/rizagp/inferzero/issues/12), 2026-11-13): 4K prompt 2,107 tok/s,
-  generation 32.2 tok/s, 75.2 with MTP.
+- **One Pro B70** ([issue #12](https://github.com/rizagp/inferzero/issues/12), release 2026.11.13.06, before the weight
+  prefetch; a rerun is asked for): 4K prompt 2,105 tok/s, generation 32.2 tok/s, 75.2 with MTP.
 - **Arc 140T** (the Core Ultra 9 285H's iGPU, [issue #5](https://github.com/rizagp/inferzero/issues/5)): 4K prompt
   330 tok/s (release 2026.11.13.11, its default 32x16 XMX tiles with H8; 302 on 2026.11.11).
 - **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel):
   - 4 Pro B60s on Windows (issue #4; no peer access there, so the sums go through host memory): the 27B's 4K prompt
-    1,597 / 1,724 / 1,888 tok/s over 2 / 3 / 4 cards (2026.11.13.05 and .11), generation 35.7 / 43 / 53 tok/s (run of
-    2026-10-31); over 4 a 131K-token prompt at 970 tok/s, then 32 tok/s generation (2026.11.14.05). The 35B's 4K
+    1,597 / 1,724 / 1,888 tok/s over 2 / 3 / 4 cards (2026.11.13.05 and .11, before the weight prefetch), generation
+    35.7 / 43 / 53 tok/s (run of 2026-10-31). Long prompts over 4 (2026.11.14.05, the middle of three passes):
+    64K / 131K / 262K tokens at 2,152 / 1,267 / 700 tok/s (the 35B), 1,258 / 970 / 640 (the 27B) and 948 / 778 / 526
+    (Flash Next); after 131K the 27B generates 32 tok/s. The 35B's 4K
     prompt over 4: 4,264 tok/s (2026-11-02).
   - 2 Pro B60s on Linux (scenic6942, [issue #17](https://github.com/rizagp/inferzero/issues/17), PCIe 4.0 x8 each):
     the sums go straight from GPU to GPU (`ARC_TP_P2P`, chosen at load since 2026.11.14.06): 4K prompt 1,630 tok/s
