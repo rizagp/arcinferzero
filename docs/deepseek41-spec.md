@@ -40,7 +40,7 @@ tokenize differently there; inferzero follows the reference tokenizer and llama.
 | `--real` (4 layers at the real widths: 5120, 64 heads, top-k 512, a 2048-block pool, 32 indexer heads, 384 experts) | kernel and buffer limits at the real sizes | median 0.001 at every depth over 1,200 positions; mean 0.05 from a random router's expert ties |
 
 **Unsloth's UD-Q8_K_XL (2026-11-14, issue #4, manoreken2's request):** `unsloth/DeepSeek-V4.1-Flash-1017-GGUF`,
-558 GB in 9 parts, the same metadata keys as the ISTA-DASLab files (headers read with their 92 keys and 1,043
+508 GB in 9 parts, the same metadata keys as the ISTA-DASLab files (headers read with their 92 keys and 1,043
 tensors). Types: routed experts MXFP4 (40 layers x 3), every other matrix BF16 (token embedding, head, attention,
 shared experts, indexer, Engram projection; the engine takes them as Q8_0 at load), the router `ffn_gate_inp` F32,
 norms / mixes / biases F32, the Engram table `per_layer_token_embd` MXFP8 (202.8 GB). MXFP8 is type 43 of Unsloth's

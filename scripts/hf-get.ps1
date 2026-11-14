@@ -5,6 +5,9 @@
 # you to accept their terms first (Gemma): $env:HF_TOKEN, or the file %USERPROFILE%\.cache\huggingface\token that
 # `hf auth login` writes. Dot-sourced by setup.ps1; also on its own:
 #   powershell -File scripts\hf-get.ps1 unsloth/Qwen3.5-4B-MTP-GGUF Qwen3.5-4B-UD-Q4_K_XL.gguf mmproj-F16.gguf
+# A folder of the repository downloads every file in it, as a split model's parts are kept (no merging needed):
+#   powershell -File scripts\hf-get.ps1 unsloth/DeepSeek-V4.1-Flash-1017-GGUF UD-Q8_K_XL
+# Before anything is downloaded the free space of the drive is checked; at the end the command that runs the model.
 function Get-HfHub {
   if ($env:HF_HUB_CACHE) { return $env:HF_HUB_CACHE }
   if ($env:HF_HOME) { return (Join-Path $env:HF_HOME "hub") }
@@ -60,6 +63,28 @@ function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)
   [IO.File]::WriteAllText((Join-Path $base "refs\main"), $sha)
   $curl = Join-Path $env:SystemRoot "System32\curl.exe"
   if (-not (Test-Path $curl)) { $curl = "curl.exe" }
+  # (a folder, "UD-Q8_K_XL" or "UD-Q8_K_XL/": every file in it, in name order, so a split model's parts come whole)
+  $Files = @(foreach ($f in $Files) {
+      $dir = $f.TrimEnd("/")
+      $inside = @($tree | Where-Object { $_.type -eq "file" -and $_.path.StartsWith("$dir/") } | ForEach-Object { $_.path } | Sort-Object)
+      if (-not ($tree | Where-Object { $_.type -eq "file" -and $_.path -eq $f }) -and $inside.Count) { $inside } else { $f }
+    })
+  # (the room the downloads need, against the drive's free space: a 558 GB model that stops at 90 % helps nobody)
+  $need = [int64]0
+  foreach ($f in $Files) {
+    $e = $tree | Where-Object { $_.path -eq $f } | Select-Object -First 1
+    if (-not $e) { continue }
+    $dst = Get-HfLocalPath $snap $f
+    $have = if (Test-Path $dst) { (Get-Item $dst).Length } elseif (Test-Path "$dst.part") { (Get-Item "$dst.part").Length } else { 0 }
+    $need += [math]::Max([int64]0, [int64]$e.size - $have)
+  }
+  try {
+    $drive = Get-PSDrive -Name ((Split-Path $snap -Qualifier).TrimEnd(":")) -ErrorAction Stop
+    if ($need -gt $drive.Free) {
+      throw ("these files need {0:N1} GB more, and {1}: has {2:N1} GB free: make room, or set HF_HOME to a folder on a larger drive" -f ($need / 1e9), $drive.Name, ($drive.Free / 1e9))
+    }
+    if ($need -gt 0) { Write-Host ("    {0:N1} GB to download ({1}: {2:N1} GB free)" -f ($need / 1e9), $drive.Name, ($drive.Free / 1e9)) }
+  } catch [System.Management.Automation.DriveNotFoundException] {}
   foreach ($f in $Files) {
     $e = $tree | Where-Object { $_.path -eq $f } | Select-Object -First 1
     if (-not $e) { throw "$Repo has no file $f" }
@@ -94,5 +119,10 @@ function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)
 }
 if ($MyInvocation.InvocationName -ne "." -and $args.Count -ge 2) {
   $ErrorActionPreference = "Stop"
-  Get-HfFiles $args[0] @($args | Select-Object -Skip 1)
+  $snap = Get-HfFiles $args[0] @($args | Select-Object -Skip 1)
+  $snap
+  # (the model to give runz / serverz: a split model's first part, else the first GGUF that is not an image encoder)
+  $g = @(Get-ChildItem $snap -Recurse -Filter *.gguf | Where-Object { $_.Name -notmatch "^mmproj" } | Sort-Object FullName)
+  $first = @($g | Where-Object { $_.Name -match "-00001-of-\d{5}\.gguf$" }) + $g | Select-Object -First 1
+  if ($first) { Write-Host "    run it with: bin\runz.exe `"$($first.FullName)`" `"The capital of France is`" --n 32" }
 }

@@ -4,6 +4,10 @@
 
 - `src/gguf.h`: a part with no tensors may end right after its header (Unsloth's DeepSeek-V4.1-Flash UD-Q8_K_XL part 1
   of 9, 5.8 MB of metadata). It was refused as "gguf: truncated", so runz could not open the model at all.
+- `scripts\hf-get.ps1` takes a folder of a repository and downloads every file in it, a split model's parts whole
+  (`hf-get.ps1 unsloth/DeepSeek-V4.1-Flash-1017-GGUF UD-Q8_K_XL`: its 9 parts, 508 GB; no merging needed). Before
+  downloading it checks the drive's free space against what is left to fetch, and at the end prints the runz command
+  with the model's first part.
 - `runz --kl-ref` with `ARC_KL_SHOW=x`: each position above x also prints both sides' probability of the prompt's next
   token and their top tokens (which side the text agrees with).
 
@@ -14,7 +18,7 @@
   routed experts in MXFP4 run on the MoE paths, the expert file and the expert cache as IQ4_NL ones do.
 - **MXFP8 rows** (type 43 of Unsloth's llama.cpp fork: 32 E4M3 codes and one E8M0 scale; upstream ggml's 43 is plain
   F8_E4M3): decoded on the CPU, where the engine reads the Engram table's rows.
-- Unsloth's file (`unsloth/DeepSeek-V4.1-Flash-1017-GGUF`, UD-Q8_K_XL, 558 GB in 9 parts): experts MXFP4, every
+- Unsloth's file (`unsloth/DeepSeek-V4.1-Flash-1017-GGUF`, UD-Q8_K_XL, 508 GB in 9 parts): experts MXFP4, every
   other matrix BF16 (taken as Q8_0 at load, as before), the router F32, the Engram table MXFP8; the metadata keys as
   the ISTA-DASLab files'. Checked on the tiny model with these types (`tools/make_tiny_deepseek41.py --unsloth`): KL
   against tools/ref_forward 0.0052 prompt / 0.0052 generation with every expert used; with 4 of 16 experts 0.070
