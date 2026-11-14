@@ -84,6 +84,7 @@ jobs:
           "$pkg/bin/serverz" --help | head -3
           "$pkg/bin/runz" --help | head -3
           python3 tests/check_catalog_sync.py
+          python3 tests/test_zero_launcher.py
           "$pkg/zero-launcher.sh" --list
           "$pkg/zero-launcher.sh" --check || true
       - uses: actions/upload-artifact@v4
