@@ -55,7 +55,9 @@ that compares every result file there).
 | Core Ultra 5 125H (Xe-LPG, 112 EUs, 2.2 GHz) | none | none | 3.85 of 3.94 TFLOPS (98 %) | 7.69 of 7.88 (98 %) | 12.98 of 15.77 TOPS (82 %) | 76.2 GB/s |
 | Arc 140T (Xe-LPG Plus, 128 EUs, 2.35 GHz; issue #5, 2026-11-11) | 76.75 of 77.0 TOPS (100 %) | 38.38 of 38.5 TFLOPS (100 %); BF16 37.56 (98 %) | 4.70 of 4.81 (98 %) | 9.39 of 9.63 (98 %) | 15.07 of 19.25 TOPS (78 %) | 81.5 GB/s |
 | Arc B580 (Xe2-HPG, 160 EUs, 2.85 GHz; Reddit, 2026-11-12, driver 101.9175) | 233.21 of 233.47 TOPS (100 %) | 116.60 of 116.74 TFLOPS (100 %); BF16 116.60 (100 %) | 14.52 of 14.59 (99.5 %) | 13.72 of 29.18 (47 %: the FP32 rate, no packed FP16) | 55.24 of 58.37 TOPS (95 %) | 1,149 GB/s, **not valid** (a one-value buffer, 456 on paper; random data since 2026-11-12) |
-| Pro B60, Arc B390 | | | | | | waiting for their owners' runs |
+| Pro B60 (Xe2-HPG, 160 EUs, 2.4 GHz; issue #4, 2026-11-11, driver 101.8976) | 196.36 of 196.61 TOPS (100 %) | 98.18 of 98.30 TFLOPS (100 %); BF16 98.18 (100 %) | 11.80 of 12.29 (96 %) | 11.56 of 24.58 (47 %: the FP32 rate, as the B580) | 46.49 of 49.15 TOPS (95 %) | 1,068 GB/s, **not valid** (the probe before 2026-11-12, as the B580's) |
+| Pro B70 (Xe2, 256 EUs, 2.8 GHz; issue #12, 2026-11-13, driver 101.9150) | not posted | not posted | 22.98 / 22.94 TFLOPS (as posted) | 21.41 of 45.88 (47 %; see "f16 vector math" below) | 87.49 / 91.75 TOPS (as posted) | not posted |
+| Arc B390 | | | | | | waiting for its owner's run |
 
 The 140T run settles its matrix figures: Intel's 77 int8 TOPS is what its XMX does (a spec database's 154 int8 TOPS and 77 FP16 TFLOPS are twice that), and the engines run at their maximum clock under load. Its 27B prompt (~12 int8 TOPS at 4K) uses about a sixth of them: the room is in the kernels, not the hardware.
 
@@ -77,13 +79,18 @@ expert GEMMs (not yet measured on a B-series card).
 
 ## What the data so far says (1x Arc Pro B60, Qwen3.8 27B IQ3_S)
 
-| | B60 | Estimate |
-|---|---:|---|
-| Prompt | 450 tok/s (617 with 128 registers, the default since 2026-11-02); DP4a only 406 | ~33 int8 TOPS at 617, a small share of the card's XMX peak; XMX only 1.1-1.5x DP4a, so the time goes elsewhere: unpacking IQ3_S (grid lookups), the activation scales (ACT=256 +13 %), or the kernels outside the GEMMs. `runz --bench-pp 4096 --prof` with and without `ARC_NO_XMX=1` shows which |
-| Generation, plain | 21.5 tok/s | 11.3 GB read per token = 243 GB/s, about half the card's bandwidth; the ceiling for plain decoding is ~40 tok/s |
-| Generation with drafts | not measured | on the laptop DFlash2 + MTP give 3.7x plain on code (4.9 -> 18.1 tok/s); on the B60 the drafts' extra compute is cheap |
+Measured by manoreken2 (issue #4), the newest release that ran each:
 
-These are estimates from the code and the logs, not measurements (from a DeepSeek review, checked against the code).
+| | B60 | Notes |
+|---|---:|---|
+| Prompt, 4K | 1,322 tok/s (release 2026.11.14.05); 1,529 with `ARC_GEMM_XW_PF=1 ARC_GEMM_XW_PFD=1`, the default from the next release | was 450 (2026-11-01), 617 with 128 registers (11-02), 1,024 with H8 (11-08), 1,292 with the wide tiles (11-13): sections 1, 8, 11, 13 |
+| Prompt, 512 / 16K | 737 / 1,226 tok/s (2026.11.14.05; 16K with `--chunk 8192`); 512 tokens 867 with the prefetch | |
+| Generation, plain | 23.7 tok/s (2026.11.13.11) | was 21.5 (2026-11-02); 11.3 GB read per token |
+| Generation, MTP | 51.6 tok/s (2026.11.13.11, 69.2 % of the drafts accepted) | section 2 |
+| Qwen3.6 35B-A3B | 4K prompt 3,508 tok/s (2026.11.10); generation 82.4, 111.9 with MTP (2026.11.13.11) | |
+
+One Pro B70 (friskens, issue #12, 2026-11-13; the release not stated, 2026.11.13.06 asked for), the same 27B: 4K
+prompt 2,107 tok/s, 512 tokens 1,112, generation 32.2 tok/s, 74.9-75.2 with MTP.
 
 ## 1. Prompt: `bench\gemm_sweep.ps1`
 
@@ -145,10 +152,17 @@ With `--gpus N` each GPU caches only its share of the experts (1/N), so on 4 car
 caches and nothing streams from the SSD after the first pass; the RAM tier (`--expert-ram-gb`) covers what does
 not fit. See [multi-gpu.md](multi-gpu.md).
 
-Measured on 4x B60 (2026-11-02): the prompt is **slower** split (3,232 tok/s on 1 GPU, 2,040-2,122 on 2-4), because
-without peer access between the cards on Windows every sum goes through host memory (65-80 % of the time waiting);
-generation gains 19-31 % (77.5 -> 92.2 / 95.3 / 101.7 tok/s). The 35B fits one 24 GB card, so for now: **1 GPU for
-long prompts, 2 GPUs for generation** (most of the gain; 3-4 add little).
+Measured on 4x B60 (issue #4). The first runs (2026-11-01, f32 sums) made the prompt **slower** split (3,232 tok/s on
+1 GPU, 2,040-2,122 on 2-4): without peer access between the cards on Windows every sum goes through host memory (65-80 %
+of the time waiting). Generation gained 19-31 % (77.5 -> 92.2 / 95.3 / 101.7 tok/s). With the f16 reduce-scatter for
+prompts (2026-11-02) the split prompt is faster: 4K 3,747 tok/s over 2 and 4,264 over 4 (generation 91.2 / 99.8); a
+16K prompt over 4 3,442-3,535 (2026-11-06 / 11-07). Long contexts over 4 (release 2026.11.14.05): 64K 2,187, 131K
+1,267, 262K 699 tok/s, generation after them 44.5 / 37.0 tok/s at 131K / 262K ([multi-gpu.md](multi-gpu.md)). So now:
+**4 GPUs for long prompts** (one GPU: 3,508 at 4K since 2026-11-10), 2 GPUs for most of the generation gain.
+
+`ARC_TP_ATT_QSPLIT=1` (the attention split by q-head) gave 4,287-4,292 tok/s on a 16K prompt over 4 (2026-11-06), but
+the same run generated 13.0 tok/s against 101.6 without it (`tg64`; a slow first step, the median step 8.1 ms; not
+explained yet). It stays off.
 
 ## 5. Kernel launches per token: would replaying a recorded step help? (`bin\replay_probe.exe`)
 
@@ -628,7 +642,7 @@ measures it; gains are estimates for the 27B on one B60 at 4K):
 | # | Step | Estimate | Effort | Check |
 |---|---|---|---|---|
 | 13.1 | ✅ built 2026-11-13, B60s to measure. **Splits: the residency estimate per shard** (raw + W8 of the shard's columns and rows), so `--budget 20` keeps a split 27B's decoded weights on 2-4 B60s; then a measurement of `--budget 20` with `--gpus 2 / 3 / 4` at 512 / 4K | splits: the decode gone, ~5-10 % at 4K, ~30 % at 512 | small | `ARC_TP_SIM`: resident = just in time, bit for bit |
-| 13.2 | ✅ built 2026-11-13 (`ARC_GEMM_XW_PF` / `_PFD`, a few chunks ahead rather than a superblock: a work-group's 8 sub-groups share its weights, and a superblock ahead would need ~80 KB of L1 per work-group), B60s to measure. **The GEMM's next superblock prefetched** while the current one's DPAS run (`intel_sub_group_2d_block_prefetch` of the activations and weights into L1; then, if registers allow, the next chunk's A / B read into registers before the DPAS: 32 x 64 uses ~176 of 256) | 52 % -> 65-70 % of peak: -250..-350 ms (8-11 %) | medium | bit for bit (the same integer sums); ocloc `bmg` for spills; DPAS emulated here |
+| 13.2 | ✅ built 2026-11-13, **on by default since 2026-11-14 as PF=1 PFD=1** (manoreken2's B60 sweep: 4K 1,321.7 -> 1,529.0 tok/s, 512 737.3 -> 867.2, identical logits) (`ARC_GEMM_XW_PF` / `_PFD`, a few chunks ahead rather than a superblock: a work-group's 8 sub-groups share its weights, and a superblock ahead would need ~80 KB of L1 per work-group), B60s to measure. **The GEMM's next superblock prefetched** while the current one's DPAS run (`intel_sub_group_2d_block_prefetch` of the activations and weights into L1; then, if registers allow, the next chunk's A / B read into registers before the DPAS: 32 x 64 uses ~176 of 256) | 52 % -> 65-70 % of peak: -250..-350 ms (8-11 %) | medium | bit for bit (the same integer sums); ocloc `bmg` for spills; DPAS emulated here |
 | 13.3 | (laptop, 2026-11-13, `ARC_H8=1`, 27B 4K: `h8_decode` 936 ms, ~40 of 73 GB/s, 54 %: the kernel itself is slow on both GPUs, so the laptop measures it) **`h8_decode` at the memory's speed**: ~37 GB of reads and writes in 231 ms is ~160 GB/s of the B60's ~430 (37 %); wider stores, more rows per work-item | -100 ms at 4K (3 %), -15 % at 512 | small-medium | bit for bit; its speed measurable on the laptop too (memory-bound there as well, `ARC_H8=1`) |
 | 13.4 | **Longer chunks on discrete cards**: `--chunk 8192` for prompts of 8K+ (half the decodes, the GEMMs' rows doubled); never measured for the 27B on a B60 | 16K: -5..-8 % | none (a measurement) | logits change with the chunk height only within the kernels' exact sums: check bit for bit |
 | 13.5 | **The norm, the rotation and the quantization in one kernel** (`rmsnorm_quant` + `h8_act`; `gated_norm_quant` + `h8_act` for `ssm_out`): one read of the f32 row instead of three passes | -100..-150 ms (3-5 %) | medium | bit for bit: the same f32 values rotated in the same order |

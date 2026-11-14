@@ -118,22 +118,31 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 ## Discrete Arc GPUs (experimental)
 
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) run the same engine, with switches of their own in `zero/xe2/` that
-the iGPUs never take. Measured by a user on Arc Pro B60s
-([issue #4](https://github.com/rizagp/inferzero/issues/4)):
-- Qwen3.8 27B IQ3_S, one B60: 4K prompt 1,292 tok/s (H8, on by default since 2026-11-08; 1,024 before the rotation reuse and the swiglu skip of 2026-11-12, 1,081 before the wide-tile GEMM became the default on 2026-11-13), 23.2 tok/s generation,
-  49.3 with MTP; over 2 cards 1,292, over 4 cards 1,624.
-- Qwen3.6 35B-A3B, one B60: 4K prompt 3,232 tok/s, 78.8 tok/s generation, 113.7 with MTP; over 4 cards 4,290 with
-  `ARC_TP_ATT_QSPLIT=1`.
-- **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel, sums through host memory since
-  B60s have no peer access): 27B generation 35.7 tok/s on 2 GPUs, 43 on 3, 53 on 4 (run of 2026-10-31, before the
-  newer one-card defaults).
+the iGPUs never take. Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
+- **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,322 tok/s (release
+  2026.11.14.05); ~1,529 expected with the next release, which prefetches the weights by default (measured on .05 with
+  `ARC_GEMM_XW_PF=1 ARC_GEMM_XW_PFD=1`). Generation 23.7 tok/s, 51.6 with MTP (2026.11.13.11). Qwen3.6 35B-A3B: 4K
+  prompt 3,508 tok/s (2026.11.10), generation 82.4 tok/s, 111.9 with MTP (2026.11.13.11).
+- **One Pro B70** ([issue #12](https://github.com/rizagp/inferzero/issues/12), 2026-11-13): 4K prompt 2,107 tok/s,
+  generation 32.2 tok/s, 75.2 with MTP.
+- **Arc 140T** (the Core Ultra 9 285H's iGPU, [issue #5](https://github.com/rizagp/inferzero/issues/5)): 4K prompt
+  302 tok/s (release 2026.11.11), 330 with the xw8 tiles of a 2026.11.13.11 sweep.
+- **One model over several GPUs** (`runz` / `serverz --gpus N`, tensor parallel):
+  - 4 Pro B60s on Windows (issue #4; no peer access there, so the sums go through host memory): the 27B's 4K prompt
+    1,597 / 1,724 / 1,888 tok/s over 2 / 3 / 4 cards (2026.11.13.05 and .11), generation 35.7 / 43 / 53 tok/s (run of
+    2026-10-31); over 4 a 131K-token prompt at 970 tok/s, then 32 tok/s generation (2026.11.14.05). The 35B's 4K
+    prompt over 4: 4,264 tok/s (2026-11-02).
+  - 2 Pro B60s on Linux (scenic6942, [issue #17](https://github.com/rizagp/inferzero/issues/17), PCIe 4.0 x8 each):
+    the sums go straight from GPU to GPU (`ARC_TP_P2P`, chosen at load since 2026.11.14.06): 4K prompt 1,630 tok/s
+    against 1,442 through host memory, generation 37.8 tok/s, the same logits.
+  - A slow link sets the pace: with one card in an x4 slot at 2.4 GB/s (issue #19, the 27B UD-Q5_K_XL) the prompt over
+    2 cards is half of one card's (620 against 1,223 tok/s). A layer split for such links is planned, not built.
   - Batched slots work over a split model.
   - A GPU that hangs makes the request fail and `/health` answer 503; the server itself stays up.
   - A model that cannot be split loads on one GPU.
 
 In progress:
 - an f16 XMX prompt GEMM (`ARC_X16=1`, off until measured);
-- GPU-side sums between cards;
 - MTP / DFlash2 on a split model.
 
 How to measure on such a card, and every switch: [docs/xe2-tuning.md](docs/xe2-tuning.md). The split model and

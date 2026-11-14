@@ -80,6 +80,19 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, `ARC_GEMM_XW_PF=1 PFD=1` by default on 16-lane XMX cards** (zero/xe2/engine_xw.h). Measured by
+  manoreken2 on a Pro B60 with release 2026.11.14.05 (`bench\xw_sweep.ps1 -Prefetch`, the 27B GSQ-RCO IQ3_S, one
+  run each): 512 tokens 737.3 -> 867.2 tok/s, 4K 1,321.7 -> 1,529.0 (pf1 d2 859.7 / 1,509.8, pf1 d4 845.2 / 1,467.3,
+  pf2 no gain, pf3 d1 867.4 / 1,478.8); logits identical in every set. The laptop (no XMX): logits bit-identical to
+  release 2026.11.14.08 (4B, 27B, the tiny DeepSeek models), and with DPAS emulated (`ARC_XMX_TRY=2 ARC_H8=1`) the
+  prefetch on and off give the same logits.
+
+- **2026-11-14, DeepSeek-V4.1-Flash over several GPUs** (zero/mgpu/engine_tp_shard.h `tp_setup`, `tp_moe_combine`;
+  zero/engine_ds41.h). Speed: not measured (needs several GPUs and the 231-508 GB model). Accuracy: the tiny model
+  with MXFP4 experts, every expert used, KL against tools/ref_forward 0.0052 / 0.0052 (1 GPU), 0.0053 / 0.0052 (2),
+  0.0053 / 0.0052 (3), 0.0051 / 0.0052 (4); at the real widths (--real --unsloth: 384 experts, top 6, MXFP4) 0.066 on 1 GPU, 0.067 on 2 and on 4 (the random router's near-tied experts; the split adds nothing). The 4B split (`--gpus 2`, `ARC_TP_SIM`): logits
+  bit-identical to release 2026.11.14.08.
+
 - **2026-11-14, Flash Next precise mode repaired (PR #21, chumbleyjl, merged)**: source values kept (F32 where BF16
   cannot hold them), DeltaNet alpha / beta in F32, float attention with QSA masks in precise mode. Measured on the
   laptop (ISTA-DASLab Flash Next GSQ-RCO IQ3_S, against tools/ref_forward; release 2026.11.14.07 -> merged):
@@ -124,7 +137,9 @@ That property is what every speed change is held to:
   rejects Q5_1. No speed or supported-model KL change is claimed.
 
 - **2026-11-14, a split model's sums straight from GPU to GPU** (`ARC_TP_P2P`, auto: chosen from the links timed at
-  start; zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums straight between GPUs"). **Speed: not measured.** It needs
+  start; zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums straight between GPUs"). **Speed: not measured** when it was
+  built; measured later the same day on issue #17's two Linux B60s, see the 0.8x entry above (4K prompt 1,442 -> 1,630
+  tok/s with the direct sums). It needs
   GPUs with peer access (Linux B60s, issue #17); the laptop has one GPU and, under `ARC_TP_SIM`, keeps host memory
   unless forced. Expected on #17's two B60s: the sum time to roughly 40 % (direct ~13 GB/s, one crossing, against
   ~5 GB/s through host, two). Accuracy: logits bit-identical with it forced on (`ARC_TP_SIM`, `ARC_TP_P2P=1`) against

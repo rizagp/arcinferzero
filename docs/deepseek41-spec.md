@@ -50,7 +50,9 @@ vision path) and DSpark keys. Since 2026-11-14 the engine decodes both formats; 
 types (`tools/make_tiny_deepseek41.py --unsloth`: 16 of 16 experts KL 0.0052 / 0.0052 against tools/ref_forward).
 
 What the server does with it: prompts and generation, the prompt-cache snapshots and saved conversations (format 3;
-`runz --snap-test` bit-identical). Not yet: slots, drafters (the DSpark MTP GGUF, section 3.9), images, multi-GPU.
+`runz --snap-test` bit-identical). Not yet: slots, drafters (the DSpark MTP GGUF, section 3.9), images. Multi-GPU (`--gpus N`) since 2026-11-14: the
+routed experts split over the GPUs, everything else whole on each (docs/multi-gpu.md, "DeepSeek-V4.1"); KL on the tiny
+model 0.0052-0.0053 over 1-4 shards (`ARC_TP_SIM`), the speed not measured yet.
 
 Switches (all default on; each one's off value restores the earlier kernel):
 

@@ -1,7 +1,8 @@
 # A Linux port: the plan (2026-11-12)
 
-Asked for in issue #11 (a headless server on a Core Ultra 9 285H) and by the user. Nothing is built yet; this is the
-scope, what is Windows-only today, and the order. The goal of the first step is `serverz` running headless on Ubuntu
+Asked for in issue #11 (a headless server on a Core Ultra 9 285H) and by the user. Written before anything was built;
+since then `runz` and `serverz` build and run on Linux (see Progress), and users run them on native Linux machines
+(issues #17, #19). This is the scope, what was Windows-only when it was written, and the order. The goal of the first step is `serverz` running headless on Ubuntu
 with the same kernels and results; the launcher (a WinForms window) stays Windows-only.
 
 ## What carries over as it is
@@ -160,7 +161,8 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
     real ones fixed (a PDF page that could throw, `run_program`'s deadline over the final wait, `SIGPIPE` from the start,
     the project paths, the crash handler's safety, kill before reap, FIFOs refused, `$TMPDIR`, atomic terminal state).
   - **Not yet:** a CMake build and a release archive (step 4); `web_view` (headless Chromium); the recorder (WASAPI);
-    the GPU memory budget through Sysman; a native Linux machine's numbers.
+    the GPU memory budget through Sysman; a native Linux machine's numbers (since then: issues #17 and #19, the last
+    entry of this list).
 - 2026-11-14: **a second audit, of all the Linux work** (Pi / DeepSeek, static, docs/audit-2026-11-14-linux.md): no Windows
   change; every fix of the first audit in place. Fixed after it: the Hugging Face cache found where `hf download`
   writes it on Linux (`$XDG_CACHE_HOME` or `~/.cache/huggingface/hub`: the model list, Whisper and Qwen3-ASR found no
@@ -173,6 +175,13 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   Checked: Linux (WSL, the 4B): the server test, the terminal (with `set --` and the child's open files), project
   folders, the model list from `~/.cache` with no `HF_*` set; Windows: the CI build and its 11 unit tests, the server
   and terminal tests, the 4B's logits bit-identical to release 2026.11.14.01; the server's replies the same on both.
+- 2026-11-13 / 14: **the first native Linux numbers** (users' builds of main from source, the commit not stated):
+  - two Pro B60s on Ubuntu 26.04, PCIe 4.0 x8 each (scenic6942, issue #17): the 27B GSQ-RCO IQ3_S's 4K prompt 1,338
+    tok/s on one card. The driver reports peer access: 14.1 GB/s GPU to GPU directly, 14.2 through host memory. Over
+    both cards 1,630 tok/s with the direct sums (`ARC_TP_P2P=1`) against 1,442 through host memory, generation 37.8
+    against 36.1 tok/s, the logits identical;
+  - two Pro B60s on CachyOS, one in a chipset x4 slot (MaineTim, issue #19): the 27B UD-Q5_K_XL 1,211-1,223 tok/s and
+    15.9-16.3 tok/s generation on one card; over both 620 / 23.8, as the x4 link (2.4 GB/s) holds up the prompt's sums.
 
 ## The order
 
@@ -199,8 +208,8 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 
 ## Open questions
 
-- Native Linux may allow GPU-to-GPU peer copies for split models (Intel's multi-B60 stack on Linux mentions PCIe peer
-  to peer), which Windows does not: a later step for `zero/mgpu/`, after `serverz` runs. `mgpu_probe` builds on Linux
-  now, so a B60 owner on native Linux can answer it (not WSL: one GPU here, and ~77 us per round trip).
+- **Answered (issue #17, 2026-11-13): GPU-to-GPU peer copies work on native Linux.** Two B60s there report peer
+  access and copy at ~14.1 GB/s directly. The engine uses it since release 2026.11.14.05 (`ARC_TP_P2P`,
+  docs/multi-gpu.md "Sums straight between GPUs"); Windows still reports no peer access.
 - The iGPU's memory share works differently (no WDDM "shared GPU memory" cap): `--ctx auto` and the expert cache need
   their budget from the driver and the free RAM; to measure on a 285H.

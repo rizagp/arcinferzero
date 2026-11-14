@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-11-14: the XMX prompt GEMM prefetches its weights a chunk ahead by default on B60 / B70 (+16 % prompt)
+
+- `ARC_GEMM_XW_PF` now defaults to 1 (the weights) and `ARC_GEMM_XW_PFD` to 1 (one chunk ahead) on 16-lane XMX cards.
+  A Pro B60's `bench\xw_sweep.ps1` (manoreken2, issue #4, release 2026.11.14.05), the 27B IQ3_S: 4K prompt 1,321.7 ->
+  1,529.0 tok/s, 512 tokens 737.3 -> 867.2, logits identical (the prefetch changes no arithmetic). `=0` turns it off.
+  iGPUs, the 140T's 8-lane kernel and generation: unchanged.
+
+## 2026-11-14: DeepSeek-V4.1-Flash over several GPUs (`--gpus N`)
+
+- Its routed experts are split over the GPUs (each caches and computes its own range, as Flash Next's), everything
+  else whole on every GPU: the attention (one kv-head), the indexer, the hyper-connection mixing, the shared expert's
+  part on GPU 0; the Engram rows are read on the host by each. The MoE's partial outputs are summed into the block
+  output (hco_) before the mixing. The experts in RAM are one pinned pool every GPU reads from.
+- Checked on the tiny model with Unsloth's types (MXFP4 experts, every expert used) against tools/ref_forward,
+  `ARC_TP_SIM`: KL 0.0052 / 0.0052 on 1 GPU, 0.0053 / 0.0052 on 2, 0.0053 / 0.0052 on 3, 0.0051 / 0.0052 on 4
+  (prompt / generation); at the real widths (--real --unsloth: 384 experts, top 6, MXFP4) 0.066 on 1 GPU, 0.067 on 2 and on 4 (the random router's near-tied experts; the split adds nothing). The 4B split bit-identical to release 2026.11.14.08.
+  Speed: not measured (manoreken2's 4 B60s, issue #4).
+
 ## 2026-11-14: Flash Next's long-prompt KL on prose; a prose prompt for long-context checks
 
 - `bench/prompts/qwen-prose-3584.ids.txt` (3,584 tokens of docs/lessons-intel-arc-igpu.md): Flash Next KL over its last
@@ -62,7 +80,8 @@
   GPU gets an inbox in its own memory that the others' parts and sums are copied straight into: one PCIe crossing
   instead of two, and the kernels read local memory. The logits are the same bit for bit
   (`ARC_TP_SIM`, forced on: 2 and 3 shards, against release 2026.11.14.04). `ARC_TP_P2P=0` / `=1` forces it off / on.
-  Windows' B60s report no peer access: unchanged there. Speed on Linux B60s: not measured yet (issue #17).
+  Windows' B60s report no peer access: unchanged there. Speed on Linux B60s: not measured yet (issue #17); measured
+  later the same day, see the 0.8x entry above (4K prompt 1,442 -> 1,630 tok/s).
 - **Server:** a request with `Connection: close`, or HTTP/1.0 without `keep-alive`, gets `Connection: close` and the
   connection ends after the reply. Before, the server answered `keep-alive` and kept the connection waiting for up to
   600 s.

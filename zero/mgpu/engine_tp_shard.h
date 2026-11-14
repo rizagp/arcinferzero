@@ -85,8 +85,12 @@
     // (Flash Next, qwen4exp: its MoE as the 35B's, the mixers and PLE whole on every shard, each block's output summed
     //  into hco_ before hc_combine: tp_out_hc)
     const bool fn = hp.arch == "qwen4exp" && hp.hc && moe;
-    if ((hp.arch != "qwen35" && !(hp.arch == "qwen35moe" && moe) && !fn) || (hp.hc && !fn) || hp.gemma || hp.qwen3)
-      throw std::runtime_error("multi-GPU (--gpus) runs Qwen3.5 / 3.6 / 3.8 models (dense, the 35B-A3B MoE, Flash Next) only for now (this is " +
+    // (DeepSeek-V4.1: as Flash Next, its routed experts split over the GPUs and everything else whole on every shard:
+    //  its attention has one kv-head, its Engram rows are read on the host; the MoE's sum goes to hco_, the block
+    //  output its mixing adds to the streams, tp_moe_combine)
+    const bool ds = hp.ds41 && moe;
+    if ((hp.arch != "qwen35" && !(hp.arch == "qwen35moe" && moe) && !fn && !ds) || (hp.hc && !fn) || hp.gemma || hp.qwen3)
+      throw std::runtime_error("multi-GPU (--gpus) runs Qwen3.5 / 3.6 / 3.8 models (dense, the 35B-A3B MoE, Flash Next) and DeepSeek-V4.1 only for now (this is " +
                                hp.arch + ")");
     if (r < 0 || r >= N) throw std::runtime_error("tensor parallel: bad rank");
     tpg_ = {hp.ssm_nk, hp.ssm_nv, hp.n_head, hp.n_head_kv, hp.n_ff, hp.n_vocab};
@@ -96,7 +100,7 @@
                                  "); try " + (N > 2 ? "2" : "1"));
     };
     // (k-heads in pairs: a pair's 2 x 128 v-values are one 256-value block of ssm_out's columns)
-    need(hp.ssm_nk > 0 && hp.ssm_nk % 2 == 0 && hp.ssm_nk / 2 >= N && hp.ssm_nv % hp.ssm_nk == 0, "DeltaNet heads");
+    if (!ds) need(hp.ssm_nk > 0 && hp.ssm_nk % 2 == 0 && hp.ssm_nk / 2 >= N && hp.ssm_nv % hp.ssm_nk == 0, "DeltaNet heads");
     // (MoE: fewer kv-heads than GPUs keeps the attention whole on every shard, it is a small part of the weights; or
     //  divides it by q-head where that splits evenly, see tp_att_qsplit_)
     tp_att_whole_ = moe && hp.n_head_kv < N;
@@ -132,7 +136,7 @@
     tpv_ = tp_range(hp.n_vocab, 16, N, r);
     const int hpg = hp.n_head / hp.n_head_kv;
     hp.ssm_nk = (int)(tpk_.second - tpk_.first);
-    hp.ssm_nv = hp.ssm_nk * (tpg_.nv / tpg_.nk);
+    hp.ssm_nv = tpg_.nk > 0 ? hp.ssm_nk * (tpg_.nv / tpg_.nk) : 0;  // (DeepSeek-V4.1: no DeltaNet)
     hp.ssm_d_inner = hp.ssm_nv * hp.ssm_d_state;
     hp.n_head_kv = (int)(tpkv_.second - tpkv_.first);
     hp.n_head = tp_att_qsplit_ ? (int)(tpq_.second - tpq_.first) : hp.n_head_kv * hpg;
@@ -182,7 +186,7 @@
     set_args(k_tp_moe_combine_, 0, tp_part_, msh_, sgate_, my_, minv_, N, nu, shared);
     size_t gws[2] = {((size_t)E + 255) / 256 * 256, (size_t)T}, lws[2] = {256, 1};
     run("moe_combine", k_tp_moe_combine_, 2, gws, lws);
-    if (hp.hc) tp_reduce_hc(T);
+    if (hp.hc || hp.ds41) tp_reduce_hc(T);
     else tp_reduce(T);
   }
 
@@ -237,7 +241,7 @@
     if (dot == std::string::npos || il < 0 || il > hp.n_layer) return t;  // ("blk.-1." or no layer: not a split tensor, MG7)
     const std::string s = name.substr(dot + 1);
     const int64_t D = hp.ssm_d_state, hd = hp.head_dim;
-    if (il < hp.n_layer && hp.recurrent(il)) {
+    if (il < hp.n_layer && !hp.ds41 && hp.recurrent(il)) {
       const int64_t nk = tpg_.nk, k0 = tpk_.first, k1 = tpk_.second;
       if (s == "attn_qkv.weight" || s == "ssm_conv1d.weight") {  // channels [q | k | v]
         TpRuns rows{{k0 * D, k1 * D}, {(nk + k0) * D, (nk + k1) * D}};
@@ -284,7 +288,7 @@
       const TpRange r0 = tp_range(total, unit, N, 0);
       return (double)(r0.second - r0.first) / (double)total;
     };
-    if (hp.recurrent(il)) {  // (rows or columns by k-head, and the v-heads that read them: all in the k-heads' share)
+    if (!hp.ds41 && hp.recurrent(il)) {  // (rows or columns by k-head, and the v-heads that read them: all in the k-heads' share)
       if (s == "attn_qkv.weight" || s == "ssm_conv1d.weight" || s == "attn_gate.weight" || s == "ssm_alpha.weight" ||
           s == "ssm_beta.weight" || s == "ssm_out.weight")
         return part(tpg_.nk, 2);

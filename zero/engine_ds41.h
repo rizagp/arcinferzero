@@ -156,8 +156,9 @@
     }
     if (d.cand_k > 0 && (d.cand_src < 0 || d.cand_src >= hp.n_layer || !dsl_[d.cand_src].ix_own))
       throw std::runtime_error("deepseek41: the candidate source layer is not an index layer");
-    if (opt.slots > 1 || opt.mtp || !opt.dflash.empty() || opt.tp_size > 1)
-      throw std::runtime_error("DeepSeek-V4.1: slots, drafters and multi-GPU are not supported yet");
+    // (multi-GPU: the routed experts split over the GPUs, the rest whole on each, zero/mgpu/engine_tp_shard.h tp_setup)
+    if (opt.slots > 1 || opt.mtp || !opt.dflash.empty())
+      throw std::runtime_error("DeepSeek-V4.1: slots and drafters are not supported yet");
   }
 
   void load_weights_ds41() {

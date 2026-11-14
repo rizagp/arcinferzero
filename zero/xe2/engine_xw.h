@@ -69,20 +69,22 @@
     const bool on = e ? atoi(e) != 0 : (p140_ || h8_auto_);
     return h8_ && h8_row() && (xw_try() || (on && xmx_));
   }
-  // ARC_GEMM_XW_PF=1 / 2 / 3 (16 lanes; B60 prefill plan 13.2, opt-in until a B60 measures it): the weights (1), the
-  // activations (2, with 2D loads) or both (3) of the chunk ARC_GEMM_XW_PFD (1 / 2 / 4, default 2) chunks ahead
-  // prefetched into L1; the same results bit for bit (checked at start like every shape)
+  // ARC_GEMM_XW_PF=0 / 1 / 2 / 3 (16 lanes; B60 prefill plan 13.2): the weights (1), the activations (2, with 2D
+  // loads) or both (3) of the chunk ARC_GEMM_XW_PFD (1 / 2 / 4) chunks ahead prefetched into L1; the same results bit
+  // for bit (checked at start like every shape). On by default since 2026-11-14 as weights, 1 chunk ahead: a Pro B60's
+  // xw_sweep (manoreken2, issue #4, release 2026.11.14.05), the 27B 4K prompt 1,321.7 -> 1,529.0 tok/s and 512 tokens
+  // 737.3 -> 867.2 (pf3 d1 867.4 / 1,478.8; pf2 no gain; deeper is slower), logits identical. =0: off, as before
   static int xw_pf() {
     static const int v = [] {
-      const int e = getenv("ARC_GEMM_XW_PF") ? atoi(getenv("ARC_GEMM_XW_PF")) : 0;
-      return e >= 0 && e <= 3 ? e : 0;
+      const int e = getenv("ARC_GEMM_XW_PF") ? atoi(getenv("ARC_GEMM_XW_PF")) : 1;
+      return e >= 0 && e <= 3 ? e : 1;
     }();
     return v;
   }
   static int xw_pfd() {
     static const int v = [] {
-      const int e = getenv("ARC_GEMM_XW_PFD") ? atoi(getenv("ARC_GEMM_XW_PFD")) : 2;
-      return e == 1 || e == 2 || e == 4 ? e : 2;
+      const int e = getenv("ARC_GEMM_XW_PFD") ? atoi(getenv("ARC_GEMM_XW_PFD")) : 1;
+      return e == 1 || e == 2 || e == 4 ? e : 1;
     }();
     return v;
   }

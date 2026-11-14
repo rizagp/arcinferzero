@@ -4,7 +4,7 @@
 (and fine-tunes of it such as Ornith 1.5 35B) or Qwen3.8 Flash Next over N GPUs with tensor parallelism; see "Mixture
 of experts" and "Flash Next" below. Each GPU reads 1/N of the weights per token, so token generation can get up to N times faster.
 Generation is bound by memory bandwidth, so this is the only kind of split that speeds it up; a layer split only adds
-capacity. The server does not use it yet (see "Not yet").
+capacity. The server uses it too: `serverz --gpus N` (see "The server" below).
 
 ```
 .\bin\runz C:\hf\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf --bench-pp 512 --n 64 --gpus 2
@@ -163,8 +163,9 @@ limit and leaves when another GPU failed; the hang watchdog counts the pieces as
 
 Per GPU and sum about one part size goes out and 2 (N - 1) / N parts come in. One after another that is about 2
 part-times on 2 GPUs and 2.5 on 4; overlapped, 1 and 1.5: the sums up to ~2x faster on 2 GPUs and ~1.7x on 4, if
-the links and the host memory carry both directions at once (manoreken2's 1.85x says they can on B60s). Not
-measured yet: off by default.
+the links and the host memory carry both directions at once (manoreken2's 1.85x says they can on B60s). Measured on
+2026-11-12 and on by default since (27B 4K prompt over 2 / 4 B60s +5 / +6 %): see "The sums in pieces by default"
+under the server below.
 
 ### Sums beside the next chunk's work (`ARC_TP_OVERLAP=1`, 2026-11-12, opt-in, stage 1)
 
@@ -286,8 +287,9 @@ file, cache tables).
   within the 4-GPU split's own range (0.0074-0.0115), and 2 GPUs are bit-identical to before. 4 B60s, 2026-11-06,
   `--bench-pp 16384 --n 64`: prompt 3,435-3,442 -> **4,287-4,292 tok/s** (+25 %), median step 8.8 -> 8.1 ms, each GPU
   5.54 instead of 6.11 GiB. It stays off for now: no KL on B60s, and its one generation run spent about 4.4 s on the
-  first token (cause not known, perhaps kernels compiling). An earlier comment in issue #4 gives 4,260 tok/s over 4
-  without saying this was on; whether the default went down since has not been checked.
+  first token (cause not known, perhaps kernels compiling): its `tg64` says 13.0 tok/s against 101.6 without it. The
+  4,264 tok/s over 4 of an earlier comment (2026-11-02) was a 4K prompt without the switch, so the default did not go
+  down: at 16K it gives 3,442-3,535.
 - **Off in a split model:** decode + GEMM for prompt experts (it decodes every expert of a layer; moe_rg runs the
   prompt chunks instead, the same results bit for bit on one GPU), and the cached / missing split of a token's
   experts (ARC_XSPLIT): with experts missing it gave run-to-run differences in a split model, see QUEUE F30.
@@ -458,6 +460,23 @@ Over 4 GPUs a chunk takes 2.6-2.7 s where the GPU time per card would allow 1.1-
 Next for speed: f16 parts for prompts (half the bytes), the next GPU waiting on an event instead of a host wait and
 a barrier, and batch decoding (a step's sums carry several rows for the cost of one).
 
+## Long contexts over 4 Arc Pro B60 (issue #4, release 2026.11.14.05)
+
+`runz --gpus 4 --bench-pp N --n 32 --prof`, sums through host memory (Windows). Prompt in tok/s, three runs each;
+generation (32 tokens) after the prompt:
+
+| Model | 64K prompt | 131K prompt | 262K prompt | Generation after 131K / 262K |
+|---|---|---|---|---|
+| Qwen3.8 27B GSQ-RCO IQ3_S | 1,258 (1,169 in a repeat) | 970 | 662 | 32.2 / 29.0 |
+| Qwen3.6 35B-A3B UD-IQ4_XS | 2,187 | 1,267 (runs 1,230-1,360) | 699 | 44.5 / 37.0 |
+| Qwen3.8 Flash Next GSQ-RCO IQ3_S | 969 | 778 | 525 (runs 525-549) | 26.9 / 22.4 |
+
+- The first generation right after loading is slow (after the 64K prompt: 27B 7.9, 35B 2.7, Flash Next 1.6 tok/s);
+  the 27B's repeat run generated 31.8. An open issue.
+- `ARC_TP_OVERLAP=1`: no prompt gain (the 27B's 64K 1,169 -> 1,173 tok/s); it stays opt-in.
+- `--budget` on a split 27B (the decoded weights kept): over 2 the 512-token prompt 1,028 -> 1,481 tok/s, but the 4K
+  prompt 1,436 over 2 and 1,738 over 4, below 1,597 / 1,888 without it (release 2026.11.13.05); it stays opt-in.
+
 ## Expected speed (the estimate before the measurement)
 
 One B60 runs the 27B IQ3_S at 21.5 tok/s, reading 11.3 GB per token in 45.3 ms. With N GPUs each reads 1/N, plus
@@ -624,6 +643,30 @@ If the B60s show a clear gain, the decode sums get an `ARC_TP_SYNC=event` path (
 .\bin\event_probe.exe
 ```
 
+## DeepSeek-V4.1-Flash (deepseek41, 2026-11-14)
+
+Split as Flash Next's MoE is: each GPU holds and caches its range of the routed experts (384 / N), computes their
+part of every token's MoE output, and the parts plus the shared expert (on GPU 0 only) are summed into the block
+output (`hco_`) that the hyper-connection mixing then adds to the streams (`tp_moe_combine`, then `tp_reduce_hc`).
+Everything else is whole on every GPU: the attention (its one kv-head cannot be divided), the compressor and indexer,
+the mixing, the vocabulary head's rows split as for every model. The Engram table's rows are read on the host by each
+shard (they are a lookup, not a matrix product). One sum per layer, as for the 35B-A3B.
+
+Memory per GPU: the dense part whole (its BF16 matrices as Q8_0) plus the GPU's expert cache; the experts kept in RAM
+are one pinned pool every GPU copies from, so 4 GPUs do not need 4 copies in RAM.
+
+Checked (laptop, `ARC_TP_SIM`), the tiny model with Unsloth's UD-Q8_K_XL types (`make_tiny_deepseek41.py --unsloth`,
+16 experts all used, 100 random tokens), KL against tools/ref_forward, prompt / generation:
+
+| GPUs | KL |
+|---|---|
+| 1 | 0.0052 / 0.0052 |
+| 2 | 0.0053 / 0.0052 |
+| 3 | 0.0053 / 0.0052 |
+| 4 | 0.0051 / 0.0052 |
+
+at the real widths (--real --unsloth: 384 experts, top 6, MXFP4) 0.066 on 1 GPU, 0.067 on 2 and on 4 (the random router's near-tied experts; the split adds nothing). Not measured yet: the speed (manoreken2's four B60s with 1 TB of RAM, issue #4).
+
 ## Not yet
 
 - **A layer split for slow links.** Each GPU would hold whole layers (GPU 0 the first half, GPU 1 the rest) and pass
@@ -634,7 +677,6 @@ If the B60s show a clear gain, the decode sums get an `ARC_TP_SYNC=event` path (
 
 - The launcher (a choice of which GPUs), and with `serverz --gpus`: MTP / DFlash2, images, the prompt and session
   caches on disk.
-- MoE models: Gemma 4 26B; the 35B and Flash Next are split (above). Measured numbers of the 35B and Flash Next over
-  B60s.
+- MoE models: Gemma 4 26B; the 35B and Flash Next are split and measured over B60s (above).
 - Fewer host round trips per sum (an event the next GPU waits on instead of a host wait and a barrier). The f16
-  reduce-scatter for prompts is in (2026-11-02), not yet measured on B60s.
+  reduce-scatter for prompts (2026-11-02) took the 35B's 4K prompt over 4 B60s from 2,040 to 4,264 tok/s (issue #4).
