@@ -16,7 +16,7 @@ Checked against upstream main `c6552692def54da2cd854c6b4a6f5fb4ebe6ab3b`:
 the private type, importer and native decode cases are absent. This draft adds
 the isolated importer, package writer, CPU/reference decoding and generic native
 expert decode/GEMV plumbing. It leaves all existing model defaults unchanged.
-It requires precise Flash Next on discrete GPUs (one, or a split over several), rejecting other modes.
+It requires precise Flash Next (`--precise`), rejecting the default mode; it runs on discrete GPUs (one, or a split over several) and on iGPUs (Xe-LPG, Xe-LPG+, Xe3), through the same expert kernels.
 
 **This is a format/runtime prototype, not a ready-to-merge performance PR.**
 The downstream measured profile also includes source-preserving mixer storage,

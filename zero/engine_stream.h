@@ -76,6 +76,9 @@
     if (!tp_on()) {  // (one process-wide hook: a split model's shards are on GPUs of their own)
       XCache::active() = xc_.get();
       zrt::oom_hook = [] { return XCache::active() && XCache::active()->shrink(); };
+    } else {  // (a split: the cache of the GPU that ran out, XCache::shrink_this_gpu)
+      XCache::on_gpu(&zrt::D(), xc_.get());
+      zrt::oom_hook = [] { return XCache::shrink_this_gpu(); };
     }
     // fill the cache before the first request: the experts the last run had cached (or the first of every layer)
     // (multi-GPU: one state per GPU of the split, for its experts)
@@ -284,8 +287,8 @@
     if (hp.moe_std) {
       for (int i = 0; i < 3; ++i) {
         const GgufTensor& t = f_.get(p + "ffn_" + names[i] + "_exps.weight");
-        if (t.type == GGML_AR4_128 && (zrt::integrated() || !hp.hc || !fn_precise()))  // (split: each shard streams its experts as on one GPU)
-          throw std::runtime_error("AR4_128 requires precise Flash Next on discrete GPUs");
+        if (t.type == GGML_AR4_128 && (!hp.hc || !fn_precise()))  // (iGPUs too; a split: each shard streams its experts)
+          throw std::runtime_error("AR4_128 requires precise Flash Next (--precise)");
         const uint64_t K = t.dims.empty() ? 0 : t.dims[0];  // (the shape tested below before anything else of it)
         if (t.dims.size() != 3 || t.dims[2] != (uint64_t)hp.n_expert || t.nelements() != per_expert * hp.n_expert ||
             K != (i == 2 ? (uint64_t)hp.n_ff_exp : (uint64_t)E) ||

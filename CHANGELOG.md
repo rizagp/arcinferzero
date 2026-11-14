@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-14: a split model's GPU out of memory shrinks its expert cache; AR4 experts on iGPUs
+
+- **Out of device memory on a split model** (zero/xcache.h, zero/engine_stream.h): a kernel launch or allocation that
+  runs out of memory on one of the GPUs now shrinks that GPU's expert cache and retries, as on one GPU. A split had
+  no such hook, so the first prompt of DeepSeek-V4.1 over 4 B60s at 262K ended serverz (layer 27, `ds_expand`, with
+  the cache planned to 0.01 GiB of the limit; issue #4). Tested with `ARC_FAKE_OOM=400`: Flash Next over 2 GPUs
+  (`ARC_TP_SIM`), both caches 5.99 -> 5.00 GiB, the run finished and its logits are bit-identical to the run without
+  it. One GPU unchanged.
+- **AR4_128 experts on iGPUs** (zero/engine_stream.h): the iGPU refusal removed (Xe-LPG / Xe-LPG+ / Xe3 have strong
+  int4 DP4a paths). On the laptop's Xe-LPG: `tests/test_autoround_decode` on synthetic AR4 data (4.9 M weights),
+  GPU decode bit-identical to the CPU decoder; the expert kernels (`moe_gateup_q`, `moe_down_q`, `moe_rg`,
+  `decode_w8_sb` / `_sl`, `gemv_v`) build for AR4. A whole AR4 model on an iGPU is still to be run (the import does
+  not fit the laptop's SSD). Still precise Flash Next only.
+
 ## 2026-11-14: AutoRound INT4 experts (AR4_128, pull request #22 by chumbleyjl)
 
 - An experimental private AR4_128 importer (`tools/import_autoround_experts.py`, `tools/import_autoround_pack.cpp`),
@@ -7,7 +21,8 @@
   defaults kept. Downstream AutoRound-hybrid benchmarks and accuracy limits are separate from upstream-branch
   validation; see docs/autoround-b70-rfc.md.
 - Merged with main's MXFP4 / MXFP8 types (both kept). AR4 experts also run on a split model (`--gpus`): each GPU
-  streams its experts as on one GPU; still precise Flash Next on discrete GPUs only.
+  streams its experts as on one GPU; and on iGPUs (the laptop: AR4 GPU decode bit-identical to the CPU decoder on
+  4.9 M synthetic weights, the expert kernels build for AR4). Still precise Flash Next only.
 - Logits bit-identical to release 2026.11.14.10 for the other models (laptop: Qwen3.5 4B, Qwen3.8 27B, Qwen3.6
   35B-A3B, Flash Next IQ3_S; prompt + 8 generated tokens). The AR4 path's GPU KL on this branch is asked of the PR's
   author (B70), one GPU and split.

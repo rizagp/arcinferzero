@@ -572,6 +572,11 @@ left a barrier or gave up a wait, all made the same number of sums and none is i
 nothing (a GPU may still run queued work; a thread given up on may still touch it): the memory waits for a restart.
 
 Other failsafes:
+- **Out of device memory on a GPU** (2026-11-14): a launch or allocation that runs out of memory on a split model's
+  GPU shrinks that GPU's expert cache and retries, as one GPU does (`XCache::shrink_this_gpu`). Before, a split had no
+  such hook: DeepSeek-V4.1 over 4 B60s at 262K ended the server at its first prompt (layer 27, `ds_expand`, issue #4).
+  `ARC_FAKE_OOM=n` (tests: every n-th launch reported as out of memory): Flash Next over 2 (`ARC_TP_SIM`), both caches
+  5.99 -> 5.00 GiB, the logits identical to the run without it.
 - **f16 range:** a prompt chunk's partial sum beyond 65504 / N (the sum of N parts must fit f16 too), or not a
   number, is flagged by the conversion kernel on any GPU; then every GPU sums that projection in f32 (logged up to
   three times as "summed in f32 (failsafe)"). `ARC_TP_F16_LIMIT=0` (tests) sends every non-zero part there: the

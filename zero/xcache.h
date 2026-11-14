@@ -15,6 +15,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 // ---- pools: the layers grouped by record size (pure host logic; tests/test_xcache_pools.cpp, no GPU)
@@ -193,6 +194,7 @@ struct XCache {
     try { save_state(); } catch (const std::exception&) {}  // (a destructor must not throw: no state saved then)
     if (trace_) { fclose(trace_); trace_ = nullptr; }
     if (zrt::oom_hook && active() == this) { zrt::oom_hook = nullptr; active() = nullptr; }
+    on_gpu_drop(this);
     zrt::sync();
     for (Pool& P : pools) {
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / std::max<uint64_t>(1, P.rec));
@@ -212,6 +214,35 @@ struct XCache {
     if (xaddr) { zrt::mem_free(zrt::ctx, xaddr); xaddr = nullptr; }
   }
   static XCache*& active() { static XCache* a = nullptr; return a; }
+  // A split model's caches, one per GPU (its shard's Dev): out of device memory on a GPU shrinks that GPU's cache,
+  // as active() does for one GPU. Before 2026-11-14 a split had no hook: DeepSeek-V4.1 over 4 B60s at 262K, its
+  // first prompt, a launch out of device memory at layer 27 ended the server (issue #4) where one GPU shrinks and
+  // retries.
+  static std::mutex& gpus_mu() { static std::mutex m; return m; }
+  static std::vector<std::pair<const zrt::Dev*, XCache*>>& gpus() {
+    static std::vector<std::pair<const zrt::Dev*, XCache*>> v;
+    return v;
+  }
+  static void on_gpu(const zrt::Dev* d, XCache* x) {
+    std::lock_guard<std::mutex> g(gpus_mu());
+    for (auto& e : gpus())
+      if (e.first == d) { e.second = x; return; }
+    gpus().push_back({d, x});
+  }
+  static void on_gpu_drop(XCache* x) {
+    std::lock_guard<std::mutex> g(gpus_mu());
+    for (auto& e : gpus())
+      if (e.second == x) e.second = nullptr;
+  }
+  static bool shrink_this_gpu() {  // (the hook: called on the thread whose launch or allocation failed, zrt::D())
+    XCache* x = nullptr;
+    {
+      std::lock_guard<std::mutex> g(gpus_mu());
+      for (auto& e : gpus())
+        if (e.first == &zrt::D()) x = e.second;
+    }
+    return x && x->shrink();
+  }
   // the layer of the last ensure() and the experts it set: kernels of that layer may still be launched
   int last_l = -1;
   std::vector<uint8_t> last_seen;
