@@ -213,6 +213,16 @@
     return out;
   }
   void load_gdn_in(Layer& L, const std::string& p) {
+    if (hp.hc && fn_precise() && !tp_on()) {
+      const GgufTensor &alpha = T(p + "ssm_alpha.weight"), &beta = T(p + "ssm_beta.weight");
+      const int E = hp.n_embd, N = hp.ssm_nv;
+      if (alpha.nelements() != (uint64_t)N * E || beta.nelements() != (uint64_t)N * E)
+        throw std::runtime_error("unexpected DeltaNet gate projection shape");
+      std::vector<float> values((size_t)2 * N * E);
+      dequant_row(alpha.type, alpha.data, N * E, values.data());
+      dequant_row(beta.type, beta.data, N * E, values.data() + (size_t)N * E);
+      L.ab_f32 = buf(values.size() * sizeof(float), values.data());
+    }
     GgufTensor q8q, q8z;
     std::vector<uint8_t> kq, kz;
     const GgufTensor *pq = &T(p + "attn_qkv.weight"), *pz = &T(p + "attn_gate.weight");
@@ -242,7 +252,7 @@
       dequant_row(tb.type, tb.data, (int64_t)nab / 2 * E, v.data() + (size_t)nab / 2 * E);
       ab = quantize_rows_q8_0(v.data(), tp_rows(nab), E);
     }
-    L.qz_ab = type == GGML_Q8_0 && nab % 16 == 0 && !getenv("ARC_NO_QZAB16");  // (the GEMV / GEMM take rows in 16s)
+    L.qz_ab = !(hp.hc && fn_precise() && !tp_on()) && type == GGML_Q8_0 && nab % 16 == 0 && !getenv("ARC_NO_QZAB16");
     std::vector<uint8_t> cat(tq.nbytes + tz.nbytes + (L.qz_ab ? ab.size() : 0));
     memcpy(cat.data(), tq.data, tq.nbytes);
     memcpy(cat.data() + tq.nbytes, tz.data, tz.nbytes);
@@ -365,7 +375,7 @@
       if ((int)ti.dims[0] != K || (int)ti.dims[1] != NI) throw std::runtime_error("unexpected tensor shape: " + inject);
       dequant_row(ti.type, ti.data, (int64_t)NI * K, v.data() + (size_t)LR * K);
     }
-    if (hc_bf16()) return bf16_weight(v, N, K);
+    if (hc_bf16()) return hc_exact_weight(v, N, K);
     auto q8 = quantize_rows_q8_0(v.data(), N, K);
     return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, K);
   }
@@ -382,6 +392,29 @@
     return on;
   }
   static bool hc_bf16() { return fn_precise(); }
+  // Q8 and F32 GGUF rows need not be exactly representable as BF16 after dequantization.
+  // Preserve them in F32; BF16 source values retain the compact existing path.
+  static bool hc_bf16_exact(const std::vector<float>& v) {
+    for (float x : v) {
+      uint32_t bits;
+      memcpy(&bits, &x, sizeof bits);
+      if (bits & 0xffffu) return false;
+    }
+    return true;
+  }
+  GpuWeight hc_exact_weight(const std::vector<float>& v, int N, int K) {
+    if (hc_bf16_exact(v)) return bf16_weight(v, N, K);
+    GpuWeight w;
+    w.type = GGML_F32;
+    w.N = N;
+    w.K = K;
+    w.raw = buf(v.size() * sizeof(float) + kRawSlack, nullptr);
+    if (w.raw) CL_CHECK(clEnqueueWriteBuffer(cl_.queue, w.raw, CL_TRUE, 0, v.size() * sizeof(float), v.data(), 0, nullptr, nullptr));
+    return w;
+  }
+  static std::string hc_weight_defs(const GpuWeight& w) {
+    return w.type == GGML_F32 ? " -DHC_F32" : w.type == GGML_BF16 ? " -DHC_BF16" : "";
+  }
   // rows of f32 values that came from BF16 (exact) stored back as BF16, for the -DHC_BF16 kernels
   GpuWeight bf16_weight(const std::vector<float>& v, int N, int K) {
     std::vector<uint16_t> bf(v.size());
@@ -407,7 +440,7 @@
     std::vector<float> a((size_t)N * K), v((size_t)N * KP, 0.0f);
     dequant_row(t.type, t.data, (int64_t)N * K, a.data());
     for (int n = 0; n < N; ++n) memcpy(&v[(size_t)n * KP], &a[(size_t)n * K], (size_t)K * 4);
-    if (hc_bf16()) return bf16_weight(v, N, KP);
+    if (hc_bf16()) return hc_exact_weight(v, N, KP);
     auto q8 = quantize_rows_q8_0(v.data(), N, KP);
     return make_weight(GGML_Q8_0, q8.data(), q8.size(), N, KP);
   }

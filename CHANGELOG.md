@@ -23,6 +23,13 @@
   the logits identical. Each GPU's kernels read their own memory instead of the other GPU's parts across PCIe.
   Windows (no peer access) and one GPU: unchanged.
 
+## 2026-11-13: draft Flash precise repair
+
+- Preserve precise source mixer values and DeltaNet gate projections; add float
+  QSA masking and split decode attention. Limit batched changes to Flash Next
+  and retain normal-mode --attn-f32 rejection. Rebased GPU/model checks and
+  before/after performance/memory measurements are required before merging.
+
 ## 2026-11-14: a split model's sums straight from GPU to GPU where the links allow it; `Connection: close` honoured
 
 - **Multi-GPU (`--gpus`):** the engine times every link at start: each GPU to host memory and back and, when the

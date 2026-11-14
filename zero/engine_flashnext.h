@@ -15,12 +15,12 @@
     if (T <= 8 && W <= 10240 && KP <= 1024) {
       if (!hc_rinv_) hc_rinv_ = buf(64 * 4);
       int rr = r0, e = E, hc = HC, n = down.N, lr = LR, kp = KP;
-      const std::string rt = (T > 1 ? "-DHC_RT=" + std::to_string(T) : std::string()) + (hc_bf16() ? " -DHC_BF16" : "");
-      cl_kernel k1 = kernel("ops", rt, "hc_down1");
+      const std::string rt = T > 1 ? "-DHC_RT=" + std::to_string(T) : std::string();
+      cl_kernel k1 = kernel("ops", rt + hc_weight_defs(down), "hc_down1");
       set_args(k1, 0, x_, rr, normw, e, hc, eps, down.raw, n, hc_xn_, hc_rinv_);
       size_t g1[2] = {(size_t)256 * ((n + 15) / 16), 8}, l1[2] = {256, 1};  // (8 K slices: HC_KS)
       run("hc_down1", k1, 2, g1, l1);
-      cl_kernel k2 = kernel("ops", rt, "hc_up1");
+      cl_kernel k2 = kernel("ops", rt + hc_weight_defs(up), "hc_up1");
       set_args(k2, 0, x_, rr, normw, hc_rinv_, hc_xn_, n, hc_lo_, lr, kp, e, hc, up.raw, hco_);
       size_t g2 = (size_t)256 * ((E + 15) / 16), l2 = 256;
       run("hc_up1", k2, 1, &g2, &l2);
@@ -54,7 +54,7 @@
     }
     const bool f32_down = f32_mode == 1 || f32_mode == 2, f32_up = f32_mode == 1 || f32_mode == 3;
     auto gemm_f32 = [&](cl_mem in, int ld_in, int K, int lo_in, const GpuWeight& w, int N, cl_mem C, int ldc) {
-      cl_kernel k = kernel("ops", hc_bf16() ? "-DHC_BF16" : "", "hc_gemm_f32");
+      cl_kernel k = kernel("ops", hc_weight_defs(w), "hc_gemm_f32");
       int ldi = ld_in, kk = K, li = lo_in, lr = LR, hc = HC, nn = N, lc = ldc, mm = Mp;
       set_args(k, 0, in, ldi, kk, li, lr, hc, w.raw, nn, C, lc, mm);
       size_t gws[2] = {(size_t)256 * ((N + 255) / 256), (size_t)(Mp + 15) / 16}, lws[2] = {256, 1};

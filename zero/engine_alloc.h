@@ -94,6 +94,7 @@
     qi_ = buf(M * nhd);
     if (frows_) qf_ = buf(M * hp.n_head * hp.head_dim * 4);  // (the f32 queries of attn_fa_g)
     qsc_ = buf(M * hp.n_head * (hp.head_dim / 64) * 4);  // q scales per 64-dim block
+    if (hp.hc && !opt.attn_int8) fa_part_ = buf((size_t)8 * hp.n_head * 64 * (hp.head_dim + 2) * 4);
     if (hp.swa_rings) {  // (RoPE tables per layer type: sliding / global)
       rope_tab_[0] = buf(M * (hp.hd_swa / 2) * 8);
       rope_tab_[1] = buf(M * (hp.hd_full / 2) * 8);

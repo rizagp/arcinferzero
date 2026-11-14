@@ -80,9 +80,10 @@
               throw std::runtime_error("unsupported QSA block size");
           if (hp.qsa_dim != 128 || hp.qsa_heads < 1 || hp.qsa_heads > 16 || hp.ple_layer < 0)
             throw std::runtime_error("unsupported QSA indexer");
-          // (attn_fa, the f32 path, has no QSA masks: a Flash Next 8K perplexity of 42.6 instead of 2.20)
-          if (!opt.attn_int8)
-            throw std::runtime_error("f32 attention (--attn-f32) does not support QSA sparse attention (Qwen3.8 Flash Next)");
+          // Only precise mode enables the new float QSA path. Keep the historical
+          // normal-mode --attn-f32 rejection until that configuration is validated.
+          if (!opt.attn_int8 && !fn_precise())
+            throw std::runtime_error("f32 QSA attention requires Flash Next precise mode");
         }
       }
     }

@@ -257,6 +257,8 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     ctx = (o.ctx + 15) / 16 * 16;
     adopt_mtp_file();  // (Flash Next's MTP head in a file of its own: before anything keeps a pointer into f_)
     load_hparams();
+    // Flash Next precision includes attention: per-row int8 Q/K/V can amplify small errors through routing.
+    if (hp.hc && fn_precise()) opt.attn_int8 = false;
     if (mtp_ext_) {  // (its layer, il = n_layer: full attention, QSA with the file's compress ratio)
       hp.qsa_ratio.resize(hp.n_layer + 1, 0);
       const auto* cr = mtp_file_->get_ints("qwen4exp.attention.compress_ratios");

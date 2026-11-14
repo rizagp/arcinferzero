@@ -80,6 +80,17 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, Flash Next precise mode repaired (PR #21, chumbleyjl, merged)**: source values kept (F32 where BF16
+  cannot hold them), DeltaNet alpha / beta in F32, float attention with QSA masks in precise mode. Measured on the
+  laptop (ISTA-DASLab Flash Next GSQ-RCO IQ3_S, against tools/ref_forward; release 2026.11.14.07 -> merged):
+  precise KL on 160 code tokens 0.00455 / 0.02056 -> 0.00173 / 0.00221 (prompt / generation; the generation path
+  was over 0.015 before), max 0.137 / 2.56 -> 0.043 / 0.067; over 2 shards (`ARC_TP_SIM`) 0.0055 / 0.0023. Precise
+  speed `--bench-pp 1024 --n 32`: prompt 67.9 -> 67.8 tok/s, generation 5.39 -> 6.88 (one run each), GPU buffers
+  19.24 GiB both (this file's mixer rows are exact in BF16). Default mode, the 4B, the 27B, their `--attn-f32` and the
+  27B's `--attn-f32 --slots-check`: logits bit-identical to release 2026.11.14.07. A 3,584-token code prompt with QSA
+  (last 256 positions): precise 0.184 -> 0.096, default 0.184 unchanged; that prompt's KL is four digit / identifier
+  positions where llama.cpp b12292 also disagrees with both (docs/flash-next-spec.md has no fair long-prompt figure yet).
+
 - **2026-11-14, MXFP4 experts and MXFP8 Engram rows (DeepSeek-V4.1-Flash UD-Q8_K_XL)** (src/quants.h,
   kernels/decode.cl, decode_moe.cl). Speed: not measured (a new format; the real model needs ~600 GB of RAM).
   Accuracy: the tiny `deepseek41` model with Unsloth's types (`tools/make_tiny_deepseek41.py --unsloth`, 100 random
@@ -95,6 +106,14 @@ That property is what every speed change is held to:
   direct against 14.2) and `=1` (direct, what 0.8x chooses): `--bench-pp 4096 --n 128`, three prompt runs each,
   1,383.9 / 1,431.0 / 1,442.2 -> 1,578.5 / 1,630.1 / 1,625.2 tok/s, generation 36.07 -> 37.82; a 4,210-token prompt
   1,293.3 -> 1,515.3. Accuracy: the logits identical (`cmp` of `--dump-logits`, prompt + 16 tokens).
+
+- **2026-11-13, draft Flash precise repair** (`zero/engine_load.h`, `engine_qwen.h`,
+  `ops_attn.cl`, `ops_flashnext.cl`). Historical downstream UD-Q4_K_XL eight-ID
+  mean KL 0.11597 -> <0.000005; workflow projection repair 0.07673 -> 0.00324
+  prefill and 0.04018 -> 0.00864 decode, maxima 0.19503 / 0.32222. These are not
+  rebased-branch measurements. Rebased speed/memory, model KL and default-path
+  bit checks remain gates. Batched changes are Flash-only; normal non-precise
+  --attn-f32 remains refused. Details: docs/flash-precise-repair-2026-11-13.md.
 
 - **2026-11-14, a split model's sums straight from GPU to GPU** (`ARC_TP_P2P`, auto: chosen from the links timed at
   start; zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums straight between GPUs"). **Speed: not measured.** It needs

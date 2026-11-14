@@ -121,6 +121,7 @@
     GpuWeight qz;
     bool qz_ab = false;
     cl_mem dt_bias = nullptr, ssm_a = nullptr, conv_w = nullptr, ssm_norm = nullptr;
+    cl_mem ab_f32 = nullptr;  // Flash Next precise: recurrent decay/update projections without Q8 requantization.
     cl_mem conv_state = nullptr, S = nullptr;
     // speculative verification (MTP): the pass writes its states to S_next and keeps S, its inputs and the conv history
     // before it, so verify_done() takes S_next (every draft accepted) or replays the accepted tokens from S
