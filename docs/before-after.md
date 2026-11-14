@@ -16,6 +16,19 @@ character. "Bit-identical" below means exactly that, not "close". Changes that a
 
 ## Where it stands
 
+### 2026-11-14: Linux expert-file compatibility (B70, GCC 15)
+
+| Check | Before (272ff6b) | After | Scope |
+|---|---|---|---|
+| Existing AutoRound hybrid package, same file and metadata | Rejected by layer-structure `memcmp`; mismatches were only padding bytes 12..15 | Layout fields match; package opens | No weight or file-format conversion |
+| First streamed expert into Level Zero host memory, 64 GiB RAM tier | `expert read failed (14)` (`EFAULT`) | Cache fills and inference completes through aligned ordinary-memory retry | Linux I/O only; no kernel or arithmetic changes |
+| CPU layout/read regressions | Old padding comparison rejects intentionally different padding; direct-only read rejects emulated unpinnable memory | Both tests pass, including ASan/UBSan | No performance or bit-identity claim from these CPU tests |
+
+The B70 coding fixture (31 positions) passes after both fixes: prefill and decode mean/max KL round to
+0.00000 against the same package's F32 reference. The 209-position workflow prefill is 0.00891 mean,
+0.99381 maximum. The unmodified executable fails before inference, so there is no before/after logit comparison
+for the load fix; do not read this as a speed improvement or a numerical identity measurement.
+
 (Updated 2026-10-25; each row's date and measurement are in the rows below.)
 
 | Model | Prompt | Generation | Accuracy |

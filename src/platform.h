@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 
@@ -229,9 +230,18 @@ class AsyncFile {
     ok_[s] = false;
     err_[s] = 0;  // (no number left from an earlier read of this slot)
     while (got < n) {
-      const ssize_t r = pread(fd_, (char*)dst + got, n - got, (off_t)(off + got));
+      // Some Linux Level Zero host allocations are CPU-readable but cannot be pinned by O_DIRECT's
+      // get_user_pages. Retry EFAULT through ordinary aligned memory, keeping the file unbuffered.
+      if (stage_[s] && stage_bytes_[s] < n) free(stage_[s]), stage_[s] = nullptr, stage_bytes_[s] = 0;
+      const ssize_t r = pread(fd_, stage_[s] ? (char*)stage_[s] + got : (char*)dst + got,
+                              n - got, (off_t)(off + got));
       if (r < 0) {
         if (errno == EINTR) continue;
+        if (errno == EFAULT && !stage_[s]) {
+          if (posix_memalign(&stage_[s], 4096, n) != 0) { err_[s] = ENOMEM; return false; }
+          stage_bytes_[s] = n;
+          continue;
+        }
         err_[s] = (unsigned long)errno;
         return false;
       }
@@ -239,6 +249,7 @@ class AsyncFile {
         err_[s] = EIO;
         return true;
       }
+      if (stage_[s]) memcpy((char*)dst + got, (char*)stage_[s] + got, (size_t)r);
       got += (size_t)r;
     }
     ok_[s] = true;
@@ -295,6 +306,11 @@ class AsyncFile {
 #else
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
+    for (int s = 0; s < kMaxSlots; ++s) {
+      free(stage_[s]);
+      stage_[s] = nullptr;
+      stage_bytes_[s] = 0;
+    }
 #endif
     n_ = 0;
   }
@@ -309,6 +325,8 @@ class AsyncFile {
   int fd_ = -1;
   unsigned long err_[kMaxSlots] = {};  // (per slot: the two reading threads use slots of their own)
   bool ok_[kMaxSlots] = {};
+  void* stage_[kMaxSlots] = {};
+  size_t stage_bytes_[kMaxSlots] = {};
 #endif
 };
 

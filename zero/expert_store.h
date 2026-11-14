@@ -29,6 +29,13 @@ struct ExpertStore {
     uint64_t part[3] = {};  // bytes of each matrix of one expert (GPU raw form)
     uint64_t rec = 0;       // bytes of one expert record (multiple of 4096)
     uint64_t off = 0;       // file offset of the layer's expert 0
+    bool operator==(const LayerInfo& other) const {
+      // The on-disk v1 layout has four padding bytes after type[]. Their values are not fields (GCC need not
+      // zero them on value initialization); comparing the object representation rejects matching packages.
+      for (int i = 0; i < 3; ++i)
+        if (type[i] != other.type[i] || part[i] != other.part[i]) return false;
+      return rec == other.rec && off == other.off;
+    }
   };
   std::vector<LayerInfo> layers;  // by layer index; rec == 0: not a MoE layer
   int n_expert = 0;
@@ -395,7 +402,7 @@ struct ExpertStore {
     bool same = ok;
     for (size_t l = 0; same && l < layers.size(); ++l) {
       LayerInfo li{};
-      same = fread(&li, sizeof li, 1, f) == 1 && memcmp(&li, &layers[l], sizeof li) == 0;
+      same = fread(&li, sizeof li, 1, f) == 1 && li == layers[l];
     }
     fclose(f);
     return same;

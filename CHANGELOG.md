@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-14: Linux expert-package validation and host-memory reads
+
+- Compare expert-file layer fields rather than C++ padding bytes. On GCC, the old comparison rejected an
+  unchanged AutoRound package even though every type, size and offset matched. The v1 file layout is unchanged.
+- Linux only: if an expert read into Level Zero host memory fails with `EFAULT`, retry through a reusable,
+  page-aligned ordinary-memory buffer for that read slot. Keep unbuffered file reads and propagate other errors.
+  On the B70, direct reads into host USM failed although CPU copies to that memory worked. Windows is unchanged.
+- CPU regression checks cover padding differences, every layout field, read-buffer reuse/growth, independent
+  slots and truncated reads; ASan/UBSan pass. Whole-model B70 validation is reported separately.
+
 ## 2026-11-14: the per-type lists in one place; the AutoRound files tidied
 
 - **One list per kind of type** instead of a copy in every place that needs it (adding MXFP4, MXFP8 and AR4_128 meant
