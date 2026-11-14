@@ -21,13 +21,14 @@
 #define IQ4_NL 20
 #define Q2_0 42
 #define MXFP4 39
+#define Q5_1 7  // (Unsloth's UD-Q4_K_XL Flash Next: its down experts; requantized per block, see decode32)
 // (a private inferzero type, not a GGML one: AutoRound INT4, 128 values to one f16 scale, zero point 8, pull request
 //  #22; tools/import_autoround_experts.py)
 #define AR4_128 0x41523447
 // The per-type lists, in one place (a new type goes here, and in src/quants.h is_per32_type / is_small_block_type):
 // per-32 float scales (decoded into the W8 GEMM's VARIANT 4 layout: one f32 per 32-block in the header; C++
 // is_per32_type)
-#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128)
+#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128 || QT == Q5_1)
 // a vector decoder, vblock (gemv_v, and the experts' MOE_VB / moe_rg): each 32-block read straight into registers
 #define VB_TYPE (QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || \
                  QT == MXFP4)
@@ -104,6 +105,8 @@ inline void ar4_unpack(uint4 q, uint* w) {
 #define BB 136  // (8 blocks of 32: 8 E8M0 scale bytes, then 8 x 16 nibble bytes)
 #elif QT == Q2_0
 #define BB 72  // (4 blocks of 64)
+#elif QT == Q5_1
+#define BB 192  // (8 blocks of 32 as in the GGUF: f16 d, f16 m, 32 high bits, 16 nibble bytes)
 #else
 #error "unsupported QT"
 #endif
@@ -305,6 +308,39 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
     sc0 = sc1 = 1;
 #pragma unroll
     for (int k = 0; k < 8; ++k) w[k] = q2_word(p[8 + 16 * (ib / 2) + 8 * (ib % 2) + k]);
+  }
+#elif QT == Q5_1
+  {
+    // GPU form = the GGUF's (src/quants.h gpu_raw_sb copies it): 24 bytes per block, f16 d, f16 m, the 32 high bits,
+    // 16 bytes with elements 0..15 in the low nibbles and 16..31 in the high ones; w = d * q + m, q = 0..31. The
+    // per-32 int8 form has no offset, so the block is requantized: scale s = max(|m|, |m + 31 d|) / 127 (the
+    // largest magnitude any code reaches), w = rint((d q + m) / s), at most s / 2 off (~0.4 % of the block's
+    // largest value), as Q4_K / Q5_K are requantized for the min-free GEMM. Every path (decode_w8, the GEMVs, the
+    // experts' kernels) decodes through here, so prompt and generation see the same int8 values. A padding block
+    // (d = m = 0, rows of K = 640) gives s = 0 and zeros.
+    const uchar* b = p + 24 * ib;
+    const float bd = f16(rd16(b)), bm = f16(rd16(b + 2));
+    const uint qh = rd32(b + 4);
+    const float vmax = fmax(fabs(bm), fabs(bm + 31.0f * bd));
+    const float inv = vmax > 0.0f ? 127.0f / vmax : 0.0f;
+    d = vmax / 127.0f;
+    sc0 = sc1 = 1;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+      const uint v = rd32(b + 8 + 4 * k);
+#pragma unroll
+      for (int h = 0; h < 2; ++h) {
+        uint word = 0;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          const int e = 16 * h + 4 * k + j;
+          const int q = (int)((v >> (8 * j + 4 * h)) & 15u) | (int)(((qh >> e) & 1u) << 4);
+          const int i8 = clamp((int)rint((bd * (float)q + bm) * inv), -127, 127);
+          word |= ((uint)i8 & 0xFFu) << (8 * j);
+        }
+        w[k + 4 * h] = word;
+      }
+    }
   }
 #elif QT == IQ2_XXS
   // (IQ2 / IQ3 types in their GPU form, src/quants.h gpu_raw_sb: the f16 d last, every other field 2 bytes earlier)

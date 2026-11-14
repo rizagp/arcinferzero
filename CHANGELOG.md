@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-14: Q5_1 weights on the GPU (Flash Next UD-Q4_K_XL's down experts)
+
+- Unsloth's UD-Q4_K_XL Qwen3.8 Flash Next keeps its down experts in Q5_1, which the engine refused ("unexpected expert
+  tensor blk.0.ffn_down_exps.weight"; PR #20 had added only the CPU reference decoder; issue #23, chumbleyjl).
+- Q5_1 (w = d q + m, q = 0..31) stays in its GGUF layout on the GPU and is decoded per 32-block into the per-32 int8
+  form every kernel already reads. That form has no offset, so each block is requantized with its own scale
+  max(|m|, |m + 31 d|) / 127: at most half a step off, ~0.4 % of the block's largest value, as Q4_K / Q5_K are
+  requantized for the min-free GEMM. Prompt and generation decode through the same function and see the same values.
+  Rows of K = 640 are padded with zero blocks as the other small-block types' (src/quants.h, zero/kernels/decode.cl).
+- Checked on the tiny DeepSeek-V4.1 (`tools/make_tiny_deepseek41.py --q5_1-down`, every expert used) against
+  tools/ref_forward, which decodes Q5_1 exactly: KL 0.00363 prompt / 0.00362 token by token against the Q8_0
+  control's 0.00340 / 0.00343. Not checked here: Flash Next itself (the 640-wide rows; its file is not on the
+  laptop): its KL against f32 is the next step, on a machine that has it.
+
 ## 2026-11-14: a pair audit (DeepSeek-V4.1 through Pi and Claude) and its fixes
 
 Six parts reviewed twice by reviewers that did not see each other's results: the engine since the morning's audit, the

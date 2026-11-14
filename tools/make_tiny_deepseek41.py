@@ -17,7 +17,9 @@
 # --unsloth: the tensor types of Unsloth's UD-Q8_K_XL (DeepSeek-V4.1-Flash-1017-GGUF): routed experts MXFP4, the
 # Engram table MXFP8 (type 43 of Unsloth's llama.cpp fork), the router F32, every other matrix BF16.
 #
-# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N] [--heads N] [--real] [--unsloth]
+# --q5_1-down: the down experts in Q5_1, as Unsloth's UD-Q4_K_XL Qwen3.8 Flash Next has them (2026-11-14, issue #23).
+#
+# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N] [--heads N] [--real] [--unsloth] [--q5_1-down]
 import struct, sys
 import numpy as np
 
@@ -35,6 +37,7 @@ PLE_LAYERS = [1, 4]
 
 GGML_F32, GGML_F16, GGML_Q4_0, GGML_Q8_0, GGML_BF16 = 0, 1, 2, 8, 30
 GGML_MXFP4, GGML_MXFP8 = 39, 43
+GGML_Q5_1 = 7
 KV_FP4 = np.array([0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12], dtype=np.float32)
 
 
@@ -93,6 +96,19 @@ def encode(data, ggml_type):
         blk = np.zeros(x.shape[0], dtype=[("d", "<f2"), ("q", "<u1", 16)])
         blk["d"], blk["q"] = d, q[:, :16] | (q[:, 16:] << 4)
         return blk.tobytes()
+    if ggml_type == GGML_Q5_1:  # (as ggml: d = (max - min) / 31, m = min, q = round((x - min) / d) in 0..31)
+        x = data.astype("<f4").reshape(-1, 32)
+        lo, hi = x.min(axis=1), x.max(axis=1)
+        d = ((hi - lo) / 31.0).astype("<f2")
+        m = lo.astype("<f2")
+        df, mf = d.astype("<f4"), m.astype("<f4")
+        inv = np.where(df != 0, 1.0 / np.where(df != 0, df, 1), 0)
+        q = np.clip(np.round((x - mf[:, None]) * inv[:, None]), 0, 31).astype(np.uint32)
+        qh = ((q >> 4) << np.arange(32, dtype=np.uint32)[None, :]).sum(axis=1).astype("<u4")
+        ql = (q & 15).astype("<u1")
+        blk = np.zeros(x.shape[0], dtype=[("d", "<f2"), ("m", "<f2"), ("qh", "<u4"), ("q", "<u1", 16)])
+        blk["d"], blk["m"], blk["qh"], blk["q"] = d, m, qh, ql[:, :16] | (ql[:, 16:] << 4)
+        return blk.tobytes()
     if ggml_type == GGML_MXFP4:  # (scale 2^(e - 128) so that the largest magnitude is at most 6; nearest code)
         x = data.astype("<f4").reshape(-1, 32).astype(np.float64)
         amax = np.abs(x).max(axis=1)
@@ -127,7 +143,7 @@ def encode(data, ggml_type):
 
 def type_bytes(n, ggml_type):
     return {GGML_F32: 4 * n, GGML_F16: 2 * n, GGML_BF16: 2 * n, GGML_Q8_0: n // 32 * 34, GGML_Q4_0: n // 32 * 18,
-            GGML_MXFP4: n // 32 * 17, GGML_MXFP8: n // 32 * 33}[ggml_type]
+            GGML_MXFP4: n // 32 * 17, GGML_MXFP8: n // 32 * 33, GGML_Q5_1: n // 32 * 24}[ggml_type]
 
 
 class Writer:
@@ -355,7 +371,8 @@ def main():
             XQ = GGML_MXFP4 if uns else Q8
             w.tensor(b + "ffn_gate_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), XQ)
             w.tensor(b + "ffn_up_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), XQ)
-            w.tensor(b + "ffn_down_exps.weight", (rng.standard_normal((NE, E, FF)) / np.sqrt(FF)).astype(np.float32), XQ)
+            w.tensor(b + "ffn_down_exps.weight", (rng.standard_normal((NE, E, FF)) / np.sqrt(FF)).astype(np.float32),
+                     GGML_Q5_1 if "--q5_1-down" in sys.argv else XQ)
         w.tensor(b + "ffn_gate_shexp.weight", mat(FF * NSH, E, 3.0), Q8)
         w.tensor(b + "ffn_up_shexp.weight", mat(FF * NSH, E, 3.0), Q8)
         w.tensor(b + "ffn_down_shexp.weight", mat(E, FF * NSH), Q8)
