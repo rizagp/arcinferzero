@@ -492,8 +492,50 @@ inline void dequant_q3_k(const uint8_t* p, float* y) {
   }
 }
 
+// MXFP4 / MXFP8 (OCP MX, as ggml): an E8M0 scale per 32 values. MXFP4's 4-bit E2M1 codes are kvalues_mxfp4 times
+// half the scale (ggml_e8m0_to_fp32_half); MXFP8's E4M3 (fn) codes times the scale (2^(e - 127); 0xFF: NaN).
+static const int8_t kvalues_mxfp4[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+inline float e8m0_to_f32_half(uint8_t e) {  // 2^(e - 128)
+  const uint32_t bits = e < 2 ? 0x00200000u << e : (uint32_t)(e - 1) << 23;
+  float f;
+  memcpy(&f, &bits, 4);
+  return f;
+}
+inline float e8m0_to_f32(uint8_t e) {  // 2^(e - 127)
+  if (e == 0xFF) return NAN;
+  const uint32_t bits = e == 0 ? 0x00400000u : (uint32_t)e << 23;
+  float f;
+  memcpy(&f, &bits, 4);
+  return f;
+}
+inline float e4m3fn_to_f32(uint8_t q) {
+  const int s = q >> 7, ex = (q >> 3) & 15, m = q & 7;
+  if (ex == 15 && m == 7) return NAN;
+  const float v = ex == 0 ? std::ldexp((float)m, -9) : std::ldexp((float)(8 + m), ex - 10);  // (m/8 2^-6; (1+m/8) 2^(ex-7))
+  return s ? -v : v;
+}
+
 // Dequantizes one full row (K elements) of a GGUF matrix to float (CPU reference / embeddings).
 inline void dequant_row(uint32_t type, const uint8_t* row, int K, float* out) {
+  if (type == GGML_MXFP4) {  // blocks of 32: E8M0 scale, low nibbles = elements 0..15, high = 16..31
+    for (int b = 0; b < K / 32; ++b) {
+      const uint8_t* p = row + (size_t)b * 17;
+      const float d = e8m0_to_f32_half(p[0]);
+      for (int j = 0; j < 16; ++j) {
+        out[b * 32 + j] = d * (float)kvalues_mxfp4[p[1 + j] & 0x0F];
+        out[b * 32 + 16 + j] = d * (float)kvalues_mxfp4[p[1 + j] >> 4];
+      }
+    }
+    return;
+  }
+  if (type == GGML_MXFP8) {  // blocks of 32: E8M0 scale, then 32 E4M3 (fn) codes
+    for (int b = 0; b < K / 32; ++b) {
+      const uint8_t* p = row + (size_t)b * 33;
+      const float d = e8m0_to_f32(p[0]);
+      for (int j = 0; j < 32; ++j) out[b * 32 + j] = d * e4m3fn_to_f32(p[1 + j]);
+    }
+    return;
+  }
   if (type == GGML_Q3_K) {
     for (int s = 0; s < K / 256; ++s) dequant_q3_k(row + (size_t)s * 110, out + (size_t)s * 256);
     return;
@@ -580,7 +622,7 @@ inline void quantize_act_cpu(const float* x, int M, int K, int8_t* aq, float* as
 // Small-block types (IQ4_NL: 32 elements / 18 bytes, Q2_0: 64 / 18) whose consecutive blocks are read as 256-element
 // "superblocks" by the GPU (144 / 72 bytes). A row whose K is not a multiple of 256 (Qwen3.8 Flash Next down
 // projections: K = 640) is padded to the next multiple with zero blocks (scale 0, dequantizing to zeros).
-inline bool is_small_block_type(uint32_t t) { return t == GGML_IQ4_NL || t == GGML_Q2_0; }
+inline bool is_small_block_type(uint32_t t) { return t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4; }
 inline int padded_k(int K) { return (K + 255) / 256 * 256; }
 // N rows of K elements of a small-block type -> N rows of padded_k(K) elements (dst holds N * the padded row bytes)
 inline void pad_small_block_rows(uint32_t type, const uint8_t* src, int N, int K, uint8_t* dst) {
@@ -597,7 +639,7 @@ inline bool is_w8_type(uint32_t t) {
   switch (t) {
     case GGML_Q2_K: case GGML_Q3_K: case GGML_Q4_K: case GGML_Q5_K: case GGML_Q6_K: case GGML_IQ2_XXS: case GGML_IQ2_XS:
     case GGML_IQ2_S: case GGML_IQ3_XXS: case GGML_IQ3_S: case GGML_IQ1_S: case GGML_IQ1_M: case GGML_IQ4_XS: case GGML_Q8_0: case GGML_Q4_0:
-    case GGML_IQ4_NL: case GGML_Q2_0: return true;
+    case GGML_IQ4_NL: case GGML_Q2_0: case GGML_MXFP4: return true;
     default: return false;
   }
 }
@@ -607,7 +649,7 @@ inline bool is_w8_type(uint32_t t) {
 // end, docs/archive/review_notes.md).
 inline bool w8_requant(uint32_t t) { return t == GGML_Q2_K || t == GGML_Q4_K || t == GGML_Q5_K; }
 inline int w8_variant(uint32_t t) {
-  if (t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0)
+  if (t == GGML_Q8_0 || t == GGML_Q4_0 || t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4)
     return 4;  // per-32 f32 scales (the GEMM runs them as its native Q8_0 form)
   const bool sc32 = t == GGML_IQ4_XS || t == GGML_IQ3_S || t == GGML_IQ3_XXS || t == GGML_IQ2_XXS ||
                     t == GGML_Q4_K || t == GGML_Q5_K;
@@ -619,7 +661,7 @@ inline size_t w8_bytes_q(int N, int K) { return (size_t)N * K; }
 inline size_t w8_bytes_h(int N, int K) { return (size_t)N / 8 * (K / 256) * 10 * 8 * 4; }
 // Codebooks for zero/kernels/decode.cl, laid out at the TAB_* uint offsets defined there.
 inline std::vector<uint32_t> build_iq_tables() {
-  std::vector<uint32_t> t(8484, 0);
+  std::vector<uint32_t> t(8488, 0);
   auto put = [&](size_t off, const void* src, size_t bytes) { memcpy(t.data() + off, src, bytes); };
   put(0, iq2xxs_grid, sizeof(iq2xxs_grid));
   put(512, iq2xs_grid, sizeof(iq2xs_grid));
@@ -629,6 +671,7 @@ inline std::vector<uint32_t> build_iq_tables() {
   put(4352, iq1s_grid, sizeof(iq1s_grid));
   put(8448, ksigns_iq2xs, sizeof(ksigns_iq2xs));
   put(8480, kvalues_iq4nl, sizeof(kvalues_iq4nl));
+  put(8484, kvalues_mxfp4, sizeof(kvalues_mxfp4));
   return t;
 }
 // GPU raw form of a GGUF matrix: each 256-element superblock zero-padded to a multiple of 8 bytes, so a pair of
@@ -644,11 +687,19 @@ inline bool gpu_d_last(uint32_t type) {
   return type == GGML_IQ2_XXS || type == GGML_IQ2_XS || type == GGML_IQ2_S || type == GGML_IQ3_XXS || type == GGML_IQ3_S;
 }
 inline bool gpu_regrouped(uint32_t type) {
-  return type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0 || gpu_d_last(type);
+  return type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0 || type == GGML_MXFP4 ||
+         gpu_d_last(type);
 }
 // One superblock in its GPU raw form (dst: raw_padded_sb_bytes(type) bytes).
 inline void gpu_raw_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
   const size_t bb = gguf_sb_bytes(type), bp = raw_padded_sb_bytes(type);
+  if (type == GGML_MXFP4) {  // 8 blocks of 17 bytes (E8M0 + 16 nibble bytes) -> the 8 scale bytes, then 8 x 16 bytes
+    for (int b = 0; b < 8; ++b) {
+      dst[b] = src[17 * b];
+      memcpy(dst + 8 + 16 * b, src + 17 * b + 1, 16);
+    }
+    return;
+  }
   if (type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0) {
     // nb blocks (f16 d + quants) -> the nb scales, then the quants (Q4_0 / Q8_0 / IQ4_NL: 8 blocks of 32;
     // Q2_0: 4 blocks of 64, so its scales take 8 bytes)

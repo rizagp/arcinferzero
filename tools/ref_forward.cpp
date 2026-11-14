@@ -44,6 +44,13 @@ static void open_package(const std::string& gguf) {
 // one superblock from its GPU raw form back to GGUF bytes (the inverse of gpu_raw_sb)
 static void gguf_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
   const size_t bb = gguf_sb_bytes(type);
+  if (type == GGML_MXFP4) {
+    for (int b = 0; b < 8; ++b) {
+      dst[17 * b] = src[b];
+      memcpy(dst + 17 * b + 1, src + 8 + 16 * b, 16);
+    }
+    return;
+  }
   if (type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0) {
     const int qb = type == GGML_Q8_0 ? 32 : 16, nb = type == GGML_Q2_0 ? 4 : 8;
     for (int b = 0; b < nb; ++b) {

@@ -39,6 +39,16 @@ tokenize differently there; inferzero follows the reference tokenizer and llama.
 | tiny (4 of 16 experts) | the routing | 0.003-0.05: expert near-ties flip under int8 rounding (traced layer by layer) |
 | `--real` (4 layers at the real widths: 5120, 64 heads, top-k 512, a 2048-block pool, 32 indexer heads, 384 experts) | kernel and buffer limits at the real sizes | median 0.001 at every depth over 1,200 positions; mean 0.05 from a random router's expert ties |
 
+**Unsloth's UD-Q8_K_XL (2026-11-14, issue #4, manoreken2's request):** `unsloth/DeepSeek-V4.1-Flash-1017-GGUF`,
+558 GB in 9 parts, the same metadata keys as the ISTA-DASLab files (headers read with their 92 keys and 1,043
+tensors). Types: routed experts MXFP4 (40 layers x 3), every other matrix BF16 (token embedding, head, attention,
+shared experts, indexer, Engram projection; the engine takes them as Q8_0 at load), the router `ffn_gate_inp` F32,
+norms / mixes / biases F32, the Engram table `per_layer_token_embd` MXFP8 (202.8 GB). MXFP8 is type 43 of Unsloth's
+llama.cpp fork (one E8M0 scale and 32 E4M3 codes, 33 bytes; upstream ggml's 43 is plain F8_E4M3), "gather-only"
+there as here (the engine reads Engram rows on the CPU). The file has `exp_probs_b_vl.bias` too (not read: the
+vision path) and DSpark keys. Since 2026-11-14 the engine decodes both formats; checked on the tiny model with these
+types (`tools/make_tiny_deepseek41.py --unsloth`: 16 of 16 experts KL 0.0052 / 0.0052 against tools/ref_forward).
+
 What the server does with it: prompts and generation, the prompt-cache snapshots and saved conversations (format 3;
 `runz --snap-test` bit-identical). Not yet: slots, drafters (the DSpark MTP GGUF, section 3.9), images, multi-GPU.
 

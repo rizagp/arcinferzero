@@ -14,7 +14,10 @@
 # candidate pool; an index layer using it), an expert FFN of 256 instead of 2304 and a vocabulary of 2048 to keep the
 # file at ~3.5 GB (experts in Q4_0). Its data are written tensor by tensor.
 #
-# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N] [--heads N] [--real]
+# --unsloth: the tensor types of Unsloth's UD-Q8_K_XL (DeepSeek-V4.1-Flash-1017-GGUF): routed experts MXFP4, the
+# Engram table MXFP8 (type 43 of Unsloth's llama.cpp fork), the router F32, every other matrix BF16.
+#
+# usage: python tools/make_tiny_deepseek41.py OUT.gguf [--seed N] [--nu N] [--heads N] [--real] [--unsloth]
 import struct, sys
 import numpy as np
 
@@ -31,6 +34,20 @@ CAND_SRC, CAND_BLOCKS, CAND_BS = 6, 4, 4
 PLE_LAYERS = [1, 4]
 
 GGML_F32, GGML_F16, GGML_Q4_0, GGML_Q8_0, GGML_BF16 = 0, 1, 2, 8, 30
+GGML_MXFP4, GGML_MXFP8 = 39, 43
+KV_FP4 = np.array([0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12], dtype=np.float32)
+
+
+def e4m3fn_values():  # (code -> value for the 254 finite E4M3 (fn) codes; NaN for 0x7F / 0xFF)
+    v = np.zeros(256, dtype=np.float64)
+    for c in range(256):
+        sg, ex, m = c >> 7, (c >> 3) & 15, c & 7
+        if ex == 15 and m == 7:
+            v[c] = np.nan
+            continue
+        x = m * 2.0 ** -9 if ex == 0 else (8 + m) * 2.0 ** (ex - 10)
+        v[c] = -x if sg else x
+    return v
 
 
 def real_config():
@@ -76,11 +93,41 @@ def encode(data, ggml_type):
         blk = np.zeros(x.shape[0], dtype=[("d", "<f2"), ("q", "<u1", 16)])
         blk["d"], blk["q"] = d, q[:, :16] | (q[:, 16:] << 4)
         return blk.tobytes()
+    if ggml_type == GGML_MXFP4:  # (scale 2^(e - 128) so that the largest magnitude is at most 6; nearest code)
+        x = data.astype("<f4").reshape(-1, 32).astype(np.float64)
+        amax = np.abs(x).max(axis=1)
+        k = np.where(amax > 0, np.ceil(np.log2(np.where(amax > 0, amax, 1) / 6.0)), -128)
+        e = np.clip(k + 128, 2, 254).astype(np.int64)
+        sc = 2.0 ** (e - 128)
+        y = x / sc[:, None]
+        q = np.abs(y[:, :, None] - KV_FP4[None, None, :8] * np.sign(y)[:, :, None]).argmin(axis=2)
+        q = np.where((y < 0) & (q > 0), q + 8, q).astype("<u1")
+        blk = np.zeros(x.shape[0], dtype=[("e", "<u1"), ("q", "<u1", 16)])
+        blk["e"], blk["q"] = e.astype("<u1"), q[:, :16] | (q[:, 16:] << 4)
+        return blk.tobytes()
+    if ggml_type == GGML_MXFP8:  # (scale 2^(e - 127) so that the largest magnitude is at most 448; nearest code)
+        x = data.astype("<f4").reshape(-1, 32).astype(np.float64)
+        amax = np.abs(x).max(axis=1)
+        k = np.where(amax > 0, np.ceil(np.log2(np.where(amax > 0, amax, 1) / 448.0)), -127)
+        e = np.clip(k + 127, 1, 254).astype(np.int64)
+        y = x / (2.0 ** (e - 127))[:, None]
+        vals = e4m3fn_values()
+        codes = np.array([c for c in range(256) if not np.isnan(vals[c])])
+        order = np.argsort(vals[codes])
+        sv, sc_codes = vals[codes][order], codes[order]
+        i = np.clip(np.searchsorted(sv, y), 1, len(sv) - 1)
+        lo, hi = sv[i - 1], sv[i]
+        pick = np.where(np.abs(y - lo) <= np.abs(hi - y), i - 1, i)
+        q = sc_codes[pick].astype("<u1")
+        blk = np.zeros(x.shape[0], dtype=[("e", "<u1"), ("q", "<u1", 32)])
+        blk["e"], blk["q"] = e.astype("<u1"), q
+        return blk.tobytes()
     raise ValueError(ggml_type)
 
 
 def type_bytes(n, ggml_type):
-    return {GGML_F32: 4 * n, GGML_F16: 2 * n, GGML_BF16: 2 * n, GGML_Q8_0: n // 32 * 34, GGML_Q4_0: n // 32 * 18}[ggml_type]
+    return {GGML_F32: 4 * n, GGML_F16: 2 * n, GGML_BF16: 2 * n, GGML_Q8_0: n // 32 * 34, GGML_Q4_0: n // 32 * 18,
+            GGML_MXFP4: n // 32 * 17, GGML_MXFP8: n // 32 * 33}[ggml_type]
 
 
 class Writer:
@@ -265,10 +312,15 @@ def main():
     w.u32("tokenizer.ggml.padding_token_id", 2)
 
     Q8, F32, BF16, F16 = GGML_Q8_0, GGML_F32, GGML_BF16, GGML_F16
+    uns = "--unsloth" in sys.argv
+    if uns:
+        Q8 = BF16  # (every dense matrix BF16, as Unsloth's UD-Q8_K_XL)
+    EXP = GGML_MXFP4 if uns else GGML_Q4_0  # (--real's experts)
     w.tensor("token_embd.weight", rng.standard_normal((VOCAB, E)).astype(np.float32), Q8)
     w.tensor("output_norm.weight", normw(E), F32)
     w.tensor("output.weight", mat(VOCAB, E, 1.5), Q8)
-    w.tensor("per_layer_token_embd.weight", rng.standard_normal((n_rows, PD)).astype(np.float32), F16)
+    w.tensor("per_layer_token_embd.weight", rng.standard_normal((n_rows, PD)).astype(np.float32),
+             GGML_MXFP8 if uns else F16)
     hcd, mix = HC * E, (2 + HC) * HC
     for il in range(NL):
         b = f"blk.{il}."
@@ -286,23 +338,24 @@ def main():
             w.tensor(b + f"hc_{site}_base.weight", (0.5 * rng.standard_normal(mix)).astype(np.float32), F32)
             w.tensor(b + f"hc_{site}_scale.weight", (1.0 + 0.2 * rng.standard_normal(3)).astype(np.float32), F32)
         w.tensor(b + "ffn_norm.weight", normw(E), F32)
-        w.tensor(b + "ffn_gate_inp.weight", mat(NE, E, 8.0), BF16)  # (decisive: fewer near-ties)
+        w.tensor(b + "ffn_gate_inp.weight", mat(NE, E, 8.0), F32 if uns else BF16)  # (decisive: fewer near-ties)
         w.tensor(b + "exp_probs_b.bias", (0.1 * rng.standard_normal(NE)).astype(np.float32), F32)
         if "--real" in sys.argv:  # (per expert at write time, Q4_0: 384 experts of 5120 x 256)
             def gen_exps(n_out, n_in, scale, seed_e):
                 def g():
                     r2 = np.random.default_rng(seed_e)
                     for e in range(NE):
-                        yield encode((r2.standard_normal((n_out, n_in)) * scale / np.sqrt(n_in)).astype(np.float32), GGML_Q4_0)
+                        yield encode((r2.standard_normal((n_out, n_in)) * scale / np.sqrt(n_in)).astype(np.float32), EXP)
                 return g
             sd = int(rng.integers(1 << 30))
-            w.tensor(b + "ffn_gate_exps.weight", gen_exps(FF, E, 3.0, sd), GGML_Q4_0, shape=(NE, FF, E))
-            w.tensor(b + "ffn_up_exps.weight", gen_exps(FF, E, 3.0, sd + 1), GGML_Q4_0, shape=(NE, FF, E))
-            w.tensor(b + "ffn_down_exps.weight", gen_exps(E, FF, 1.0, sd + 2), GGML_Q4_0, shape=(NE, E, FF))
+            w.tensor(b + "ffn_gate_exps.weight", gen_exps(FF, E, 3.0, sd), EXP, shape=(NE, FF, E))
+            w.tensor(b + "ffn_up_exps.weight", gen_exps(FF, E, 3.0, sd + 1), EXP, shape=(NE, FF, E))
+            w.tensor(b + "ffn_down_exps.weight", gen_exps(E, FF, 1.0, sd + 2), EXP, shape=(NE, E, FF))
         else:
-            w.tensor(b + "ffn_gate_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
-            w.tensor(b + "ffn_up_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), Q8)
-            w.tensor(b + "ffn_down_exps.weight", (rng.standard_normal((NE, E, FF)) / np.sqrt(FF)).astype(np.float32), Q8)
+            XQ = GGML_MXFP4 if uns else Q8
+            w.tensor(b + "ffn_gate_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), XQ)
+            w.tensor(b + "ffn_up_exps.weight", (rng.standard_normal((NE, FF, E)) * 3 / np.sqrt(E)).astype(np.float32), XQ)
+            w.tensor(b + "ffn_down_exps.weight", (rng.standard_normal((NE, E, FF)) / np.sqrt(FF)).astype(np.float32), XQ)
         w.tensor(b + "ffn_gate_shexp.weight", mat(FF * NSH, E, 3.0), Q8)
         w.tensor(b + "ffn_up_shexp.weight", mat(FF * NSH, E, 3.0), Q8)
         w.tensor(b + "ffn_down_shexp.weight", mat(E, FF * NSH), Q8)

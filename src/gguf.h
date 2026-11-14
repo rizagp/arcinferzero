@@ -21,6 +21,9 @@ enum GgmlType : uint32_t {
   GGML_Q8_K = 15, GGML_IQ2_XXS = 16, GGML_IQ2_XS = 17, GGML_IQ3_XXS = 18, GGML_IQ1_S = 19, GGML_IQ4_NL = 20,
   GGML_IQ3_S = 21, GGML_IQ2_S = 22, GGML_IQ4_XS = 23, GGML_I8 = 24, GGML_I16 = 25, GGML_I32 = 26, GGML_IQ1_M = 29,
   GGML_BF16 = 30, GGML_MXFP4 = 39,
+  // Unsloth's llama.cpp fork for DeepSeek-V4.1 (its Engram table): 32 E4M3 (fn) values sharing one E8M0 scale, 33
+  // bytes. Upstream ggml gives 43 to plain F8_E4M3 (1 byte a value, no scale), which no model this engine runs uses.
+  GGML_MXFP8 = 43,
   GGML_Q2_0 = 42,  // blocks of 64: f16 scale + 2-bit codes, value (q - 1) * d (Qwen3.8 Flash Next down projections)
 };
 
@@ -33,7 +36,7 @@ inline const char* ggml_type_name(uint32_t t) {
     case GGML_IQ4_NL: return "IQ4_NL"; case GGML_IQ4_XS: return "IQ4_XS"; case GGML_BF16: return "BF16";
     case GGML_IQ2_XXS: return "IQ2_XXS"; case GGML_IQ2_XS: return "IQ2_XS"; case GGML_IQ3_XXS: return "IQ3_XXS";
     case GGML_IQ1_S: return "IQ1_S"; case GGML_IQ3_S: return "IQ3_S"; case GGML_IQ2_S: return "IQ2_S"; case GGML_IQ1_M: return "IQ1_M";
-    case GGML_MXFP4: return "MXFP4"; case GGML_Q2_0: return "Q2_0"; default: return "?";
+    case GGML_MXFP4: return "MXFP4"; case GGML_MXFP8: return "MXFP8"; case GGML_Q2_0: return "Q2_0"; default: return "?";
   }
 }
 
@@ -64,6 +67,7 @@ inline void ggml_block_info(uint32_t t, int& blk, int& bytes) {
     case GGML_IQ1_S: blk = 256; bytes = 50; return;
     case GGML_IQ1_M: blk = 256; bytes = 56; return;
     case GGML_MXFP4: blk = 32; bytes = 17; return;
+    case GGML_MXFP8: blk = 32; bytes = 33; return;
     case GGML_Q2_0: blk = 64; bytes = 18; return;
     default: throw std::runtime_error("unsupported ggml type " + std::to_string(t));
   }

@@ -375,7 +375,7 @@
   // moe_rg's types: no per-block mins, not requantized by decode_w8 (IQ1_M: its own scale layout)
   static bool moe_rg_type(uint32_t t) {
     return t == GGML_IQ4_XS || t == GGML_IQ3_S || t == GGML_IQ3_XXS || t == GGML_IQ2_XXS || t == GGML_IQ2_XS ||
-           t == GGML_IQ2_S || t == GGML_Q6_K || t == GGML_Q3_K || t == GGML_IQ4_NL || t == GGML_Q2_0 ||
+           t == GGML_IQ2_S || t == GGML_Q6_K || t == GGML_Q3_K || t == GGML_IQ4_NL || t == GGML_Q2_0 || t == GGML_MXFP4 ||
            t == GGML_Q4_0 || t == GGML_Q8_0;
   }
   static bool moe_rg_layer_ok(const Layer& L) {

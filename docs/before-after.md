@@ -80,6 +80,15 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, MXFP4 experts and MXFP8 Engram rows (DeepSeek-V4.1-Flash UD-Q8_K_XL)** (src/quants.h,
+  kernels/decode.cl, decode_moe.cl). Speed: not measured (a new format; the real model needs ~600 GB of RAM).
+  Accuracy: the tiny `deepseek41` model with Unsloth's types (`tools/make_tiny_deepseek41.py --unsloth`, 100 random
+  tokens) against tools/ref_forward, which decodes the same bytes: every expert used (16 of 16) KL 0.0052 prompt /
+  0.0052 generation (max 0.028 / 0.023); 4 of 16 experts 0.070 / 0.062, where the same model in Q8_0 gives 0.084
+  (router near-ties, docs/deepseek41-spec.md). Expert cache at 19 % of the experts and no RAM tier: logits bit-identical
+  to the default run. The 4B, the 27B, Flash Next and the tiny `deepseek41` model in Q8_0: logits bit-identical to
+  release 2026.11.14.06.
+
 - **2026-11-14, the direct GPU-to-GPU sums from 0.8x the host link** (was 1.1x; zero/mgpu/engine_tp.h
   `choose_sums`). Measured by scenic6942 on two Pro B60s, Linux, PCIe 4.0 x8 each (issue #17), the 27B GSQ-RCO
   IQ3_S, the same build (release 2026.11.14.05) with `ARC_TP_P2P=0` (host memory, what the 1.1x rule chose: 14.1 GB/s

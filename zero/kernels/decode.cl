@@ -14,13 +14,15 @@
 #define TAB_IQ1S 4352
 #define TAB_KSIGNS 8448
 #define TAB_KVAL 8480
+#define TAB_KFP4 8484  // (MXFP4's 16 values, src/quants.h kvalues_mxfp4)
 
 #define Q4_0 2
 #define Q8_0 8
 #define IQ4_NL 20
 #define Q2_0 42
+#define MXFP4 39
 // per-32 float scales (decoded into the W8 GEMM's VARIANT 4 layout: one f32 per 32-block in the header)
-#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0)
+#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4)
 // header uints per superblock and lane: W8 (d, dmin, 16 scales, 16 mins) or, for PER32, the 8 f32 block scales in
 // the layout of the GEMM's native Q8_0 form (kernels/gemm.cl QTYPE 8), which reads the decoded weights directly
 #if PER32
@@ -74,6 +76,8 @@
 #define BB 144
 #elif QT == IQ4_NL
 #define BB 144  // (8 blocks of 32, as Q4_0)
+#elif QT == MXFP4
+#define BB 136  // (8 blocks of 32: 8 E8M0 scale bytes, then 8 x 16 nibble bytes)
 #elif QT == Q2_0
 #define BB 72  // (4 blocks of 64)
 #else
@@ -111,7 +115,12 @@ inline float f16(uint h) { return vload_half(0, (const __private half*)&h); }
 #elif QT == IQ4_XS || QT == IQ4_NL
 #define AUX_OFF TAB_KVAL
 #define AUX_N 4
+#elif QT == MXFP4
+#define AUX_OFF TAB_KFP4
+#define AUX_N 4
 #endif
+// an E8M0 scale's half, 2^(e - 128) (MXFP4: ggml_e8m0_to_fp32_half)
+inline float e8m0_half(uint e) { return as_float(e < 2 ? 0x00200000u << e : (e - 1) << 23); }
 inline uint grid4w(const uint* grid, uint idx) { return grid[idx]; }
 inline uint2 grid8w(const uint* grid, uint idx) { return (uint2)(grid[2 * idx], grid[2 * idx + 1]); }
 inline uint ksigns(const uint* aux, uint i) { return ((const uchar*)aux)[i]; }
@@ -240,6 +249,20 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
 #pragma unroll
     for (int k = 0; k < 4; ++k) {
       const uint b = rd32(p + 16 + 16 * ib + 4 * k);
+      w[k] = kv[b & 0xF] | ((uint)kv[(b >> 8) & 0xF] << 8) | ((uint)kv[(b >> 16) & 0xF] << 16) | ((uint)kv[(b >> 24) & 0xF] << 24);
+      w[4 + k] = kv[(b >> 4) & 0xF] | ((uint)kv[(b >> 12) & 0xF] << 8) | ((uint)kv[(b >> 20) & 0xF] << 16) |
+                 ((uint)kv[(b >> 28) & 0xF] << 24);
+    }
+  }
+#elif QT == MXFP4
+  {
+    // GPU form (src/quants.h gpu_raw_sb): 8 E8M0 scale bytes, then 16 nibble bytes per block; w = 2^(e - 128) kvalues[q]
+    d = e8m0_half(p[ib]);
+    sc0 = sc1 = 1;
+    const uchar* kv = (const uchar*)aux;
+#pragma unroll
+    for (int k = 0; k < 4; ++k) {
+      const uint b = rd32(p + 8 + 16 * ib + 4 * k);
       w[k] = kv[b & 0xF] | ((uint)kv[(b >> 8) & 0xF] << 8) | ((uint)kv[(b >> 16) & 0xF] << 16) | ((uint)kv[(b >> 24) & 0xF] << 24);
       w[4 + k] = kv[(b >> 4) & 0xF] | ((uint)kv[(b >> 12) & 0xF] << 8) | ((uint)kv[(b >> 20) & 0xF] << 16) |
                  ((uint)kv[(b >> 28) & 0xF] << 24);
@@ -910,7 +933,7 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
   }
 }
 
-#if QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || defined(GRID_OFF)
+#if QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || defined(GRID_OFF)
 // GEMVs that read the weights straight into registers (gemv_v: one token, gemv_mt_v: TB tokens): IQ4_XS, and Q6_K
 // for output heads. As gemv / gemv_mt, lane l handles 32-element block (l % 8) of superblock (sp + l / 8), the 16
 // lanes two contiguous superblocks; but each lane vector-loads its own bytes from global memory instead of the
@@ -921,12 +944,17 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
 // memory): E4B IQ4_XS matrices 44-65 -> 67-70 GB/s, Q6_K output heads 66-67 -> 72 GB/s; Q4_K / Q5_K matrices were
 // as fast or faster with gemv (their decoding is cheap and every lane would reload the shared header), so they
 // stay there. Q4_0 (Google's QAT Gemma 4) in its regrouped GPU form: one 16-byte vector load per block.
-#if QT == IQ4_XS || QT == IQ4_NL
+#if QT == IQ4_XS || QT == IQ4_NL || QT == MXFP4
 #define VB_TABLES 64
+#if QT == MXFP4
+#define VB_TAB TAB_KFP4
+#else
+#define VB_TAB TAB_KVAL
+#endif
 inline void vb_tables(__local uint* kt, __global const uint* tabs) {
   if (get_local_id(0) < 64) {
     const int t = get_local_id(0) / 16, v = get_local_id(0) % 16;
-    kt[t * 16 + v] = ((tabs[TAB_KVAL + v / 4] >> (8 * (v % 4))) & 0xFFu) << (8 * t);
+    kt[t * 16 + v] = ((tabs[VB_TAB + v / 4] >> (8 * (v % 4))) & 0xFFu) << (8 * t);
   }
   barrier(CLK_LOCAL_MEM_FENCE);
 }
@@ -1021,6 +1049,18 @@ inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint
 #elif QT == IQ4_NL
   const uint4 q = vload4(0, pu + 4 + 4 * ib);
   *d = f16(((__global const ushort*)p)[ib]);
+  *dmin = 0.0f;
+  *sc0 = *sc1 = 1;
+  *mn0 = *mn1 = 0;
+#pragma unroll
+  for (int k = 0; k < 4; ++k) {
+    const uint bk = k == 0 ? q.x : k == 1 ? q.y : k == 2 ? q.z : q.w;
+    w[k] = kt[bk & 15u] | kt[16 + ((bk >> 8) & 15u)] | kt[32 + ((bk >> 16) & 15u)] | kt[48 + ((bk >> 24) & 15u)];
+    w[4 + k] = kt[(bk >> 4) & 15u] | kt[16 + ((bk >> 12) & 15u)] | kt[32 + ((bk >> 20) & 15u)] | kt[48 + (bk >> 28)];
+  }
+#elif QT == MXFP4
+  const uint4 q = vload4(0, pu + 2 + 4 * ib);
+  *d = e8m0_half(p[ib]);
   *dmin = 0.0f;
   *sc0 = *sc1 = 1;
   *mn0 = *mn1 = 0;

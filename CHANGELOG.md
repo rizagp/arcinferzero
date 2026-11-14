@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-14: DeepSeek-V4.1-Flash in Unsloth's UD-Q8_K_XL types: MXFP4 experts, MXFP8 Engram (issue #4)
+
+- **MXFP4 weights** (ggml type 39: 32 E2M1 codes and one E8M0 scale): decoded on the GPU into the per-32 int8 form
+  the GEMMs read, exactly (the codes 0..12 times 2^(e - 128); src/quants.h, kernels/decode.cl, decode_moe.cl), so
+  routed experts in MXFP4 run on the MoE paths, the expert file and the expert cache as IQ4_NL ones do.
+- **MXFP8 rows** (type 43 of Unsloth's llama.cpp fork: 32 E4M3 codes and one E8M0 scale; upstream ggml's 43 is plain
+  F8_E4M3): decoded on the CPU, where the engine reads the Engram table's rows.
+- Unsloth's file (`unsloth/DeepSeek-V4.1-Flash-1017-GGUF`, UD-Q8_K_XL, 558 GB in 9 parts): experts MXFP4, every
+  other matrix BF16 (taken as Q8_0 at load, as before), the router F32, the Engram table MXFP8; the metadata keys as
+  the ISTA-DASLab files'. Checked on the tiny model with these types (`tools/make_tiny_deepseek41.py --unsloth`): KL
+  against tools/ref_forward 0.0052 prompt / 0.0052 generation with every expert used; with 4 of 16 experts 0.070
+  (the same model in Q8_0 0.084: the random router's near-ties); the expert cache at 19 % and no RAM tier gives the
+  same logits bit for bit. Every other model's logits identical to release 2026.11.14.06. Not run yet: the real model
+  (it needs a tester with ~600 GB of RAM).
+
 ## 2026-11-14: a split model takes the direct GPU-to-GPU sums at equal link speeds too (issue #17)
 
 - **Multi-GPU (`--gpus`):** the sums go straight from GPU to GPU when the slowest direct copy is at least 0.8x the
