@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-14: serverz keeps the startup model's context when it loads it again (PR #26, chumbleyjl)
+
+- A model started with an explicit `--ctx` (262,144 on chumbleyjl's B70) came back at its automatic context (131,072)
+  when it was loaded again: after `/v1/server/unload` and a request naming it, or when a failed switch to another
+  model restored it. Both paths set `--ctx auto` for every model; now only for models other than the startup file,
+  as the startup `--dflash` drafter already was (tools/server.cpp). Other models still choose their own context; a
+  startup `--ctx auto` stays automatic. No engine or kernel change. Checked on the B70 (Linux): 262,144 after both
+  paths, the same reply to the same request before and after.
+
 ## 2026-11-14: Q5_1 weights on the GPU (Flash Next UD-Q4_K_XL's down experts)
 
 - Unsloth's UD-Q4_K_XL Qwen3.8 Flash Next keeps its down experts in Q5_1, which the engine refused ("unexpected expert
