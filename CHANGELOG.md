@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-15: `runz --kl-ref` with `--feed-step` scores the right positions (issue #23, chumbleyjl)
+
+- With `--feed-step N` and a reference of every position, `runz` scored the last piece's rows against the
+  reference's first positions, then stopped at `logits_at: row 15 is not one of the 15 the last pass left`: the first
+  readable position was counted from 0, not from the last piece's start. Now it is, and a reference that covers
+  positions no longer readable says which ones are (`ARC_KL_FROM=N` with `ref_forward REF_ALL_FROM=N`); a reference
+  of the wrong size says so too (before: nothing printed). Tooling only: no engine change.
+
 ## 2026-11-15: the DeltaNet recurrence's L1 prefetch on by default on discrete cards (+1.4 % on a B70's 27B prompt)
 
 - `ARC_GDN_L1PF=2` is the default on discrete cards (`zero/xe2/engine_xe2.h` `xe2_gdn_l1pf`): a Pro B70's 27B 4K

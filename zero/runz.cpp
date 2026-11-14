@@ -1168,8 +1168,11 @@ static int run_main(int argc, char** argv) {
         fclose(fi);
       }
       // (ARC_KL_FROM=N: the reference holds positions N.. only; they must lie in the last chunk, which x_ holds)
+      // (kl_c0: the first position whose logits the last forward() left: the last call starts at rest0 (--feed-step),
+      //  and of its rows x_ holds the last chunk. It was the chunk's start counted from 0, so with --feed-step the rows
+      //  of the last piece were scored against the reference's first positions, then logits_at threw: issue #23)
       const size_t kl_from = getenv("ARC_KL_FROM") ? std::min<size_t>(atoi(getenv("ARC_KL_FROM")), toks.size() - 1) : 0,
-                   kl_c0 = (toks.size() - 1) / eng.max_chunk * eng.max_chunk;
+                   kl_c0 = rest0 + (toks.size() - rest0 - 1) / eng.max_chunk * eng.max_chunk;
       if (ref.size() == V) {
         printf("\nKL(ref || inferzero) = %.5f", kl_of(lg, ref.data()));
       } else if (ref.size() == V * (toks.size() - kl_from) && kl_from >= kl_c0) {
@@ -1223,6 +1226,13 @@ static int run_main(int argc, char** argv) {
         printf("\nlogits against the reference: relative L2 %.3f %%, worst cosine %.6f, top-5 overlap %.3f",
                100.0 * std::sqrt(d2 / r2), worst_cos, top5 / (double)n);
         std::copy(last.begin(), last.end(), const_cast<float*>(lg.data()));
+      } else if (ref.size() == V * (toks.size() - kl_from)) {
+        printf("\n--kl-ref: the reference starts at position %zu, but only positions %zu.. are left to read (the last "
+               "%s); give ARC_KL_FROM=%zu and a reference of those positions (ref_forward with REF_ALL_FROM=%zu)",
+               kl_from, kl_c0, feed_step > 0 ? "--feed-step piece's last chunk" : "prompt chunk", kl_c0, kl_c0);
+      } else {
+        printf("\n--kl-ref: %s holds %zu floats, not one position (%zu) or positions %zu..%zu (%zu)", kl_ref.c_str(),
+               ref.size(), V, kl_from, toks.size() - 1, V * (toks.size() - kl_from));
       }
     }
     eng.profile = prof_gen;
