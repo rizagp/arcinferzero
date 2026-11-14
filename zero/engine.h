@@ -16,6 +16,7 @@
 #include "../src/load_progress.h"
 #include <algorithm>
 #include <chrono>
+#include <climits>  // (INT_MAX in the parts below: GCC 16's libstdc++ no longer brings it in through other headers, issue #27)
 #include <deque>
 #include <filesystem>
 #include <functional>

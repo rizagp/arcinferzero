@@ -8,6 +8,7 @@
 // prompts and conversations).
 #include "../zero/engine.h"
 #include "../zero/gguf_pack.h"
+#include <climits>  // (INT_MAX here and in server_chat.h; GCC 16, issue #27)
 #define ARC_DATA "/zero/"  // (under app_dir(), src/app_dir.h)
 #define ARC_DATA_HELP "%%USERPROFILE%%\\.inferzero\\zero\\"  // (the same folder, as --help prints it)
 #include "../src/tokenizer.h"

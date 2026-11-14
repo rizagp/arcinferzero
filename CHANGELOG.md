@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-14: builds with GCC 16 (issue #27, joshdev-de)
+
+- GCC 16's libstdc++ no longer brings in `<climits>` through other headers, so `INT_MAX` was undeclared in
+  `zero/engine_drafters.h`, `zero/mgpu/engine_tp.h`, `tools/server.cpp` and `tools/server_chat.h` (Fedora 45).
+  `#include <climits>` in `zero/engine.h` and `tools/server.cpp`. No code change: Windows (MSVC) and g++ 13 build
+  as before.
+
 ## 2026-11-14: a Linux package and a terminal launcher
 
 - **`inferzero-<version>-linux-x64.tar.gz`** (`scripts/make-package-linux.sh`): the tracked files plus `bin/runz`,
