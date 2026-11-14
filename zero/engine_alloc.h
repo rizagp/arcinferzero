@@ -198,7 +198,7 @@
         stage_h_[r] = buf(stage_have_h_[r] = stage_need_h_[r]);
       }
     if (hp.ds41) alloc_ds41();
-    if ((!w8_resident || stream_) && !hp.ds41) {
+    if (lm_prompts() && !hp.ds41) {
       // residual stream of a layer-major segment (+ one chunk of padding rows)
       lm_seg_ = lm_seg_for(ctx);
       const size_t rows = (size_t)lm_seg_ + max_chunk;
@@ -226,4 +226,19 @@
   }
   // tokens per layer-major prompt segment (Flash Next: 8192, its residual rows are 4 streams wide)
   int lm_seg_for(int c) const { return std::max(max_chunk, std::min(c, hp.hc ? 8192 : 16384) / max_chunk * max_chunk); }
+  // Prompts longer than a chunk go layer by layer (forward_layer_major) with just-in-time or streamed weights, and,
+  // since 2026-11-14, on a dense split model with resident weights when ARC_TP_OVERLAP=1 (or ARC_TP_LM=1, layer by
+  // layer without the overlap, to measure the two apart): the overlap hides the sums behind the next chunk only in
+  // layer-major passes, so with resident weights (chunk by chunk) it never switched on (manoreken2's 4 B60s, the 27B
+  // at 64K: 1,169 tok/s without it, 1,172 with it, issue #4). The same kernels on the same chunks in the same order
+  // per layer (a chunk's attention and DeltaNet read the earlier chunks' KV and state of that layer, written before
+  // it either way): the logits stay the same bit for bit. MoE splits (their combine sums) and Flash Next's PLE stay
+  // as they were.
+  bool lm_resident_tp() const {
+    if (opt.tp_size <= 1 || !w8_resident || stream_ || hp.moe || hp.n_ple || hp.ds41) return false;
+    static const bool on = (getenv("ARC_TP_OVERLAP") && atoi(getenv("ARC_TP_OVERLAP")) != 0) ||
+                           (getenv("ARC_TP_LM") && atoi(getenv("ARC_TP_LM")) != 0);
+    return on;
+  }
+  bool lm_prompts() const { return !w8_resident || stream_ || lm_resident_tp(); }
 

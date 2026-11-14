@@ -480,7 +480,7 @@ __kernel void rd_block(__global const uint* p, __global uint* out, int per_item)
     if (hp.ple_layer >= 0) ple_sync();
     struct DflCommit { Engine& e; int p0; ~DflCommit() { if (e.dfl_) e.dfl_commit_prompt(p0); } } dfl_commit{*this, pos};
     if (dfl_) dfl_window(pos, n);
-    if ((!w8_resident || stream_) && n > max_chunk && !hp.n_ple && !hp.ds41) {
+    if (lm_prompts() && n > max_chunk && !hp.n_ple && !hp.ds41) {
       // layer-major in segments of up to lm_seg_ tokens (each matrix is decoded once per segment)
       prog_total_ = n;
       for (int s0 = 0; s0 < n; s0 += lm_seg_) {

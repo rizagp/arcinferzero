@@ -18,6 +18,22 @@
 - Logits bit-identical: H8 against the two-pass path, the old kernel and release 2026.11.14.09 (27B, 4B with
   `--budget 0`), the partial residency against none (27B, with and without H8), the default paths against .09.
 
+## 2026-11-14: DeepSeek-V4.1's context memory counted right; the split overlap with resident weights
+
+- **DeepSeek-V4.1's context memory** (`--ctx auto`, the memory lines): counted by its own caches (the KV-source
+  layers' compressed rows and index keys, the indexer's score buffers, zero/engine_ds41.h) instead of the Qwen
+  formula, which took 10.1 GiB at 262K for ~1.0 GiB real, so `--ctx auto` chose a context far below what fits. Tiny
+  model, 4K -> 131K: 0.625 GiB counted, 0.62 measured.
+- **A split model's expert cache leaves room for the sum buffers** its first pass allocates (~max_chunk x n_embd x
+  10 bytes; only a dry load counted them). DeepSeek over 4 B60s at 262K had its cache planned to 0.01 GiB of the
+  limit and ran out of device memory at the first prompt (manoreken2, issue #4). Whether this was the whole cause
+  is for his rerun to show: the GPU's own count still had ~2.2 GiB free at the error.
+- **`ARC_TP_OVERLAP=1` on a dense split model with resident weights**: its prompts longer than a chunk now go
+  layer by layer, so the sums overlap the next chunk's work; before, chunk-by-chunk passes left it nothing to do
+  (the 27B over 4 B60s at 64K: 1,169 tok/s off, 1,172 on). `ARC_TP_LM=1`: layer by layer without the overlap.
+  Logits bit-identical either way (4B over 2, `ARC_TP_SIM`, 3,584 tokens); the default and one GPU unchanged.
+  Speed: the B60s to measure.
+
 ## 2026-11-14: the XMX prompt GEMM prefetches its weights a chunk ahead by default on B60 / B70 (+16 % prompt)
 
 - `ARC_GEMM_XW_PF` now defaults to 1 (the weights) and `ARC_GEMM_XW_PFD` to 1 (one chunk ahead) on 16-lane XMX cards.

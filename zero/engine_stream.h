@@ -58,7 +58,12 @@
       // (ARC_TP_SIM: every shard on GPU 0, each with its part of the memory)
       if (tp_on() && getenv("ARC_TP_SIM") && atoi(getenv("ARC_TP_SIM")) != 0) limit /= opt.tp_size;
       // (+ kernels and host side, the server's state snapshots, and what the caller keeps for its encoders)
-      const uint64_t used = gpu_bytes + xc_->stage_bytes + (uint64_t)(0.1 * GiB) + snapshot_bytes() * std::max(opt.slots, 1) + opt.stream_reserve;
+      // (a split model: also the sum buffers its first pass allocates, tp_part_ f32, the f16 rows and the add buffer,
+      //  ~max_chunk x n_embd x 10 bytes; a dry load counted them (engine.h), a real one did not, and the cache took
+      //  their room: DeepSeek-V4.1 over 4 B60s, 262K, the cache planned to 0.01 GiB of the limit, the engine's memory
+      //  then 20.48 -> 20.53 GiB on the first prompt and a launch out of device memory, issue #4, 2026-11-14)
+      const uint64_t tp_sums = tp_on() ? (uint64_t)max_chunk * (uint64_t)hp.n_embd * 10 : 0;
+      const uint64_t used = gpu_bytes + xc_->stage_bytes + (uint64_t)(0.1 * GiB) + snapshot_bytes() * std::max(opt.slots, 1) + opt.stream_reserve + tp_sums;
       want = limit > used ? limit - used : 0;
       zlog::eprintf("inferzero: memory limit %.2f GiB (GPU share %.2f - %.1f for the driver), model + buffers %.2f GiB\n",
               limit / GiB, share / GiB, driver_slack() / GiB, used / GiB);
