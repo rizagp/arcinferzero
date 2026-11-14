@@ -18,7 +18,7 @@
 #
 # (No param() block on purpose: PowerShell would otherwise try to bind Pi's own options such as -p or --tools.)
 $ErrorActionPreference = "Stop"
-$shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "9b", "4b", "g12", "e4b", "g26", "g31")
+$shortcuts = @("27b", "35b", "35b-s", "35b-m", "35b-mtp", "flash", "flash-ar4", "9b", "4b", "g12", "e4b", "g26", "g31")
 # (a shortcut with a variant suffix: 27b-std, 9b-vision, 35b-mtp-std, g12-mtp, ...)
 function Test-Shortcut([string]$s) { $s = $s.ToLower(); return ($shortcuts | Where-Object { $s -match "^$([regex]::Escape($_))(-mtp|-vision|-std)?(-df|-nodf)?$" }).Count -gt 0 }
 $gpus = 0; $precise = ""; $model = ""; $pick = $false; $thinking = "low"; $noMtp = $false; $ctx = ""; $chunk = 0; $sessGb = $null; $vision = ""; $noStream = $false; $preserve = $false; $slots = 0; $npu = ""

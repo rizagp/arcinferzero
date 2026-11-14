@@ -1,5 +1,10 @@
 # RFC: AutoRound INT4 routed-expert hybrid on a B70
 
+> **Getting it (2026-11-14):** merged into main. `setup -Models flash-ar4` (or `scripts\get-autoround.ps1`)
+> downloads, imports and places the package where the server lists it; the model turns precise mode on by itself.
+> See [install.md](install.md#flash-next-with-intels-autoround-int4-experts-flash-ar4). The text below is the
+> pull request's report as submitted.
+
 The benchmark in this report uses an **AutoRound quantization**: Intel's
 calibrated symmetric INT4/group-128 routed experts, with all non-expert tensors,
 tokenizer and chat metadata retained from UD-Q4_K_XL. The separate Q4_0 MTP head

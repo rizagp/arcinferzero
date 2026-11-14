@@ -302,7 +302,9 @@ static std::vector<ModelInfo> scan_models() {
       try {
         const GgufFile g(cands[i].path.string());
         const std::string src = g.get_str("inferzero.source", "");
-        if (!src.empty()) packed.insert(lower(src));
+        // (an AutoRound package, tools/import_autoround_pack: other expert weights than its source, so another model;
+        //  the UD-Q4_K_XL it took the rest from stays listed)
+        if (!src.empty() && g.get_str("inferzero.autoround.model", "").empty()) packed.insert(lower(src));
       } catch (const std::exception&) {
       }
     }
@@ -323,6 +325,8 @@ static std::vector<ModelInfo> scan_models() {
       {"Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf", {"qwen3.8-flash-next-gsq-rco", "flash"}},
       // (its inferzero package keeps the id and the shortcut; with both on disk the GGUF's entry comes first)
       {"Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S.gguf", {"qwen3.8-flash-next-gsq-rco", "flash"}},
+      // (Intel's AutoRound INT4 experts in a package, setup -Models flash-ar4: precise mode on by itself)
+      {"Qwen3.8-Flash-Next-AutoRound-INT4.gguf", {"qwen3.8-flash-next-autoround", "flash-ar4"}},
       {"Qwen3.5-9B-UD-Q4_K_XL.gguf", {"qwen3.5-9b", "9b"}},
       {"Qwen3.5-4B-UD-Q4_K_XL.gguf", {"qwen3.5-4b", "4b"}},
       {"gemma-4-12b-it-qat-q4_0.gguf", {"gemma4-12b", "g12"}},

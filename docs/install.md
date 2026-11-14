@@ -39,21 +39,41 @@ From the sources: once the graphics driver, Visual Studio Build Tools (C++) and 
 
 ```powershell
 .\setup.cmd                    # checks, builds, asks which models to download, connects Pi
-.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 35b-gsq 9b 4b g12 g31 e4b, whisper asr: speech to text; all, none)
+.\setup.cmd -Models 27b,4b     # download these without asking (27b 35b 35b-gsq flash flash-ar4 9b 4b g12 g31 e4b, whisper asr: speech to text; all, none)
 .\setup.cmd -Tests             # also build the test tools and run the regression tests (needs the 4B)
 ```
 
 It checks the requirements (and says where to get what is missing), builds `bin\serverz.exe`, `runz.exe`,
 `clinfo.exe`, `transcribez.exe` and `zero_recorder.exe` when they are missing or older than the sources, checks the GPU (OpenCL 3.0, DP4a, sub-groups, GPU
 memory), downloads the chosen models into the Hugging Face cache without Python (Gemma with its drafter and image
-projector; `35b-gsq` is the one model converted with Python, then it installs `huggingface_hub` / `numpy` with pip
-after asking), and
+projector; `35b-gsq` and `flash-ar4` are converted with Python, then it installs `huggingface_hub` / `numpy` with
+pip after asking), and
 connects Pi (`zero-pi`, `zero-server`, Pi's model list with each model's context). Running it again only does what
 is missing: a model the server already finds (in the Hugging Face cache, as a package in
 `%USERPROFILE%\.inferzero\zero\models` or in a folder of `model-dirs.txt`) is not downloaded again. Double-clicked,
 its window stays open at the end so the result can be read; it ends with setup's exit code (1 when a step failed).
 Afterwards the easiest start is `zero-launcher.cmd` (see the package's steps above). Steps 1–10 describe the same by
 hand.
+
+### Flash Next with Intel's AutoRound INT4 experts (`flash-ar4`)
+
+[Intel/Qwen3.8-Flash-Next-W4A16-AutoRound](https://huggingface.co/Intel/Qwen3.8-Flash-Next-W4A16-AutoRound) is
+safetensors, not GGUF, so it is imported once (pull request #22). `setup -Models flash-ar4`, or on its own
+`powershell -File scripts\get-autoround.ps1`, does all of it:
+
+1. downloads the checkpoint's expert shards at the revision the importer checks (~78 GB; the shards without experts
+   are skipped) and the file list with every file's SHA-256 (`model-info.json`, from the Hugging Face API);
+2. imports the INT4 experts into an expert file (`tools\import_autoround_experts.py`, ~64 GB), checking every code
+   and scale;
+3. downloads Unsloth's UD-Q4_K_XL Flash Next (~111 GB) for everything but the experts, and its image projector;
+4. writes the package (`bin\import_autoround_pack.exe`, ~32 GB) next to the expert file in
+   `%USERPROFILE%\.inferzero\zero\models\Qwen3.8-Flash-Next-AutoRound-INT4\`, where the server lists it as
+   `qwen3.8-flash-next-autoround` (shortcut `flash-ar4`).
+
+Then it asks whether to delete the AutoRound shards, which inferzero no longer reads (`-DeleteSource`: without
+asking). Disk: ~285 GB at the most, ~207 GB kept with the shards deleted (the UD-Q4_K_XL stays: it is listed as a
+model of its own). The model runs in Flash Next's precise mode by itself, without `--precise`; other models are not
+affected. A run stopped halfway goes on where it stopped (the downloads resume; a finished expert file is kept).
 
 ## 1. Requirements
 
@@ -65,7 +85,7 @@ hand.
 | CPU | AVX2 (every Core Ultra has it; the build uses `/arch:AVX2`) | |
 | Graphics driver | Intel Arc & Iris Xe graphics driver (it contains the OpenCL runtime; nothing else to install) | 32.0.101.9033 |
 | Compiler | Visual Studio 2026 Build Tools with the **Desktop development with C++** workload (MSVC + Windows SDK); not for the ready-to-use package | VS Build Tools 18 |
-| Python | only for the `35b-gsq` conversion (Python 3.10 or newer with `huggingface_hub` and `numpy`); downloads use `curl.exe` | Python 3.14 |
+| Python | only for the `35b-gsq` conversion (Python 3.10 or newer with `huggingface_hub` and `numpy`) and the `flash-ar4` import (3.11 or newer, `numpy`); downloads use `curl.exe` | Python 3.14 |
 | Pi (optional) | the Pi coding agent, which runs on Node.js | Node.js 24 |
 | Disk | 3–13 GB per model | |
 

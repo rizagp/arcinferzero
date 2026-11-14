@@ -112,6 +112,30 @@ struct TpComm;
 class TpEngine;
 #include "mgpu/tp_mirror.h"  // (serverz --gpus: shard 0's calls run on every shard)
 
+// Flash Next's precise mode for the models that need it: one with AR4_128 experts (AutoRound INT4, pull request #22)
+// runs only in precise mode, so loading it turns the mode on (an FnPreciseHold, an Engine member) without
+// --precise / ARC_FN_PRECISE=1, and unloading it turns it off again: the server switching from such a model to the
+// GSQ Flash Next runs that one in its default (fast) mode as before. A count, not a flag: every shard of a split model
+// holds one, and a speech engine loaded beside the model holds none.
+inline std::atomic<int>& fn_precise_models() {
+  static std::atomic<int> n{0};
+  return n;
+}
+struct FnPreciseHold {
+  bool on = false;
+  explicit FnPreciseHold(const GgufFile& f) {
+    for (const auto& t : f.tensors)
+      if (t.type == GGML_AR4_128) { on = true; break; }
+    if (on && fn_precise_models().fetch_add(1) == 0)
+      zlog::eprintf("inferzero: AR4_128 (AutoRound INT4) experts: Flash Next's precise mode on for this model\n");
+  }
+  ~FnPreciseHold() {
+    if (on) fn_precise_models().fetch_sub(1);
+  }
+  FnPreciseHold(const FnPreciseHold&) = delete;
+  FnPreciseHold& operator=(const FnPreciseHold&) = delete;
+};
+
 class Engine {
   friend class VisionQwen3VL;
   friend class VisionGemma4V;

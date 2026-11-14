@@ -404,9 +404,11 @@
   // at 139 tok/s (the int8 inputs dominate). What is left is mostly the int8 attention (q / K / V per row: simulated
   // in the f32 reference, +0.11 % at layer 3 as in the engine; per-32 scales +0.06 %): float attention with the QSA
   // masks is the next step.
+  // (ARC_FN_PRECISE=1 / serverz --precise for every Flash Next; a model with AR4_128 experts turns it on for itself,
+  //  fn_precise_models)
   static bool fn_precise() {
-    static const bool on = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
-    return on;
+    static const bool env = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
+    return env || fn_precise_models().load(std::memory_order_relaxed) > 0;
   }
   static bool hc_bf16() { return fn_precise(); }
   // Q8 and F32 GGUF rows need not be exactly representable as BF16 after dequantization.

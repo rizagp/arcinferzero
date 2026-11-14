@@ -41,11 +41,13 @@
     // (4, the default since 20 Oct: the up projection's input as two int8 passes, the values then their rounding
     //  residual, accumulated: KL 0.0647 -> 0.0483 against the f32 reference, prompts 5-7 % slower; 0: one int8 pass)
     // (BF16 mixer rows: always the f32 GEMMs, mode 1)
-    static const int f32_mode = [] {
-      const int m = hc_bf16() ? 1 : getenv("ARC_HC_F32") ? atoi(getenv("ARC_HC_F32")) : 4;
+    // (the environment's mode read once; precise mode, which a loaded AR4 model turns on, asked every time)
+    static const int env_mode = [] {
+      const int m = getenv("ARC_HC_F32") ? atoi(getenv("ARC_HC_F32")) : 4;
       if (m < 0 || m > 4) zlog::eprintf("ARC_HC_F32=%d: not 0..4, the int8 mixers\n", m);
       return m < 0 || m > 4 ? 0 : m;
     }();
+    const int f32_mode = hc_bf16() ? 1 : env_mode;
     static bool hc_logged = false;
     if (!hc_logged) {
       hc_logged = true;

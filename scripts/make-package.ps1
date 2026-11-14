@@ -3,7 +3,8 @@
 # runtime vcomp140.dll next to them), bin\PREBUILT.txt tells setup to keep them, and models download with
 # scripts\hf-get.ps1. What it holds: every file git tracks (sources too, so setup -Rebuild still builds; nothing
 # untracked: no recordings, reports or models), plus bin\ with serverz, runz, transcribez, zero_recorder, clinfo,
-# mgpu_probe, event_probe, replay_probe, membw_probe, gpu_bench, xw_peak, ref_forward, gguf_dump.
+# mgpu_probe, event_probe, replay_probe, membw_probe, gpu_bench, xw_peak, ref_forward, gguf_dump, import_autoround_pack
+# (setup -Models flash-ar4).
 #   powershell -File scripts\make-package.ps1            build the exes, then the zip
 #   powershell -File scripts\make-package.ps1 -NoBuild   the exes as they are in bin\
 #   powershell -File scripts\make-package.ps1 -Release 2026.11.13.01   the release's number in the package's name
@@ -13,7 +14,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot
 Set-Location $root
 $exes = @("zero\serverz", "zero\runz", "zero\transcribez", "tools\zero_recorder", "tools\clinfo", "zero\mgpu_probe", "zero\event_probe", "bench\replay_probe", "bench\membw_probe", "bench\gpu_bench",
-          "bench\xw_peak", "tools\ref_forward", "tools\gguf_dump")  # (ref_forward: the f32 CPU reference of bench\website_bench.ps1's KL, 2026-11-09; gguf_dump: a model's keys and tensors, for reports; xw_peak: the 140T's XMX GEMM in TOPS, 2026-11-12)
+          "bench\xw_peak", "tools\ref_forward", "tools\gguf_dump", "tools\import_autoround_pack")  # (ref_forward: the f32 CPU reference of bench\website_bench.ps1's KL, 2026-11-09; gguf_dump: a model's keys and tensors, for reports; xw_peak: the 140T's XMX GEMM in TOPS, 2026-11-12)
 if (-not $NoBuild) {
   $srcs = @($exes | ForEach-Object { "$_.cpp" })  # (splatted from a variable: @(...) inline is one argument)
   & (Join-Path $root "build.ps1") @srcs

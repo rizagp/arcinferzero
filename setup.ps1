@@ -1,7 +1,7 @@
 # inferzero setup: everything needed on this laptop, in one command. Safe to run again: done steps are skipped.
 #
 #   setup                        check the requirements, build, choose models to download, connect Pi
-#   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq flash 9b 4b g12 g31 e4b whisper asr, all, none)
+#   setup -Models 27b,4b         download these without asking (27b 35b 35b-gsq flash flash-ar4 9b 4b g12 g31 e4b whisper asr, all, none)
 #   setup -Tests                 also build the test tools and run the regression tests (needs the 4B model)
 #   setup -NoPi                  leave Pi alone
 #   setup -Yes                   do not ask (pip installs, downloads of the models given with -Models)
@@ -27,7 +27,7 @@ setup: everything inferzero needs on this laptop, in one command. Safe to run ag
 
 USAGE
   setup                          check, build, ask which models to download, connect Pi
-  setup -Models 27b,4b           download these without asking: 27b 35b 35b-gsq flash 9b 4b g12 g31 e4b, whisper asr
+  setup -Models 27b,4b           download these without asking: 27b 35b 35b-gsq flash flash-ar4 9b 4b g12 g31 e4b, whisper asr
                                  (speech to text), or all / none
   setup -Tests                   also build the test tools and run the regression tests (needs the 4B model)
   setup -NoPi                    leave Pi alone
@@ -59,6 +59,8 @@ MODELS
   27b  Qwen3.8 27B (ISTA-DASLab GSQ-RCO IQ3_S, MTP)        12.1 GB
   35b  Qwen3.6 35B-A3B (Unsloth UD-IQ4_XS, MTP) + image projector  19.1 GB
   35b-gsq  Qwen3.6 35B-A3B 2-bit GSQ (converted with Python, no MTP)  12.6 GB download, 11.7 GB converted
+  flash-ar4  Qwen3.8 Flash Next with Intel's AutoRound INT4 experts (safetensors imported with Python 3.11;
+           precise mode by itself)  189 GB download, ~96 GB kept (the AutoRound shards deleted when you agree)
   9b   Qwen3.5 9B (Unsloth UD-Q4_K_XL, MTP)                6.1 GB
   4b   Qwen3.5 4B (Unsloth UD-Q4_K_XL, MTP)                3.0 GB
   g12  Gemma 4 12B (Google QAT Q4_0) + image projector + drafter  7.4 GB
@@ -201,6 +203,11 @@ $gsq35 = Join-Path $arcModels "Qwen3.6-35B-A3B-GSQ2-arc.gguf"
 # (35b-gsq: the 2-bit GSQ file, converted with Python: smaller, no MTP; setup's own step)
 $catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6 35B-A3B 2-bit GSQ (converted; needs Python)"
     repo = "ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ"; gb = 12.6; files = @() })
+# (flash-ar4: Intel's AutoRound INT4 experts for Flash Next, safetensors imported into a package, scripts\get-autoround.ps1;
+#  78 GB of expert shards + Unsloth's 111 GB UD-Q4_K_XL for the rest; disk at the most ~285 GB)
+. (Join-Path $root "scripts\get-autoround.ps1")
+$catalog += @([pscustomobject]@{ key = "flash-ar4"; name = "Qwen3.8 Flash Next, Intel AutoRound INT4 experts (imported; needs Python 3.11)"
+    repo = "Intel/Qwen3.8-Flash-Next-W4A16-AutoRound"; gb = 189; disk = 290; files = @() })
 $ErrorActionPreference = "Continue"
 $listed = @(& (Join-Path $bin "serverz.exe") --list-models 2>$null | ConvertFrom-Json | ForEach-Object { $_ })
 $ErrorActionPreference = "Stop"
@@ -209,6 +216,7 @@ $ErrorActionPreference = "Stop"
 function Present($m) {
   # (a file from before 2026-11-10, keyed arcinferzero.*, is listed as unsupported: converted again)
   if ($m.key -eq "35b-gsq") { return (Test-Path $gsq35) -and -not ($listed | Where-Object { $_.path -and $_.path -ieq $gsq35 -and -not $_.supported }) }
+  if ($m.key -eq "flash-ar4") { return Test-AutoRound }
   if (Test-ArcModel $m $hub) { return $true }
   $main = Split-Path $m.files[0] -Leaf
   $pkg = $main -replace "-00001-of-\d{5}\.gguf$", ".gguf"  # (a split model kept as a package: one GGUF, Flash Next)
@@ -221,15 +229,15 @@ foreach ($m in $catalog) {
 $want = @()
 if ($Models) {
   # (all: every model but Flash Next, 141 GB of disk: by name only)
-  if ($Models -contains "all") { $want = @($catalog | Where-Object { $_.key -ne "flash" } | ForEach-Object { $_.key }) }
+  if ($Models -contains "all") { $want = @($catalog | Where-Object { $_.key -notin "flash", "flash-ar4" } | ForEach-Object { $_.key }) }
   elseif ($Models -notcontains "none") {
-    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq flash 9b 4b g12 g31 e4b whisper asr, all or none" } }
+    foreach ($k in $Models) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq flash flash-ar4 9b 4b g12 g31 e4b whisper asr, all or none" } }
     $want = $Models
   }
 } elseif (-not $Yes) {
   $a = Read-Host "  Models to download (e.g. '27b 4b whisper asr'; Enter = none)"
   $want = @(($a -split "[,;\s]+") | Where-Object { $_ } | ForEach-Object { $_.ToLower() })
-  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq flash 9b 4b g12 g31 e4b whisper asr" } }
+  foreach ($k in $want) { if (-not ($catalog | Where-Object { $_.key -eq $k })) { Bad "unknown model '$k'" "use 27b 35b 35b-gsq flash flash-ar4 9b 4b g12 g31 e4b whisper asr" } }
 }
 $todo = @($catalog | Where-Object { $want -contains $_.key -and -not $_.have })
 if ($todo | Where-Object { $_.key -eq "35b-gsq" }) {  # its tokenizer comes from the 4B GGUF
@@ -257,7 +265,9 @@ if ($todo) {
   if (-not $Yes -and -not $Models) { if (-not (Ask ("Download {0} ({1:N1} GB)?" -f (($todo | ForEach-Object { $_.key }) -join ", "), $gb))) { $todo = @() } }
   foreach ($m in $todo) {
     Write-Host "  downloading $($m.key): $($m.repo)"
-    if ($m.key -eq "35b-gsq") {
+    if ($m.key -eq "flash-ar4") {
+      try { $null = Install-AutoRound -Yes:$Yes } catch { Bad "the AutoRound import failed" "$_" }
+    } elseif ($m.key -eq "35b-gsq") {
       if (-not (PyHas "numpy")) { Py -m pip install -U numpy; if ($LASTEXITCODE -ne 0) { Bad "pip install numpy failed" } }
       $snap = Py -c "import sys; from huggingface_hub import snapshot_download; print(snapshot_download(sys.argv[1]))" $m.repo
       if ($LASTEXITCODE -ne 0) { Bad "download failed: $($m.repo)" }

@@ -41,13 +41,14 @@ function Get-HfLocalPath([string]$snap, [string]$f) {
   return $full
 }
 # downloads $Files of $Repo (paths as the repository lists them, e.g. IQ3_S/x.gguf) and returns the snapshot folder
-function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)) {
+# (-Revision: a commit to take instead of the newest, e.g. the one tools\import_autoround_experts.py checks)
+function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub), [string]$Revision = "main") {
   $token = Get-HfToken
   $hdr = @{}
   if ($token) { $hdr.Authorization = "Bearer $token" }
   $api = "https://huggingface.co/api/models/$Repo"
   try {
-    $sha = (Invoke-RestMethod "$api/revision/main" -Headers $hdr -TimeoutSec 60).sha
+    $sha = (Invoke-RestMethod "$api/revision/$Revision" -Headers $hdr -TimeoutSec 60).sha
     # (Windows PowerShell hands a JSON array over as one item: unrolled into its entries)
     $tree = @(Invoke-RestMethod "$api/tree/$sha`?recursive=1" -Headers $hdr -TimeoutSec 60 | ForEach-Object { $_ })
   } catch {
@@ -60,7 +61,7 @@ function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)
   $base = Join-Path $Hub ("models--" + ($Repo -replace "/", "--"))
   $snap = Join-Path $base "snapshots\$sha"
   New-Item -ItemType Directory -Force $snap, (Join-Path $base "refs") | Out-Null
-  [IO.File]::WriteAllText((Join-Path $base "refs\main"), $sha)
+  if ($Revision -eq "main") { [IO.File]::WriteAllText((Join-Path $base "refs\main"), $sha) }
   $curl = Join-Path $env:SystemRoot "System32\curl.exe"
   if (-not (Test-Path $curl)) { $curl = "curl.exe" }
   # (a folder, "UD-Q8_K_XL" or "UD-Q8_K_XL/": every file in it, in name order, so a split model's parts come whole)

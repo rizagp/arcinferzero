@@ -430,6 +430,7 @@
     return ok;
   }
   GgufFile f_;
+  FnPreciseHold fn_precise_hold_{f_};  // (after f_: precise mode on while a model with AR4_128 experts is loaded)
   std::string path_;
   ClRt cl_;
   std::string gemm_src_, asr_src_;

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-11-14: Flash Next with Intel's AutoRound INT4 experts in one step (`setup -Models flash-ar4`)
+
+- **`scripts/get-autoround.ps1`** (and `setup -Models flash-ar4`): Intel's AutoRound checkpoint is safetensors, so it
+  is imported: the expert shards at the importer's pinned revision (~78 GB; the index says which hold experts, the
+  102 GB shard without any is skipped), `model-info.json` from the Hugging Face API (every file's size and SHA-256,
+  which the importer checks), `tools/import_autoround_experts.py`, Unsloth's UD-Q4_K_XL (~111 GB) for the rest and
+  its image projector, then `bin/import_autoround_pack.exe` (now in the release package) writes the package where
+  the server lists it. The AutoRound shards are deleted afterwards when the user agrees (`-DeleteSource`).
+  `scripts/hf-get.ps1`: `-Revision` for a pinned commit (refs/main left as it was).
+- **Precise mode by itself** (zero/engine.h `FnPreciseHold`): a model with AR4_128 experts turns Flash Next's precise
+  mode on while it is loaded, without `--precise`; unloaded, it is off again, so the GSQ Flash Next loaded after it
+  in the same server runs in its default mode. `engine_flashnext.h`'s mixer mode is no longer cached once per process.
+- **The model list** (tools/server_catalog.h): an AutoRound package keeps the UD-Q4_K_XL it was made from listed (it
+  is another model; a package made with `--pack` still hides its source); its alias `qwen3.8-flash-next-autoround`,
+  shortcut `flash-ar4` (zero-pi too). Tested with metadata-only GGUFs in a temporary data folder against release
+  2026.11.14.10, which hid the UD-Q4_K_XL.
+- Checked here: the pinned download and `model-info.json` against the API, the importer's checks on them, the shard
+  list from the real index (15 files), the scripts parse. Not run here: the full download and import (~290 GB of
+  disk); to be run by a tester.
+
 ## 2026-11-14: the per-type lists in one place; the AutoRound files tidied
 
 - **One list per kind of type** instead of a copy in every place that needs it (adding MXFP4, MXFP8 and AR4_128 meant
