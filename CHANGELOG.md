@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-14: check AutoRound package and expert revision fingerprints
+
+- A package with AR4_128 tensors must have a full hexadecimal checkpoint SHA in `inferzero.autoround.revision`.
+  Its first 64 bits must match the expert-file v1 fingerprint. The engine and CPU reference now reject a mismatch
+  before using the expert weights; ordinary packages keep their existing fingerprint policy.
+- The v1 layout is unchanged. Its fingerprint is only a revision prefix, not a full-SHA or payload integrity check.
+- Model-free tests cover matching and mismatching metadata/headers, malformed revisions, truncated headers and
+  legacy packages. Before/after loader and matching-model checks are in `docs/before-after.md`.
+
 ## 2026-11-14: Flash Next with Intel's AutoRound INT4 experts in one step (`setup -Models flash-ar4`)
 
 - **`scripts/get-autoround.ps1`** (and `setup -Models flash-ar4`): Intel's AutoRound checkpoint is safetensors, so it

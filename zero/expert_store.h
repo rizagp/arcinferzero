@@ -10,6 +10,7 @@
 #include <atomic>
 #include "../src/app_dir.h"
 #include "../src/gguf.h"
+#include "../src/autoround_revision.h"
 #include "../src/load_progress.h"
 #include "../src/quants.h"
 #include <cctype>
@@ -217,7 +218,7 @@ struct ExpertStore {
       }
       path = fixed_path;
     }
-    if (!valid(fp, package)) {
+    if (!valid(fp, package, package ? &f : nullptr)) {
       if (package)
         throw std::runtime_error("the package's expert file is missing or does not match: " + path +
                                  " (make the package again from the original GGUF: serverz --pack <gguf>)");
@@ -384,7 +385,7 @@ struct ExpertStore {
     uint32_t magic, version;
     uint64_t fingerprint, layers, experts, bytes;
   };
-  bool valid(uint64_t fp, bool any_fp = false) {
+  bool valid(uint64_t fp, bool any_fp = false, const GgufFile* package = nullptr) {
     std::error_code ec;
     if (!std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) != file_bytes) return false;
     FILE* f = fopen(path.c_str(), "rb");
@@ -398,6 +399,7 @@ struct ExpertStore {
       same = fread(&li, sizeof li, 1, f) == 1 && memcmp(&li, &layers[l], sizeof li) == 0;
     }
     fclose(f);
+    if (ok && package) check_autoround_expert_revision(*package, h.fingerprint);
     return same;
   }
   void build(const GgufFile& f, const std::vector<std::string>& prefixes, uint64_t fp) {

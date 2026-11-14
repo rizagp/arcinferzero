@@ -16,6 +16,17 @@ character. "Bit-identical" below means exactly that, not "close". Changes that a
 
 ## Where it stands
 
+### 2026-11-14: AutoRound revision fingerprint validation (B70 / Linux)
+
+| Check | Before (`7ea1d32` plus PR #24 Linux compatibility fixes) | After | Scope |
+|---|---|---|---|
+| Same-layout synthetic AR4 package, different expert-header revision fingerprint | Accepted silently | Rejected with a revision-mismatch error | Actual expert-store load gate, no GPU or model weights |
+| Correct AutoRound package, coding (31) and workflow (209) last-prompt dumps | Baseline vectors recorded | Both vectors bit-identical | Metadata guard only; no kernels, dispatch or quantization changes |
+| Model-free policy and load checks | No revision-consistency check | 23 checks pass; ASan/UBSan pass | Bad/missing revision, header mismatch/truncation, uppercase hex, legacy behavior, v1 64-bit limitation |
+
+The valid matching package uses Intel's calibrated AutoRound INT4 routed experts with UD-Q4_K_XL non-expert
+weights. This is not a cross-quantization comparison or a speedup claim. Windows/iGPU kernels are unchanged.
+
 (Updated 2026-10-25; each row's date and measurement are in the rows below.)
 
 | Model | Prompt | Generation | Accuracy |
