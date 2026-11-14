@@ -1,3 +1,4 @@
+# bench/b60_sweep.py is the same script in Python, the one to use on Linux (and on Windows too); the two must stay the same.
 # Sweeps the prompt GEMM's settings on a discrete Arc card (made for the Pro B60, issue #4) around the two best paths
 # so far: the default (XMX with 2D loads and their prefetch: 764 tok/s on the 27B, 4K prompt) and H8 (ARC_H8=1,
 # Hadamard-rotated int8 with one scale per column and token: 918 tok/s). Each setting is changed alone from each base,

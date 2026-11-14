@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-15: the GPU sweeps in Python, for Linux and Windows alike (issue #27)
+
+- `bench/b60_sweep.py` and `bench/decode_try.py`: the same runs, order, variables, best-of and 3 % rules, KL and
+  token checks and printed output as the `.ps1` versions, standard library only (`bin/runz` on Linux,
+  `bin/runz.exe` on Windows). Linux owners of discrete cards could not run the `.ps1` sweeps (joshdev-de asked for
+  one script for both systems). The `.ps1` files stay, with a line that the two must stay the same. Checked:
+  `decode_try.py` on the laptop's 4B, every row parsed as the `.ps1` prints it.
+
 ## 2026-11-15: the DeltaNet recurrence's loads further ahead, opt-in (`ARC_GDN_PF`, `ARC_GDN_L1PF`; the B70)
 
 - A B70's 4K prompt on the 27B spent 292 ms in `gdn_recur`, as a B60 did (289 ms), with 60 % more Xe-cores (issue
