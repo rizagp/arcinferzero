@@ -193,7 +193,8 @@ struct XCache {
     try { join(); } catch (const std::exception&) {}  // (a failed prefetch: its experts are dropped, nothing to report)
     try { save_state(); } catch (const std::exception&) {}  // (a destructor must not throw: no state saved then)
     if (trace_) { fclose(trace_); trace_ = nullptr; }
-    if (zrt::oom_hook && active() == this) { zrt::oom_hook = nullptr; active() = nullptr; }
+    // (the hook stays installed: with no cache left it finds none and returns false, as no hook did)
+    if (active() == this) active() = nullptr;
     on_gpu_drop(this);
     zrt::sync();
     for (Pool& P : pools) {
@@ -234,14 +235,24 @@ struct XCache {
     for (auto& e : gpus())
       if (e.second == x) e.second = nullptr;
   }
-  static bool shrink_this_gpu() {  // (the hook: called on the thread whose launch or allocation failed, zrt::D())
+  // The one zrt::oom_hook, installed once (std::call_once: a split's shards load on threads of their own, together
+  // with ARC_TP_PARALLEL_LOAD=1) and never cleared: called on the thread whose launch or allocation failed, it shrinks
+  // the cache registered for that thread's GPU (zrt::D(), a split's shard), else the one-GPU engine's (active()).
+  // (Before 2026-11-14 the one-GPU engine set and cleared the hook itself, and a cache destroyed later than another
+  // engine's registration could clear the hook under it; DeepSeek's review of release 2026.11.14.11.)
+  static bool shrink_this_gpu() {
     XCache* x = nullptr;
     {
       std::lock_guard<std::mutex> g(gpus_mu());
       for (auto& e : gpus())
         if (e.first == &zrt::D()) x = e.second;
     }
+    if (!x) x = active();
     return x && x->shrink();
+  }
+  static void install_hook() {
+    static std::once_flag once;
+    std::call_once(once, [] { zrt::oom_hook = [] { return shrink_this_gpu(); }; });
   }
   // the layer of the last ensure() and the experts it set: kernels of that layer may still be launched
   int last_l = -1;
@@ -277,7 +288,10 @@ struct XCache {
     if (last_seen.size() != (size_t)NE || last_seen[0] != 2) last_seen.assign(NE, 2);  // (2: all, set by this)
     hits += used;
   }
+  bool in_shrink_ = false;  // (shrink's own copies out of memory: imm() -> flush -> the hook -> not again)
   bool shrink() {
+    if (in_shrink_) return false;
+    struct Guard { bool& b; explicit Guard(bool& x) : b(x) { b = true; } ~Guard() { b = false; } } guard(in_shrink_);
     // (called from a kernel launch that ran out of memory: a failed prefetch's experts are dropped by join(), its
     // error is not thrown from here; the layer's ensure() reads them again and reports a lasting read error itself)
     all_in_ok = false;

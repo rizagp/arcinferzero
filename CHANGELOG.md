@@ -8,6 +8,12 @@
   the cache planned to 0.01 GiB of the limit; issue #4). Tested with `ARC_FAKE_OOM=400`: Flash Next over 2 GPUs
   (`ARC_TP_SIM`), both caches 5.99 -> 5.00 GiB, the run finished and its logits are bit-identical to the run without
   it. One GPU unchanged.
+- **The hook after a review by DeepSeek-V4.1 (through Pi):** one hook installed once (`std::call_once`) and never
+  cleared, which finds the cache of the failing thread's GPU (a destroyed cache could clear another engine's hook;
+  shards loading together wrote it at once); an ARC_BATCH flush of another GPU's list no longer shrinks from the
+  wrong thread; `shrink()` does not re-enter when its own copies run out of memory. `ARC_FAKE_OOM=400`, Flash Next:
+  split over 2 and one GPU, the caches shrink, logits bit-identical to the runs without it. CI builds and runs
+  `tests/test_autoround_blocks.cpp`.
 - **AR4_128 experts on iGPUs** (zero/engine_stream.h): the iGPU refusal removed (Xe-LPG / Xe-LPG+ / Xe3 have strong
   int4 DP4a paths). On the laptop's Xe-LPG: `tests/test_autoround_decode` on synthetic AR4 data (4.9 M weights),
   GPU decode bit-identical to the CPU decoder; the expert kernels (`moe_gateup_q`, `moe_down_q`, `moe_rg`,

@@ -73,13 +73,11 @@
     want = std::max<uint64_t>(want, xc_->min_bytes());
     xc_->set_cache(want);
     gpu_bytes += xc_->cache_bytes;
-    if (!tp_on()) {  // (one process-wide hook: a split model's shards are on GPUs of their own)
-      XCache::active() = xc_.get();
-      zrt::oom_hook = [] { return XCache::active() && XCache::active()->shrink(); };
-    } else {  // (a split: the cache of the GPU that ran out, XCache::shrink_this_gpu)
-      XCache::on_gpu(&zrt::D(), xc_.get());
-      zrt::oom_hook = [] { return XCache::shrink_this_gpu(); };
-    }
+    // (out of device memory shrinks this cache: XCache::shrink_this_gpu; a split model's shards are on GPUs of
+    //  their own, each cache registered with its shard's GPU)
+    if (!tp_on()) XCache::active() = xc_.get();
+    else XCache::on_gpu(&zrt::D(), xc_.get());
+    XCache::install_hook();
     // fill the cache before the first request: the experts the last run had cached (or the first of every layer)
     // (multi-GPU: one state per GPU of the split, for its experts)
     xc_->state_path = xc_->st.path.substr(0, xc_->st.path.size() - 8) +

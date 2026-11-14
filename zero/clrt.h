@@ -222,7 +222,9 @@ inline void flush(Dev& d) {
   ZE_CHECK(batch_fns().close(l));
   Dev::RecList& r = d.rec_pool[d.rec_cur];
   ze_result_t e = batch_fns().append(d.cl, 1, &l, r.done, 0, nullptr);
-  for (int i = 0; e == (ze_result_t)0x70000003 && i < 8 && oom_hook && oom_hook(); ++i)  // (out of device memory)
+  // (out of device memory; the hook frees on the calling thread's GPU, zrt::D(): only when d is that GPU, as
+  //  clReleaseMemObject can flush another GPU's list, whose shard thread may be using its cache)
+  for (int i = 0; e == (ze_result_t)0x70000003 && i < 8 && &d == &D() && oom_hook && oom_hook(); ++i)
     e = batch_fns().append(d.cl, 1, &l, r.done, 0, nullptr);
   ZE_CHECK(e);
   r.used = true;
