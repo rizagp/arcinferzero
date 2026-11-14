@@ -319,9 +319,9 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
       <div><div class="eb">Core Ultra 5 125H</div><b>851<small>tok/s</small></b><p>Qwen3.6 35B-A3B, 8K prompt, experts streamed from the SSD. A 131K-token context read in 6.7 minutes.</p></div>
       <div><div class="eb">Core Ultra 9 285H</div><b>330<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt on the Arc 140T's XMX. Flash Next generates 26 tok/s there with DFlash2.</p></div>
       <div><div class="eb">1× Arc Pro B60</div><b>1,522<small>tok/s</small></b><p>Qwen3.8 27B, 4K prompt, with the weight prefetch that is on by default. The 35B reads 3,536 tok/s and generates 82 tok/s, 112 with MTP.</p></div>
-      <div><div class="eb">4× Arc Pro B60</div><b>2,152<small>tok/s</small></b><p>Qwen3.6 35B-A3B, a 64K-token prompt, one model split over four cards. 1,267 at 131K, 700 at 262K.</p></div>
+      <div><div class="eb">4× Arc Pro B60</div><b>4,264<small>tok/s · 4K</small></b><b style="margin-top:4px">2,152<small>tok/s · 64K</small></b><p>Qwen3.6 35B-A3B, one model split over four cards: a 4K and a 64K-token prompt. 1,267 at 131K, 700 at 262K.</p></div>
     </div>
-    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, commit 281b083, 2026-11-09. 285H: a user on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a>, release 2026.11.13.11. B60s: a user on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, releases 2026.11.14.09 (one card) and 2026.11.14.05 (four cards), 2026-11-14.</p>
+    <p class="src">Laptop: <code>bench/website_bench.ps1</code>, commit 281b083, 2026-11-09. 285H: a user on <a href="https://github.com/rizagp/inferzero/issues/5">issue #5</a>, release 2026.11.13.11. B60s: a user on <a href="https://github.com/rizagp/inferzero/issues/4">issue #4</a>, release 2026.11.14.09 (one card, 2026-11-14); four cards: the 4K prompt on 2026-11-02, the long prompts on release 2026.11.14.05 (2026-11-14).</p>
   </div>
 </section>
 
