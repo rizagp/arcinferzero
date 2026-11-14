@@ -71,7 +71,7 @@ builds everything, downloads the models you pick and connects the [Pi](https://p
 
 On the laptop (Core Ultra 5 125H, 32 GB, Windows 11; `bench/website_bench.ps1`, 2026-11-09, the 27B's 131K row and
 Gemma's KL again on 2026-11-10). Prompt in tok/s with the wait for the first token; generation in tok/s for 256
-tokens, plain and with the model's drafters:
+tokens, plain and with the model's drafters; KL on 480 tokens of USAGE.md:
 
 | Model | 8K prompt | 32K prompt | 131K prompt | Generation | With drafting | KL vs f32 |
 |---|---|---|---|---|---|---|
@@ -128,7 +128,7 @@ engines the prompt GEMMs run on them after a start-up check against the DP4a ker
 Arc B-series cards (Xe2: B580, Pro B60, Pro B70) run the same engine, with switches of their own in `zero/xe2/` that
 the iGPUs never take. Measured by users (Qwen3.8 27B GSQ-RCO IQ3_S unless named):
 - **One Pro B60** ([issue #4](https://github.com/rizagp/inferzero/issues/4)): 4K prompt 1,522 tok/s (release
-  2026.11.14.09, which prefetches the weights by default; 1,322 before), generation 23.3 tok/s, 51.6 with MTP
+  2026.11.14.09, which prefetches the weights by default; 1,322 before), generation 23.3 tok/s (2026.11.14.09), 51.6 with MTP
   (2026.11.13.11). Qwen3.6 35B-A3B: 4K prompt 3,536 tok/s (2026.11.14.09), generation 82.4 tok/s, 111.9 with MTP
   (2026.11.13.11). The switches still off by default (`ARC_X16`, `ARC_GV_IQ3S`, `ARC_H8_NORM`, H8 on MoE models,
   `--chunk 8192`) were measured there on 2026-11-14 and none is faster: [docs/xe2-tuning.md](docs/xe2-tuning.md).

@@ -143,7 +143,7 @@ LAUNCHER OPTIONS
   --npu on|off, -Npu             the NPU (Intel AI Boost) computes part of each prompt chunk next to the GPU
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %; other models stay off). Kept when you switch
                                  models (/model, zero-pi on another model) and on a restart; off after zero-server stop
-  --precise, -Precise            Qwen3.8 Flash Next's precise mode: KL 0.0186 -> 0.0127 at 3.5K tokens (under the
+  --precise, -Precise            Qwen3.8 Flash Next's precise mode: KL 0.0105 -> 0.0060 at 3.5K tokens (under the
                                  0.015 limit), prompts about half as fast; kept like --npu (--no-precise: off)
   --help, -h, -?, /?, help       the short help;  --help-all: this text
 

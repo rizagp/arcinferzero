@@ -11,7 +11,7 @@
 #      (shortcut flash-ar4; precise mode turns on by itself for it).
 # Afterwards the AutoRound shards are no longer needed: deleted when you agree at the prompt (-DeleteSource: without
 # asking; -Yes alone keeps them). The UD-Q4_K_XL stays (its own model). Disk: ~78 GB of shards + 64 GB expert file +
-# 111 GB UD-Q4_K_XL + 32 GB package = ~285 GB at the most, ~207 GB once the shards are deleted.
+# 111 GB UD-Q4_K_XL + 32 GB package = ~290 GB at the most, ~207 GB once the shards are deleted.
 # The steps are Install-AutoRound in scripts\autoround.ps1, which setup.ps1 dot-sources too. This file is the command
 # only: dot-sourced, its param block would set the caller's own $DeleteSource / $Yes (dot-source autoround.ps1).
 param([switch]$DeleteSource, [switch]$Yes)

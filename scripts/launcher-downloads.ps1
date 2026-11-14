@@ -267,7 +267,8 @@ function Show-Downloads {
         $m = $ArcModels[$i]
         if (Test-ArcHave $m $hub) { continue }
         $tok += $m.key; $total += $m.gb * 1e9; $disk += $(if ($m.disk) { $m.disk } else { $m.gb })
-        foreach ($rp in @($m.repo, $m.drafter.repo, $m.extra.repo)) { if ($rp) { $dirs += Join-Path $hub ("models--" + ($rp -replace "/", "--")) } }
+        foreach ($rp in @($m.repo, $m.drafter.repo, $m.extra.repo) + @($m.more_repos)) { if ($rp) { $dirs += Join-Path $hub ("models--" + ($rp -replace "/", "--")) } }
+        if ($m.install -eq "autoround") { $dirs += Get-AutoRoundDir }  # (its expert file and package count as they are written)
       }
       $paths = @($st.hf | ForEach-Object { $_.path })
       $want = @()

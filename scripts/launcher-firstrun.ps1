@@ -53,7 +53,7 @@ function Show-GetModels([bool]$first) {
   $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
   $hub = Get-HfHub
   $drive = Get-PSDrive ((Split-Path $hub -Qualifier).TrimEnd(":")) -ErrorAction SilentlyContinue
-  $chat = @($ArcModels | Where-Object { -not $_.speech })
+  $chat = @($ArcModels | Where-Object { -not $_.speech -and -not $_.install })  # (flash-ar4: imported; Downloads / setup)
   $speech = @($ArcModels | Where-Object { $_.speech })
   $rec = if ($ramGb -ge 30) { "35b" } else { "4b" }
 

@@ -435,7 +435,7 @@ Options for start / restart:
                                  (Qwen3.8 27B +15 %, Gemma 4 12B +10 %, 0.4 GB of RAM; other models stay off). Kept when
                                  the model changes (zero-pi, Pi's /model) and on a restart; off again after stop
   -Precise / -NoPrecise          Qwen3.8 Flash Next's precise mode (BF16 hyper-connection rows and router, two int8
-                                 passes everywhere): KL 0.0186 -> 0.0127 at 3.5K tokens (under the 0.015 limit),
+                                 passes everywhere): KL 0.0105 -> 0.0060 at 3.5K tokens (under the 0.015 limit),
                                  prompts about half as fast; other models are unchanged. Kept like -Npu
   -Whisper auto|on|off|<folder>  speech to text at /v1/audio/transcriptions (OpenAI's API) and the Transcripts tab:
                                  Qwen3-ASR (default), Gemma 4 E4B or Whisper large-v3 (turbo when large-v3 is not

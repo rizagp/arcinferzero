@@ -503,11 +503,15 @@ function Fill-Defaults {
   $draftBox.Enabled = $noMtpChk.Enabled = [bool]($m -and $m.mtp)
   $imgMinBox.Enabled = $imgMaxBox.Enabled = $visionBox.Enabled = [bool]($m -and $m.vision)
   $noStreamChk.Enabled = [bool]($m -and $m.moe)
-  # (only Flash Next has a precise mode; an AutoRound package runs only in it, so the box shows it on and stays off
-  #  limits)
+  # (only Flash Next has a precise mode; an AutoRound package runs only in it: the box shows it on and is disabled.
+  #  Set as filling, not as an edit: its change handler took it for the user's choice, and every model picked after
+  #  it started with -Precise; audit 2026-11-14)
   $preciseOnly = [bool]($m -and $m.precise_only)
   $preciseChk.Enabled = [bool]($m -and $m.arch -eq "qwen4exp") -and -not $preciseOnly
-  if ($preciseOnly) { $preciseChk.Checked = $true }
+  if ($preciseOnly) {
+    $script:filling = $true
+    try { $preciseChk.Checked = $true } finally { $script:filling = $false }
+  }
   Update-Speech
   Update-Fit
 }

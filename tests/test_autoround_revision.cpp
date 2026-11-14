@@ -59,6 +59,9 @@ int main() {
   // Exercise the actual expert-store load gate too, with an empty synthetic v1 file (no model weights).
   const auto experts = std::filesystem::path(path.string() + ".experts");
   Cleanup expert_cleanup{experts};
+  // (open_or_build's place() makes the package's folder in the data directory: gone at the end too)
+  struct DirCleanup { std::filesystem::path p; ~DirCleanup() { std::error_code ec; std::filesystem::remove(p, ec); } }
+      dir_cleanup{std::filesystem::path(app_dir()) / "zero" / "models" / path.stem()};
   unsigned char header[4096] = {};
   const uint32_t magic[2] = {ExpertStore::kMagic, ExpertStore::kVersion};
   const uint64_t fields[4] = {fp, 0, 1, sizeof header};

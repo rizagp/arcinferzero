@@ -237,7 +237,11 @@ class AsyncFile {
     while (got < n) {
       // (EFAULT: Level Zero host memory the CPU can write but O_DIRECT cannot pin, on some Linux drivers: read
       //  again through a 4 KB-aligned buffer of this slot, the file still unbuffered; pull request #24, a B70)
-      if (stage_[s] && stage_bytes_[s] < n) free(stage_[s]), stage_[s] = nullptr, stage_bytes_[s] = 0;
+      if (stage_[s] && stage_bytes_[s] < n) {  // (a longer read than the slot's buffer: a new one at the fault below)
+        free(stage_[s]);
+        stage_[s] = nullptr;
+        stage_bytes_[s] = 0;
+      }
       const ssize_t r = pread(fd_, stage_[s] ? (char*)stage_[s] + got : (char*)dst + got,
                               n - got, (off_t)(off + got));
       if (r < 0) {

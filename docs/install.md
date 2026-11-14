@@ -71,7 +71,7 @@ safetensors, not GGUF, so it is imported once (pull request #22). `setup -Models
    `qwen3.8-flash-next-autoround` (shortcut `flash-ar4`).
 
 Then it asks whether to delete the AutoRound shards, which inferzero no longer reads (`-DeleteSource`: without
-asking). Disk: ~285 GB at the most, ~207 GB kept with the shards deleted (the UD-Q4_K_XL stays: it is listed as a
+asking). Disk: ~290 GB at the most, ~207 GB kept with the shards deleted (the UD-Q4_K_XL stays: it is listed as a
 model of its own). The model runs in Flash Next's precise mode by itself, without `--precise`; other models are not
 affected. A run stopped halfway goes on where it stopped (the downloads resume; a finished expert file is kept).
 

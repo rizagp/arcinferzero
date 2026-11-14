@@ -1053,7 +1053,7 @@ class TpEngine {
     };
     if (!w_.empty() && !fault) {  // (after a failure too: the GPUs that answer get their memory back, for a load again)
       // (the shards taken out here, so a free that is given up on touches nothing of this TpEngine when it ends; one
-      //  limit for the frees, not the 10 s after a failure that wait_done gives passes, nor none: a free after a
+      //  limit for all the frees, not the 10 s after a failure that wait_done gives passes, nor none: a free after a
       //  failure took longer than 10 s and its thread was left on a TpEngine then freed, or a GPU that stopped while
       //  freeing hung the unload for good. Audit 2026-11-14)
       std::vector<int> made;
@@ -1071,11 +1071,17 @@ class TpEngine {
 #else
           // (Linux: one shard at a time, each still on its own thread: Intel's Linux runtime faulted while two
           //  shards freed their kernels and modules at once, B70 with ARC_TP_SIM, pull request #24 by chumbleyjl.
-          //  A free given up on does not keep the others from theirs)
+          //  One deadline for all of them; after a free given up on, the shards left are left too, as its thread
+          //  may still be freeing and a second free at the same time is what faulted)
+          const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(free_limit_s_);
           for (int r : made) {
+            const double left = std::chrono::duration<double>(until - std::chrono::steady_clock::now()).count();
+            if (left <= 0) break;
+            free_limit_s_ = left;
             try {
               run_on({r}, [raw](int q) { delete raw[q]; }, true, false);
             } catch (...) {
+              break;
             }
           }
 #endif

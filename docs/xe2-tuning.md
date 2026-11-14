@@ -83,11 +83,11 @@ Measured by manoreken2 (issue #4), the newest release that ran each:
 
 | | B60 | Notes |
 |---|---:|---|
-| Prompt, 4K | 1,322 tok/s (release 2026.11.14.05); 1,529 with `ARC_GEMM_XW_PF=1 ARC_GEMM_XW_PFD=1`, the default from the next release | was 450 (2026-11-01), 617 with 128 registers (11-02), 1,024 with H8 (11-08), 1,292 with the wide tiles (11-13): sections 1, 8, 11, 13 |
+| Prompt, 4K | 1,522 tok/s (release 2026.11.14.09, the weight prefetch on by default; 1,322 on .05 before it) | was 450 (2026-11-01), 617 with 128 registers (11-02), 1,024 with H8 (11-08), 1,292 with the wide tiles (11-13): sections 1, 8, 11, 13 |
 | Prompt, 512 / 16K | 737 / 1,226 tok/s (2026.11.14.05; 16K with `--chunk 8192`); 512 tokens 867 with the prefetch | |
 | Generation, plain | 23.7 tok/s (2026.11.13.11) | was 21.5 (2026-11-02); 11.3 GB read per token |
 | Generation, MTP | 51.6 tok/s (2026.11.13.11, 69.2 % of the drafts accepted) | section 2 |
-| Qwen3.6 35B-A3B | 4K prompt 3,508 tok/s (2026.11.10); generation 82.4, 111.9 with MTP (2026.11.13.11) | |
+| Qwen3.6 35B-A3B | 4K prompt 3,536 tok/s (2026.11.14.09); generation 82.4, 111.9 with MTP (2026.11.13.11) | |
 
 One Pro B70 (friskens, issue #12, 2026-11-13; the release not stated, 2026.11.13.06 asked for), the same 27B: 4K
 prompt 2,107 tok/s, 512 tokens 1,112, generation 32.2 tok/s, 74.9-75.2 with MTP.

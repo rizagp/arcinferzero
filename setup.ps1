@@ -60,7 +60,7 @@ MODELS
   35b  Qwen3.6 35B-A3B (Unsloth UD-IQ4_XS, MTP) + image projector  19.1 GB
   35b-gsq  Qwen3.6 35B-A3B 2-bit GSQ (converted with Python, no MTP)  12.6 GB download, 11.7 GB converted
   flash-ar4  Qwen3.8 Flash Next with Intel's AutoRound INT4 experts (safetensors imported with Python 3.11;
-           precise mode by itself)  189 GB download, ~285 GB of disk at the most, ~207 GB kept (the
+           precise mode by itself)  189 GB download, ~290 GB of disk at the most, ~207 GB kept (the
            UD-Q4_K_XL stays as a model of its own; the AutoRound shards are deleted when you agree)
   9b   Qwen3.5 9B (Unsloth UD-Q4_K_XL, MTP)                6.1 GB
   4b   Qwen3.5 4B (Unsloth UD-Q4_K_XL, MTP)                3.0 GB
