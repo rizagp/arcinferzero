@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-11-14: Linux: AutoRound packages open, expert reads into host memory, split models freed in turn (PR #24, chumbleyjl)
+
+- **The expert file's layer table compared field by field** (zero/expert_store.h `LayerInfo::operator==`), not with
+  `memcmp`: its 4 padding bytes after the three types are not set on GCC, so a matching file could be refused (the
+  AutoRound package on chumbleyjl's B70) or a plain model's expert file written again. The file layout is unchanged.
+  `tests/test_expert_layout.cpp`.
+- **Linux: an expert read into Level Zero host memory that fails with `EFAULT`** (`O_DIRECT` cannot pin that memory
+  on some drivers, though the CPU can write it) is read through a 4 KB-aligned buffer of the read slot, then copied
+  (src/platform.h `AsyncFile`). It goes with this audit's realignment of short `O_DIRECT` reads: the staged bytes are
+  copied before the read advances. `tests/test_platform_read.cpp`, built and run by a new Linux job in CI.
+- **Linux: a split model's shards are freed one at a time**, each on its own thread (zero/mgpu/engine_tp.h
+  `shutdown`): Intel's Linux runtime crashed while two shards freed their kernels at once (B70, `ARC_TP_SIM`). With
+  this audit's frees: through pointers taken out first, one limit each, and a free given up on does not stop the
+  others'. Windows frees them together as before.
+- Checked by chumbleyjl on the B70 (Linux, GCC 15): the AutoRound package opens and runs; the two-shard run ends
+  normally. Checked here: see the merge's commit (logits bit-identical on Windows, the tests on both systems).
+
 ## 2026-11-14: serverz keeps the startup model's context when it loads it again (PR #26, chumbleyjl)
 
 - A model started with an explicit `--ctx` (262,144 on chumbleyjl's B70) came back at its automatic context (131,072)

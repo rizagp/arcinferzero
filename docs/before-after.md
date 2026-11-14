@@ -80,6 +80,19 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, Linux: expert files compared field by field, `EFAULT` reads through aligned memory, split shards freed
+  in turn** (zero/expert_store.h, src/platform.h, zero/mgpu/engine_tp.h; pull request #24 by chumbleyjl). Measured by
+  its author on a B70 (Linux, GCC 15): the AutoRound package, refused before (`memcmp` over the layer table's padding
+  bytes 12-15), opens; its first streamed expert, `expert read failed (14)` before, is read and the cache fills; a
+  two-shard Flash Next run (`ARC_TP_SIM`, 209 tokens), which crashed in Intel's runtime while both shards freed, ends
+  normally, its last prompt row bit-identical before and after. No change to what any model computes; Windows' reads
+  and frees unchanged.
+- **2026-11-14, AutoRound INT4 experts merged** (AR4_128, pull request #22 by chumbleyjl). Measured by its author on a
+  B70 with 96 GB of RAM before the merge, on his own optimized build, not this one: against the UD-Q4_K_XL whose
+  non-expert tensors the package keeps, a warm 15,599-token prompt 695.6 -> 783.6 tok/s and generation 25.8 -> 42.4
+  (the smaller experts fit his 64 GiB RAM tier); a first-use prompt 484.5 -> 300.8 tok/s (cold reads and kernel builds
+  not separated). KL against each package's own f32 reference, his workflow prompts: 0.0070 -> 0.0107 mean. On this
+  build: docs/autoround-b70-rfc.md and the AR4 checks in the 2026-11-14 entries above.
 - **2026-11-14, `h8_decode` from local memory, 4 blocks a work-group, the per-32 types too** (kernels/decode.cl
   `h8r_decode`, zero/engine_h8.h; B60 prefill plan 13.3). Laptop (125H), the 27B GSQ-RCO IQ3_S, `ARC_H8=1`, 2K prompt,
   `--prof`, the kernel's GPU time, three interleaved rounds: registers (before) 1,180.3 / 1,200.8 / 1,144.8 ms, local
@@ -463,14 +476,3 @@ Measure before and after on the same build options with a pause in between, best
 noisy, and state the check: bit-identical logits (`runz --dump-logits A.bin` vs `B.bin`, `cmp`), identical greedy
 text, or KL against the f32 reference / the int8 cache (`runz --ppl-kl-save` / `--ppl-kl`) for changes that are
 meant to change the numbers.
-
-## 2026-11-13: AutoRound hybrid RFC (historical downstream measurements)
-
-| Measurement | Q4XL control | AutoRound INT4 expert hybrid | Scope |
-|---|---:|---:|---|
-| Warm 15,599-token PP / TG | 695.63 / 25.78 | 783.59 / 42.36 | Changed expert quant; downstream optimized runtime, not this branch. |
-| Incremental PP / TG | 102.41 / 24.53 | 194.15 / 38.53 | Same profile, mean turn 3.461 -> 2.137 s. |
-| First-use PP | 484.48 | 300.79 | Regressed; cold/JIT costs not isolated. |
-| Workflow engine mean / maximum KL vs own F32 | 0.00700 / 0.58798 | 0.01074 / 0.83681 | Cross-quant F32 KL 0.149171; BF16 quality parity not established. |
-
-See docs/autoround-b70-rfc.md for quant provenance, full-context/Pi checks and pending upstream validation.

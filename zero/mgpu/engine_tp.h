@@ -1065,7 +1065,21 @@ class TpEngine {
         }
       free_limit_s_ = comm_.timeout_s + 30;
       try {
-        if (!made.empty()) run_on(made, [raw](int r) { delete raw[r]; }, true, false);
+        if (!made.empty()) {
+#ifdef _WIN32
+          run_on(made, [raw](int r) { delete raw[r]; }, true, false);
+#else
+          // (Linux: one shard at a time, each still on its own thread: Intel's Linux runtime faulted while two
+          //  shards freed their kernels and modules at once, B70 with ARC_TP_SIM, pull request #24 by chumbleyjl.
+          //  A free given up on does not keep the others from theirs)
+          for (int r : made) {
+            try {
+              run_on({r}, [raw](int q) { delete raw[q]; }, true, false);
+            } catch (...) {
+            }
+          }
+#endif
+        }
       } catch (...) {}
       free_limit_s_ = 0;
     }

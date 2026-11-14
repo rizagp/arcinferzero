@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 
@@ -234,12 +235,24 @@ class AsyncFile {
     ok_[s] = false;
     err_[s] = 0;  // (no number left from an earlier read of this slot)
     while (got < n) {
-      const ssize_t r = pread(fd_, (char*)dst + got, n - got, (off_t)(off + got));
+      // (EFAULT: Level Zero host memory the CPU can write but O_DIRECT cannot pin, on some Linux drivers: read
+      //  again through a 4 KB-aligned buffer of this slot, the file still unbuffered; pull request #24, a B70)
+      if (stage_[s] && stage_bytes_[s] < n) free(stage_[s]), stage_[s] = nullptr, stage_bytes_[s] = 0;
+      const ssize_t r = pread(fd_, stage_[s] ? (char*)stage_[s] + got : (char*)dst + got,
+                              n - got, (off_t)(off + got));
       if (r < 0) {
         if (errno == EINTR) continue;
+        if (errno == EFAULT && !stage_[s]) {
+          if (posix_memalign(&stage_[s], 4096, n) != 0) { err_[s] = ENOMEM; return false; }
+          stage_bytes_[s] = n;
+          continue;
+        }
         err_[s] = (unsigned long)errno;
         return false;
       }
+      // (read through the staging buffer: its bytes to the caller's, before the advance and a realignment below,
+      //  which read the same aligned offsets of it again)
+      if (stage_[s] && r > 0) memcpy((char*)dst + got, (char*)stage_[s] + got, (size_t)r);
       got += (size_t)r;
       if (r == 0 || got <= end) {  // (the file ends first: started, and finish() says it failed, as a short read)
         err_[s] = EIO;
@@ -306,6 +319,11 @@ class AsyncFile {
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
     direct_ = false;
+    for (int s = 0; s < kMaxSlots; ++s) {
+      free(stage_[s]);
+      stage_[s] = nullptr;
+      stage_bytes_[s] = 0;
+    }
 #endif
     n_ = 0;
   }
@@ -321,6 +339,8 @@ class AsyncFile {
   bool direct_ = false;  // (opened with O_DIRECT: reads at 4 KB-aligned offsets only)
   unsigned long err_[kMaxSlots] = {};  // (per slot: the two reading threads use slots of their own)
   bool ok_[kMaxSlots] = {};
+  void* stage_[kMaxSlots] = {};
+  size_t stage_bytes_[kMaxSlots] = {};
 #endif
 };
 
