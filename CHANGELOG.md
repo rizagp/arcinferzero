@@ -7,6 +7,10 @@
 - Linux only: if an expert read into Level Zero host memory fails with `EFAULT`, retry through a reusable,
   page-aligned ordinary-memory buffer for that read slot. Keep unbuffered file reads and propagate other errors.
   On the B70, direct reads into host USM failed although CPU copies to that memory worked. Windows is unchanged.
+- Linux split models release their shards one at a time, on each shard's own thread. The 209-position Flash
+  Next two-shard simulation faulted inside Intel's runtime during simultaneous `Engine::release_all`; sequential
+  cleanup exits normally. The tested last-prompt logit vectors are bit-identical before/after (single GPU and
+  simulated split). No inference dispatch, kernels, quantization or Windows cleanup changes.
 - CPU regression checks cover padding differences, every layout field, read-buffer reuse/growth, independent
   slots and truncated reads; ASan/UBSan pass. Whole-model B70 validation is reported separately.
 

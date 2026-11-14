@@ -1015,7 +1015,15 @@ class TpEngine {
       for (int r = 0; r < (int)shards_.size(); ++r)
         if (shards_[r] && !is_stuck(r)) made.push_back(r);
       try {
-        if (!made.empty()) run_on(made, [this](int r) { shards_[r].reset(); }, true, false);
+        if (!made.empty()) {
+#ifdef _WIN32
+          run_on(made, [this](int r) { shards_[r].reset(); }, true, false);
+#else
+          // The Linux Intel runtime can fault while two shards destroy their kernels/modules together
+          // (B70, ARC_TP_SIM, after a 209-token Flash Next KL run). Still destroy on each shard's own thread.
+          for (int r : made) run_on({r}, [this](int s) { shards_[s].reset(); }, true, false);
+#endif
+        }
       } catch (...) {}
     }
     {

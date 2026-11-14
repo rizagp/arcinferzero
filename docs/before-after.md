@@ -23,6 +23,12 @@ character. "Bit-identical" below means exactly that, not "close". Changes that a
 | Existing AutoRound hybrid package, same file and metadata | Rejected by layer-structure `memcmp`; mismatches were only padding bytes 12..15 | Layout fields match; package opens | No weight or file-format conversion |
 | First streamed expert into Level Zero host memory, 64 GiB RAM tier | `expert read failed (14)` (`EFAULT`) | Cache fills and inference completes through aligned ordinary-memory retry | Linux I/O only; no kernel or arithmetic changes |
 | CPU layout/read regressions | Old padding comparison rejects intentionally different padding; direct-only read rejects emulated unpinnable memory | Both tests pass, including ASan/UBSan | No performance or bit-identity claim from these CPU tests |
+| Two-shard Flash Next workflow KL run, 209 tokens, 32 GiB RAM tier per shard | SIGSEGV during simultaneous shard cleanup, inside Intel's Linux runtime | Sequential cleanup exits 0; prefill mean/max 0.01179/1.11518, decode 0.00822/0.69072 | B70 `ARC_TP_SIM=1`, correctness only; Windows unchanged |
+
+Cleanup check: `runz --dump-logits` on the 209-token simulated split writes the same 993,280-byte last-prompt
+vector before and after (SHA256 `057c44ddb68339d69436337b8c4d65740c05cfe8fa5c33482cd9c3f6c5fdf880`).
+The 31-token single-GPU coding last-prompt vector is also bit-identical before/after. These are last-row checks,
+not dumps of every prompt row. The compiler-serialization experiment did not solve cleanup and is not included.
 
 The B70 coding fixture (31 positions) passes after both fixes: prefill and decode mean/max KL round to
 0.00000 against the same package's F32 reference. The 209-position workflow prefill is 0.00891 mean,
