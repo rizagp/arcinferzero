@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-14: preserve the startup model's context on reload
+
+- Reloading the startup model after an explicit unload keeps its original context policy, including an explicit
+  `--ctx 262144`. Failed-switch recovery also restores that policy for the startup model. Other models still
+  choose their automatic context. B70 live unload/reload and failed-switch recovery checks are recorded in
+  `docs/context-reload-validation.md`; no engine kernels or quantization changes.
+
 ## 2026-11-14: Flash Next with Intel's AutoRound INT4 experts in one step (`setup -Models flash-ar4`)
 
 - **`scripts/get-autoround.ps1`** (and `setup -Models flash-ar4`): Intel's AutoRound checkpoint is safetensors, so it

@@ -2419,7 +2419,9 @@ int main(int argc, char** argv) {
           if (cur && cur->srv) cur->srv->save_held();  // (switching back later loads the conversation instead of redoing it)
           cur.reset(), zmet::unloaded();  // frees the GPU memory first
           ServeOpts s2 = so;
-          s2.ctx_auto = true;  // the --ctx given at start was for the first model
+          // The startup context belongs to this model too when it is loaded again after an explicit unload.
+          // Other models still choose their own context, as before.
+          if (!same_file(m->path, model)) s2.ctx_auto = true;
           s2.eo.mtp = m->mtp;  // the variant's settings: MTP block / drafter, image projector
           s2.dflash_auto = m->draft != 1;  // (-nodf: the MTP block only; -df: DFlash2 only)
           s2.eo.mtp_block = m->draft != 2;
@@ -2439,7 +2441,7 @@ int main(int argc, char** argv) {
             zlog::eprintf("could not load %s: %s; %s\n", m->path.c_str(), e.what(),
                     prev_path.empty() ? "no model was loaded before it" : ("loading " + prev_alias + " again").c_str());
             ServeOpts s3 = so;
-            s3.ctx_auto = true;
+            if (!same_file(prev_path, model)) s3.ctx_auto = true;
             for (const ModelInfo& pm : catalog)  // (the previous variant's settings)
               if (pm.alias == prev_alias) {
                 s3.eo.mtp = pm.mtp;

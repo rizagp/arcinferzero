@@ -16,6 +16,16 @@ character. "Bit-identical" below means exactly that, not "close". Changes that a
 
 ## Where it stands
 
+### 2026-11-14: server context after reloading its startup model (B70 / Linux)
+
+| Check | Before (`7ea1d32` plus Linux loading fixes) | After | Scope |
+|---|---|---|---|
+| AutoRound catalog model started with `--ctx 262144`, explicitly unloaded, reloaded by alias | Silent automatic choice of 131072 | Keeps 262144 | Same model, same server flags, automatic precise mode |
+| Failed switch to a metadata-only model with missing hparams | — | Expected error, startup model restored with 262144 | Recovery state; no second model weights |
+
+Live requests produce the same full choice and completion-token count before/after unload/reload with the fix.
+This is not a kernel change, a speed claim or a full-logit identity measurement; see `docs/context-reload-validation.md`.
+
 (Updated 2026-10-25; each row's date and measurement are in the rows below.)
 
 | Model | Prompt | Generation | Accuracy |
