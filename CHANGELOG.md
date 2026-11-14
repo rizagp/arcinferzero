@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-11-14: Flash Next's long-prompt KL on prose; a prose prompt for long-context checks
+
+- `bench/prompts/qwen-prose-3584.ids.txt` (3,584 tokens of docs/lessons-intel-arc-igpu.md): Flash Next KL over its last
+  256 positions with QSA on, against tools/ref_forward: default 0.0105, precise 0.0060 (main with PR #21; release
+  2026.11.14.07 the same). The code prompt's 0.18 comes from four digit / identifier positions where the engine,
+  ref_forward and llama.cpp b12292 each predict a different token (bench/prompts/README.md).
+
 ## 2026-11-14: a split GGUF whose first part holds metadata only and ends without padding is read (issue #4)
 
 - `src/gguf.h`: a part with no tensors may end right after its header (Unsloth's DeepSeek-V4.1-Flash UD-Q8_K_XL part 1

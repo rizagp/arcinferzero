@@ -89,7 +89,9 @@ That property is what every speed change is held to:
   19.24 GiB both (this file's mixer rows are exact in BF16). Default mode, the 4B, the 27B, their `--attn-f32` and the
   27B's `--attn-f32 --slots-check`: logits bit-identical to release 2026.11.14.07. A 3,584-token code prompt with QSA
   (last 256 positions): precise 0.184 -> 0.096, default 0.184 unchanged; that prompt's KL is four digit / identifier
-  positions where llama.cpp b12292 also disagrees with both (docs/flash-next-spec.md has no fair long-prompt figure yet).
+  positions where llama.cpp b12292 also disagrees with both. A fair long prompt, 3,584 tokens of prose
+  (`bench/prompts/qwen-prose-3584.ids.txt`, last 256 positions, QSA on): default 0.0105 (max 0.161) both, precise
+  0.00596 -> 0.00599 (max 0.056 -> 0.069): long contexts are within the limit in both modes.
 
 - **2026-11-14, MXFP4 experts and MXFP8 Engram rows (DeepSeek-V4.1-Flash UD-Q8_K_XL)** (src/quants.h,
   kernels/decode.cl, decode_moe.cl). Speed: not measured (a new format; the real model needs ~600 GB of RAM).
