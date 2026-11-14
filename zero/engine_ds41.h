@@ -247,6 +247,27 @@
           throw std::runtime_error("Engram hash columns past the table");
   }
 
+  // GPU bytes of a c-token context, by the same formulas as the allocations (ctx_bytes / ctx_buf_bytes, --ctx auto):
+  // the KV-source layers' compressed rows and index keys (load_weights_ds41: cap = c / rt + 2 rows of D and ID
+  // values), and the indexer's score buffers (alloc_ds41: rows = c / min_rt + 64). The window rings, pending rows and
+  // the chunk's buffers do not grow with c. (Before 2026-11-14 the Qwen formula counted 40 layers x 1,032 bytes per
+  // position, 10.1 GiB at 262K against ~1.0 GiB, and the Qwen apart_ buffer, which DeepSeek does not have.)
+  size_t ds_ctx_cache_bytes(int c) const {
+    size_t n = 0;
+    for (const DsLayer& S : dsl_)
+      if (S.kv_own) n += (size_t)(c / S.rt + 2) * (size_t)(hp.head_dim + ds_.ID) * ds_kvb();
+    return n;
+  }
+  size_t ds_ctx_buf_bytes(int c) const {
+    const size_t M = max_chunk;
+    int min_rt = 2;
+    for (const DsLayer& L : dsl_) if (L.rt) min_rt = std::min(min_rt, L.rt);
+    const size_t rows = (size_t)c / min_rt + 64;
+    const size_t q = std::max<size_t>(1, std::min<size_t>(M, ((size_t)64 << 20) / rows));
+    const size_t nb = (rows + ds_.cand_bs - 1) / ds_.cand_bs;
+    return q * rows * 4 + q * nb * 4 + (M * nb + 3) / 4 * 4;  // ds_sc_, ds_bsc_, ds_cand_
+  }
+
   void alloc_ds41() {
     const DsHp& d = ds_;
     const size_t M = max_chunk;

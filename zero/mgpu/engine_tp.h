@@ -142,7 +142,8 @@ struct TpComm {
 //    main list never waits for good) and thrown on the main thread at its next submit or join; a pass that ends early
 //    with sums queued marks the split model failed (the others leave their barriers) and waits for its sum thread;
 //    a sum thread stuck in a hang keeps its shard's thread waiting, which TpEngine::wait_done gives up on as before
-// Not with MoE (tp_moe_combine's sum stays where it is) and not in chunk-by-chunk passes (resident weights).
+// Not with MoE (tp_moe_combine's sum stays where it is). Chunk-by-chunk passes have nothing to overlap with, so a dense
+// split with resident weights runs its long prompts layer by layer when this is on (Engine::lm_resident_tp, 2026-11-14).
 inline bool tpo_wanted() {
   static const bool on = getenv("ARC_TP_OVERLAP") && atoi(getenv("ARC_TP_OVERLAP")) != 0;
   return on;

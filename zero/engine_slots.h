@@ -10,9 +10,10 @@
   // residual stream of layer-major prompt segments)
   size_t ctx_buf_bytes(int c) const {
     c = (c + 15) / 16 * 16;
+    if (hp.ds41) return ds_ctx_buf_bytes(c);  // (DeepSeek-V4.1: its own caches and buffers, zero/engine_ds41.h)
     size_t n = 4 * (size_t)std::max(c / 256 + 1, 512) * hp.n_head * (hp.head_dim + 2) * 4;  // apart_
     if (hp.n_qsa) n += (size_t)256 * qsa_blocks(c) * 4 + (size_t)max_chunk * qsa_mask_words(c) * 4;  // QSA scores, masks
-    if (!w8_resident || stream_) {
+    if (lm_prompts()) {
       const int seg = lm_seg_for(c);
       n += (size_t)(seg + max_chunk) * (hp.hce() + (hp.ple_layer >= 0 ? hp.n_embd : 0)) * 4;  // x_all_ (+ PLE rows)
     }
@@ -48,6 +49,7 @@
   size_t ctx_bytes(int c) const {
     c = (c + 15) / 16 * 16;
     size_t n = ctx_buf_bytes(c);
+    if (hp.ds41) return n + ds_ctx_cache_bytes(c);
     if (hp.swa_rings) {
       const int swa_cap = std::min(c, (hp.n_swa + max_chunk + swa_margin() + 255) / 256 * 256);
       for (const Layer& L : layers_)
