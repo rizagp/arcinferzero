@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-11-14: AutoRound INT4 experts (AR4_128, pull request #22 by chumbleyjl)
+
+- An experimental private AR4_128 importer (`tools/import_autoround_experts.py`, `tools/import_autoround_pack.cpp`),
+  CPU/reference and generic native decode plumbing (`kernels/ar4.cl`), plus source/package checks. Existing model
+  defaults kept. Downstream AutoRound-hybrid benchmarks and accuracy limits are separate from upstream-branch
+  validation; see docs/autoround-b70-rfc.md.
+- Merged with main's MXFP4 / MXFP8 types (both kept). AR4 experts also run on a split model (`--gpus`): each GPU
+  streams its experts as on one GPU; still precise Flash Next on discrete GPUs only.
+- Logits bit-identical to release 2026.11.14.10 for the other models (laptop: Qwen3.5 4B, Qwen3.8 27B, Qwen3.6
+  35B-A3B, Flash Next IQ3_S; prompt + 8 generated tokens). The AR4 path's GPU KL on this branch is asked of the PR's
+  author (B70), one GPU and split.
+
 ## 2026-11-14: `h8_decode` reads each superblock once and covers the per-32 types; part of the decoded weights resident (opt-in)
 
 - **`h8_decode`** (H8's decode + rotation in one pass, the B60 prefill plan's step 13.3): a work-group's 16 rows of
@@ -4532,3 +4544,4 @@ one kv head) ran at only ~20 GB/s, 0.7 ms per layer.
 - Segmented layer-major prefill (16K tokens) and the largest contexts that fit 16.5 GiB for every model
   (`scripts/arc-server.ps1`, `scripts/install-pi.ps1`).
 - Review page `docs/review.html` (EN/ID) with `bench/review_data.py`; prompt benchmark `bench/prompt_bench.py`.
+

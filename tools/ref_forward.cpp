@@ -51,6 +51,12 @@ static void gguf_sb(uint32_t type, const uint8_t* src, uint8_t* dst) {
     }
     return;
   }
+  if (type == GGML_AR4_128) {
+    memcpy(dst, src, 2); memcpy(dst + 2, src + 4, 64);
+    memcpy(dst + 66, src + 2, 2); memcpy(dst + 68, src + 68, 64);
+    return;
+  }
+
   if (type == GGML_Q4_0 || type == GGML_Q8_0 || type == GGML_IQ4_NL || type == GGML_Q2_0) {
     const int qb = type == GGML_Q8_0 ? 32 : 16, nb = type == GGML_Q2_0 ? 4 : 8;
     for (int b = 0; b < nb; ++b) {

@@ -17,12 +17,15 @@
 #define TAB_KFP4 8484  // (MXFP4's 16 values, src/quants.h kvalues_mxfp4)
 
 #define Q4_0 2
+#ifndef AR4_128
+#define AR4_128 0x41523447
+#endif
 #define Q8_0 8
 #define IQ4_NL 20
 #define Q2_0 42
 #define MXFP4 39
 // per-32 float scales (decoded into the W8 GEMM's VARIANT 4 layout: one f32 per 32-block in the header)
-#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4)
+#define PER32 (QT == Q8_0 || QT == Q4_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || QT == AR4_128)
 // header uints per superblock and lane: W8 (d, dmin, 16 scales, 16 mins) or, for PER32, the 8 f32 block scales in
 // the layout of the GEMM's native Q8_0 form (kernels/gemm.cl QTYPE 8), which reads the decoded weights directly
 #if PER32
@@ -44,7 +47,9 @@
 #define IQ1_M 29
 #define IQ1_S 19
 
-#if QT == Q2_K
+#if QT == AR4_128
+#define BB 132
+#elif QT == Q2_K
 #define BB 84
 #elif QT == Q3_K
 #define BB 110
@@ -157,7 +162,12 @@ inline void decode32(const uchar* p, int ib, const uint* grid, const uint* aux, 
                      int* pmn0, int* pmn1, float* pd, float* pdmin) {
   int sc0, sc1, mn0 = 0, mn1 = 0;
   float d, dmin = 0.0f;
-#if QT == Q2_K
+#if QT == AR4_128
+  d = f16(rd16(p + 2 * (ib / 4)));
+  sc0 = sc1 = 1;
+  const uchar* q = p + 4 + ib * 16;
+  ar4_unpack((uint4)(rd32(q), rd32(q + 4), rd32(q + 8), rd32(q + 12)), w);
+#elif QT == Q2_K
   d = f16(rd16(p + 80));
   dmin = f16(rd16(p + 82));
   sc0 = p[2 * ib] & 0xF; mn0 = p[2 * ib] >> 4;
@@ -968,7 +978,8 @@ __kernel void gemv(__global const uchar* raw, int N, int K, __global const uint*
   }
 }
 
-#if QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || defined(GRID_OFF)
+#if QT == AR4_128 || QT == IQ4_XS || QT == Q6_K || QT == Q4_0 || QT == Q8_0 || QT == IQ4_NL || QT == Q2_0 || QT == MXFP4 || \
+    defined(GRID_OFF)
 // GEMVs that read the weights straight into registers (gemv_v: one token, gemv_mt_v: TB tokens): IQ4_XS, and Q6_K
 // for output heads. As gemv / gemv_mt, lane l handles 32-element block (l % 8) of superblock (sp + l / 8), the 16
 // lanes two contiguous superblocks; but each lane vector-loads its own bytes from global memory instead of the
@@ -1048,7 +1059,11 @@ inline void vb_tables(__local uint* kt, __global const uint* tabs) {}
 inline void vblock(__global const uchar* p, int ib, __local const uint* kt, uint* w, float* d, float* dmin, int* sc0,
                    int* sc1, int* mn0, int* mn1) {
   __global const uint* pu = (__global const uint*)p;
-#if QT == IQ4_XS
+#if QT == AR4_128
+  *d = f16(((__global const ushort*)p)[ib / 4]);
+  *dmin = 0.0f; *sc0 = *sc1 = 1; *mn0 = *mn1 = 0;
+  ar4_unpack(vload4(0, pu + 1 + 4 * ib), w);
+#elif QT == IQ4_XS
   const uint2 h = vload2(0, pu);
   const uint4 q = vload4(0, (__global const uint*)(p + 8 + 16 * ib));
   *d = f16(h.x & 0xFFFFu);
