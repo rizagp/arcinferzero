@@ -18,6 +18,7 @@ struct ModelInfo {
   // vision), -vision (vision, no MTP) and -std (neither). base: the file's id; tags: "MTP + vision", ...
   bool supported = false, vision = false, mtp = false;
   bool moe = false;  // routed experts (inferzero streams them from the SSD)
+  bool precise_only = false;  // (an AutoRound package: Flash Next's precise mode on by itself, Engine::fn_precise)
   bool audio = false;  // the image projector also holds a Gemma 4 audio encoder (loaded with it: vision variants only)
   // inferzero, a file with a DFlash2 drafter: 0 both drafters, picked per step (the file's id); 1 the MTP block
   // only (-nodf); 2 DFlash2 only, the MTP block not loaded (-df)
@@ -352,6 +353,7 @@ static std::vector<ModelInfo> scan_models() {
       m.ctx_train = g.get_int(m.arch + ".context_length", 0);
       nextn = g.get_int(m.arch + ".nextn_predict_layers", 0);
       m.moe = g.get_int(m.arch + ".expert_count", 0) > 0;
+      m.precise_only = !g.get_str("inferzero.autoround.model", "").empty();
     } catch (const std::exception& e) {
       // (a file from before the rename, keyed arcinferzero.*: listed as unsupported, and the log says why)
       static std::mutex told_mu;
@@ -820,6 +822,7 @@ static int list_models(size_t speech = 0, int gpus = 1) {
     j.set("vision", m.vision);
     j.set("mtp", m.mtp);
     j.set("moe", m.moe);
+    j.set("precise_only", m.precise_only);
     j.set("alias", m.alias);
     j.set("short", m.shortcut);
     j.set("base", m.base);

@@ -329,7 +329,7 @@ $slotsBox = New-Num 1 8 1 0 60
 $gpusBox = New-Num 1 8 1 0 60
 $npuBox = New-Combo @("off", "on") 60
 $noStreamChk = New-Check "every expert on the GPU (-NoStream: no SSD reads, smaller context)"
-$preciseChk = New-Check "precise mode (-Precise: Flash Next; KL 0.0186 -> 0.0127, prompts about half as fast)"
+$preciseChk = New-Check "precise mode (-Precise: Flash Next; KL on prose 0.0105 -> 0.0060, prompts about half as fast; AutoRound: always)"
 $keepThinkChk = New-Check "earlier turns keep their reasoning (-PreserveThinking)"
 $whisperBox = New-EditCombo @("off", "auto") 170
 $asrBox = New-EditCombo @("auto", "off") 170
@@ -503,7 +503,11 @@ function Fill-Defaults {
   $draftBox.Enabled = $noMtpChk.Enabled = [bool]($m -and $m.mtp)
   $imgMinBox.Enabled = $imgMaxBox.Enabled = $visionBox.Enabled = [bool]($m -and $m.vision)
   $noStreamChk.Enabled = [bool]($m -and $m.moe)
-  $preciseChk.Enabled = [bool]($m -and $m.arch -eq "qwen4exp")  # (only Flash Next has a precise mode)
+  # (only Flash Next has a precise mode; an AutoRound package runs only in it, so the box shows it on and stays off
+  #  limits)
+  $preciseOnly = [bool]($m -and $m.precise_only)
+  $preciseChk.Enabled = [bool]($m -and $m.arch -eq "qwen4exp") -and -not $preciseOnly
+  if ($preciseOnly) { $preciseChk.Checked = $true }
   Update-Speech
   Update-Fit
 }

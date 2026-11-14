@@ -96,7 +96,7 @@ That property is what every speed change is held to:
   non-expert tensors the package keeps, a warm 15,599-token prompt 695.6 -> 783.6 tok/s and generation 25.8 -> 42.4
   (the smaller experts fit his 64 GiB RAM tier); a first-use prompt 484.5 -> 300.8 tok/s (cold reads and kernel builds
   not separated). KL against each package's own f32 reference, his workflow prompts: 0.0070 -> 0.0107 mean. On this
-  build: docs/autoround-b70-rfc.md and the AR4 checks in the 2026-11-14 entries above.
+  build: docs/autoround.md and the AR4 checks in the 2026-11-14 entries above.
 - **2026-11-14, `h8_decode` from local memory, 4 blocks a work-group, the per-32 types too** (kernels/decode.cl
   `h8r_decode`, zero/engine_h8.h; B60 prefill plan 13.3). Laptop (125H), the 27B GSQ-RCO IQ3_S, `ARC_H8=1`, 2K prompt,
   `--prof`, the kernel's GPU time, three interleaved rounds: registers (before) 1,180.3 / 1,200.8 / 1,144.8 ms, local
@@ -152,19 +152,21 @@ That property is what every speed change is held to:
   1,383.9 / 1,431.0 / 1,442.2 -> 1,578.5 / 1,630.1 / 1,625.2 tok/s, generation 36.07 -> 37.82; a 4,210-token prompt
   1,293.3 -> 1,515.3. Accuracy: the logits identical (`cmp` of `--dump-logits`, prompt + 16 tokens).
 
-- **2026-11-13, draft Flash precise repair** (`zero/engine_load.h`, `engine_qwen.h`,
-  `ops_attn.cl`, `ops_flashnext.cl`). Historical downstream UD-Q4_K_XL eight-ID
-  mean KL 0.11597 -> <0.000005; workflow projection repair 0.07673 -> 0.00324
-  prefill and 0.04018 -> 0.00864 decode, maxima 0.19503 / 0.32222. These are not
-  rebased-branch measurements. Rebased speed/memory, model KL and default-path
-  bit checks remain gates. Batched changes are Flash-only; normal non-precise
-  --attn-f32 remains refused. Details: docs/flash-precise-repair-2026-11-13.md.
+- **2026-11-13, Flash Next precise mode: source values, DeltaNet alpha / beta in F32, QSA in float attention**
+  (zero/engine_load.h, engine_qwen.h, kernels/ops_attn.cl, ops_flashnext.cl; pull request #21 by chumbleyjl, as a
+  draft). Measured by its author before the pull request, on his own B70 build, not on the rebased branch: UD-Q4_K_XL
+  with Q5_1 expert-down tensors, mean KL against its own f32 reference, eight fixed ids 0.11597 -> <0.000005; the
+  209-position workflow with the DeltaNet projections in F32 0.07673 -> 0.00324 prefill, 0.04018 -> 0.00864 decode
+  (maxima 0.19503 / 0.32222). Speed and memory, model KL on the branch and the default path's bit checks were left
+  for before the merge: the 2026-11-14 entry "Flash Next precise mode repaired" above. The batched changes are Flash
+  Next's only; `--attn-f32` in its default mode stays refused. docs/flash-precise-repair-2026-11-13.md.
 
-- **2026-11-13, Q5_1 CPU reference rows** (`src/quants.h`, `tests/test_quant_rows.cpp`).
-  Before: K<256 left output unwritten; K>=256 threw `decode_sb: unsupported type`.
-  After: 3,424 independently encoded values at eight widths (including 640) and
-  output guards pass; ASan/UBSan pass. CPU-only repair; main's GPU loader still
-  rejects Q5_1. No speed or supported-model KL change is claimed.
+- **2026-11-13, the CPU reference decodes Q5_1 rows** (src/quants.h `dequant_row`, tests/test_quant_rows.cpp; pull
+  request #20 by chumbleyjl). Before: rows of K < 256 left unwritten, K >= 256 threw `decode_sb: unsupported type`.
+  After: 3,424 independently encoded values at eight widths (32, 64, 128, 256, 512, 640, 768, 1,024) and the output
+  guards pass; AddressSanitizer and UndefinedBehaviorSanitizer pass. CPU only: the GPU loader refused Q5_1 then (it
+  decodes it since 2026-11-14: the table row "Q5_1 weights on the GPU" below), so no speed or KL change of a model
+  main could run.
 
 - **2026-11-14, a split model's sums straight from GPU to GPU** (`ARC_TP_P2P`, auto: chosen from the links timed at
   start; zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums straight between GPUs"). **Speed: not measured** when it was

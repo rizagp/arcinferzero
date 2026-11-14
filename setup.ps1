@@ -204,12 +204,8 @@ $gsq35 = Join-Path $arcModels "Qwen3.6-35B-A3B-GSQ2-arc.gguf"
 # (35b-gsq: the 2-bit GSQ file, converted with Python: smaller, no MTP; setup's own step)
 $catalog = @($ArcModels) + @([pscustomobject]@{ key = "35b-gsq"; name = "Qwen3.6 35B-A3B 2-bit GSQ (converted; needs Python)"
     repo = "ISTA-DASLab/Qwen3.6-35B-A3B-2Bit-GSQ"; gb = 12.6; files = @() })
-# (flash-ar4: Intel's AutoRound INT4 experts for Flash Next, safetensors imported into a package, scripts\autoround.ps1,
-#  which scripts\get-autoround.ps1 runs on its own; 78 GB of expert shards + Unsloth's 111 GB UD-Q4_K_XL for the rest;
-#  disk at the most ~285 GB. Not get-autoround.ps1 dot-sourced here: its param block set this script's -Yes to false)
-. (Join-Path $root "scripts\autoround.ps1")
-$catalog += @([pscustomobject]@{ key = "flash-ar4"; name = "Qwen3.8 Flash Next, Intel AutoRound INT4 experts (imported; needs Python 3.11)"
-    repo = "Intel/Qwen3.8-Flash-Next-W4A16-AutoRound"; gb = 189; disk = 290; files = @() })
+# (flash-ar4: in the shared list, scripts\model-catalog.ps1, imported by scripts\autoround.ps1, which the list
+#  dot-sources; not scripts\get-autoround.ps1, whose param block set this script's -Yes to false)
 $ErrorActionPreference = "Continue"
 $listed = @(& (Join-Path $bin "serverz.exe") --list-models 2>$null | ConvertFrom-Json | ForEach-Object { $_ })
 $ErrorActionPreference = "Stop"

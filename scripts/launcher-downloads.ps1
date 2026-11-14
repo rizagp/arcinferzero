@@ -37,6 +37,7 @@ function Get-SplitSet([string]$p, $paths) {
 # %USERPROFILE%\.inferzero\zero\models (one GGUF for a split model: Flash Next)
 function Test-ArcHave($m, [string]$hub) {
   if (Test-ArcModel $m $hub) { return $true }
+  if (-not $m.files) { return $false }  # (flash-ar4: Test-ArcModel looked for its package)
   $pk = Join-Path (Get-AppDir) "zero\models"  # (app-dir.ps1: loaded by zero-launcher.ps1)
   if (-not (Test-Path $pk)) { return $false }
   $main = Split-Path $m.files[0] -Leaf

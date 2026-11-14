@@ -160,7 +160,7 @@ fix. The logits stay bit-identical; nothing found changes a model's results.
 - An experimental private AR4_128 importer (`tools/import_autoround_experts.py`, `tools/import_autoround_pack.cpp`),
   CPU/reference and generic native decode plumbing (`ar4_unpack` in `kernels/decode.cl`), plus source/package checks. Existing model
   defaults kept. Downstream AutoRound-hybrid benchmarks and accuracy limits are separate from upstream-branch
-  validation; see docs/autoround-b70-rfc.md.
+  validation; see docs/autoround.md.
 - Merged with main's MXFP4 / MXFP8 types (both kept). AR4 experts also run on a split model (`--gpus`): each GPU
   streams its experts as on one GPU; and on iGPUs (the laptop: AR4 GPU decode bit-identical to the CPU decoder on
   4.9 M synthetic weights, the expert kernels build for AR4). Still precise Flash Next only.
@@ -261,19 +261,25 @@ fix. The logits stay bit-identical; nothing found changes a model's results.
   the logits identical. Each GPU's kernels read their own memory instead of the other GPU's parts across PCIe.
   Windows (no peer access) and one GPU: unchanged.
 
-## 2026-11-13: draft Flash precise repair
+## 2026-11-13: Flash Next's precise mode keeps its source values; QSA in float attention (PR #21, chumbleyjl)
 
-- Preserve precise source mixer values and DeltaNet gate projections; add float
-  QSA masking and split decode attention. Limit batched changes to Flash Next
-  and retain normal-mode --attn-f32 rejection. Rebased GPU/model checks and
-  before/after performance/memory measurements are required before merging.
+- **Precise mode** (`--precise`, `ARC_FN_PRECISE=1`): the mixers' source values kept (F32 where BF16 cannot hold
+  them exactly; zero/engine_load.h); DeltaNet's alpha / beta projections in F32 on one GPU, out of the Q8 qkv / z
+  stack (engine_qwen.h); float attention with the QSA masks, its short decode calls split over key ranges
+  (kernels/ops_attn.cl, ops_flashnext.cl). The batched changes are Flash Next's only; `--attn-f32` in the default
+  mode is still refused. docs/flash-precise-repair-2026-11-13.md.
+- Submitted as a draft: GPU and model checks on the rebased code, and speed and memory before and after, were to come
+  before the merge. Checked here before the merge (laptop, 2026-11-14): precise KL on 160 code tokens 0.00455 /
+  0.02056 -> 0.00173 / 0.00221 (prompt / generation), the default mode and the other models bit-identical to release
+  2026.11.14.07 (docs/before-after.md).
 
-## 2026-11-13: Q5_1 CPU reference rows
+## 2026-11-13: the CPU reference decodes Q5_1 rows (PR #20, chumbleyjl)
 
-- Decode Q5_1 rows in 32-value blocks, including K=640 tails. Before: short rows
-  were unwritten and rows of at least 256 values threw unsupported-type errors.
-  Add a model-free regression to test_quant_rows and run it in CI. The GPU still
-  rejects Q5_1; this repairs CPU references, not KL for models main can run.
+- `dequant_row` (src/quants.h) decodes Q5_1 in blocks of 32 values, rows of K = 640 included. Before: rows of fewer
+  than 256 values were left unwritten, and rows of 256 or more threw an unsupported-type error.
+- `tests/test_quant_rows.cpp`: a model-free regression, in CI.
+- CPU only: the GPU refused Q5_1 then, so this fixed the f32 reference, not the KL of a model main could run. Since
+  2026-11-14 the GPU takes Q5_1 too (the entry "Q5_1 weights on the GPU" above).
 
 ## 2026-11-14: a split model's sums straight from GPU to GPU where the links allow it; `Connection: close` honoured
 

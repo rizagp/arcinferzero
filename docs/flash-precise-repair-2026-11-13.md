@@ -1,56 +1,64 @@
-# Flash Next precise source values and QSA attention
+# Flash Next's precise mode: source values, F32 DeltaNet gates, QSA in float attention (2026-11-13)
 
-Rebased onto main `c6552692def54da2cd854c6b4a6f5fb4ebe6ab3b`.
-This draft contains the correctness part of the downstream B70 repair:
+Pull request #21 by chumbleyjl, submitted as a draft on 2026-11-13 against main at `c655269`, merged 2026-11-14. It
+is the correctness part of the repair of precise mode (`--precise`, `ARC_FN_PRECISE=1`) in his own B70 build
+("downstream").
 
-- Preserve dequantized mixer values in F32 unless every value is exactly
-  representable in BF16. A Q8 source does not imply its dequantized values fit
-  BF16. Keep the existing compact path when it is exact.
-- Preserve precise single-GPU DeltaNet alpha/beta projections in F32, evaluate
-  them from the F32 normalized input, and exclude them from the Q8 qkv/z stack.
-- Use float attention for Flash precise mode, applying the selected QSA blocks
-  and the uncompressed tail. Skip wholly excluded tiles and keep empty partial
-  accumulators finite. Split short decode/verification calls across at most
-  64 key ranges and merge numerators/denominators stably.
+## What it changes
 
-Current main's H8 and logging changes are preserved. The batched float-input
-change is restricted to Flash Next; dense-model behavior is retained. Normal
-non-precise Flash --attn-f32 remains refused, so this PR no longer enables
-that previously unsupported perplexity configuration. Native mixer compression,
-expert XMX, private AutoRound types, virtual KV and local API/Pi changes are
-separate work, not prerequisites for this source patch to compile.
+- **Mixer values kept as the source has them** (zero/engine_load.h `hc_exact_weight`, kernels/ops_flashnext.cl
+  `-DHC_F32`): precise mode stored the hyper-connection mixers' dequantized rows as BF16, but a Q8 source's
+  dequantized values need not fit BF16. They are now kept in F32 unless every value is exactly a BF16 value; then
+  the compact BF16 path stays.
+- **DeltaNet's alpha / beta projections in F32** (precise mode on one GPU; zero/engine_load.h, engine_qwen.h
+  `gdn_ab_input`): computed from the f32 normalized input and left out of the Q8 qkv / z stack.
+- **Float attention with the QSA masks** (kernels/ops_attn.cl `attn_fa` with `FA_QSA`, `qsa_fa_combine`): precise
+  mode's attention runs in float over the QSA blocks chosen and the uncompressed tail. Tiles excluded whole are
+  skipped, and an empty partial accumulator stays finite. Short decode and verification calls are split over at most
+  64 key ranges, whose numerators and denominators are merged stably.
 
-## Checks
+**Kept as they were:**
 
-Both native Linux runz and serverz build from this branch. The CPU reference
-builds with `-D_fseeki64=fseeko` for its existing seek spelling. The independent
-masked-attention fixture builds against this branch. It requires an Intel GPU
-and is not suitable for the model-free GitHub Windows CI runner. Its coverage includes
-unmasked attention, excluded leading tiles, sparse blocks, incomplete tails,
-multiple query rows, split/unsplit paths and near-262k addresses.
+- main's H8 and logging changes;
+- dense models: the batched float-input change applies only to Flash Next;
+- `--attn-f32` in Flash Next's default mode: still refused (`f32 QSA attention requires Flash Next precise mode`), so
+  the pull request does not open that perplexity configuration, which was never supported.
 
-At initial submission the production B70 Pi service was left running, so GPU
-execution and model KL on the rebased source were not run. Review follow-up
-will record new checks explicitly rather than relabeling historical evidence. Windows, iGPU, tensor-parallel and
-batched-slot regressions remain pending. Keep this PR a draft until those gates
-are met. The Q5_1 reference fix is separately required for references containing
-that quant; this branch does not silently duplicate it.
+**Not part of it**, and not needed for it to build: his build's native mixer compression, expert XMX, the private
+AutoRound types (pull request #22 since, [autoround.md](autoround.md)), virtual KV and local API / Pi changes.
 
-## Historical downstream evidence, not rebased-main results
+## The author's checks at submission
 
-The model here is **UD-Q4_K_XL with Q5_1 expert-down tensors**, with its existing
-Q4_0 MTP head. These precision measurements are not AutoRound benchmarks.
-The F32 reference decodes the same quantized weights, not original BF16 weights.
+- **Builds:** native Linux runz and serverz from the branch; tools/ref_forward with `-D_fseeki64=fseeko` (for its
+  seek spelling).
+- **A masked-attention fixture** (`tests/test_qsa_float.cpp`) builds against the branch. It needs an Intel GPU, so it
+  cannot run on the model-free GitHub Windows CI runner. It covers attention without a mask, leading tiles excluded,
+  sparse blocks, incomplete tails, several query rows, the split and unsplit paths and addresses near 262K.
+- **Not run:** GPU runs and model KL on the rebased code (his B70 Pi service was left running); the Windows, iGPU,
+  split and batched-slot regressions. He kept the pull request a draft until those were done, with new checks to be
+  recorded as new rather than earlier results labelled again.
+- **Q5_1:** a reference with Q5_1 tensors needs the CPU reference fix of pull request #20, which this one does not
+  copy.
 
-| Fixture | Before | After |
+## Measured on his B70 build before the pull request
+
+Not results of the rebased branch. The model: **UD-Q4_K_XL with Q5_1 expert-down tensors**, with its Q4_0 MTP head;
+these are not AutoRound measurements (those are in [autoround.md](autoround.md), with another expert quant). The f32
+reference decodes the same quantized weights, not the BF16 ones.
+
+| Prompt | Before | After |
 |---|---:|---:|
-| Eight fixed IDs, corrected Q5_1 CPU reference, mean KL | 0.11597 | <0.000005 |
-| 209-position workflow, before/after F32 DeltaNet projections, prefill mean KL | 0.07673 | 0.00324 |
-| Same workflow, sequential decode mean KL | 0.04018 | 0.00864 |
-| Tool conversation, forced top-8 sparse attention mean KL | Not a paired measurement | 0.00021 |
+| Eight fixed ids, with the corrected Q5_1 CPU reference: mean KL | 0.11597 | <0.000005 |
+| 209-position workflow, DeltaNet projections in F32: prefill mean KL | 0.07673 | 0.00324 |
+| The same workflow, sequential decode: mean KL | 0.04018 | 0.00864 |
+| Tool conversation, forced top-8 sparse attention: mean KL | not measured as a pair | 0.00021 |
 
-The workflow maxima are 0.19503 prefill and 0.32222 decode. Mean KL passing
-0.015 is not a guarantee for every position. The downstream independent masked
-float-attention fixture passed 74 cases; that historical result must not be
-presented as execution of this rebased branch. The separate AutoRound report
-explicitly identifies its changed expert quant and different measurements.
+- **The workflow's maxima:** 0.19503 prefill, 0.32222 decode. A mean within 0.015 does not hold for every position.
+- **The masked float-attention fixture** passed 74 cases there: a result of his build, not a run of this branch.
+
+## Checked here before the merge (laptop, 2026-11-14)
+
+ISTA-DASLab's Flash Next GSQ-RCO IQ3_S against tools/ref_forward, release 2026.11.14.07 -> merged: precise KL on 160
+code tokens 0.00455 / 0.02056 -> 0.00173 / 0.00221 (prompt / generation); the default mode and the other models
+bit-identical to .07. The rest (maxima, the split, speed, memory, long prompts): [before-after.md](before-after.md),
+"2026-11-14, Flash Next precise mode repaired".
