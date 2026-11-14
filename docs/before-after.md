@@ -80,6 +80,13 @@ That property is what every speed change is held to:
 
 ## Changes, newest first
 
+- **2026-11-14, the direct GPU-to-GPU sums from 0.8x the host link** (was 1.1x; zero/mgpu/engine_tp.h
+  `choose_sums`). Measured by scenic6942 on two Pro B60s, Linux, PCIe 4.0 x8 each (issue #17), the 27B GSQ-RCO
+  IQ3_S, the same build (release 2026.11.14.05) with `ARC_TP_P2P=0` (host memory, what the 1.1x rule chose: 14.1 GB/s
+  direct against 14.2) and `=1` (direct, what 0.8x chooses): `--bench-pp 4096 --n 128`, three prompt runs each,
+  1,383.9 / 1,431.0 / 1,442.2 -> 1,578.5 / 1,630.1 / 1,625.2 tok/s, generation 36.07 -> 37.82; a 4,210-token prompt
+  1,293.3 -> 1,515.3. Accuracy: the logits identical (`cmp` of `--dump-logits`, prompt + 16 tokens).
+
 - **2026-11-14, a split model's sums straight from GPU to GPU** (`ARC_TP_P2P`, auto: chosen from the links timed at
   start; zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums straight between GPUs"). **Speed: not measured.** It needs
   GPUs with peer access (Linux B60s, issue #17); the laptop has one GPU and, under `ARC_TP_SIM`, keeps host memory

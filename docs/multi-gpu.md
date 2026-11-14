@@ -71,7 +71,7 @@ inferzero: links: GPU 0 -> host 12.1 GB/s, host -> GPU 0 11.8 GB/s, -> GPU 1 13.
 inferzero: the GPUs' sums go straight from GPU to GPU (13.0 GB/s directly against 11.8 through host memory)
 ```
 
-The sums go direct when the slowest direct copy is at least 1.1 times the slowest direction of the host links. Then
+The sums go direct when the slowest direct copy is at least 0.8 times the slowest direction of the host links. Then
 every GPU gets an inbox in its own memory, 2 × (N + 1) × chunk × n_embd × 2 bytes (2 GPUs, the 27B at chunk 512:
 31 MB). Its layout is a half of the host buffer:
 - the prompt sums (the f16 reduce-scatter in pieces): a GPU's copy engine writes block k's pieces straight into GPU
@@ -106,6 +106,20 @@ the driver's abort on 3 and 4 B60s (issue #4). A link slower than 4 GB/s gets a 
 on their sums there.
 
 On Windows the B60s report no peer access, so nothing changes there.
+
+Measured on two Pro B60s on Linux (scenic6942, issue #17, both cards on PCIe 4.0 x8; the 27B GSQ-RCO IQ3_S,
+`--bench-pp 4096 --n 128`, three prompt runs each): the links measure 14.1 GB/s direct and 14.2 through host memory.
+
+| Sums | 4K prompt (tok/s) | 4,210-token prompt | Generation (tok/s) |
+|---|---|---|---|
+| through host memory (`ARC_TP_P2P=0`) | 1,383.9 / 1,431.0 / 1,442.2 | 1,293.3 | 36.07 |
+| direct (`ARC_TP_P2P=1`) | 1,578.5 / 1,630.1 / 1,625.2 | 1,515.3 | 37.82 |
+
+The logits are identical (`cmp` of `--dump-logits`, 16 tokens). Direct wins by 13-17 % on prompts at equal link
+speeds: through host memory, each GPU's kernels read the other GPU's parts across PCIe while they compute; direct,
+they read their own memory. The first rule asked for 1.1x and so kept these cards on host memory; since release
+2026.11.14.06 it asks for 0.8x. On MaineTim's board (issue #19: one card on a chipset x4 slot at 2.4 GB/s, direct
+2.4-2.7 GB/s) the sums now go direct too; that link stays the limit there.
 
 A count that does not divide by N is split as evenly as its unit allows, the first GPUs taking one unit more:
 - k-heads in pairs (a pair's v-values are one 256-value block of `ssm_out`'s columns);

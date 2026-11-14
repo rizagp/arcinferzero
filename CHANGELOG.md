@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-14: a split model takes the direct GPU-to-GPU sums at equal link speeds too (issue #17)
+
+- **Multi-GPU (`--gpus`):** the sums go straight from GPU to GPU when the slowest direct copy is at least 0.8x the
+  host link (it was 1.1x). Two Pro B60s on Linux with 14.1 GB/s direct and 14.2 through host memory (issue #17):
+  the 27B's 4K prompt 1,384-1,442 -> 1,578-1,630 tok/s, a 4,210-token prompt 1,293 -> 1,515, generation 36.1 -> 37.8,
+  the logits identical. Each GPU's kernels read their own memory instead of the other GPU's parts across PCIe.
+  Windows (no peer access) and one GPU: unchanged.
+
 ## 2026-11-14: a split model's sums straight from GPU to GPU where the links allow it; `Connection: close` honoured
 
 - **Multi-GPU (`--gpus`):** the engine times every link at start: each GPU to host memory and back and, when the

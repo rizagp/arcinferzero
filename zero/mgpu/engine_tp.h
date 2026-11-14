@@ -1067,8 +1067,11 @@ class TpEngine {
   }
   // How the sums cross between GPUs on this machine, from its links timed once here (16 MB copies, one GPU at a time):
   // through pinned host memory, which every GPU reaches, or straight into the other GPUs' memory (TpComm::p2p) when
-  // the driver reports peer access between every pair and the slowest direct copy is at least 1.1x the slowest
-  // direction of the host links (a sum's bytes cross PCIe once instead of twice). Both, and the choice, go to the log.
+  // the driver reports peer access between every pair and the slowest direct copy is at least 0.8x the slowest
+  // direction of the host links. Both, and the choice, go to the log. (Why direct wins at equal links: through host
+  // memory a GPU's kernels read the other GPUs' parts across PCIe while they compute; direct, they read their own
+  // memory. Two Pro B60s at 14.1 GB/s direct and 14.2 through host, issue #17: the 27B's 4K prompt 1,384-1,442 ->
+  // 1,578-1,630 tok/s, generation 36.1 -> 37.8, the logits identical; the first rule, 1.1x, kept them on host memory)
   // ARC_TP_P2P=0: host memory always; =1: direct whenever peer access is there (under ARC_TP_SIM too, where every
   // inbox is on GPU 0: a test of the data flow). Not with ARC_TP_OVERLAP (its sum thread's copies stay as they are).
   // Failsafe: no memory for the inboxes (2 x (N + 1) x chunk x n_embd x 2 bytes per GPU), host memory.
@@ -1138,7 +1141,7 @@ class TpEngine {
       }
       zlog::eprintf("%s\n", line.c_str());
     }
-    bool use = want == 1 ? peer : want == 0 ? false : (peer && timed && direct >= 1.1 * host);
+    bool use = want == 1 ? peer : want == 0 ? false : (peer && timed && direct >= 0.8 * host);
     std::string why;
     char b[160];
     if (want == 0) why = "ARC_TP_P2P=0";
