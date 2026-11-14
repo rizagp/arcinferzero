@@ -7,6 +7,7 @@
 #include "../zero/gguf_pack.h"
 
 int main(int argc, char** argv) {
+  std::string created;  // (the .tmp once it exists: removed when a step after that fails)
   try {
     if (argc != 5)
       throw std::runtime_error("usage: import_autoround_pack SOURCE.gguf OUTPUT.gguf EXPERTS_BASENAME REVISION");
@@ -45,6 +46,7 @@ int main(int argc, char** argv) {
     // the GGUF (version 3): header, metadata (the source's + 8 of the package's), tensor infos, data
     const std::string temporary = std::string(argv[2]) + ".tmp";
     zpack::Writer out(temporary);
+    created = temporary;
     out.put<uint32_t>(0x46554747);  // "GGUF"
     out.put<uint32_t>(3);
     out.put<uint64_t>(keep.size());
@@ -79,11 +81,16 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "hybrid package: %zu unchanged tensors, %zu virtual expert tensors, %.3f GiB\n", keep.size(),
             names.size(), out.pos() / 1073741824.0);
-    out.close();
+    out.close();  // (throws when the last bytes did not reach the disk: no rename then)
     fs::rename(temporary, argv[2]);  // (written under .tmp first: a failed run leaves no half model)
     return 0;
   } catch (const std::exception& error) {
     fprintf(stderr, "import_autoround_pack: %s\n", error.what());
+    // (the Writer is closed by now, its destructor ran when the exception left the try block)
+    if (!created.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(created, ec);
+    }
     return 1;
   }
 }

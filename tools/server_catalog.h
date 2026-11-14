@@ -561,6 +561,19 @@ static uint64_t device_global_mem() {
 static std::string ctx_cache_file() {
   return app_dir() + ARC_DATA "ctx-auto.txt";
 }
+// (Flash Next's precise mode, whose f16 K/V rows take about twice the bytes of int8 ones: ARC_FN_PRECISE=1, or an
+//  AutoRound package, which runs only in it; in the context key, so a size worked out in one mode is not reused in the
+//  other. Audit 2026-11-14)
+static bool precise_model(const std::string& model) {
+  static const bool env = getenv("ARC_FN_PRECISE") && atoi(getenv("ARC_FN_PRECISE")) != 0;
+  if (env) return true;
+  try {
+    const GgufFile g(model);
+    return !g.get_str("inferzero.autoround.model", "").empty();
+  } catch (const std::exception&) {
+    return false;
+  }
+}
 static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -571,7 +584,7 @@ static std::string ctx_key(const std::string& model, const EngineOptions& eo) {
          (eo.dflash.empty() ? std::string() : eo.mtp_block ? "|dflash" : "|dflash-only") + 
          (eo.slots > 1 ? "|slots" + std::to_string(eo.slots) + "/" + std::to_string(Engine::kSlotCtxFloor) : std::string()) +
          "|md" + std::to_string(eo.mtp_drafts) + "|" +  // (DFlash2 drafter: its weights and buffers; 4-bit V)
-         (eo.min_chunk ? "/" + std::to_string(eo.min_chunk) : std::string()) + "|" + (eo.mtp ? "mtp" : "-") + "|" + (eo.attn_int8 ? "i8" : "f32") + "|" + std::to_string(device_global_mem()) +
+         (eo.min_chunk ? "/" + std::to_string(eo.min_chunk) : std::string()) + "|" + (eo.mtp ? "mtp" : "-") + "|" + (!eo.attn_int8 ? "f32" : precise_model(model) ? "p16" : "i8") + "|" + std::to_string(device_global_mem()) +
          (eo.tp_size > 1 ? "|tp" + std::to_string(eo.tp_size) + (getenv("ARC_TP_SIM") ? "sim" : "") : std::string()) +  // (a split model: shard 0's memory)
          "|kf" + std::string(getenv("ARC_G4_KF16") ? getenv("ARC_G4_KF16") : "") + "/" +
          std::string(getenv("ARC_Q3_KF32") ? getenv("ARC_Q3_KF32") : "") +  // (the float K rows' size)

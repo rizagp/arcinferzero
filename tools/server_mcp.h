@@ -8,7 +8,10 @@
 // Endpoints: GET /v1/mcp[?project=] (servers, switches, tools of the running ones), GET / PUT /v1/mcp/config (the
 // file's text), PUT /v1/mcp/enabled, POST /v1/mcp/start | stop | tools | call.
 // Linux: the program found on PATH, started with posix_spawn in a process group of its own (in place of the job
-// object), its pipes read with poll and a stop flag (so a grandchild holding a pipe never keeps a reader waiting).
+// object), its pipes read with poll and a stop flag (so a grandchild holding a pipe never keeps a reader waiting), its
+// stdin written the same way. The group is ended at a stop, not when the server itself ends: no job object closes with
+// it. The server's end closes the program's stdin, so one that reads it ends by itself; the rest (one that does not,
+// what it started outside its group) is left to a service manager, docs/linux-port.md.
 #pragma once
 #ifdef _WIN32
 #include <windows.h>
@@ -306,6 +309,9 @@ class Client : public std::enable_shared_from_this<Client> {
   pid_t proc_ = -1;  // (and the process group of that id)
   int in_ = -1, out_ = -1, err_ = -1;
   std::atomic<bool> stop_{false};  // (the readers end at the next poll)
+  // (cleanup() under way: a writer waiting for room in the child's stdin gives up within 200 ms, so a child that
+  //  stopped reading never keeps write_mu_, and with it cleanup() and /v1/mcp/stop, waiting)
+  std::atomic<bool> closing_{false};
   // up to cap bytes from fd as they come; false: the end, an error, or stop_
   bool read_some(int fd, char* b, size_t cap, size_t& n) {
     for (;;) {
@@ -338,6 +344,12 @@ class Client : public std::enable_shared_from_this<Client> {
     plat::ignore_sigpipe();
     const std::string prog = find_program(cfg_.command);
     if (prog.empty()) throw std::runtime_error("cannot find the program \"" + cfg_.command + "\" (not in PATH)");
+    {  // (checked here, as the terminal does: a folder that is not there failed in posix_spawn's chdir, said as the
+       //  program's own error, "cannot start ... (No such file or directory)")
+      std::error_code ec;
+      if (!cfg_.cwd.empty() && !fs::is_directory(cfg_.cwd, ec))
+        throw std::runtime_error("the folder in \"cwd\" of mcp.json is not there: " + cfg_.cwd);
+    }
     // the environment: this server's, with the config's variables set over it (as on Windows)
     std::vector<std::pair<std::string, std::string>> envv;
     for (char** e = environ; e && *e; ++e) {
@@ -397,7 +409,9 @@ class Client : public std::enable_shared_from_this<Client> {
     }
     proc_ = pid;
     in_ = pi[1], out_ = po[0], err_ = pe[0];
+    fcntl(in_, F_SETFL, fcntl(in_, F_GETFL) | O_NONBLOCK);  // (this end only: send() waits for room in steps, closing_)
     stop_ = false;
+    closing_ = false;
     dead_ = false;
     {
       std::lock_guard<std::mutex> lk(mu_);
@@ -526,6 +540,7 @@ class Client : public std::enable_shared_from_this<Client> {
 
   void cleanup() {
 #ifndef _WIN32
+    closing_ = true;  // (a writer stuck on a full stdin lets go of write_mu_)
     {
       std::lock_guard<std::mutex> lk(write_mu_);  // (the reader thread may be answering a ping)
       if (in_ >= 0) ::close(in_), in_ = -1;  // (stdin closed: a well-behaved server ends by itself)
@@ -695,8 +710,14 @@ class Client : public std::enable_shared_from_this<Client> {
         throw std::runtime_error("the server closed its input");
 #else
     for (size_t off = 0; off < s.size();) {
+      if (closing_) throw std::runtime_error("the server is being stopped");
       const ssize_t w = ::write(in_, s.data() + off, std::min<size_t>(s.size() - off, 1u << 20));
       if (w < 0 && errno == EINTR) continue;
+      if (w < 0 && errno == EAGAIN) {  // (its stdin full, the child not reading: waited for in steps of 200 ms)
+        pollfd p{in_, POLLOUT, 0};
+        poll(&p, 1, 200);
+        continue;
+      }
       if (w <= 0) throw std::runtime_error("the server closed its input");
       off += (size_t)w;
     }
@@ -794,7 +815,9 @@ struct Manager {
   std::map<std::string, std::shared_ptr<Client>> clients;
 };
 inline Manager& manager() {
-  static Manager* m = new Manager;  // (never destroyed: the job objects end the processes with this one)
+  // (never destroyed: on Windows the job objects end the processes with this one. On Linux nothing ends them: each
+  //  sees its stdin close and should end by itself, the rest is left to a service manager, docs/linux-port.md)
+  static Manager* m = new Manager;
   return *m;
 }
 // the server's client (made, not started; a changed config replaces a running one); null: not in mcp.json

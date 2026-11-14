@@ -34,12 +34,19 @@ struct Pdf {
       if (t->path.empty()) return false;
       const plat::ProcResult r = plat::run_program({"pdfinfo", plat::path_arg(t->path)}, "", 60000, 1 << 20);
       if (!r.started) { err = r.error + " (Linux renders PDF pages with poppler: apt install poppler-utils)"; return false; }
-      const size_t k = r.out.find("Pages:");
+      // (the last line that starts with "Pages:": the title, subject and author come before it and may hold a line
+      //  break and "Pages:" of their own)
+      size_t k = std::string::npos;
+      for (size_t at = 0; (at = r.out.find("Pages:", at)) != std::string::npos; ++at)
+        if (at == 0 || r.out[at - 1] == '\n') k = at;
       if (r.exit_code != 0 || k == std::string::npos) {
         err = "not a PDF poppler can read" + (r.err.empty() ? std::string() : ": " + plat::last_line(r.err));
         return false;
       }
-      n = std::max(0, atoi(r.out.c_str() + k + 6));
+      // (at most kMaxPages: the OCR reads 50 pages a request and goes on with "lanjut", so every page counts, but a
+      //  forged count must not size the list below or the page-size run; 100,000 pages' sizes fit its 16 MB of output)
+      constexpr long kMaxPages = 100000;
+      n = (int)std::clamp(strtol(r.out.c_str() + k + 6, nullptr, 10), 0L, kMaxPages);
       // (every page's size in one run: "Page    3 size: 595.28 x 841.89 pts (A4)"; a page not listed keeps Letter)
       sizes.assign((size_t)n, {612.0, 792.0});
       if (n > 0) {

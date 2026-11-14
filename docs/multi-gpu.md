@@ -554,8 +554,17 @@ A GPU that stops answering would otherwise leave the others at a barrier for goo
 - **Barrier timeout:** a shard waiting longer than `ARC_TP_TIMEOUT` seconds (default 120, far beyond one layer of a
   prompt chunk; 5 s to an hour) stops every shard; the error names the GPUs that did not come.
 - **GPU waits** (`zrt::sync` on a split model's GPUs) wait in pieces of 100 ms: they give up after the same timeout,
-  or as soon as another shard failed. One GPU waits as before, with no limit.
+  or, on GPUs 1 and up, as soon as another shard failed. GPU 0's waits leave only by the timeout: Whisper and
+  Qwen3-ASR share that GPU, and their waits must not be cut short. One GPU waits as before, with no limit.
 - **A thread stuck in the driver** 10 s after a failure is given up on (left running, its shard's memory left).
+- **Since the audit of 2026-11-14:**
+  - unloading frees the shards within one limit (`ARC_TP_TIMEOUT` + 30 s, failure or not), and a thread given up on
+    there touches nothing of the freed model when its free ends (before: a free after a failure was given up on
+    after 10 s and its thread wrote into freed memory; a GPU that stopped while freeing hung the unload);
+  - `ARC_TP_OVERLAP`'s sum thread is waited for within the same limit (in serverz nothing else watches shard 0);
+  - the expert prefetch thread's copy waits take its GPU's limit;
+  - a timed copy of the link test that does not finish leaves its buffers and the model, as a GPU fault does;
+  - out of device memory on a GPU shrinks that GPU's own expert cache (`XCache::shrink_this_gpu`).
 - **No progress at all:** a pass, slot change or mirrored server call during which no barrier completes for
   `ARC_TP_TIMEOUT` + 30 s is given up on the same way, with no shard having failed: a shard stuck *inside* a driver
   call (not in a wait) throws nothing, and the request waited forever (self audit 2026-11-03, MG1). Loads and frees

@@ -7,7 +7,8 @@
 // New (zero/kernels/ops_ds41.cl): the hyper-connection mixes with Sinkhorn, collapse / expand of the 4 streams,
 // Engram, the window + compressed-row attention with sinks, the compressor, the indexer and its top-k.
 // First version: f32 caches and plain kernels, checked against tools/ref_forward; the server's snapshots (ds_save) and
-// saved conversations (ds_save_state); not yet slots, drafters, images or multi-GPU for this architecture.
+// saved conversations (ds_save_state); over several GPUs since 2026-11-14 (the routed experts split, the rest whole:
+// zero/mgpu/engine_tp_shard.h); not yet slots, drafters or images for this architecture.
 
   struct DsHp {
     int QL = 0, G = 0, OL = 0, W = 0, IH = 0, ID = 0, TOPK = 0, HC = 4, MIX = 24, iters = 20;
@@ -131,7 +132,7 @@
     // (the kernels' assumptions: ops_ds41.cl ds_attn holds 512-wide heads in 16 lanes, ds_mix 4 streams, the GEMMs K % 256)
     if (hp.head_dim != 512 || hp.n_head_kv != 1 || hp.n_rot != 64 || d.HC != 4 || hp.n_embd % 256 || d.QL % 256 ||
         hp.n_head % d.G || (hp.n_head / d.G * hp.head_dim) % 256 || (d.G * d.OL) % 256 || d.OL % 16 || d.ID != 128 ||
-        d.IH % 16 || d.IH * d.ID % 256 || d.TOPK > 2048 || d.cand_k > 2048 || hp.n_expert % 16 ||
+        d.IH % 16 || d.IH * d.ID % 256 || d.TOPK > 2048 || d.cand_k > 2048 || d.cand_bs < 1 || hp.n_expert % 16 ||
         hp.n_expert_used > 16 || hp.n_ff_exp % 256 || d.W < 1 || (d.ncol * d.PD) % 256 || d.ngram > 8 ||
         (int)d.mult.size() < d.ngram * (int)d.ple_layers.size() || (int)d.offs.size() < d.ncol * (int)d.ple_layers.size() ||
         (int)d.primes.size() < d.ncol * (int)d.ple_layers.size() || d.ple_layers.size() > 2)

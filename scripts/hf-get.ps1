@@ -79,13 +79,27 @@ function Get-HfFiles([string]$Repo, [string[]]$Files, [string]$Hub = (Get-HfHub)
     $have = if (Test-Path $dst) { (Get-Item $dst).Length } elseif (Test-Path "$dst.part") { (Get-Item "$dst.part").Length } else { 0 }
     $need += [math]::Max([int64]0, [int64]$e.size - $have)
   }
+  # (best effort: when the drive's free space cannot be found, a relative path for one, the check is skipped; before,
+  #  Split-Path -Qualifier's error on a relative or UNC path stopped every download. A UNC share, \\server\share: its
+  #  free space from Windows' FileSystemObject, as [IO.DriveInfo] refuses such a path in PowerShell 5.1 and 7 alike)
+  $free = $null
+  $where = ""
   try {
-    $drive = Get-PSDrive -Name ((Split-Path $snap -Qualifier).TrimEnd(":")) -ErrorAction Stop
-    if ($need -gt $drive.Free) {
-      throw ("these files need {0:N1} GB more, and {1}: has {2:N1} GB free: make room, or set HF_HOME to a folder on a larger drive" -f ($need / 1e9), $drive.Name, ($drive.Free / 1e9))
+    if ($snap -match '^\\\\[^\\?.]') {
+      $where = [IO.Path]::GetPathRoot($snap).TrimEnd('\')
+      $free = (New-Object -ComObject Scripting.FileSystemObject).GetDrive($where).AvailableSpace
+    } else {
+      $drive = Get-PSDrive -Name ((Split-Path $snap -Qualifier -ErrorAction Stop).TrimEnd(":")) -ErrorAction Stop
+      $free = $drive.Free
+      $where = "$($drive.Name):"
     }
-    if ($need -gt 0) { Write-Host ("    {0:N1} GB to download ({1}: {2:N1} GB free)" -f ($need / 1e9), $drive.Name, ($drive.Free / 1e9)) }
-  } catch [System.Management.Automation.DriveNotFoundException] {}
+  } catch { $free = $null }
+  if ($null -ne $free) {
+    if ($need -gt $free) {
+      throw ("these files need {0:N1} GB more, and {1} has {2:N1} GB free: make room, or set HF_HOME to a folder on a larger drive" -f ($need / 1e9), $where, ($free / 1e9))
+    }
+    if ($need -gt 0) { Write-Host ("    {0:N1} GB to download ({1} {2:N1} GB free)" -f ($need / 1e9), $where, ($free / 1e9)) }
+  }
   foreach ($f in $Files) {
     $e = $tree | Where-Object { $_.path -eq $f } | Select-Object -First 1
     if (-not $e) { throw "$Repo has no file $f" }

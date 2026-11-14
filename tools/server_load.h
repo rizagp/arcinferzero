@@ -330,13 +330,19 @@ static std::unique_ptr<Loaded> load_model(const std::string& model, const std::s
   if (!eo.mtp) layout += "-std";
   if (eo.mtp && !eo.dflash.empty() && !eo.mtp_block) layout += "-nomtp";
   if (L->eng->hp.gemma) layout += "-q2";  // (Gemma 4: two-pass states; the one-pass ones of before 2026-10-22 stay unused)
-  if (so.prefix_cache && eo.attn_int8) {  // %USERPROFILE%\.inferzero\prefix\<model>-<size>[<layout>]
+  // (the engine's own attention mode, not eo's: precise Flash Next and every AR4 model turn int8 attention off in the
+  //  engine, whose states then cannot be saved; with eo's the caches opened, saved nothing, and deleted the files the
+  //  same model had saved in its fast mode as unreadable. Audit 2026-11-14)
+  const bool saveable = eo.attn_int8 && L->eng->opt.attn_int8;
+  if (eo.attn_int8 && !saveable && (so.prefix_cache || so.sess_gb > 0))
+    zlog::eprintf("inferzero: the system-prompt cache and saved conversations are off for this model (precise mode: float attention)\n");
+  if (so.prefix_cache && saveable) {  // %USERPROFILE%\.inferzero\prefix\<model>-<size>[<layout>]
     std::error_code ec;
     const std::filesystem::path mp(model);
     srv.open_prefix_cache(app_dir() + ARC_DATA "prefix/" + mp.stem().string() + "-" +
                           std::to_string(std::filesystem::file_size(mp, ec)) + layout, so.prefix_gb);
   }
-  if (so.sess_gb > 0 && eo.attn_int8) {
+  if (so.sess_gb > 0 && saveable) {
     // saved conversations of this model file: %USERPROFILE%\.inferzero\sessions\<model>-<size>
     std::error_code ec;
     const std::filesystem::path mp(model);

@@ -3,7 +3,10 @@
 // (see server.cpp): a server opened to the network with --host never runs a command for another computer.
 // The command runs in a job object, so a timeout ends it and every process it started; its output (stdout and stderr
 // together) is kept up to kMaxOut: the start and the end of a longer one.
-// Linux: bash instead of PowerShell, a process group instead of the job object, the same session state file.
+// Linux: bash instead of PowerShell, a process group instead of the job object, the same session state file. (The
+// group is ended at a timeout or a cancel, but not when the server itself ends, a crash or a kill: no job object closes
+// with it. A command still running then loses its output pipe, so it ends at its next write (SIGPIPE) or runs on to
+// its own end; a service manager ends the rest, docs/linux-port.md)
 #pragma once
 #ifdef _WIN32
 #include <windows.h>
@@ -124,21 +127,27 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
     }
   }
   // the script in a file of its own (no length limit, and the command's own stdin stays /dev/null), and the files the
-  // EXIT trap writes the folder and the environment to
-  auto tmp = [](const char* name) {
-    std::string p = plat::temp_dir() + "/inferzero-" + name + "-XXXXXX";
-    const int fd = mkstemp(p.data());
-    if (fd < 0) throw std::runtime_error("cannot make a temporary file");
-    ::close(fd);
-    return p;
-  };
-  const std::string script = tmp("cmd"), out_pwd = state.empty() ? "" : tmp("pwd"), out_env = state.empty() ? "" : tmp("env");
+  // EXIT trap writes the folder and the environment to; each one in `gone` as soon as it is made (a later mkstemp that
+  // throws left the earlier files behind)
   struct Gone {
     std::vector<std::string> p;
     ~Gone() {
       for (const std::string& s : p) if (!s.empty()) unlink(s.c_str());
     }
-  } gone{{script, out_pwd, out_env}};
+  } gone;
+  gone.p.reserve(3);  // (no allocation between a file's making and its entry)
+  auto tmp = [&gone](const char* name) {
+    gone.p.push_back(plat::temp_dir() + "/inferzero-" + name + "-XXXXXX");
+    std::string& p = gone.p.back();
+    const int fd = mkstemp(p.data());
+    if (fd < 0) {
+      p.clear();  // (no file made: the name, which mkstemp may have changed, is not removed)
+      throw std::runtime_error("cannot make a temporary file");
+    }
+    ::close(fd);
+    return p;
+  };
+  const std::string script = tmp("cmd"), out_pwd = state.empty() ? "" : tmp("pwd"), out_env = state.empty() ? "" : tmp("env");
   {
     std::string body;
     if (!state.empty())
@@ -199,12 +208,15 @@ inline Result run(const std::string& command, const std::string& cwd, const std:
   fcntl(po[0], F_SETFL, fcntl(po[0], F_GETFL) | O_NONBLOCK);
   OutKeep keep;
   char b[8192];
-  auto drain = [&] {  // (false: the pipe ended)
-    for (;;) {
+  // (false: the pipe ended. At most 1 MB a call: a command writing as fast as it is read, `yes`, kept the loop going
+  //  for good, the timeout and the cancel never asked; after kill(-pid) too, a process outside the group writing)
+  auto drain = [&] {
+    for (size_t got = 0; got < ((size_t)1 << 20);) {
       const ssize_t n = ::read(po[0], b, sizeof b);
-      if (n > 0) { keep.add(b, (size_t)n); continue; }
+      if (n > 0) { keep.add(b, (size_t)n); got += (size_t)n; continue; }
       return !(n == 0 || (errno != EAGAIN && errno != EINTR));
     }
+    return true;
   };
   const auto deadline = t0 + std::chrono::seconds(timeout_s);
   bool open = true, exited = false, killed = false;

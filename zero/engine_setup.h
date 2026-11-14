@@ -120,7 +120,9 @@
       throw std::runtime_error("unsupported Qwen3.5 attention: " + std::to_string(hp.n_head / hp.n_head_kv) + " q heads per kv head");
     // (hc_down1 / hc_up1: hc_n divides the 8 K slices and fits hc_rinv_'s 8 rows x 8; the inject logits within the
     //  padded low rank, which hc_up1 writes)
-    if (hp.hc && (hp.hc_n < 1 || 8 % hp.hc_n || hp.hc_lr <= 0 || hp.hc_lr + hp.hc_n > 512 ||
+    // (hc_n x n_embd = 10240: kernels/ops_flashnext.cl HCK, the size of hc_down1 / hc_up1's local rows; another shape
+    //  would write past them, audit 2026-11-14)
+    if (hp.hc && (hp.hc_n < 1 || 8 % hp.hc_n || hp.hc_n * hp.n_embd != 10240 || hp.hc_lr <= 0 || hp.hc_lr + hp.hc_n > 512 ||
                   hp.hc_lr + hp.hc_n > padded_k(hp.hc_lr) ||
                   (hp.ple_layer >= 0 && !hp.recurrent(hp.ple_layer))))
       throw std::runtime_error("unsupported hyper-connection shape");

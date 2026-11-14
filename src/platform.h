@@ -91,14 +91,17 @@ class FileMap {
     file_ = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     return file_ != INVALID_HANDLE_VALUE;
 #else
-    // (no FILE_SHARE_READ lock on Linux: a file rewritten while mapped faults (SIGBUS) where Windows refused to open)
-    fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
+    // (no FILE_SHARE_READ lock on Linux: a file rewritten while mapped faults (SIGBUS) where Windows refused to open.
+    //  O_NONBLOCK: a FIFO at the path would block the open until a writer came; only a regular file is mapped, as
+    //  SeqFile::open)
+    fd_ = ::open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
     if (fd_ < 0) return false;
     struct stat st{};
-    if (fstat(fd_, &st) != 0 || S_ISDIR(st.st_mode)) {  // (a folder: refused here, as CreateFileA refuses it)
+    if (fstat(fd_, &st) != 0 || !S_ISREG(st.st_mode)) {  // (a folder, as CreateFileA refuses it; a FIFO, a device)
       close();
       return false;
     }
+    fcntl(fd_, F_SETFL, fcntl(fd_, F_GETFL) & ~O_NONBLOCK);
     return true;
 #endif
   }
@@ -195,6 +198,7 @@ class AsyncFile {
       if (!(ev_[s] = CreateEventW(nullptr, TRUE, FALSE, nullptr))) return 2;
 #else
     fd_ = ::open(path, O_RDONLY | O_DIRECT | O_CLOEXEC);
+    direct_ = fd_ >= 0;
     if (fd_ < 0 && errno == EINVAL) fd_ = ::open(path, O_RDONLY | O_CLOEXEC);  // (a filesystem without O_DIRECT: cached)
     if (fd_ < 0) return 1;
     {  // (a filesystem that takes O_DIRECT at open but refuses its reads, EINVAL: a block larger than 4 KB, some FUSE
@@ -207,6 +211,7 @@ class AsyncFile {
         if (r < 0 && e == EINVAL) {
           ::close(fd_);
           fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
+          direct_ = false;
           if (fd_ < 0) return 1;
         }
       }
@@ -225,7 +230,7 @@ class AsyncFile {
     ResetEvent(ev_[s]);
     return ReadFile(h_, dst, (DWORD)n, nullptr, &ov) || GetLastError() == ERROR_IO_PENDING;
 #else
-    size_t got = 0;
+    size_t got = 0, end = 0;  // (end: the furthest byte read so far)
     ok_[s] = false;
     err_[s] = 0;  // (no number left from an earlier read of this slot)
     while (got < n) {
@@ -235,11 +240,16 @@ class AsyncFile {
         err_[s] = (unsigned long)errno;
         return false;
       }
-      if (r == 0) {  // (the file ends first: started, and finish() says it failed, as a short read)
+      got += (size_t)r;
+      if (r == 0 || got <= end) {  // (the file ends first: started, and finish() says it failed, as a short read)
         err_[s] = EIO;
         return true;
       }
-      got += (size_t)r;
+      end = got;
+      // (O_DIRECT: a short read that ends inside a 4 KB block, the file's end there or a partial read, is tried again
+      //  from that block's start, not from its last byte: an unaligned offset, buffer and length, which the kernel
+      //  refuses (EINVAL). No progress past `end` then: the file's end, as above)
+      if (direct_ && got < n && (got & 4095)) got &= ~(size_t)4095;
     }
     ok_[s] = true;
     return true;
@@ -295,6 +305,7 @@ class AsyncFile {
 #else
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
+    direct_ = false;
 #endif
     n_ = 0;
   }
@@ -307,6 +318,7 @@ class AsyncFile {
   OVERLAPPED ov_[kMaxSlots] = {};
 #else
   int fd_ = -1;
+  bool direct_ = false;  // (opened with O_DIRECT: reads at 4 KB-aligned offsets only)
   unsigned long err_[kMaxSlots] = {};  // (per slot: the two reading threads use slots of their own)
   bool ok_[kMaxSlots] = {};
 #endif

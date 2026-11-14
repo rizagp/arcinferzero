@@ -175,6 +175,21 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
   Checked: Linux (WSL, the 4B): the server test, the terminal (with `set --` and the child's open files), project
   folders, the model list from `~/.cache` with no `HF_*` set; Windows: the CI build and its 11 unit tests, the server
   and terminal tests, the 4B's logits bit-identical to release 2026.11.14.01; the server's replies the same on both.
+- 2026-11-14: **what is left on Linux: child processes when the server itself ends.** On Windows the job objects end
+  the terminal's commands and the MCP servers with the server, a crash or a kill included. On Linux a process group is
+  ended at a timeout, a cancel or a stop, but nothing ends it when the server ends (no signal handler or
+  `PR_SET_PDEATHSIG`, on purpose):
+  - an MCP server sees its stdin close and, reading it as the protocol wants, ends by itself; one that does not, and
+    what it started, runs on;
+  - a terminal command still running loses its output pipe: it ends at its next write (`SIGPIPE`) or runs to its end;
+  - what either started in a session of its own (`setsid`, a daemon) runs on in any case;
+  - Ctrl+C in a terminal reaches the server's own process group only, not its children's groups.
+
+  A service manager covers it: under systemd every process the service starts stays in its control group, and with
+  the default `KillMode=control-group` all that are left are killed when the service stops or its main process ends
+  (a crash too, before a `Restart=`). Step 4's systemd unit relies on that; a server started by hand can be run the
+  same way with `systemd-run --user` (a transient service, not `--scope`, which stays until its last process ends).
+  A container ends everything with its main process too.
 - 2026-11-13 / 14: **the first native Linux numbers** (users' builds of main from source, the commit not stated):
   - two Pro B60s on Ubuntu 26.04, PCIe 4.0 x8 each (scenic6942, issue #17): the 27B GSQ-RCO IQ3_S's 4K prompt 1,338
     tok/s on one card. The driver reports peer access: 14.1 GB/s GPU to GPU directly, 14.2 through host memory. Over

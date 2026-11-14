@@ -28,9 +28,9 @@ def main():
         parser.error('private experimental AR4_128 format: explicitly pass --experimental-format')
     if args.output.exists():
         raise ValueError('refusing to overwrite an existing expert file')
-    info = json.loads((args.source / 'model-info.json').read_text())
-    config = json.loads((args.source / 'config.json').read_text())
-    weight_map = json.loads((args.source / 'model.safetensors.index.json').read_text())['weight_map']
+    info = json.loads((args.source / 'model-info.json').read_text(encoding='utf-8'))
+    config = json.loads((args.source / 'config.json').read_text(encoding='utf-8'))
+    weight_map = json.loads((args.source / 'model.safetensors.index.json').read_text(encoding='utf-8'))['weight_map']
     files = {item['rfilename']: item for item in info['siblings']}
     quant = config['quantization_config']
     if info['id'] != 'Intel/Qwen3.8-Flash-Next-W4A16-AutoRound' or info['sha'] != REVISION:

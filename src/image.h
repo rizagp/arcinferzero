@@ -72,12 +72,13 @@ inline std::vector<uint8_t> from_data_url(const std::string& url) {
 
 #ifndef _WIN32
 // (Linux) ffmpeg decodes the bytes from stdin and writes the first frame as binary PPM (P6: "P6 w h 255", then the RGB
-// rows), the same 24-bit RGB rows WIC's converter gives; the same size limits before the pixels are kept.
+// rows), the same 24-bit RGB rows WIC's converter gives; the same size limits before the pixels are kept. (Its input
+// may open only the pipe: bytes that are a playlist must not make ffmpeg open URLs or files)
 inline ImageRGB decode(const std::vector<uint8_t>& bytes) {
   if (bytes.empty()) throw std::runtime_error("cannot decode image");
   const plat::ProcResult r = plat::run_program(
-      {"ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "image2pipe", "-vcodec", "ppm",
-       "-pix_fmt", "rgb24", "pipe:1"},
+      {"ffmpeg", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "pipe", "-i", "pipe:0", "-frames:v", "1", "-f",
+       "image2pipe", "-vcodec", "ppm", "-pix_fmt", "rgb24", "pipe:1"},
       std::string((const char*)bytes.data(), bytes.size()), 60000, (size_t)200 << 20);
   if (!r.started) throw std::runtime_error("cannot decode image: " + r.error + " (Linux decodes images with ffmpeg: apt install ffmpeg)");
   if (r.timed_out || r.cut || r.exit_code != 0 || r.out.size() < 11 || r.out.compare(0, 2, "P6") != 0)

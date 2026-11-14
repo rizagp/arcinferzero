@@ -215,7 +215,14 @@ inline std::vector<Entry> walk(const Project& p, size_t limit, bool& more) {
     e.rel = fs::relative(it->path(), root, ec).generic_string();
     e.bytes = it->file_size(ec);
     const auto t = it->last_write_time(ec);
+#ifdef _WIN32
     e.modified = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count() - 11644473600LL;
+#else
+    // (unix seconds through clock_cast, as server_files.h: libstdc++'s file clock does not count from 1601 as MSVC's,
+    //  and the subtraction above gave dates around the year 1453)
+    e.modified = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::clock_cast<std::chrono::system_clock>(t).time_since_epoch()).count();
+#endif
     out.push_back(e);
   }
   std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) { return a.modified > b.modified; });

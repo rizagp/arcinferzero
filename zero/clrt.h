@@ -987,10 +987,11 @@ inline cl_int clEnqueueNDRangeKernel(cl_command_queue, cl_kernel k, cl_uint dim,
   }
   ze_result_t r = zeCommandListAppendLaunchKernel(zrt::imm(), k->k, &gc, sig, 0, nullptr);
   static const long fake_oom = getenv("ARC_FAKE_OOM") ? atol(getenv("ARC_FAKE_OOM")) : 0;  // (test: launch N "fails")
-  static long launches = 0;
-  if (fake_oom && ++launches % fake_oom == 0 && r == ZE_RESULT_SUCCESS) {
+  static std::atomic<long> launches{0};  // (several threads launch: a split shard's main list and its sum thread)
+  const long nth = fake_oom ? ++launches : 0;
+  if (fake_oom && nth % fake_oom == 0 && r == ZE_RESULT_SUCCESS) {
     zrt::sync();  // (the kernel was appended: let it finish, then report the failure as if it had not been)
-    zlog::eprintf("(test: launch %ld of %s reported as out of device memory)\n", launches, k->name.c_str());
+    zlog::eprintf("(test: launch %ld of %s reported as out of device memory)\n", nth, k->name.c_str());
     if (zrt::oom_hook && zrt::oom_hook()) return CL_SUCCESS;
   }
   for (int i = 0; r == (ze_result_t)0x70000003 && i < 8 && zrt::oom_hook && zrt::oom_hook(); ++i)  // (out of device memory)

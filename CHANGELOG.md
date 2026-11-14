@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-11-14: a pair audit (DeepSeek-V4.1 through Pi and Claude) and its fixes
+
+Six parts reviewed twice by reviewers that did not see each other's results: the engine since the morning's audit, the
+tools and scripts, the contributor pull requests, the Linux port, the web UI and the multi-GPU failsafes.
+[docs/audit-2026-11-14-pair.md](docs/audit-2026-11-14-pair.md) lists every finding, who found it, the verdict and the
+fix. The logits stay bit-identical; nothing found changes a model's results.
+
+- **Multi-GPU failsafes:**
+  - **Unloading a split model:**
+    - after a failure, a shard's free that took over 10 s was given up on, and its thread then wrote into the freed
+      model;
+    - without one, a GPU that stopped while freeing hung the unload;
+    - now one limit for the frees, and a thread given up on touches nothing of the model when its job ends.
+  - **Waits:** the overlap's sum thread and the expert prefetch's copies now have a limit.
+  - **The link test:** a timed copy that does not finish keeps its buffers.
+  - **The direct sums' inboxes** no longer take the first pass's sum buffers' room.
+  - **Smaller:** `~XCache` throws nothing; a leaked model's caches no longer shadow GPU 0's.
+- **Precise mode and AR4:**
+  - precise mode is per engine;
+  - the system-prompt cache and saved conversations are off in precise mode, where the server had deleted files the
+    model saved in its fast mode;
+  - the `--ctx auto` key records precise mode;
+  - a Flash Next shape other than `hc_n × n_embd = 10240` is refused.
+- **DeepSeek-V4.1:**
+  - `ARC_TP_ATT_QSPLIT=1` no longer applies to it;
+  - a `candidate_block_size` of 0 is refused.
+- **Scripts:**
+  - `setup -Yes` was reset by the AutoRound script (its functions moved to `scripts/autoround.ps1`);
+  - deleting the shards resolved symlinks against the wrong folder;
+  - free-space checks broke UNC and relative cache paths;
+  - `HOME="~"` looped at server start.
+- **Linux:**
+  - the terminal ignored its timeout while output kept coming;
+  - file dates came out around 1453;
+  - ffmpeg allowed every protocol on untrusted bytes;
+  - an MCP child that stopped reading hung its stop;
+  - PDF page counts were read from anywhere in pdfinfo's output;
+  - FIFOs blocked a model's open.
+- **Web UI:**
+  - a deleted chat came back through its queued messages;
+  - messages typed during Compact were never sent;
+  - the folder picker failed on Linux;
+  - images a tool showed split turns;
+  - Enter during an IME composition sent the message;
+  - and smaller ones.
+- **Left on purpose:**
+  - the layer table's padding compare (pull request #24 fixes it; both reviewers judge it safe to merge);
+  - the Windows half of the MCP stop deadlock;
+  - Linux children outliving a killed server (documented).
+
 ## 2026-11-14: Flash Next with Intel's AutoRound INT4 experts in one step (`setup -Models flash-ar4`)
 
 - **`scripts/get-autoround.ps1`** (and `setup -Models flash-ar4`): Intel's AutoRound checkpoint is safetensors, so it

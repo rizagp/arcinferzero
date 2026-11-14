@@ -196,7 +196,13 @@ struct XCache {
     // (the hook stays installed: with no cache left it finds none and returns false, as no hook did)
     if (active() == this) active() = nullptr;
     on_gpu_drop(this);
-    zrt::sync();
+    // (a split model's GPU that does not finish: GpuWaitError from a destructor ended the process; its memory is left
+    //  instead, as a stuck shard's. Audit 2026-11-14)
+    try {
+      zrt::sync();
+    } catch (const std::exception&) {
+      return;
+    }
     for (Pool& P : pools) {
       const int per = (int)std::max<uint64_t>(1, (1ull << 30) / std::max<uint64_t>(1, P.rec));
       for (size_t c = 0; c < P.chunks.size(); ++c) {
@@ -674,7 +680,11 @@ struct XCache {
     // (the layer's record, not the pool's padded slot: a source in the RAM tier holds only the record)
     const uint64_t rec = st.layers[X].rec;
     try {
-    pf_ = std::thread([this, todo = std::move(todo), h, cc, rec, X, ev, pev] {
+    pf_ = std::thread([this, todo = std::move(todo), h, cc, rec, X, ev, pev, dev = &zrt::D(), guarded = zrt::tp_guarded] {
+      // (its GPU and that GPU's wait limits, as the thread that started it: a split model's copy engine that hangs
+      //  ends this wait with an error instead of holding join() for good; one GPU waits as before, without a limit)
+      zrt::cur = dev;
+      zrt::tp_guarded = guarded;
       const auto t0 = std::chrono::steady_clock::now();
       std::vector<ExpertStore::Req> reqs;
       try {
@@ -684,7 +694,7 @@ struct XCache {
       for (size_t b0 = 0, r = 0; b0 < todo.size(); b0 += R, ++r) {
         const int p = (int)(r & 1);
         ze_event_handle_t pe = pev[p];
-        if (r >= 2) ZE_CHECK(zeEventHostSynchronize(pe, UINT64_MAX));
+        if (r >= 2) zrt::event_wait(pe);
         ZE_CHECK(zeEventHostReset(pe));
         char* base = stage[h] + (size_t)p * R * stage_rec;
         const size_t b1 = std::min(todo.size(), b0 + R);
@@ -696,10 +706,10 @@ struct XCache {
         ZE_CHECK(zeCommandListAppendBarrier(cc, pe, 0, nullptr));
       }
       ZE_CHECK(zeCommandListAppendBarrier(cc, ev, 0, nullptr));  // (signalled once every copy above is done)
-      ZE_CHECK(zeCommandListHostSynchronize(cc, UINT64_MAX));
+      zrt::list_wait(cc);
       } catch (const std::exception& e) {  // (the main list must not wait for the event forever; join() throws)
         pf_err_ = std::string("expert prefetch: ") + e.what();
-        zeCommandListHostSynchronize(cc, UINT64_MAX);
+        try { zrt::list_wait(cc); } catch (const std::exception&) {}  // (a GPU that hangs: its copies may still run)
         zeEventHostSignal(ev);
       }
       pf_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

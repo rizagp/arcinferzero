@@ -189,10 +189,21 @@ struct Engine::TpOverlap {
     }
     return evs[used++];
   }
-  // (the queue empty and no job running; the first error, cleared)
-  std::exception_ptr wait_idle() {
+  // (the queue empty and no job running; the first error, cleared. limit_s > 0: given up on after that, *gave_up set:
+  //  a sum thread stuck in a host or driver wait otherwise held its shard's thread for good, and in serverz shard 0's
+  //  part of a call has no watchdog, so the server hung; audit 2026-11-14)
+  std::exception_ptr wait_idle(double limit_s = 0, bool* gave_up = nullptr) {
     std::unique_lock<std::mutex> lk(mu);
-    idle_cv.wait(lk, [&] { return q.empty() && !busy; });
+    auto idle = [&] { return q.empty() && !busy; };
+    if (limit_s > 0) {
+      if (!idle_cv.wait_for(lk, std::chrono::duration<double>(limit_s), idle)) {
+        if (gave_up) *gave_up = true;
+        return std::make_exception_ptr(zrt::GpuWaitError("the split model's sum thread did not finish within " +
+                                                         std::to_string((int)limit_s) + " s (a GPU hangs?)"));
+      }
+    } else {
+      idle_cv.wait(lk, idle);
+    }
     std::exception_ptr e = err;
     err = nullptr;
     return e;
@@ -667,9 +678,21 @@ inline void Engine::tpo_chunk(int c) {
     o.pend[c] = nullptr;
   }
 }
+// (the sum thread given up on: the model faulted, so it is never freed while that thread may still use it, TpHold)
+inline void Engine::tpo_gave_up() {
+  tp_->fault = true;
+  int none = -1;
+  tp_->first_failed.compare_exchange_strong(none, opt.tp_rank);
+  tp_->failed = true;
+}
 inline void Engine::tpo_join() {
   if (!tpo_ || !tpo_->live) return;
-  std::exception_ptr e = tpo_->wait_idle();
+  bool gave_up = false;
+  std::exception_ptr e = tpo_->wait_idle(tp_->timeout_s + 30, &gave_up);
+  if (gave_up) {
+    tpo_gave_up();
+    std::rethrow_exception(e);
+  }
   tpo_gpu_done();
   if (e) std::rethrow_exception(e);
 }
@@ -690,7 +713,13 @@ inline void Engine::tpo_wait(ze_event_handle_t e) {
 inline void Engine::tpo_end() {
   if (!tpo_ || !tpo_->live) return;
   TpOverlap& o = *tpo_;
-  std::exception_ptr e = o.wait_idle();
+  bool gave_up = false;
+  std::exception_ptr e = o.wait_idle(tp_->timeout_s + 30, &gave_up);
+  if (gave_up) {
+    o.live = false;
+    tpo_gave_up();
+    std::rethrow_exception(e);
+  }
   for (ze_event_handle_t& p : o.pend)
     if (p) {
       tpo_wait(p);
@@ -715,7 +744,12 @@ inline void Engine::tpo_abandon() {
     c.first_failed.compare_exchange_strong(none, opt.tp_rank);
     c.failed = true;
   }
-  o.wait_idle();  // (its error, if any, is the second one: the pass's own goes on)
+  bool gave_up = false;
+  o.wait_idle(tp_->timeout_s + 30, &gave_up);  // (its error, if any, is the second one: the pass's own goes on)
+  if (gave_up) {
+    tpo_gave_up();
+    return;
+  }
   try {  // (signalled by now, by its list or from the host after a failure; a GPU that hangs: the wait's limit)
     tpo_gpu_done();
   } catch (...) {  // (a destructor's caller: the pass's own error goes on)
@@ -879,7 +913,7 @@ class TpEngine {
     static std::atomic<bool> gone{true};
     if (release_stuck) leaked_fault() = true;
     for (int r = 0; r < n_ && r < (int)zrt::devs.size(); ++r) {
-      zrt::devs[r]->abort = release_stuck ? &gone : nullptr;
+      zrt::devs[r]->abort = release_stuck || leaked_fault() ? &gone : nullptr;  // (a model left earlier: its threads still leave)
       zrt::devs[r]->sync_timeout_ns = UINT64_MAX;
       zrt::devs[r]->fault = nullptr;
     }
@@ -944,26 +978,33 @@ class TpEngine {
     stuck_.assign(n, 0);
     shards_.resize(n);
     w_.resize(n);
-    for (int r = 0; r < n; ++r) w_[r].th = std::thread([this, r] { loop(r); });
+    for (int r = 0; r < n; ++r) w_[r].th = std::thread([this, r, life = life_] { loop(r, life); });
     // shard 0 first (it compiles and caches the kernels the others then load), then the others one after another:
     // made together (kernels built, the XMX check, buffers allocated on several GPUs of one context at once), 3 and 4
     // B60s ended at random in the driver's "Abort was called at 252 line" (issue #4, 2026-10-31).
     // ARC_TP_PARALLEL_LOAD=1: the others together again (faster to load; for tests)
     const int oom_rank = getenv("ARC_TP_OOM") ? atoi(getenv("ARC_TP_OOM")) : -1;
-    auto make = [&, o](int r) mutable {
+    auto make = [&, o, life = life_](int r) mutable {
       EngineOptions so = o;
       so.tp_rank = r;
       so.tp_size = n;
       zrt::oom_throws = true;  // (failsafe: a shard short of memory throws, the server loads on one GPU instead)
       zrt::oom_test = r == oom_rank;
+      std::unique_ptr<Engine> made;
       try {
-        shards_[r] = std::make_unique<Engine>(path, so);
+        made = std::make_unique<Engine>(path, so);
       } catch (...) {
         zrt::oom_throws = zrt::oom_test = false;
         throw;
       }
       zrt::oom_throws = zrt::oom_test = false;
-      shards_[r]->tp_ = &comm_;
+      std::lock_guard<std::mutex> alive(life->mu);  // (given up on while it loaded: its TpEngine may be gone)
+      if (life->gone) {
+        made.release();  // (left, as a stuck shard is)
+        return;
+      }
+      made->tp_ = &comm_;
+      shards_[r] = std::move(made);
     };
     run_on({0}, make, false, false);  // (loads: no barrier to show progress, not watched)
     const bool together = getenv("ARC_TP_PARALLEL_LOAD") && atoi(getenv("ARC_TP_PARALLEL_LOAD")) != 0;
@@ -1011,12 +1052,22 @@ class TpEngine {
       return r < (int)stuck_.size() && stuck_[r];
     };
     if (!w_.empty() && !fault) {  // (after a failure too: the GPUs that answer get their memory back, for a load again)
+      // (the shards taken out here, so a free that is given up on touches nothing of this TpEngine when it ends; one
+      //  limit for the frees, not the 10 s after a failure that wait_done gives passes, nor none: a free after a
+      //  failure took longer than 10 s and its thread was left on a TpEngine then freed, or a GPU that stopped while
+      //  freeing hung the unload for good. Audit 2026-11-14)
       std::vector<int> made;
+      std::vector<Engine*> raw(shards_.size(), nullptr);
       for (int r = 0; r < (int)shards_.size(); ++r)
-        if (shards_[r] && !is_stuck(r)) made.push_back(r);
+        if (shards_[r] && !is_stuck(r)) {
+          made.push_back(r);
+          raw[r] = shards_[r].release();
+        }
+      free_limit_s_ = comm_.timeout_s + 30;
       try {
-        if (!made.empty()) run_on(made, [this](int r) { shards_[r].reset(); }, true, false);
+        if (!made.empty()) run_on(made, [raw](int r) { delete raw[r]; }, true, false);
       } catch (...) {}
+      free_limit_s_ = 0;
     }
     {
       std::lock_guard<std::mutex> g(mu_);
@@ -1035,6 +1086,13 @@ class TpEngine {
     }
     if (any_stuck || fault) {  // (the shards and the shared memory a stuck thread or a busy GPU may still touch: left)
       for (auto& sh : shards_) sh.release();
+      if (any_stuck) {
+        {
+          std::lock_guard<std::mutex> g(life_->mu);
+          life_->gone = true;  // (the threads left running touch nothing of this TpEngine when their jobs end)
+        }
+        disarm(true);  // (no other split model while they run; their GPU waits leave at the next piece)
+      }
       return;
     }
     shards_.clear();  // (after a failure: whatever is left, freed here)
@@ -1050,6 +1108,9 @@ class TpEngine {
   // one copy's speed in GB/s on this GPU's copy list (the one the prompt sums use): the best of 4 after 2 warm-ups
   // (a copy the driver refuses: -1, the link not used. One that does not finish within 20 s: an error that says how
   //  to load without the direct path; a peer link the driver reports but the IOMMU blocks may do either)
+  struct CopyStuck : std::runtime_error {
+    using std::runtime_error::runtime_error;
+  };
   static double link_gbps(void* dst, const void* src, size_t b, const char* what) {
     ze_command_list_handle_t l = zrt::tp_copy_list();
     double best = 1e30;
@@ -1058,7 +1119,7 @@ class TpEngine {
       if (zeCommandListAppendMemoryCopy(l, dst, src, b, nullptr, 0, nullptr) != ZE_RESULT_SUCCESS) return -1;
       const ze_result_t w = zeCommandListHostSynchronize(l, 20000000000ull);
       if (w != ZE_RESULT_SUCCESS)
-        throw std::runtime_error(std::string("--gpus: a timed copy ") + what + " did not finish (0x" +
+        throw CopyStuck(std::string("--gpus: a timed copy ") + what + " did not finish (0x" +
                                  [&] { char h[16]; snprintf(h, sizeof h, "%x", (unsigned)w); return std::string(h); }() +
                                  "): restart with ARC_TP_P2P=0 to keep the sums in host memory");
       const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -1097,9 +1158,11 @@ class TpEngine {
     // (ARC_TP_LINKS_SIM=1: timed under ARC_TP_SIM too, GPU 0 to itself: a test of the timing on one GPU)
     const bool time_sim = getenv("ARC_TP_LINKS_SIM") && atoi(getenv("ARC_TP_LINKS_SIM")) != 0;
     if ((!sim || time_sim) && want != 0) {
-      struct Free {  // (also when a timed copy throws)
+      struct Free {  // (also when a timed copy throws; not when one did not finish: it may still write them)
         std::vector<char*>& v;
+        bool keep = false;
         ~Free() {
+          if (keep) return;
           for (char* p : v)
             if (p) zrt::mem_free(zrt::ctx, p);
         }
@@ -1113,14 +1176,24 @@ class TpEngine {
           zrt::oom_throws = false;
         }, false, false);
       timed = std::all_of(tmp.begin(), tmp.end(), [](char* p) { return p != nullptr; });
-      if (timed)
-        for (int q = 0; q < n; ++q)
-          run_on({q}, [&](int r) {
-            d2h[r] = link_gbps(comm_.host, tmp[r], tb, "to host memory");
-            h2d[r] = link_gbps(tmp[r], comm_.host, tb, "from host memory");
-            for (int k = 0; k < n && peer; ++k)
-              if (k != r) pp[r][k] = link_gbps(tmp[k], tmp[r], tb, "between GPUs");
-          }, false, false);
+      if (timed) {
+        try {
+          for (int q = 0; q < n; ++q)
+            run_on({q}, [&](int r) {
+              d2h[r] = link_gbps(comm_.host, tmp[r], tb, "to host memory");
+              h2d[r] = link_gbps(tmp[r], comm_.host, tb, "from host memory");
+              for (int k = 0; k < n && peer; ++k)
+                if (k != r) pp[r][k] = link_gbps(tmp[k], tmp[r], tb, "between GPUs");
+            }, false, false);
+        } catch (const CopyStuck&) {
+          // (its copy is still queued on that GPU's list: the buffers and the shards it may touch are left, as after
+          //  a GPU fault, and no other split model runs in this process; the server loads on one GPU. Audit 2026-11-14)
+          free_tmp.keep = true;
+          comm_.fault = true;
+          leaked_fault() = true;
+          throw;
+        }
+      }
       for (int r = 0; r < n && timed; ++r) {
         timed = d2h[r] > 0 && h2d[r] > 0;
         for (int k = 0; k < n && peer; ++k)
@@ -1159,7 +1232,12 @@ class TpEngine {
       for (int q = 0; q < n; ++q)  // (one GPU at a time, as above)
         run_on({q}, [&](int r) {
           zrt::oom_throws = true;
-          try { comm_.inbox[r] = (char*)zrt::device_alloc(2 * comm_.half_b); } catch (...) {}
+          // (the first pass's sum buffers first: the memory plan counts them, not the inbox, which takes what is left
+          //  or the sums stay in host memory. Before, the inbox was made first and took their room, audit 2026-11-14)
+          try {
+            shards_[r]->tp_reserve_sums();
+            comm_.inbox[r] = (char*)zrt::device_alloc(2 * comm_.half_b);
+          } catch (...) {}
           zrt::oom_throws = false;
         }, false, false);
       if (!std::all_of(comm_.inbox.begin(), comm_.inbox.end(), [](char* p) { return p != nullptr; })) {
@@ -1195,6 +1273,16 @@ class TpEngine {
   int pending_ = 0;
   std::vector<float> logits_, batch_logits_;
   std::vector<char> stuck_;  // (per shard: its thread was given up on, wait_done)
+  // A thread given up on may finish its job long after (a free that took 10 s after a failure, a GPU that answers late):
+  // what it touches of this TpEngine afterwards, it touches under life_->mu and only while gone is false. shutdown sets
+  // gone when it leaves such a thread, so the TpEngine can be freed (by its destructor, or a constructor that threw)
+  // without the thread writing into freed memory. Before the audit of 2026-11-14 it took mu_ and read stuck_ there.
+  struct Life {
+    std::mutex mu;
+    bool gone = false;
+  };
+  std::shared_ptr<Life> life_ = std::make_shared<Life>();
+  double free_limit_s_ = 0;  // (shutdown's frees: one limit for all of them, wait_done)
 
   // The workers' jobs waited for. Failsafe: once a shard failed, the others leave their barriers and GPU waits within
   // 100 ms; a thread still running 10 s later is stuck in the driver (its GPU hangs): it is given up on (left running,
@@ -1204,6 +1292,7 @@ class TpEngine {
   // nothing, and the request waited forever (self audit MG1). Not for loads and frees, which meet at no barrier.
   void wait_done(std::unique_lock<std::mutex>& lk, bool watch = true) {
     std::chrono::steady_clock::time_point since{}, moved = std::chrono::steady_clock::now();
+    const auto started = moved;
     // (progress: barriers completed, and the pipelined sums' pieces, ARC_TP_PIPE, which meet at no barrier: a long
     //  prompt of such sums is not a hang)
     auto progress = [this] {
@@ -1215,6 +1304,23 @@ class TpEngine {
     bool warned = false;
     while (!done_cv_.wait_for(lk, std::chrono::seconds(1), [&] { return pending_ == 0; })) {
       const auto now = std::chrono::steady_clock::now();
+      if (free_limit_s_ > 0) {  // (shutdown's frees: given up on only after free_limit_s_, failure or not)
+        if (now - started < std::chrono::duration<double>(free_limit_s_)) continue;
+        comm_.failed = true;
+        for (int r = 0; r < n_; ++r)
+          if (w_[r].has) {
+            stuck_[r] = 1;
+            w_[r].has = false;
+            w_[r].err = std::make_exception_ptr(std::runtime_error("multi-GPU: GPU " + std::to_string(r) + " did not finish freeing within " +
+                                                                    std::to_string((int)free_limit_s_) + " s"));
+            zlog::eprintf("inferzero: GPU %d did not finish freeing within %d s: given up on (restart to free its memory)\n", r,
+                          (int)free_limit_s_);
+          }
+        pending_ = 0;
+        comm_.fault = true;
+        broken_ = true;
+        return;
+      }
       const long g = progress();
       if (g != last_gen) last_gen = g, moved = now, warned = false;
       // (a line first, 30 s before giving up: a slow path between two sums can be told from a hang in the log, R9)
@@ -1245,7 +1351,7 @@ class TpEngine {
     }
   }
 
-  void loop(int r) {
+  void loop(int r, std::shared_ptr<Life> life) {
     zrt::cur = zrt::devs[r];
     zrt::tp_guarded = true;
     for (;;) {
@@ -1257,12 +1363,18 @@ class TpEngine {
         job = w_[r].job;
       }
       std::exception_ptr err;
+      bool threw = false;
       try {
         job(r);
       } catch (const Engine::Cancelled&) {
         err = std::current_exception();  // (served: every shard cancels at the same point, tp_cancelled)
       } catch (...) {
         err = std::current_exception();
+        threw = true;
+      }
+      std::lock_guard<std::mutex> alive(life->mu);  // (given up on and its TpEngine freed since: touch nothing of it)
+      if (life->gone) return;
+      if (threw) {
         int none = -1;
         comm_.first_failed.compare_exchange_strong(none, r);
         comm_.failed = true;

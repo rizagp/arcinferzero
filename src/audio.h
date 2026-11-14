@@ -604,10 +604,13 @@ inline std::string ff_error(const plat::ProcResult& r) {
   if (e.empty()) e = "exit " + std::to_string(r.exit_code);
   return "audio decoding failed (ffmpeg: " + e + ")";
 }
+// (each ffmpeg / ffprobe input on Linux is a file and may open files only, "-protocol_whitelist file": a file that is
+//  a playlist, HLS or the like, must not make it open URLs)
 // the first audio stream's channel count (ffprobe), 0 when unknown
 inline int ff_channels(const std::string& file) {
-  const plat::ProcResult r = plat::run_program({"ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels",
-                                                "-of", "default=noprint_wrappers=1:nokey=1", plat::path_arg(file)},
+  const plat::ProcResult r = plat::run_program({"ffprobe", "-v", "error", "-protocol_whitelist", "file", "-select_streams",
+                                                "a:0", "-show_entries", "stream=channels", "-of",
+                                                "default=noprint_wrappers=1:nokey=1", plat::path_arg(file)},
                                                "", 60000, 4096);
   const int n = r.started && r.exit_code == 0 ? atoi(r.out.c_str()) : 0;
   return n >= 1 && n <= 64 ? n : 0;
@@ -619,7 +622,8 @@ inline int ff_channels(const std::string& file) {
 // Throws when it cannot be read.
 inline void ff_audio(const std::string& file, int pick, int rate, const char* fmt,
                      const std::function<bool(const char*, size_t)>& on) {
-  std::vector<std::string> a = {"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-i", plat::path_arg(file), "-vn", "-map", "0:a:0"};
+  std::vector<std::string> a = {"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-protocol_whitelist", "file",
+                                "-i", plat::path_arg(file), "-vn", "-map", "0:a:0"};
   const std::string sync = "aresample=async=1:first_pts=0";
   if (pick >= 0) {
     a.insert(a.end(), {"-af", "pan=mono|c0=c" + std::to_string(pick) + "," + sync});
@@ -748,8 +752,9 @@ inline std::vector<float> decode_16k_file(const std::filesystem::path& path, dou
 // an audio or video file's length in seconds from its container (no decoding; 0: not known)
 inline double duration_seconds(const std::filesystem::path& path) {
 #ifndef _WIN32
-  const plat::ProcResult r = plat::run_program({"ffprobe", "-v", "error", "-show_entries", "format=duration", "-of",
-                                                "default=noprint_wrappers=1:nokey=1", plat::path_arg(path.string())},
+  const plat::ProcResult r = plat::run_program({"ffprobe", "-v", "error", "-protocol_whitelist", "file", "-show_entries",
+                                                "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+                                                plat::path_arg(path.string())},
                                                "", 60000, 4096);
   double v = 0;  // (from_chars: '.' whatever the locale; atof would read "123.456" as 123 under a German one)
   if (r.started && r.exit_code == 0) std::from_chars(r.out.data(), r.out.data() + r.out.size(), v);
@@ -870,8 +875,9 @@ inline bool encode_compressed(const std::filesystem::path& wav, const std::files
     // (ffmpeg's encoders: LAME for MP3, its own AAC; the same bitrate cap as the Windows encoders)
     const int top = std::clamp(kbps, 96, aac ? 192 : 320);
     const plat::ProcResult r = plat::run_program(
-        {"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", plat::path_arg(wav.string()), "-c:a",
-         aac ? "aac" : "libmp3lame", "-b:a", std::to_string(top) + "k", plat::path_arg(mp3.string())},
+        {"ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-protocol_whitelist", "file", "-i",
+         plat::path_arg(wav.string()), "-c:a", aac ? "aac" : "libmp3lame", "-b:a", std::to_string(top) + "k",
+         plat::path_arg(mp3.string())},
         "", 6 * 3600 * 1000, 65536);
     if (!r.started) throw std::runtime_error(r.error + " (Linux encodes MP3 / AAC with ffmpeg: apt install ffmpeg)");
     if (r.exit_code != 0 || r.timed_out)

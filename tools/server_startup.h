@@ -99,11 +99,14 @@ inline std::string switches() {
     bool secret = false;
     for (const char* w : {"token", "secret", "pass", "key", "auth", "cred", "cookie"})
       secret = secret || up.find(w) != std::string::npos;
+    // (each search goes on after the replacement put in: from the start, a HOME of "~" was found again forever)
     if (!home.empty())
 #ifdef _WIN32
-      for (size_t at; (at = lower(v).find(lower(home))) != std::string::npos;) v.replace(at, home.size(), "%USERPROFILE%");
+      for (size_t at = 0; (at = lower(v).find(lower(home), at)) != std::string::npos; at += sizeof("%USERPROFILE%") - 1)
+        v.replace(at, home.size(), "%USERPROFILE%");
 #else
-      for (size_t at; (at = v.find(home)) != std::string::npos;) v.replace(at, home.size(), "~");  // (case-sensitive paths)
+      for (size_t at = 0; (at = v.find(home, at)) != std::string::npos; at += 1)  // (1: "~"; case-sensitive paths)
+        v.replace(at, home.size(), "~");
 #endif
     for (char& c : v)
       if ((unsigned char)c < 0x20) c = '?';

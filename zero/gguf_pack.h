@@ -49,7 +49,13 @@ class Writer {
     while (pos_ % align) put(z, std::min<uint64_t>(64, align - pos_ % align));
   }
   uint64_t pos() const { return pos_; }
-  void close() { if (f_) { fclose(f_); f_ = nullptr; } }
+  // (fclose writes the last buffered bytes: a full disk can fail only here, and the file is then short)
+  void close() {
+    if (!f_) return;
+    const int rc = fclose(f_);
+    f_ = nullptr;
+    if (rc != 0) throw std::runtime_error("write failed (closing the file)");
+  }
 
  private:
   FILE* f_ = nullptr;

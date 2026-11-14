@@ -574,7 +574,7 @@ details[open].think > div { animation: fade-up .2s var(--ease-out); }
           <div class="opt" id="thinkrow"><div class="lab">Thinking<small id="thinkhelp">The model reasons before it answers: better answers, more time</small></div>
             <select id="thinkmode" aria-label="Thinking"></select></div>
           <div class="opt"><div class="lab">Conversations at once<small id="slothelp">Chats that answer at the same time</small></div>
-            <select id="slots" aria-label="Conversations at once"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+            <select id="slots" aria-label="Conversations at once"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option></select></div>
           <div class="opt"><div class="lab">Files<small>The model may list and read your saved files and write documents (DOCX, PDF, DOC, RTF, Markdown, Excel XLSX) that appear in its answer</small></div>
             <label class="switch"><input type="checkbox" id="ftools"><span></span></label></div>
           <div class="opt"><div class="lab">Terminal<small>The model may run commands in the chat's terminal (PowerShell on Windows, bash on Linux; the Terminal button above the chat), opening it itself when closed: ask each time, run without asking (the first command of a terminal still asks), or never</small></div>
@@ -936,14 +936,16 @@ async function pdShow(path) {
   try { j = await (await fetch("/v1/projects/browse" + (path ? "?path=" + encodeURIComponent(path) : ""))).json(); } catch (e) {}
   pdAt = path ? j.path || path : "";
   $("pdpath").textContent = pdAt || "This computer";
-  $("pduse").disabled = !pdAt || !!j.refused;
+  $("pduse").disabled = !pdAt || !j.path || !!j.refused;  // (no path back: an error, or no answer)
   $("pdnote").textContent = j.refused ? "Not this folder: " + j.refused : j.error ? j.error.message : "The model reads the folder's files and its AGENTS.md; it writes into it only through the terminal, which asks you.";
   const box = $("pdlist");
   box.replaceChildren();
+  // (the server's own separator, as its path has it: "C:\..." on Windows, "/home/..." on Linux; the root "/" not doubled)
+  const sep = /\\|^[A-Za-z]:/.test(pdAt) ? "\\" : "/";
   for (const f of j.folders || []) {
     const d = document.createElement("div");
     d.textContent = (pdAt ? "📁 " : "") + f;
-    d.addEventListener("click", () => pdShow(pdAt ? pdAt.replace(/\\$/, "") + "\\" + f : f));
+    d.addEventListener("click", () => pdShow(pdAt ? pdAt.replace(/[\\/]$/, "") + sep + f : f));
     box.appendChild(d);
   }
   $("pdup").disabled = !pdAt;
@@ -1176,9 +1178,12 @@ async function refreshModel() {
     $("slothelp").textContent = slotHelp();
   } catch (e) {}
   fillThinking();
-  const t = caps.sampling ? caps.sampling.temperature : null;
-  $("temphelp").textContent = "Off: the model maker's recommended sampling" + (t !== null ? " (temperature " + +t.toFixed(2) + ", top-p " +
-    +caps.sampling.top_p.toFixed(2) + ", top-k " + caps.sampling.top_k + ")" : "");
+  // (each value only when the server sent it as a number: a /props without one threw here, and the model, the buttons
+  //  and the transcript library were not shown)
+  const sm = caps.sampling || {}, num = (v) => typeof v === "number" && isFinite(v);
+  const t = num(sm.temperature) ? sm.temperature : null;
+  $("temphelp").textContent = "Off: the model maker's recommended sampling" + (t !== null ? " (temperature " + +t.toFixed(2) +
+    (num(sm.top_p) ? ", top-p " + +sm.top_p.toFixed(2) : "") + (num(sm.top_k) ? ", top-k " + sm.top_k : "") + ")" : "");
   if (!$("tempon").checked && t !== null) $("temp").value = +t.toFixed(2);
   showModel();
   updateButtons();  // (an OCR model: the project files button)
@@ -1669,6 +1674,9 @@ function trimCalls(m) {
   });
   return changed ? { ...m, tool_calls: calls } : m;
 }
+// a message the user wrote: the start of a turn (a steered one too). The images web_fetch / web_view / an MCP tool
+// showed the model ({fetched}) are user messages in the middle of an answer: part of its turn
+function userTurn(m) { return m?.role === "user" && !m.fetched; }
 // deep: the answer under way did not fit (its own rounds' results are long, and a compaction keeps the question and
 // everything after it): every result before its last round shortened too, that round's kept
 function trimTools(h, deep = false) {
@@ -1676,7 +1684,7 @@ function trimTools(h, deep = false) {
   if (deep) {
     for (let i = h.length - 1; i >= 0; i--) if (h[i].role === "assistant" && h[i].tool_calls) { cut = i; break; }
   } else {
-    for (let i = h.length - 1, users = 0; i >= 0; i--) if (h[i].role === "user" && ++users === 2) { cut = i; break; }
+    for (let i = h.length - 1, users = 0; i >= 0; i--) if (userTurn(h[i]) && ++users === 2) { cut = i; break; }
   }
   if (cut < 0) return h;
   const keep = new Set(), args = new Map();
@@ -1750,7 +1758,7 @@ async function summarize(msgs, signal, model, id) {
 async function compact(keep, signal, statsEl, job, cutAt) {
   const h = job ? job.history : history;
   let cut = cutAt ?? h.length - keep;
-  while (cut > 0 && h[cut]?.role !== "user") cut--;
+  while (cut > 0 && !userTurn(h[cut])) cut--;
   if (cut < 2 || (h[0].role === "user" && textOf(h[0].content).startsWith(SUMMARY_HEAD) && cut <= 2)) return false;  // (nothing new to fold)
   const old = h.slice(0, cut), kept = h.slice(cut);
   if (statsEl) statsEl.textContent = "compacting the earlier conversation…";
@@ -3400,6 +3408,10 @@ function renderConvs() {
 }
 async function deleteConv(c) {
   if (!confirm("Delete the chat \"" + c.title + "\"? Its attached files that no other chat uses are deleted too.")) return;
+  // (its queued messages go first, and on screen its Talk results and a Compact by hand: the stopped answer's end sent
+  //  the next one, a new answer that saved the deleted chat again)
+  queued.delete(c.id);
+  if (c.id === convId) { bg.ctl.abort(); bg.ctl = new AbortController(); bg.ready = []; compacting?.abort(); renderQueue(); }
   const job = jobs.get(c.id);  // (its answer stops first, and saves nothing more)
   if (job) { job.deleted = true; job.controller.abort(); }
   await saving;
@@ -3465,13 +3477,16 @@ async function openConv(id) {
       c = await r.json();
     } catch (e) { if (seq === openSeq) note("opening the chat failed: " + (e.message || e)); return; }
   if (seq !== openSeq) return;  // (another chat was opened or started while this one loaded: that one stays)
-  resetChat();
-  convId = id;
   // (its project and instructions; its notes: the copies it started with; a chat from before memory existed keeps
   //  none, so its prompt is as it was)
   if (!job && !chatProj.has(id)) chatProj.set(id, typeof c.project === "string" ? c.project : "");
   if (!job && !chatInstr.has(id) && typeof c.instructions === "string") chatInstr.set(id, c.instructions);
   if (chatProj.get(id) && !projInfo.has(chatProj.get(id))) await loadProjInfo(chatProj.get(id));
+  // (the same while its project loaded; before resetChat, which counts openSeq on, and before anything on screen
+  //  changes: a chat opened meanwhile drew itself, and this one drew its messages under that one's id)
+  if (seq !== openSeq) return;
+  resetChat();
+  convId = id;
   if (!job && !chatMem.has(id) && (typeof c.memory === "string" || (Array.isArray(c.history) && c.history.length)))
     chatMem.set(id, typeof c.memory === "string" ? c.memory : null);
   if (!terms.has(id) && c.terminal) terms.set(id, { open: !!c.terminal.open, cwd: c.terminal.cwd || "", venv: c.terminal.venv || "", shell: c.terminal.shell,
@@ -3657,6 +3672,11 @@ async function dataSummary() {
 async function clearData(files) {
   const what = files ? "every chat and every uploaded file" : "every chat (the files stay in the Files panel)";
   if (!confirm("Delete " + what + "? This cannot be undone.")) return;
+  // (every chat's queued messages, the Talk results and a Compact by hand first: a stopped answer's end sends none of
+  //  them into a new answer that saves its chat again)
+  queued.clear();
+  bg.ctl.abort(); bg.ctl = new AbortController(); bg.ready = [];
+  compacting?.abort();
   for (const j of jobs.values()) { j.deleted = true; j.controller.abort(); }
   await saving;  // (a save already on its way lands first, then goes)
   try {
@@ -4118,10 +4138,10 @@ function turnRange(el) {
   const i = history.indexOf(el._h);
   if (i < 0) return null;
   let from = i, to = i + 1;
-  if (history[i].role === "user") { while (to < history.length && history[to].role !== "user") to++; }
+  if (userTurn(history[i])) { while (to < history.length && !userTurn(history[to])) to++; }
   else {
-    while (from > 0 && history[from - 1].role !== "user") from--;
-    while (to < history.length && history[to].role !== "user") to++;
+    while (from > 0 && !userTurn(history[from - 1])) from--;
+    while (to < history.length && !userTurn(history[to])) to++;
   }
   return [from, to];
 }
@@ -4165,7 +4185,7 @@ async function deleteMsg(el) {
   else {  // (only the answer: the user's message stays)
     const range = turnRange(el);
     if (range) {
-      const from = history[range[0]]?.role === "user" ? range[0] + 1 : range[0];
+      const from = userTurn(history[range[0]]) ? range[0] + 1 : range[0];
       const gone = new Set(history.splice(from, range[1] - from));
       for (const m of [...thread.querySelectorAll(".msg")]) if (gone.has(m._h)) m.remove();
       used = 0; showUse();
@@ -4250,7 +4270,7 @@ function mentionPick(i) {
 input.addEventListener("input", mentionUpdate);
 input.addEventListener("blur", () => setTimeout(mentionClose, 150));
 input.addEventListener("keydown", (e) => {
-  if (!mention.on) return;
+  if (!mention.on || e.isComposing || e.keyCode === 229) return;  // (an IME's keys while it composes: its own)
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     if (mention.items.length) mention.sel = (mention.sel + (e.key === "ArrowDown" ? 1 : mention.items.length - 1)) % mention.items.length;
@@ -4264,7 +4284,8 @@ input.addEventListener("keydown", (e) => {
 
 $("send").addEventListener("click", send);
 $("stop").addEventListener("click", () => controller && controller.abort());
-input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.defaultPrevented) { e.preventDefault(); send(); } });
+// (not while an IME composes: its Enter picks the word, as in the terminal)
+input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.defaultPrevented && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); } });
 $("compact").addEventListener("click", async () => {
   if (controller || compactable() < 2) return;
   const ctl = controller = compacting = new AbortController();
@@ -4277,7 +4298,10 @@ $("compact").addEventListener("click", async () => {
   try { await compact(2, ctl.signal); note.remove(); }
   catch (e) { note.textContent = e.name === "AbortError" ? "compacting stopped" : "compacting failed: " + (e.message || e); }
   if (compacting === ctl) compacting = null;
-  if (controller === ctl) controller = null;  // (another chat opened meanwhile: its running answer's Stop stays)
+  if (controller === ctl) {  // (another chat opened meanwhile: its running answer's Stop stays)
+    controller = null;
+    setTimeout(drainQueue, 0);  // (still on screen: the messages queued while it compacted, the next one now)
+  }
   showUse();
 });
 
@@ -5618,11 +5642,12 @@ async function trMinutesForm(form) {
   const hm = (d) => String(d.getHours()).padStart(2, "0") + "." + String(d.getMinutes()).padStart(2, "0");
   let day = t0.toDateString();
   try { day = t0.toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" }); } catch (e) {}
-  $("trdocx").disabled = true;
-  await trCtxReady();
-  const budget = Math.max(6000, Math.floor((ctxLen || 8192) * 3 / 3));
-  let source = lines.join("\n");
+  // (both buttons, as trMinutes: a PDF started meanwhile turned Word on again at its end, a second form fill then)
+  $("trdocx").disabled = $("trpdf").disabled = true;
   try {
+    await trCtxReady();
+    const budget = Math.max(6000, Math.floor((ctxLen || 8192) * 3 / 3));
+    let source = lines.join("\n");
     if (source.length > budget) {  // (a long meeting: notes of its parts first, as many at once as the server has slots)
       const parts = [];
       let cur = "";
@@ -5703,7 +5728,7 @@ async function trMinutesForm(form) {
     a.remove();
     trNote(form.name + " saved (also in the Files panel): check it before you sign it", 10000);
   } catch (e) { trNote("minutes failed: " + (e.message || e), 12000); }
-  $("trdocx").disabled = false;
+  finally { $("trdocx").disabled = $("trpdf").disabled = false; }
 }
 $("trdocx").addEventListener("click", () => {
   const f = trForms.find((t) => t.name === $("trtpl").value);

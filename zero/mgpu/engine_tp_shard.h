@@ -40,6 +40,12 @@
   TpEngine* tp_front_ = nullptr;
   int tp_depth_ = 0;  // (mirrored calls under way: only the outermost one is mirrored)
   friend struct TpMirror;
+  // the first pass's sum buffers made now (as the passes make them when missing: the same sizes), before the direct
+  // sums' inboxes, which the memory plan does not count (TpEngine::choose_sums)
+  void tp_reserve_sums() {
+    if (!tp_part_) tp_part_ = buf((size_t)max_chunk * hp.n_embd * 4);
+    if (!tp_h_) tp_h_ = buf((size_t)max_chunk * hp.n_embd * 2);
+  }
   int n_logits() const { return lm_head_.N; }  // this engine's logits per row (its vocabulary rows when split)
   const std::vector<float>& logits_host() const { return logits_host_; }
   const std::vector<float>& batch_logits_host() const { return batch_logits_host_; }  // (rows of n_logits())
@@ -108,8 +114,10 @@
       const int nkv = hp.n_head_kv, hpg_g = nkv > 0 ? hp.n_head / nkv : 0, per = nkv > 0 ? N / nkv : 0;
       // (opt-in until B60s measure it: it adds a sum per attention layer, which costs more than it saves at short
       //  contexts, and saves K / V reads and attention work at long ones)
-      // (not Flash Next: its QSA attention by q-head is not checked)
-      const bool want = getenv("ARC_TP_ATT_QSPLIT") && atoi(getenv("ARC_TP_ATT_QSPLIT")) != 0 && !hp.hc;
+      // (not Flash Next: its QSA attention by q-head is not checked; not DeepSeek-V4.1: its attention stays whole on
+      //  every GPU, attn_q_a / q_b are not sliced and its output has no sum, so the split refused the load or would
+      //  add partial outputs; audit 2026-11-14)
+      const bool want = getenv("ARC_TP_ATT_QSPLIT") && atoi(getenv("ARC_TP_ATT_QSPLIT")) != 0 && !hp.hc && !hp.ds41;
       if (tp_att_whole_ && want && nkv > 0 && N % nkv == 0 && hpg_g % per == 0 && (hpg_g / per * hp.head_dim) % 256 == 0) {
         tp_att_whole_ = false;
         tp_att_qsplit_ = true;
@@ -351,6 +359,7 @@
   TpOverlap* tpo_ = nullptr;
   void tpo_begin(int nch);
   void tpo_chunk(int c);   // (before chunk c goes through a layer)
+  void tpo_gave_up();
   void tpo_join();         // (every sum queued so far done: before a barrier of the main thread, tp_cancelled)
   void tpo_end();          // (after the last layer)
   void tpo_abandon();      // (the pass left early)

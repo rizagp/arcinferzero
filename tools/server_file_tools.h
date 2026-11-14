@@ -299,7 +299,14 @@ static void file_tools(const HttpRequest& rq, HttpResponse& rs, bool terminal, i
       i.kind = files::kind_of(rel);
       i.bytes = std::filesystem::file_size(f, ec);
       const auto t = std::filesystem::last_write_time(f, ec);
+#ifdef _WIN32
       i.created = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count() - 11644473600LL;
+#else
+      // (unix seconds through clock_cast, as server_files.h: libstdc++'s file clock does not count from 1601 as MSVC's,
+      //  and the subtraction above gave dates around the year 1453)
+      i.created = (int64_t)std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::clock_cast<std::chrono::system_clock>(t).time_since_epoch()).count();
+#endif
       i.id = fid;
       i.stamp = (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(t.time_since_epoch()).count();
       return true;

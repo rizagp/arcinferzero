@@ -102,6 +102,7 @@
     for (Snap& s : snaps_) s.ring_ok = s.ring_want = false;  // (Gemma: a saved conversation holds no ring copies)
     hsnap_.pos = hpos;
     pos = spos;
+    if (hp.ple_layer >= 0) ple_sync();  // (the PLE ids before pos, from the state just loaded: as restore() does)
     written_hi_ = swh;
     swa_lo_ = slo;
     pend_toks_.clear();

@@ -75,8 +75,10 @@
     gpu_bytes += xc_->cache_bytes;
     // (out of device memory shrinks this cache: XCache::shrink_this_gpu; a split model's shards are on GPUs of
     //  their own, each cache registered with its shard's GPU)
+    // (a one-GPU engine's cache registered for its GPU too: a split model left after a fault keeps its entries, and
+    //  GPU 0's hook found that dead shard's cache before active(); audit 2026-11-14)
     if (!tp_on()) XCache::active() = xc_.get();
-    else XCache::on_gpu(&zrt::D(), xc_.get());
+    XCache::on_gpu(&zrt::D(), xc_.get());
     XCache::install_hook();
     // fill the cache before the first request: the experts the last run had cached (or the first of every layer)
     // (multi-GPU: one state per GPU of the split, for its experts)
