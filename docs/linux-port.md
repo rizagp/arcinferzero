@@ -3,7 +3,8 @@
 Asked for in issue #11 (a headless server on a Core Ultra 9 285H) and by the user. Written before anything was built;
 since then `runz` and `serverz` build and run on Linux (see Progress), and users run them on native Linux machines
 (issues #17, #19). This is the scope, what was Windows-only when it was written, and the order. The goal of the first step is `serverz` running headless on Ubuntu
-with the same kernels and results; the launcher (a WinForms window) stays Windows-only.
+with the same kernels and results; the launcher (a WinForms window) stays Windows-only. Since 2026-11-14 Linux has a
+release package and a terminal launcher of its own (step 4, Progress; how to use it: [install.md](install.md#linux)).
 
 ## What carries over as it is
 
@@ -35,6 +36,19 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 | The scripts and the launcher | the 14 scripts in `scripts/` (4,300 lines; 30 `.ps1` files in all with `bench/` and `tests/`), the WinForms launcher | a small shell script to start `serverz`, a systemd unit; PowerShell 7 runs on Linux for some of the rest (not `vcvars.ps1`, `make-package.ps1` or the launcher's); the launcher stays Windows-only |
 
 ## Progress
+
+- **2026-11-14: step 4, the package and a launcher.** `build.sh` (the g++ build line below, `-ldl` for glibc before
+  2.34); `scripts/make-package-linux.sh` makes `inferzero-<version>-linux-x64.tar.gz` (the tracked files plus
+  `bin/runz`, `serverz`, `mgpu_probe` and `bin/PREBUILT.txt`, owned by root in the archive); `zero-launcher.sh` /
+  `scripts/zero_launcher.py`, a terminal launcher (Python 3, standard library only): `--check` (CPU, Level Zero,
+  OpenCL, libgomp, Intel's ICD, the render node or WSL's `/dev/dxg`, the `render` group, RAM), the catalog of
+  `scripts/model-catalog.ps1` (`tests/check_catalog_sync.py` keeps the two equal), downloads through
+  `scripts/hf-download.py`, a port check, `serverz` started with the package as its working folder, the web UI
+  opened once `/health` answers, `--install-service` (a systemd user unit). CI's `linux-package` job builds the
+  package on Ubuntu 24.04 and runs what needs no GPU. Checked in WSL2 (Ubuntu 24.04, g++ 13.3): the package builds
+  (6.3 MB), its programs start, and the launcher starts the 4B and serves the web UI and a chat request. Reviewed
+  by DeepSeek-V4.1 through Pi and by a Claude reviewer before release; their findings fixed (CHANGELOG). Not done:
+  CMake, packages for distributions (.deb), a window.
 
 - **2026-11-14: the kernels' compiler is the OpenCL of Intel's driver, for Level Zero's GPU 0** (`zero/clrt.h`): a
   Linux machine may list Mesa's rusticl too (MaineTim's 2 B60s, issue #11); it is now skipped unless nothing else has a
@@ -209,7 +223,8 @@ with the same kernels and results; the launcher (a WinForms window) stays Window
 3. **`serverz` headless on Linux**: sockets, the file tools, the terminal tool and MCP with process groups, the
    crash report; audio, PDF rendering and `web_view` through the external tools above, or off with a message.
 4. **Packaging**: a release archive for Ubuntu 24.04 (x86-64, Intel's compute-runtime packages as the only
-   dependency), a start script and a systemd unit; a GitHub Actions job that builds it on every push.
+   dependency), a start script and a systemd unit; a GitHub Actions job that builds it on every push. **Done
+   2026-11-14** (Progress), with a terminal launcher in place of the start script.
 
 ## How it can be tested
 

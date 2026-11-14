@@ -32,6 +32,39 @@ part of Windows; every file's SHA256 checked) into the Hugging Face cache, from 
 so setup keeps the shipped programs (`setup.cmd -Rebuild` builds them from the sources in the package: step 3).
 The package is made with `scripts\make-package.ps1` (into `dist\`).
 
+## Linux
+
+The headless server and a terminal launcher (no window), on Ubuntu 24.04 or newer (other distributions with glibc
+2.39+; users run CachyOS too). The steps:
+
+1. **Intel's GPU runtime.** Ubuntu's own packages: `sudo apt install intel-opencl-icd libze-intel-gpu1 libze1
+   ocl-icd-libopencl1 libgomp1 python3`. Battlemage cards (B580, Pro B60 / B70) and Arrow Lake H need a newer
+   compute runtime than Ubuntu 24.04 ships: Intel's packages (the `kobuk-team/intel-graphics` PPA their GPU pages
+   point to), see [linux-port.md](linux-port.md).
+2. **Access to the GPU.** `sudo usermod -aG render $USER`, then log in again.
+3. **The package.** Download `inferzero-<version>-linux-x64.tar.gz` from the
+   [latest release](https://github.com/rizagp/inferzero/releases/latest), then:
+   ```
+   tar -xzf inferzero-<version>-linux-x64.tar.gz
+   cd inferzero-<version>-linux-x64
+   ./zero-launcher.sh --check
+   ./zero-launcher.sh
+   ```
+   `--check` lists what the system has and lacks. The menu offers the catalog's models (the ones that suit the RAM),
+   downloads one with `scripts/hf-download.py` (resumes, checks SHA-256) into the Hugging Face cache, starts
+   `bin/serverz` and opens the web UI at `http://127.0.0.1:8090/` when it is ready. Ctrl+C stops it.
+4. **Without the menu:** `./zero-launcher.sh --model 4b` (a catalog key, see `--list`, or a path to a `.gguf`),
+   `--download 4b`, `--port N`, `--host H`, `--gpus N`, `--no-browser`, and `-- <serverz options>`.
+5. **As a service:** `./zero-launcher.sh --model 4b --install-service` writes a systemd user unit
+   (`~/.config/systemd/user/inferzero.service`, with the cache variables you have set); then
+   `systemctl --user daemon-reload`, `systemctl --user enable inferzero`, `systemctl --user restart inferzero`; its
+   log: `journalctl --user -u inferzero -f`.
+
+From the sources instead: `./build.sh` (g++ 13 or newer) builds `runz`, `serverz` and `mgpu_probe` into `bin/`.
+`scripts/make-package-linux.sh` makes the package (into `dist/`). Not on Linux yet: the window launcher, speech
+recording, the NPU (built, not run), `web_view` (Edge); audio formats other than WAV and scanned-PDF pages need
+`ffmpeg` / `pdftoppm` if installed ([linux-port.md](linux-port.md)).
+
 ## Quick setup
 
 From the sources: once the graphics driver, Visual Studio Build Tools (C++) and optionally Pi are installed (steps

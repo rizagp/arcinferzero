@@ -54,6 +54,12 @@ You need:
 Discrete Arc B-series cards (Xe2) work too, experimentally. A user runs 1-4 Arc Pro B60s, and one model can be split
 over several of them (`--gpus N`). See [Discrete GPUs](#discrete-arc-gpus-experimental).
 
+**Linux** (Ubuntu 24.04 or newer): download `inferzero-<version>-linux-x64.tar.gz` from the same release, unpack it,
+and run `./zero-launcher.sh` (a terminal menu that downloads a model and starts the headless server). It needs Intel's
+GPU runtime and Python 3: [docs/install.md](docs/install.md#linux).
+
+On Windows:
+
 1. Download `inferzero-<version>-win64.zip` (6 MB) from the
    **[latest release](https://github.com/rizagp/inferzero/releases/latest)** and unpack it anywhere.
 2. Double-click `zero-launcher.cmd` (Windows may ask once: "More info", "Run anyway").

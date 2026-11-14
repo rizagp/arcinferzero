@@ -64,3 +64,30 @@ jobs:
         run: |
           g++ -std=c++20 -O1 -g -fsanitize=address,undefined tests/test_platform_read.cpp -o /tmp/test_platform_read
           /tmp/test_platform_read
+  # The Linux package (scripts/make-package-linux.sh) on the oldest Ubuntu it is for, so its programs run on 24.04
+  # and newer; no GPU here, so only what needs none runs: the programs start, the launcher's catalog matches the
+  # Windows one, its system check reports what is missing instead of failing.
+  linux-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and package
+        shell: bash
+        run: |
+          bash scripts/make-package-linux.sh
+          ls -l dist/*.tar.gz
+      - name: Checks without a GPU
+        shell: bash  # (bash -eo pipefail: without it a crashing binary piped into head would still pass)
+        run: |
+          set -e
+          pkg=$(ls -d dist/inferzero-*-linux-x64 | head -1)
+          "$pkg/bin/serverz" --help | head -3
+          "$pkg/bin/runz" --help | head -3
+          python3 tests/check_catalog_sync.py
+          "$pkg/zero-launcher.sh" --list
+          "$pkg/zero-launcher.sh" --check || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inferzero-linux-x64
+          path: dist/*.tar.gz
+          retention-days: 14

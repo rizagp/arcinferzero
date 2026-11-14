@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>inferzero: fast local LLMs on Intel Arc, laptop iGPU to Pro B60</title>
-<meta name="description" content="A from-scratch LLM inference engine for Intel Arc on Windows. Qwen3.6 35B at 851 tok/s on a Core Ultra laptop iGPU, the 27B past 1,000 tok/s on one Arc Pro B60. Every number measured, every model checked against an f32 reference.">
+<meta name="description" content="A from-scratch LLM inference engine for Intel Arc on Windows and Linux. Qwen3.6 35B at 851 tok/s on a Core Ultra laptop iGPU, the 27B past 1,000 tok/s on one Arc Pro B60. Every number measured, every model checked against an f32 reference.">
 <meta name="color-scheme" content="dark light">
 <meta property="og:title" content="inferzero">
 <meta property="og:description" content="Fast local LLMs on Intel Arc, laptop iGPU to Pro B60. Every number measured, every answer checked.">
@@ -306,9 +306,10 @@ footer .fine{color:var(--mute);font-size:13px;margin-top:12px;max-width:26rem}
         <p class="lede">An inference engine written from scratch for Intel Arc graphics. Qwen3.6 35B, Qwen3.8 27B and Flash Next's 52&nbsp;GB of experts run on a Core Ultra laptop with 32&nbsp;GB, and the same engine scales to four Arc Pro B60s. Every model is checked against an f32 reference, and the same prompt gives the same logits, bit for bit.</p>
         <div class="cta">
           <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>8 MB</kbd></a>
+          <a class="btn s" href="https://github.com/rizagp/inferzero/releases/latest">Download for Linux <kbd>7 MB</kbd></a>
           <a class="btn s" href="#results">See the measurements</a>
         </div>
-        <p class="req">Windows 11 · Core Ultra with Arc graphics · 16 GB RAM for 4B / E4B, 32 GB for 12B-35B<br>Arc B580 / Pro B60 / Pro B70: experimental · Apache-2.0</p>
+        <p class="req">Windows 11 · Core Ultra with Arc graphics · 16 GB RAM for 4B / E4B, 32 GB for 12B-35B<br>Linux: the headless server and a terminal launcher, <a href="https://github.com/rizagp/inferzero/blob/main/docs/install.md#linux">linux-x64 package</a> · Arc B580 / Pro B60 / Pro B70: experimental · Apache-2.0</p>
       </div>
       <div class="term" role="img" aria-label="A benchmark run: Qwen3.6 35B-A3B, 8,192-token prompt at 851 tok/s on a Core Ultra 5 125H, 38.1 tok/s generation with MTP and DFlash2, KL 0.0040 against f32, logits bit-identical to the previous run">
         <div class="bar"><i></i><i></i><i></i><span>runz · Core Ultra 5 125H · 32 GB</span></div>
@@ -630,13 +631,14 @@ zero-server start -Model 27b -Slots 2</pre>
       <div class="step"><h3>Pick a model</h3><p>Choose one and press "Download and start". The web UI opens at <code>127.0.0.1:8090</code>.</p></div>
     </div>
     <div class="need">
-      <div><b>System</b>Windows 11, 64-bit, with Intel's graphics driver.</div>
+      <div><b>System</b>Windows 11, 64-bit, with Intel's graphics driver. Or Linux (Ubuntu 24.04 and newer; users run CachyOS too) with Intel's compute runtime and Python 3: unpack <code>inferzero-&lt;version&gt;-linux-x64.tar.gz</code> and run <code>./zero-launcher.sh</code> (a terminal menu, no window), or build from source with <code>./build.sh</code>. The headless server only: no speech recording or desktop window there yet.</div>
       <div><b>GPU</b>Core Ultra with Arc graphics (Meteor Lake, Lunar Lake, Arrow Lake H, Panther Lake), or an Arc B-series card.</div>
       <div><b>Memory</b>16 GB for the 4B and E4B, 32 GB for the 12B to 35B models.</div>
     </div>
     <div class="endcta">
       <a class="btn p" href="https://github.com/rizagp/inferzero/releases/latest">Download for Windows <kbd>8 MB</kbd></a>
       <a class="btn s" href="https://github.com/rizagp/inferzero/blob/main/docs/install.md">Build from source</a>
+      <a class="btn s" href="https://github.com/rizagp/inferzero/releases/latest">Download for Linux <kbd>7 MB</kbd></a>
       <span class="mono">release 2026.11.14.12</span>
     </div>
   </div>

@@ -1,5 +1,43 @@
 # Changelog
 
+## 2026-11-14: a Linux package and a terminal launcher
+
+- **`inferzero-<version>-linux-x64.tar.gz`** (`scripts/make-package-linux.sh`): the tracked files plus `bin/runz`,
+  `bin/serverz` and `bin/mgpu_probe` built on Ubuntu 24.04 (g++ 13), for Ubuntu 24.04 and newer. Needs Intel's GPU
+  runtime, libgomp and Python 3; [docs/install.md](docs/install.md#linux) has the steps. `./build.sh` builds the
+  same programs from the sources.
+- **`./zero-launcher.sh`** (`scripts/zero_launcher.py`, standard library only): a terminal menu with the Windows
+  launcher's steps. It checks the system (`--check`: CPU, Level Zero, OpenCL, libgomp, Intel's driver, the GPU node
+  and its `render` group, RAM), lists the catalog (the same models as `scripts/model-catalog.ps1`, kept equal by
+  `tests/check_catalog_sync.py` in CI), downloads with `scripts/hf-download.py`, starts `serverz` and opens the web UI
+  once it answers. `--model KEY|FILE`, `--download`, `--port`, `--host`, `--gpus`, `--install-service` (a systemd
+  user unit). Not offered there: Flash Next's AutoRound import and the speech models.
+- **CI**: a `linux-package` job builds the package on Ubuntu 24.04 and runs what needs no GPU.
+- **The website and the README** say what runs on Linux.
+- **Reviewed before release** by DeepSeek-V4.1 through Pi and by a Claude reviewer, separately; fixed from their
+  findings:
+  - the wrapper changed folder, so a relative `--model` path, and a symlinked launcher, broke;
+  - "downloaded" looked only at `refs/main`'s snapshot, so a model could be fetched again;
+  - no port check, so a server already on 8090 answered for the new one;
+  - `--host ::` was never reported ready (the server's IPv6 socket is IPv6-only);
+  - a Gemma drafter's copy was not atomic;
+  - the free-space check ignored what was already downloaded;
+  - the browser shared the server's process group and closed with Ctrl+C;
+  - SIGINT sent to the launcher alone did not reach the server;
+  - the systemd unit: no cache variables, no line-break check, `XDG_CONFIG_HOME`;
+  - `$XDG_CACHE_HOME` was not honoured (the engine does; `hf-download.py` too, on Linux only);
+  - libgomp not checked;
+  - `-ldl` for glibc before 2.34;
+  - the archive held the builder's uid;
+  - the package cleanup could delete other folders in `dist/`;
+  - `--release` without a value was ignored;
+  - a rebuild in a package kept its `PREBUILT.txt`;
+  - CI piped `--help` into `head` without `pipefail`.
+  Also found by the self audit: Ctrl+C was sent to the server twice, a proxy could catch the health check, the
+  exit code of a server killed by a signal, and WSL2's `/dev/dxg` not counted as a GPU.
+- Windows: nothing changes (no engine, kernel or Windows script touched, except `hf-download.py`'s Linux-only cache
+  path).
+
 ## 2026-11-14: an AutoRound package refuses an expert file from another checkpoint (PR #25, chumbleyjl)
 
 - The package's `inferzero.autoround.revision` (the checkpoint's 40-digit SHA) is checked against the expert file's

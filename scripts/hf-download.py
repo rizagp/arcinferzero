@@ -13,6 +13,9 @@ import argparse, hashlib, http.client, os, sys, time, urllib.error, urllib.parse
 def cache_dir():
     if os.environ.get('HF_HUB_CACHE'): return os.environ['HF_HUB_CACHE']
     if os.environ.get('HF_HOME'): return os.path.join(os.environ['HF_HOME'], 'hub')
+    # (Linux: an absolute XDG_CACHE_HOME, as huggingface_hub and the engine's src/platform.h hf_home_hub take it)
+    x = os.environ.get('XDG_CACHE_HOME', '')
+    if os.name != 'nt' and x.startswith('/'): return os.path.join(x, 'huggingface', 'hub')
     return os.path.join(os.path.expanduser('~'), '.cache', 'huggingface', 'hub')
 
 def request(url, method='GET', start=0):
