@@ -33,8 +33,15 @@
     k_gdn_gates_ = p("gdn_gates");
     const std::string big = "-cl-intel-256-GRF-per-thread -DGQ=" + std::to_string(gq());
     k_attn_ = kernel("ops", big, "attn_fa");
-    k_gdn_recur_ = kernel("ops", big, "gdn_recur");
-    k_gdn_recur_g_ = kernel("ops", big + " -DFUSE_GATES", "gdn_recur");
+    // (ARC_GDN_PF=2..8, opt-in: gdn_recur keeps that many tokens' operands in flight, bit-identical; kernels/ops.cl)
+    const int gdn_pf = getenv("ARC_GDN_PF") ? std::clamp(atoi(getenv("ARC_GDN_PF")), 1, 8) : 1;
+    // (ARC_GDN_L1PF=D, opt-in: token t+D's operands prefetched into L1, bit-identical; only on GPUs whose driver has
+    //  cl_intel_subgroup_buffer_prefetch, ignored elsewhere)
+    const int gdn_l1 = getenv("ARC_GDN_L1PF") ? std::clamp(atoi(getenv("ARC_GDN_L1PF")), 0, 64) : 0;
+    const std::string gpf = (gdn_pf > 1 ? " -DGDN_PF=" + std::to_string(gdn_pf) : std::string()) +
+                            (gdn_l1 > 1 ? " -DGDN_L1PF=" + std::to_string(gdn_l1) : std::string());
+    k_gdn_recur_ = kernel("ops", big + gpf, "gdn_recur");
+    k_gdn_recur_g_ = kernel("ops", big + gpf + " -DFUSE_GATES", "gdn_recur");
     const std::string att = "-cl-intel-256-GRF-per-thread -DHPG=" + std::to_string(hp.n_head / hp.n_head_kv) +
                             " -DHS=" + std::to_string(attn_hs()) + " -DTPW=" + std::to_string(attn_tpw()) + sb_opt(256) +
                             (hp.qwen3 ? " -DHD=" + std::to_string(hp.head_dim) : std::string());

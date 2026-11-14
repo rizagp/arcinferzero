@@ -557,6 +557,86 @@ __kernel void gdn_recur(__global const float* x, int C, __global const float* ab
     s[i + 12] = v16.sc; s[i + 13] = v16.sd; s[i + 14] = v16.se; s[i + 15] = v16.sf;
   }
 #endif
+#if defined(GDN_PF) && GDN_PF > 1
+  // -DGDN_PF=P (ARC_GDN_PF, 2026-11-15): the operands of P tokens in flight instead of 1. A B70 took as long as a
+  // B60 in gdn_recur (292 / 289 ms of a 27B 4K prompt, issue #27) with 60 % more Xe-cores: each token's step waits
+  // for its q / k / v loads (~1 us of global latency against ~0.2 us of arithmetic), so loads are issued P tokens
+  // ahead into a ring of P slots (compile-time indices: the token loop unrolled by P). The arithmetic and its order
+  // are the default path's, token by token: the results are the same bit for bit.
+  uint8 rk0[GDN_PF], rk1[GDN_PF], rq0[GDN_PF], rq1[GDN_PF];
+  uint rv[GDN_PF];
+  float rd[GDN_PF], rb[GDN_PF];
+  rk0[0] = kn0; rk1[0] = kn1; rq0[0] = qn0; rq1[0] = qn1; rv[0] = vn; rd[0] = dn; rb[0] = bn;  // (token 0, read above)
+#pragma unroll
+  for (int u = 1; u < GDN_PF; ++u) {
+    rk0[u] = rk1[u] = rq0[u] = rq1[u] = 0; rv[u] = 0; rd[u] = rb[u] = 0.0f;
+    if (u < M_valid) {
+      __global const float* nrow = x + (size_t)u * C;
+      rk0[u] = intel_sub_group_block_read8((__global const uint*)(nrow + ko));
+      rq0[u] = intel_sub_group_block_read8((__global const uint*)(nrow + qo));
+#if GW == 8
+      rk1[u] = intel_sub_group_block_read8((__global const uint*)(nrow + ko + 64));
+      rq1[u] = intel_sub_group_block_read8((__global const uint*)(nrow + qo + 64));
+#endif
+      rv[u] = intel_sub_group_block_read((__global const uint*)(nrow + vo));
+      rd[u] = ab[(size_t)u * 2 * nv + h];
+      rb[u] = ab[(size_t)u * 2 * nv + nv + h];
+    }
+  }
+  for (int t0 = 0; t0 < M_valid; t0 += GDN_PF) {
+#pragma unroll
+    for (int u = 0; u < GDN_PF; ++u) {
+      const int t = t0 + u;
+      if (t >= M_valid) break;
+      const uint8 c0 = rk0[u], c1 = rk1[u], d0 = rq0[u], d1 = rq1[u];
+      const float v = as_float(rv[u]), decay = GDN_DECAY(rd[u]), beta = GDN_BETA(rb[u]);
+      if (t + GDN_PF < M_valid) {  // (this slot's next token, P ahead, requested before this token's arithmetic)
+        __global const float* nrow = x + (size_t)(t + GDN_PF) * C;
+        rk0[u] = intel_sub_group_block_read8((__global const uint*)(nrow + ko));
+        rq0[u] = intel_sub_group_block_read8((__global const uint*)(nrow + qo));
+#if GW == 8
+        rk1[u] = intel_sub_group_block_read8((__global const uint*)(nrow + ko + 64));
+        rq1[u] = intel_sub_group_block_read8((__global const uint*)(nrow + qo + 64));
+#endif
+        rv[u] = intel_sub_group_block_read((__global const uint*)(nrow + vo));
+        rd[u] = ab[(size_t)(t + GDN_PF) * 2 * nv + h];
+        rb[u] = ab[(size_t)(t + GDN_PF) * 2 * nv + nv + h];
+      }
+      const float kr[16] = {as_float(c0.s0), as_float(c0.s1), as_float(c0.s2), as_float(c0.s3),
+                            as_float(c0.s4), as_float(c0.s5), as_float(c0.s6), as_float(c0.s7),
+                            as_float(c1.s0), as_float(c1.s1), as_float(c1.s2), as_float(c1.s3),
+                            as_float(c1.s4), as_float(c1.s5), as_float(c1.s6), as_float(c1.s7)};
+      const float qr[16] = {as_float(d0.s0), as_float(d0.s1), as_float(d0.s2), as_float(d0.s3),
+                            as_float(d0.s4), as_float(d0.s5), as_float(d0.s6), as_float(d0.s7),
+                            as_float(d1.s0), as_float(d1.s1), as_float(d1.s2), as_float(d1.s3),
+                            as_float(d1.s4), as_float(d1.s5), as_float(d1.s6), as_float(d1.s7)};
+      float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+#pragma unroll
+      for (int i = 0; i < 128; i += 4) {
+        s[i] *= decay; s[i + 1] *= decay; s[i + 2] *= decay; s[i + 3] *= decay;
+        a0 = fma(s[i], BCW(kr[i / GW], i % GW), a0);
+        a1 = fma(s[i + 1], BCW(kr[(i + 1) / GW], (i + 1) % GW), a1);
+        a2 = fma(s[i + 2], BCW(kr[(i + 2) / GW], (i + 2) % GW), a2);
+        a3 = fma(s[i + 3], BCW(kr[(i + 3) / GW], (i + 3) % GW), a3);
+      }
+      const float d = (v - ((a0 + a1) + (a2 + a3))) * beta;
+      float b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, b3 = 0.0f;
+#pragma unroll
+      for (int i = 0; i < 128; i += 4) {
+        s[i] = fma(BCW(kr[i / GW], i % GW), d, s[i]);
+        s[i + 1] = fma(BCW(kr[(i + 1) / GW], (i + 1) % GW), d, s[i + 1]);
+        s[i + 2] = fma(BCW(kr[(i + 2) / GW], (i + 2) % GW), d, s[i + 2]);
+        s[i + 3] = fma(BCW(kr[(i + 3) / GW], (i + 3) % GW), d, s[i + 3]);
+        b0 = fma(s[i], BCW(qr[i / GW], i % GW), b0);
+        b1 = fma(s[i + 1], BCW(qr[(i + 1) / GW], (i + 1) % GW), b1);
+        b2 = fma(s[i + 2], BCW(qr[(i + 2) / GW], (i + 2) % GW), b2);
+        b3 = fma(s[i + 3], BCW(qr[(i + 3) / GW], (i + 3) % GW), b3);
+      }
+      intel_sub_group_block_write((__global uint*)(o + (size_t)t * nv * 128 + h * 128 + jb),
+                                  as_uint((b0 + b1) + (b2 + b3)));
+    }
+  }
+#else
   for (int t = 0; t < M_valid; ++t) {
     // (element i of q / k: register i / GW of lane i % GW, as the sub-group block reads lay them out)
     const float kr[16] = {as_float(kn0.s0), as_float(kn0.s1), as_float(kn0.s2), as_float(kn0.s3),
@@ -580,6 +660,22 @@ __kernel void gdn_recur(__global const float* x, int C, __global const float* ab
       dn = ab[(size_t)(t + 1) * 2 * nv + h];
       bn = ab[(size_t)(t + 1) * 2 * nv + nv + h];
     }
+#if defined(GDN_L1PF) && defined(cl_intel_subgroup_buffer_prefetch)
+    // -DGDN_L1PF=D (ARC_GDN_L1PF, 2026-11-15): token t+D's k / q / v rows prefetched into L1 (no registers, no
+    // arithmetic: the results are the default's bit for bit), so the one-ahead loads above find them there instead of
+    // waiting ~1 us for global memory (a B70's gdn_recur took as long as a B60's, issue #27). Only where the driver
+    // has cl_intel_subgroup_buffer_prefetch (Battlemage: yes; Meteor Lake: no, the switch does nothing there).
+    if (t + GDN_L1PF < M_valid) {
+      __global const float* prow = x + (size_t)(t + GDN_L1PF) * C;
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + ko));
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + qo));
+#if GW == 8
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + ko + 64));
+      intel_sub_group_block_prefetch_ui8((__global const uint*)(prow + qo + 64));
+#endif
+      intel_sub_group_block_prefetch_ui((__global const uint*)(prow + vo));
+    }
+#endif
     float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
 #pragma unroll
     for (int i = 0; i < 128; i += 4) {
@@ -605,6 +701,7 @@ __kernel void gdn_recur(__global const float* x, int C, __global const float* ab
     intel_sub_group_block_write((__global uint*)(o + (size_t)t * nv * 128 + h * 128 + jb),
                                 as_uint((b0 + b1) + (b2 + b3)));
   }
+#endif  // GDN_PF
 #ifdef GDN_LINE_SWAP
   __global float* so0 = Sout + ((size_t)h * 128 + (j & ~1)) * 128 + 8 * hf;
 #pragma unroll

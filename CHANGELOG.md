@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-11-15: the DeltaNet recurrence's loads further ahead, opt-in (`ARC_GDN_PF`, `ARC_GDN_L1PF`; the B70)
+
+- A B70's 4K prompt on the 27B spent 292 ms in `gdn_recur`, as a B60 did (289 ms), with 60 % more Xe-cores (issue
+  #27, joshdev-de): each token's step waits for its q / k / v loads, about 1 us of global memory latency, against
+  ~0.2 us of arithmetic, and the kernel asked for them only one token ahead.
+- **`ARC_GDN_PF=2`** (up to 8): the operands of that many tokens in registers. On a B70's 16-lane build no spill at
+  2, 15 KB of spill at 4 (ocloc, Battlemage), so 2 is the one to try there. On the laptop's 8-lane build it spills
+  already at 2: `gdn_recur` 238 -> 1,394 ms (4B, 4K prompt).
+- **`ARC_GDN_L1PF=D`** (e.g. 4, 8, 16): token t+D's k / q / v rows prefetched into L1 with
+  `intel_sub_group_block_prefetch`, no registers; only where the driver has `cl_intel_subgroup_buffer_prefetch`
+  (Battlemage yes, no spill; Meteor Lake no, where the switch does nothing).
+- Both keep the arithmetic and its order: logits bit-identical (4B, 3,584 tokens: `ARC_GDN_PF=2` and `=4` against the
+  default). Off by default; the B70 owners measure them.
+
 ## 2026-11-14: builds with GCC 16 (issue #27, joshdev-de)
 
 - GCC 16's libstdc++ no longer brings in `<climits>` through other headers, so `INT_MAX` was undeclared in
