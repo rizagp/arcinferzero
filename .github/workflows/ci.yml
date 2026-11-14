@@ -33,6 +33,7 @@ jobs:
             'test_xcache_pools' = 'ALL OK'
             'test_json'         = 'test_json: all passed'
             'test_sampler'      = 'ALL OK'
+            'test_quant_rows'   = 'test_quant_rows: all passed'
             'test_chat_store'   = 'test_chat_store: all passed'
             'test_doc_read'     = 'test_doc_read: all passed'
             'test_office'       = 'test_office: all passed'

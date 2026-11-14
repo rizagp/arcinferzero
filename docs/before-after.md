@@ -117,6 +117,12 @@ That property is what every speed change is held to:
   bit checks remain gates. Batched changes are Flash-only; normal non-precise
   --attn-f32 remains refused. Details: docs/flash-precise-repair-2026-11-13.md.
 
+- **2026-11-13, Q5_1 CPU reference rows** (`src/quants.h`, `tests/test_quant_rows.cpp`).
+  Before: K<256 left output unwritten; K>=256 threw `decode_sb: unsupported type`.
+  After: 3,424 independently encoded values at eight widths (including 640) and
+  output guards pass; ASan/UBSan pass. CPU-only repair; main's GPU loader still
+  rejects Q5_1. No speed or supported-model KL change is claimed.
+
 - **2026-11-14, a split model's sums straight from GPU to GPU** (`ARC_TP_P2P`, auto: chosen from the links timed at
   start; zero/mgpu/engine_tp.h; docs/multi-gpu.md, "Sums straight between GPUs"). **Speed: not measured.** It needs
   GPUs with peer access (Linux B60s, issue #17); the laptop has one GPU and, under `ARC_TP_SIM`, keeps host memory

@@ -48,6 +48,13 @@
   and retain normal-mode --attn-f32 rejection. Rebased GPU/model checks and
   before/after performance/memory measurements are required before merging.
 
+## 2026-11-13: Q5_1 CPU reference rows
+
+- Decode Q5_1 rows in 32-value blocks, including K=640 tails. Before: short rows
+  were unwritten and rows of at least 256 values threw unsupported-type errors.
+  Add a model-free regression to test_quant_rows and run it in CI. The GPU still
+  rejects Q5_1; this repairs CPU references, not KL for models main can run.
+
 ## 2026-11-14: a split model's sums straight from GPU to GPU where the links allow it; `Connection: close` honoured
 
 - **Multi-GPU (`--gpus`):** the engine times every link at start: each GPU to host memory and back and, when the
